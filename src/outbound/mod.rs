@@ -231,12 +231,36 @@ fn build_insecure_client() -> PooledClient {
 /// Builds a client TLS connector for a raw upstream WebSocket (`wss`) handshake.
 ///
 /// ALPN is pinned to `http/1.1` (the WebSocket upgrade is HTTP/1.1). When
-/// `verify` is false, certificate verification is disabled (matching
-/// `ssl_verify: false`). The verified connector is cached, since loading the
-/// platform's native root store on every connection is wasteful; the insecure
-/// connector is cheap and built on demand.
-pub fn client_tls_connector(verify: bool) -> Result<tokio_rustls::TlsConnector, String> {
+/// `identity` is set, the connector presents that client certificate (and
+/// trusts its private CA, if any) — mirroring `OutboundClient::identity_client`
+/// — and is cached per identity (`UpstreamTls::cache_key`), never evicted. When
+/// `identity` is `None` and `verify` is false, certificate verification is
+/// disabled (matching `ssl_verify: false`). The verified connector is cached,
+/// since loading the platform's native root store on every connection is
+/// wasteful; the insecure connector is cheap and built on demand.
+pub fn client_tls_connector(
+    verify: bool,
+    identity: Option<&Arc<tls::UpstreamTls>>,
+) -> Result<tokio_rustls::TlsConnector, String> {
     crate::server::tls::install_crypto_provider();
+
+    if let Some(id) = identity {
+        static CUSTOM: OnceLock<std::sync::RwLock<HashMap<u64, tokio_rustls::TlsConnector>>> =
+            OnceLock::new();
+        let cache = CUSTOM.get_or_init(|| std::sync::RwLock::new(HashMap::new()));
+        if let Some(c) = cache.read().unwrap().get(&id.cache_key()) {
+            return Ok(c.clone());
+        }
+        let mut config = id.client_config()?;
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        return Ok(cache
+            .write()
+            .unwrap()
+            .entry(id.cache_key())
+            .or_insert(connector)
+            .clone());
+    }
 
     if !verify {
         let config = rustls::ClientConfig::builder()
@@ -330,14 +354,49 @@ mod tests {
     #[test]
     fn test_client_tls_connector_insecure_builds() {
         // Insecure connector never touches the native store — fast/deterministic.
-        assert!(client_tls_connector(false).is_ok());
+        assert!(client_tls_connector(false, None).is_ok());
     }
 
     #[test]
     fn test_client_tls_connector_verified_builds() {
         // On a normal dev/CI host the native root store loads; if an
         // environment has no parsable roots the helper returns Err gracefully.
-        assert!(client_tls_connector(true).is_ok());
+        assert!(client_tls_connector(true, None).is_ok());
+    }
+
+    #[test]
+    fn test_client_tls_connector_with_identity_builds_and_caches() {
+        // Reuse the identity written by the Task 1 helper — write PEMs inline
+        // here the same way (CA + leaf via rcgen, temp files).
+        let (cert, key, ca) = {
+            let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+            ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            let ca_key = rcgen::KeyPair::generate().unwrap();
+            let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+            let leaf_params = rcgen::CertificateParams::new(vec!["client".to_string()]).unwrap();
+            let leaf_key = rcgen::KeyPair::generate().unwrap();
+            let leaf_cert = leaf_params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
+            let dir = std::env::temp_dir();
+            let pid = std::process::id();
+            let cert = dir.join(format!("featherbit_wsid_{}.crt", pid));
+            let key = dir.join(format!("featherbit_wsid_{}.key", pid));
+            let ca = dir.join(format!("featherbit_wsid_{}.ca.crt", pid));
+            std::fs::write(&cert, leaf_cert.pem()).unwrap();
+            std::fs::write(&key, leaf_key.serialize_pem()).unwrap();
+            std::fs::write(&ca, ca_cert.pem()).unwrap();
+            (
+                cert.to_str().unwrap().to_string(),
+                key.to_str().unwrap().to_string(),
+                ca.to_str().unwrap().to_string(),
+            )
+        };
+        let identity = tls::UpstreamTls::load(Some((&cert, &key)), Some(&ca), true).unwrap();
+        assert!(client_tls_connector(true, Some(&identity)).is_ok());
+        // Second call hits the connector cache — still fine.
+        assert!(client_tls_connector(true, Some(&identity)).is_ok());
+        // No identity: existing behavior, both variants still build.
+        assert!(client_tls_connector(true, None).is_ok());
+        assert!(client_tls_connector(false, None).is_ok());
     }
 
     /// Minimal one-shot HTTPS server that requires a client certificate and
