@@ -1,0 +1,20 @@
+# semgrep exclusions — vendored, generated, and scanner-output trees.
+# semgrep's default ignores (.git, common minified assets) still apply.
+# Markdown is prose: `ws://` and sample keys in docs are examples, not code.
+*.md
+# Self-signed test certificates/keys for the TLS integration tests.
+tests/security/
+# Local planning notes (gitignored), incl. the vendored APISIX reference copy.
+plan/
+target/
+node_modules/
+ui/dist/
+ui/docs/
+website/build/
+website/.docusaurus/
+website/static/api/
+graphify-out/
+tests/pg-data-keycloak/
+e2e/test-results/
+e2e/playwright-report/
+sast-out/

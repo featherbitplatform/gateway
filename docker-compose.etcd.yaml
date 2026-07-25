@@ -1,0 +1,55 @@
+# HA overlay: one etcd + two gateway replicas sharing config through etcd.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.etcd.yaml up
+#
+# Both gateways run `config.source: etcd` (examples/system-etcd.yaml). The first
+# to start seeds etcd from config/gateway.yaml; a change on either replica's
+# admin API (or a direct etcdctl write) converges to both within the poll
+# interval.
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.13
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd0
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+    ports:
+      - "2379:2379"
+
+  gateway:
+    command: ["--system-config", "/etc/gateway/system-etcd.yaml", "--gateway-config", "/etc/gateway/gateway.yaml"]
+    volumes:
+      - ./config:/etc/gateway
+      - ./examples/system-etcd.yaml:/etc/gateway/system-etcd.yaml
+      - ./examples/plugins:/etc/gateway/plugins
+    environment:
+      - ETCD_ENDPOINT=http://etcd:2379
+      - ADMIN_USER=admin
+      - ADMIN_PASSWORD=admin
+      - ECHO_BACKEND_HOST=echo-backend
+      - ECHO_BACKEND_PORT=3000
+    depends_on:
+      - etcd
+      - echo-backend
+
+  gateway-2:
+    build: .
+    command: ["--system-config", "/etc/gateway/system-etcd.yaml", "--gateway-config", "/etc/gateway/gateway.yaml"]
+    ports:
+      - "8081:8080"
+      - "9091:9090"
+    volumes:
+      - ./config:/etc/gateway
+      - ./examples/system-etcd.yaml:/etc/gateway/system-etcd.yaml
+      - ./examples/plugins:/etc/gateway/plugins
+    environment:
+      - ETCD_ENDPOINT=http://etcd:2379
+      - ADMIN_USER=admin
+      - ADMIN_PASSWORD=admin
+      - ECHO_BACKEND_HOST=echo-backend
+      - ECHO_BACKEND_PORT=3000
+    depends_on:
+      - etcd
+      - echo-backend

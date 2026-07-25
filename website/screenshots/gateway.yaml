@@ -1,0 +1,101 @@
+# gateway.yaml for documentation screenshots only -- not a deployment config.
+#
+# The policy is posed for the canvas: a realistic request chain (CORS -> auth ->
+# rate limit -> rewrite -> upstream -> access log) with three error edges
+# converging on one error-handler. Nodes carry no `position`, so the UI's
+# auto-layout runs: the success chain marches left-to-right and the error branch
+# drops below it -- which is exactly the shape the error-routing screenshot needs.
+routes:
+  - name: orders-api
+    match:
+      path: /api/orders/*
+      methods: [GET, POST, PUT, DELETE]
+    policy: orders-policy
+
+  - name: public-catalog
+    match:
+      path: /api/catalog/*
+      methods: [GET]
+    policy: orders-policy
+
+policies:
+  - name: orders-policy
+    error_handler: error-handler
+    nodes:
+      - id: listener
+        type: listener
+
+      - id: cors
+        type: cors
+        config:
+          allowed_origins: ["https://app.example.com"]
+          allowed_methods: ["GET", "POST", "PUT", "DELETE"]
+          max_age: 600
+
+      - id: api-key
+        type: key-auth
+        config:
+          keys: ["${ORDERS_API_KEY:-demo-key}"]
+          header_name: x-api-key
+
+      - id: rate-limit
+        type: rate-limit
+        config:
+          requests_per_second: 10
+          burst: 20
+          key_from: "header:x-api-key"
+
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /api
+
+      - id: orders-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ORDERS_BACKEND_HOST:-orders.internal}
+              port: ${ORDERS_BACKEND_PORT:-8080}
+
+      - id: access-log
+        type: logging
+        config:
+          include_headers: true
+
+      - id: error-handler
+        type: error-handler
+        config:
+          status_code: 502
+          body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+
+      - id: client
+        type: client
+
+    edges:
+      # Success chain.
+      - from: listener.out
+        to: cors.in
+      - from: cors.success
+        to: api-key.in
+      - from: api-key.success
+        to: rate-limit.in
+      - from: rate-limit.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: orders-backend.in
+      - from: orders-backend.success
+        to: access-log.in
+      - from: access-log.success
+        to: client.in
+
+      # Error ports: a rejected key, a throttled client, and a failing upstream
+      # all route to the same handler instead of a raw 500.
+      - from: api-key.error
+        to: error-handler.in
+      - from: rate-limit.error
+        to: error-handler.in
+      - from: orders-backend.error
+        to: error-handler.in
+      - from: error-handler.success
+        to: client.in

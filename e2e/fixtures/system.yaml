@@ -1,0 +1,32 @@
+# system.yaml for the e2e suite. Ports are offset from the defaults so a run
+# never collides with a dev gateway on 8080/9090 or the screenshot capture.
+listener:
+  bind: "127.0.0.1"
+  port: 18081
+
+http2:
+  enabled: true
+
+timeouts:
+  connection_seconds: 5
+  read_seconds: 5
+  write_seconds: 5
+  idle_seconds: 30
+
+logging:
+  level: ${LOG_LEVEL:-warn}
+  format: text
+
+admin:
+  bind: "127.0.0.1"
+  port: 19091
+  username: admin
+  password: admin
+
+# Debug mode is on for the whole e2e run because `enabled` is static. That is
+# deliberate: every other spec then doubles as proof that tracing stays inert
+# for requests that do not opt in. The disabled path is covered by unit tests
+# in src/admin/debug.rs instead.
+debug:
+  enabled: true
+  max_traces: 20

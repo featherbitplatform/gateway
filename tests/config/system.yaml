@@ -1,0 +1,26 @@
+listener:
+  bind: "0.0.0.0"
+  port: ${GATEWAY_PORT:-8080}
+
+http2:
+  enabled: true
+
+timeouts:
+  connection_seconds: 30
+  read_seconds: 30
+  write_seconds: 30
+  idle_seconds: 300
+
+logging:
+  level: ${LOG_LEVEL:-info}
+  format: text
+
+admin:
+  bind: "0.0.0.0"
+  port: ${ADMIN_PORT:-9090}
+  username: ${ADMIN_USER:-admin}
+  password: ${ADMIN_PASSWORD:-admin}
+
+debug:
+  enabled: ${FEATHERBIT_DEBUG:-false}
+  capture_bodies: ${FEATHERBIT_DEBUG_BODIES:-false}

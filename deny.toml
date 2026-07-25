@@ -1,0 +1,69 @@
+# cargo-deny configuration — dependency advisories, licenses, bans, sources.
+# Run locally via `dev/sast.ps1 deny` (or `cargo deny check`); CI runs the same
+# config through EmbarkStudios/cargo-deny-action in .github/workflows/security.yml.
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisory DB (same data cargo-audit uses). Errors fail the scan;
+# unmaintained/unsound advisories surface as warnings.
+ignore = [
+    # `instant` is unmaintained; pulled in via notify 7 -> notify-types. No
+    # safe upgrade short of a notify major bump; revisit when bumping notify.
+    "RUSTSEC-2024-0384",
+    # rustls-pemfile is unmaintained (superseded by rustls-pki-types' own PEM
+    # parsing). Direct dep used only to load PEM certs/keys at startup;
+    # migrating is tracked work, not a vulnerability.
+    "RUSTSEC-2025-0134",
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "MIT-0",
+    "CC0-1.0",
+]
+# The featherbit crate itself is publish = false; don't require a license
+# expression on it.
+private = { ignore = true }
+
+# ring ships a composite LICENSE file rather than an SPDX expression; this is
+# the community-standard clarification for it.
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+# Duplicate crate versions surface as warnings so NEW dupes stay visible; the
+# known, accepted ones below are skipped. All are platform/ecosystem shims
+# where different transitive deps sit on different majors — nothing to fix on
+# our side until the ecosystem converges.
+multiple-versions = "warn"
+wildcards = "deny"
+skip = [
+    { name = "bitflags" },
+    { name = "core-foundation" },
+    { name = "getrandom" },
+    { name = "hashbrown" },
+    { name = "r-efi" },
+    { name = "redox_syscall" },
+    { name = "thiserror" },
+    { name = "thiserror-impl" },
+    { name = "windows-sys" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

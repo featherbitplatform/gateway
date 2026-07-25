@@ -1,0 +1,25 @@
+# system.yaml for documentation screenshots only -- not a deployment config.
+# Ports are offset from the defaults so a capture run cannot collide with a
+# gateway the developer already has running on 8080/9090.
+listener:
+  bind: "127.0.0.1"
+  port: 18080
+
+http2:
+  enabled: true
+
+timeouts:
+  connection_seconds: 30
+  read_seconds: 30
+  write_seconds: 30
+  idle_seconds: 300
+
+logging:
+  level: warn
+  format: text
+
+admin:
+  bind: "127.0.0.1"
+  port: 19090
+  username: admin
+  password: admin

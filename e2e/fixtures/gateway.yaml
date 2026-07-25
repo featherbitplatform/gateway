@@ -1,0 +1,809 @@
+# Seed config for the e2e suite. Copied to e2e/.tmp/ before the gateway boots:
+# admin-API writes persist back to the config file, and a test run must not
+# dirty the fixture.
+routes:
+  - name: echo-api
+    match:
+      path: /api/*
+      methods: [GET, POST, PUT, DELETE, OPTIONS]
+    policy: echo-policy
+
+  - name: secure-api
+    match:
+      path: /secure/*
+      methods: [GET]
+    policy: secure-policy
+
+  - name: dead-api
+    match:
+      path: /dead/*
+      methods: [GET]
+    policy: dead-policy
+
+  # A throwaway route the UI round-trip tests mutate freely (add/delete nodes,
+  # wire edges, edit config, Save) without perturbing the shared policies.
+  - name: rt-api
+    match:
+      path: /rt/*
+      methods: [GET]
+    policy: rt-policy
+
+  # A wired basic-auth node with NO inline users (use_consumers keeps it valid to
+  # boot). The UI test adds a user through the node editor's form, saves, and
+  # checks it authenticates -- proving the array-shape fix works from the actual UI.
+  - name: uiauth-api
+    match:
+      path: /uiauth/*
+      methods: [GET]
+    policy: uiauth-policy
+
+  # OIDC bearer-token validation against the mock IdP's JWKS.
+  - name: bearer-api
+    match:
+      path: /bearer/*
+      methods: [GET]
+    policy: bearer-policy
+
+  # OIDC interactive login. The match MUST cover the redirect_uri path
+  # (/app/callback), or the IdP's callback never reaches the node.
+  - name: app-api
+    match:
+      path: /app/*
+      methods: [GET]
+    policy: app-policy
+
+  # forward-auth: delegate the decision to the mock auth service. The decision is
+  # driven off the path -- /fauth/allow/* permits, anything else is denied.
+  - name: fauth-api
+    match:
+      path: /fauth/*
+      methods: [GET]
+    policy: fauth-policy
+
+  # opa: same path-driven allow/deny, decided by the mock OPA.
+  - name: opa-api
+    match:
+      path: /opa/*
+      methods: [GET]
+    policy: opa-policy
+
+  # authz-casdoor: bearer token validated via Casdoor introspection.
+  - name: casdoor-api
+    match:
+      path: /casdoor/*
+      methods: [GET]
+    policy: casdoor-policy
+
+  # wolf-rbac: an rbac token checked against wolf-server per method+path.
+  - name: wolf-api
+    match:
+      path: /wolf/*
+      methods: [GET]
+    policy: wolf-policy
+
+  # authz-keycloak UMA: the mock permits when the requested permission names an
+  # "allow" resource. Two routes exercise the real callout both ways.
+  - name: kc-allow-api
+    match:
+      path: /kc-allow/*
+      methods: [GET]
+    policy: kc-allow-policy
+  - name: kc-deny-api
+    match:
+      path: /kc-deny/*
+      methods: [GET]
+    policy: kc-deny-policy
+
+  # cas-auth stateless: a service ticket validated against the mock CAS server.
+  - name: casauth-api
+    match:
+      path: /casauth/*
+      methods: [GET]
+    policy: casauth-policy
+
+  # basic-auth with users in the WEB UI's array shape (regression guard: the
+  # gateway used to reject this shape, so it would not even boot with this route).
+  - name: basicauth-api
+    match:
+      path: /basicauth/*
+      methods: [GET]
+    policy: basicauth-policy
+
+  # ldap-auth: HTTP Basic credentials verified by a real LDAP bind.
+  - name: ldap-api
+    match:
+      path: /ldap/*
+      methods: [GET]
+    policy: ldap-policy
+
+  # dingtalk-auth / feishu-auth: validate an authorization code (via ?code=).
+  - name: dingtalk-api
+    match:
+      path: /dingtalk/*
+      methods: [GET]
+    policy: dingtalk-policy
+  - name: feishu-api
+    match:
+      path: /feishu/*
+      methods: [GET]
+    policy: feishu-policy
+
+policies:
+  # /api/* -> echo backend, with the /api prefix stripped.
+  - name: echo-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: cors
+        type: cors
+        config:
+          allowed_origins: ["https://app.example.com"]
+          allowed_methods: ["GET", "POST", "OPTIONS"]
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /api
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: error-handler
+        type: error-handler
+        config:
+          status_code: 502
+          body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: cors.in
+      - from: cors.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: echo-backend.error
+        to: error-handler.in
+      - from: error-handler.success
+        to: client.in
+
+  # /secure/* -> key-auth + rate-limit in front of the echo backend.
+  #
+  # key-auth and rate-limit wire their `error` ports STRAIGHT TO client.in. Both
+  # plugins set the rejection response (401 / 429) on the context and then return
+  # an error; routing that error to `client` is what lets the status survive. Send
+  # it to an error-handler instead and the handler's status_code overwrites it —
+  # leave it unwired and the generic 500 fallback does. E2E-DP-05 pins this.
+  - name: secure-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: api-key
+        type: key-auth
+        config:
+          keys: ["e2e-secret"]
+          header_name: x-api-key
+      - id: throttle
+        type: rate-limit
+        config:
+          requests_per_second: 2
+          burst: 2
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /secure
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: api-key.in
+      - from: api-key.success
+        to: throttle.in
+      - from: throttle.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: api-key.error
+        to: client.in
+      - from: throttle.error
+        to: client.in
+
+  # /bearer/* -> openid-connect in bearer_only mode. Signatures are verified for
+  # real against the mock IdP's published JWKS.
+  #
+  # `oidc.error -> client.in` is required: the plugin sets 401 on the context and
+  # then returns an error, exactly like key-auth. Without that edge the caller
+  # gets the generic 500 instead of the 401.
+  - name: bearer-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: oidc
+        type: openid-connect
+        config:
+          bearer_only: true
+          jwks_uri: ${IDP_ISSUER:-http://127.0.0.1:3011}/jwks.json
+          client_id: featherbit-e2e
+          set_userinfo_header: true
+          claim_validator:
+            issuer:
+              valid_issuers: ["${IDP_ISSUER:-http://127.0.0.1:3011}"]
+            audience:
+              required: true
+              match_with_client_id: true
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /bearer
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: oidc.in
+      - from: oidc.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: oidc.error
+        to: client.in
+
+  # /app/* -> openid-connect interactive login (Authorization Code + PKCE).
+  #
+  # Both the 302 to the IdP and the post-callback 302 leave through the node's
+  # ERROR port with the response already prepared, so `oidc.error -> client.in`
+  # is what actually makes the browser move. Wire it anywhere else and login hangs.
+  - name: app-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: oidc
+        type: openid-connect
+        config:
+          bearer_only: false
+          discovery: ${IDP_ISSUER:-http://127.0.0.1:3011}/.well-known/openid-configuration
+          client_id: featherbit-e2e
+          client_secret: e2e-client-secret
+          redirect_uri: http://127.0.0.1:18081/app/callback
+          set_userinfo_header: true
+          session:
+            secret: e2e-session-secret-do-not-use-in-prod
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /app
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: oidc.in
+      - from: oidc.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: oidc.error
+        to: client.in
+
+  # /fauth/* -> forward-auth delegates to the mock auth service, then (on allow)
+  # proxies to echo. `oidc/forward-auth-style` error routing: the plugin returns
+  # Err on deny, so oidc.error -> client.in carries the 403 to the caller.
+  - name: fauth-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: fauth
+        type: forward-auth
+        config:
+          uri: ${AUTH_BASE:-http://127.0.0.1:3012}/forward-auth/verify
+          request_method: GET
+          # Copy the auth service's X-Auth-User onto the upstream request on allow.
+          upstream_headers: ["x-auth-user"]
+          # Mirror its X-Deny-Reason onto the client response on deny.
+          client_headers: ["x-deny-reason"]
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /fauth
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: fauth.in
+      - from: fauth.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: fauth.error
+        to: client.in
+
+  # /opa/* -> opa asks the mock OPA for a decision, then proxies to echo on allow.
+  - name: opa-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: opa
+        type: opa
+        config:
+          host: ${AUTH_BASE:-http://127.0.0.1:3012}
+          policy: e2e/allow
+          send_headers_upstream: ["x-opa-user"]
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /opa
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: opa.in
+      - from: opa.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: opa.error
+        to: client.in
+
+  # /casdoor/* -> authz-casdoor bearer mode: introspect the token, allow on active.
+  # Decision is on the TOKEN (valid-token), not the path.
+  - name: casdoor-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: casdoor
+        type: authz-casdoor
+        config:
+          endpoint_addr: ${AUTH_BASE:-http://127.0.0.1:3012}
+          client_id: e2e-client
+          client_secret: e2e-secret
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /casdoor
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: casdoor.in
+      - from: casdoor.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: casdoor.error
+        to: client.in
+
+  # /wolf/* -> wolf-rbac: check the rbac token against wolf-server. The mock
+  # decides on resName (the request path): /wolf/allow/* permits.
+  - name: wolf-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: wolf
+        type: wolf-rbac
+        config:
+          server: ${AUTH_BASE:-http://127.0.0.1:3012}
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /wolf
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: wolf.in
+      - from: wolf.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: wolf.error
+        to: client.in
+
+  # /kc-allow/* and /kc-deny/* -> authz-keycloak. The permission string is static
+  # per policy; the mock permits the one naming an "allow" resource.
+  - name: kc-allow-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: keycloak
+        type: authz-keycloak
+        config:
+          token_endpoint: ${AUTH_BASE:-http://127.0.0.1:3012}/keycloak/token
+          client_id: e2e-client
+          permissions: ["allow-resource"]
+      - id: strip-prefix
+        type: proxy-rewrite
+        config: { phase: request, strip_path_prefix: /kc-allow }
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: keycloak.in
+      - from: keycloak.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: keycloak.error
+        to: client.in
+
+  - name: kc-deny-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: keycloak
+        type: authz-keycloak
+        config:
+          token_endpoint: ${AUTH_BASE:-http://127.0.0.1:3012}/keycloak/token
+          client_id: e2e-client
+          permissions: ["deny-resource"]
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: keycloak.in
+      - from: keycloak.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: keycloak.error
+        to: client.in
+
+  # /casauth/* -> cas-auth stateless. A ?ticket= is validated against the mock.
+  - name: casauth-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: cas
+        type: cas-auth
+        config:
+          idp_uri: ${AUTH_BASE:-http://127.0.0.1:3012}/cas
+          service: http://127.0.0.1:18081/casauth
+      - id: strip-prefix
+        type: proxy-rewrite
+        config: { phase: request, strip_path_prefix: /casauth }
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: cas.in
+      - from: cas.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: cas.error
+        to: client.in
+
+  # /dingtalk/* -> dingtalk-auth: exchange the ?code= for userinfo. good-code passes.
+  - name: dingtalk-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: dingtalk
+        type: dingtalk-auth
+        config:
+          app_key: e2e-key
+          app_secret: e2e-secret
+          access_token_url: ${AUTH_BASE:-http://127.0.0.1:3012}/dingtalk/accessToken
+          userinfo_url: ${AUTH_BASE:-http://127.0.0.1:3012}/dingtalk/getuserinfo
+      - id: strip-prefix
+        type: proxy-rewrite
+        config: { phase: request, strip_path_prefix: /dingtalk }
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: dingtalk.in
+      - from: dingtalk.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: dingtalk.error
+        to: client.in
+
+  # /feishu/* -> feishu-auth: exchange the ?code= for a user token + userinfo.
+  - name: feishu-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: feishu
+        type: feishu-auth
+        config:
+          app_id: e2e-id
+          app_secret: e2e-secret
+          auth_redirect_uri: http://127.0.0.1:18081/feishu/callback
+          access_token_url: ${AUTH_BASE:-http://127.0.0.1:3012}/feishu/token
+          userinfo_url: ${AUTH_BASE:-http://127.0.0.1:3012}/feishu/userinfo
+      - id: strip-prefix
+        type: proxy-rewrite
+        config: { phase: request, strip_path_prefix: /feishu }
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: feishu.in
+      - from: feishu.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: feishu.error
+        to: client.in
+
+  # /basicauth/* -> basic-auth with users written the way the web UI serializes
+  # the field: an array of {username, password} objects (not a map).
+  - name: basicauth-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: auth
+        type: basic-auth
+        config:
+          realm: rt
+          users:
+            - username: alice
+              password: secret
+      - id: strip-prefix
+        type: proxy-rewrite
+        config: { phase: request, strip_path_prefix: /basicauth }
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: auth.in
+      - from: auth.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: auth.error
+        to: client.in
+
+  # /ldap/* -> ldap-auth: bind DN is cn=<user>,<base_dn>. The mock accepts
+  # cn=alice,ou=users,dc=example,dc=org / "secret".
+  - name: ldap-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: ldap
+        type: ldap-auth
+        config:
+          ldap_uri: ${LDAP_URI:-ldap://127.0.0.1:3389}
+          base_dn: ou=users,dc=example,dc=org
+          uid: cn
+      - id: strip-prefix
+        type: proxy-rewrite
+        config: { phase: request, strip_path_prefix: /ldap }
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: ldap.in
+      - from: ldap.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: ldap.error
+        to: client.in
+
+  # /uiauth/* -> basic-auth seeded with use_consumers:true and no inline users.
+  # The E2E-UI-13 test adds a user via the editor form.
+  - name: uiauth-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: auth
+        type: basic-auth
+        config:
+          realm: uiauth
+          use_consumers: true
+      - id: strip-prefix
+        type: proxy-rewrite
+        config: { phase: request, strip_path_prefix: /uiauth }
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: auth.in
+      - from: auth.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: auth.error
+        to: client.in
+
+  # Seed graph for the UI round-trip tests. Includes a key-auth node (for the
+  # switch-coercion test) and an error-handler (for the number-coercion test),
+  # both already wired -- the gateway rejects orphan nodes, so a form-field test
+  # cannot just drop an unconnected node on the canvas.
+  - name: rt-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: auth
+        type: cors
+        config:
+          allowed_origins: ["https://rt.example.com"]
+      - id: strip-prefix
+        type: proxy-rewrite
+        config: { phase: request, strip_path_prefix: /rt }
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: error-handler
+        type: error-handler
+        config:
+          status_code: 502
+          body_template: '{"error": "{{error.code}}"}'
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: auth.in
+      - from: auth.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: auth.error
+        to: error-handler.in
+      - from: echo-backend.error
+        to: error-handler.in
+      - from: error-handler.success
+        to: client.in
+
+  # /dead/* -> a port nothing listens on, so the upstream always fails and the
+  # error-handler renders. E2E-LOOP-01 edits this handler's status from the UI.
+  - name: dead-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: dead-backend
+        type: upstream
+        config:
+          targets:
+            - host: 127.0.0.1
+              port: 9
+      - id: error-handler
+        type: error-handler
+        config:
+          status_code: 502
+          body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: dead-backend.in
+      - from: dead-backend.success
+        to: client.in
+      - from: dead-backend.error
+        to: error-handler.in
+      - from: error-handler.success
+        to: client.in

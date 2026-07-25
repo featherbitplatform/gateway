@@ -1,0 +1,93 @@
+routes:
+  - name: scripted-api
+    match:
+      path: /api/*
+      methods: [GET, POST, PUT, DELETE]
+    policy: scripted-policy
+
+policies:
+  - name: scripted-policy
+    error_handler: error-handler
+    nodes:
+      - id: listener
+        type: listener
+
+      # Lua: add a unique request ID
+      - id: request-id
+        type: script
+        config:
+          runtime: lua
+          source: /etc/gateway/plugins/add-request-id.lua
+
+      # Lua: block known bot user agents
+      - id: block-bots
+        type: script
+        config:
+          runtime: lua
+          source: /etc/gateway/plugins/block-user-agents.lua
+
+      # Lua: start the response timer
+      - id: timer-start
+        type: script
+        config:
+          runtime: lua
+          source: /etc/gateway/plugins/response-timer.lua
+
+      # Strip the /api prefix before forwarding
+      - id: rewrite
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /api
+
+      # Forward to the backend
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_BACKEND_HOST:-localhost}
+              port: ${ECHO_BACKEND_PORT:-3000}
+
+      # Lua: stop the response timer, add X-Response-Time header
+      - id: timer-end
+        type: script
+        config:
+          runtime: lua
+          source: /etc/gateway/plugins/response-timer.lua
+
+      # Python: inject security headers and wrap response in envelope
+      # (uncomment when Python runtime is available)
+      # - id: transform-response
+      #   type: script
+      #   config:
+      #     runtime: python
+      #     source: /etc/gateway/plugins/response_transformer.py
+
+      - id: error-handler
+        type: error-handler
+        config:
+          status_code: 502
+          body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+
+      - id: client
+        type: client
+
+    edges:
+      - from: listener.out
+        to: request-id.in
+      - from: request-id.success
+        to: block-bots.in
+      - from: block-bots.success
+        to: timer-start.in
+      - from: timer-start.success
+        to: rewrite.in
+      - from: rewrite.success
+        to: backend.in
+      - from: backend.success
+        to: timer-end.in
+      - from: timer-end.success
+        to: client.in
+      - from: backend.error
+        to: error-handler.in
+      - from: error-handler.success
+        to: client.in

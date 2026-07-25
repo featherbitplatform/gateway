@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Unit + integration tests (621, inline in src/) and lints.
+  rust:
+    name: cargo test + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # The admin UI is embedded into the binary at compile time via rust-embed,
+      # and ui/dist is gitignored -- so it must be built before cargo, or the
+      # build embeds nothing. (This is the same trap that shipped a stale UI.)
+      - name: Build the embedded UI
+        run: npm ci && npm run build
+        working-directory: ui
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The tree is rustfmt-clean today; keep it that way.
+      - run: cargo fmt --check
+
+      - run: cargo test --locked
+
+      # The tree is clippy-clean today; keep it that way.
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  # ESLint over the admin UI. The tree is eslint-clean (errors and warnings);
+  # keep it that way.
+  ui-lint:
+    name: eslint (ui)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - run: npm ci && npm run lint
+        working-directory: ui
+
+  # The Playwright suite: admin API + data plane + web UI. See E2E_TESTBOOK.md.
+  e2e:
+    name: e2e (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            e2e/package-lock.json
+
+      - name: Build the embedded UI
+        run: npm ci && npm run build
+        working-directory: ui
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The suite runs the release binary (see e2e/playwright.config.ts).
+      - name: Build the gateway
+        run: cargo build --release --locked
+
+      - name: Install e2e deps
+        run: npm ci && npx playwright install --with-deps chromium
+        working-directory: e2e
+
+      # Playwright boots everything itself: the gateway, the Python echo backend
+      # (python3 is preinstalled; the config resolves it per platform), and the
+      # Node mock services (OIDC provider, the HTTP auth mock, and an ldapjs
+      # LDAP server). No containers required.
+      - name: Run e2e
+        run: npm test
+        working-directory: e2e
+
+      # The report carries traces, screenshots and the failing scenario IDs --
+      # the only way to diagnose a browser failure after the fact.
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
+          retention-days: 14
