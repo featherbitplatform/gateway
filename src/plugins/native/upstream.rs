@@ -150,18 +150,19 @@ impl UpstreamPlugin {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        let client_cert_path = config
-            .get("client_cert_path")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let client_key_path = config
-            .get("client_key_path")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let ca_cert_path = config
-            .get("ca_cert_path")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        let string_config_value = |key: &str| -> Result<Option<String>, String> {
+            match config.get(key) {
+                None => Ok(None),
+                Some(v) => match v.as_str() {
+                    Some(s) => Ok(Some(s.to_string())),
+                    None => Err(format!("{} must be a string", key)),
+                },
+            }
+        };
+
+        let client_cert_path = string_config_value("client_cert_path")?;
+        let client_key_path = string_config_value("client_key_path")?;
+        let ca_cert_path = string_config_value("ca_cert_path")?;
 
         let any_mtls_key =
             client_cert_path.is_some() || client_key_path.is_some() || ca_cert_path.is_some();
@@ -550,5 +551,29 @@ mod tests {
         config.insert("tls".to_string(), serde_json::json!(true));
         let plugin = UpstreamPlugin::from_config(&config, &PluginResources::empty()).unwrap();
         assert!(plugin.tls_identity.is_none());
+    }
+
+    #[test]
+    fn test_mtls_config_non_string_keys_rejected() {
+        for key in ["client_cert_path", "client_key_path", "ca_cert_path"] {
+            for bad_value in [
+                serde_json::json!(123),
+                serde_json::json!(true),
+                serde_json::json!(["x"]),
+            ] {
+                let mut config = mtls_config();
+                config.insert("tls".to_string(), serde_json::json!(true));
+                config.insert(key.to_string(), bad_value.clone());
+                let err =
+                    UpstreamPlugin::from_config(&config, &PluginResources::empty()).unwrap_err();
+                assert!(
+                    err.contains(&format!("{} must be a string", key)),
+                    "key {} value {:?} produced err: {}",
+                    key,
+                    bad_value,
+                    err
+                );
+            }
+        }
     }
 }
