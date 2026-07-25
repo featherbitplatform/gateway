@@ -2,11 +2,11 @@
 
 A lightweight, high-performance API gateway delivered as a single binary. Routes are configured as visual node graphs — each plugin is a node, wired together through success and error ports.
 
-![CI](https://github.com/francescodedomenico/featherbit/actions/workflows/ci.yml/badge.svg) ![Security](https://github.com/francescodedomenico/featherbit/actions/workflows/security.yml/badge.svg) ![Rust](https://img.shields.io/badge/rust-1.82+-orange) ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
+![CI](https://github.com/featherbitplatform/gateway/actions/workflows/ci.yml/badge.svg) ![Security](https://github.com/featherbitplatform/gateway/actions/workflows/security.yml/badge.svg) ![Rust](https://img.shields.io/badge/rust-1.82+-orange) ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 ## Documentation
 
-Full documentation lives at [francescodedomenico.github.io/featherbit](https://francescodedomenico.github.io/featherbit/) — source in [`website/`](website/) (Docusaurus). Run it locally with `cd website && npm install && npm run start`; it deploys to GitHub Pages via `.github/workflows/docs.yml`. API references: `cargo doc --no-deps --document-private-items` (Rust) and `cd ui && npm run docs` (TypeDoc) — both get bundled into the site at `/api/`.
+Full documentation lives at [featherbitplatform.github.io/gateway](https://featherbitplatform.github.io/gateway/) — source in [`website/`](website/) (Docusaurus). Run it locally with `cd website && npm install && npm run start`; it deploys to GitHub Pages via `.github/workflows/docs.yml`. API references: `cargo doc --no-deps --document-private-items` (Rust) and `cd ui && npm run docs` (TypeDoc) — both get bundled into the site at `/api/`.
 
 ## Features
 
@@ -161,7 +161,7 @@ Core structural nodes:
 | `error-handler` | Render custom error responses with template variables |
 | `script` | Lua scripted plugin (see below) |
 
-Beyond these, 80+ node types cover transformation, security, auth/authz, traffic control, logging, tracing, metrics, and serverless. The [plugin reference](https://francescodedomenico.github.io/featherbit/docs/reference/plugins) documents every one.
+Beyond these, 80+ node types cover transformation, security, auth/authz, traffic control, logging, tracing, metrics, and serverless. The [plugin reference](https://featherbitplatform.github.io/gateway/docs/reference/plugins) documents every one.
 
 ## Lua Scripting
 

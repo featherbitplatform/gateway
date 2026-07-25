@@ -21,4 +21,4 @@ cd ui && npm run docs                          # TypeDoc
 
 ## Deploying to GitHub Pages
 
-`docusaurus.config.ts` is configured for `francescodedomenico.github.io/featherbit/`. The deploy workflow is `.github/workflows/docs.yml` — enable GitHub Pages with "GitHub Actions" as the source in the repo settings.
+`docusaurus.config.ts` is configured for `featherbitplatform.github.io/gateway/`. The deploy workflow is `.github/workflows/docs.yml` — enable GitHub Pages with "GitHub Actions" as the source in the repo settings.

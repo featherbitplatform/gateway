@@ -116,7 +116,7 @@ function Hero(): ReactNode {
           </Link>
           <Link
             className="button button--secondary button--outline button--lg"
-            href="https://github.com/francescodedomenico/featherbit">
+            href="https://github.com/featherbitplatform/gateway">
             GitHub
           </Link>
         </div>
