@@ -256,6 +256,7 @@ impl ZipkinPlugin {
             body: body.into(),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
         let client = self.client.clone();
         // Fire-and-forget: the export never blocks or affects the request path.

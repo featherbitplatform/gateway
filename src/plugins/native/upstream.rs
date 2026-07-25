@@ -31,6 +31,23 @@ pub struct UpstreamPlugin {
     /// Verify the upstream's TLS certificate; default true. Only meaningful
     /// when `tls` is set.
     ssl_verify: bool,
+    /// Per-upstream TLS identity (client cert / private CA); None = shared
+    /// clients, exactly the pre-mTLS behavior.
+    tls_identity: Option<Arc<crate::outbound::tls::UpstreamTls>>,
+}
+
+// Manual `Debug`, scoped to what's useful in test/error output: `balancer`
+// and `client` don't implement it (pooled hyper client, atomics-backed pool
+// state), so a derive isn't available here.
+impl std::fmt::Debug for UpstreamPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpstreamPlugin")
+            .field("timeout", &self.timeout)
+            .field("tls", &self.tls)
+            .field("ssl_verify", &self.ssl_verify)
+            .field("tls_identity_set", &self.tls_identity.is_some())
+            .finish()
+    }
 }
 
 impl UpstreamPlugin {
@@ -52,9 +69,20 @@ impl UpstreamPlugin {
     ///   (`https` for the buffered path, `wss` for WebSocket).
     /// - `ssl_verify` (bool, default `true`): verify the upstream's TLS
     ///   certificate. Only meaningful when `tls` is set.
+    /// - `client_cert_path` / `client_key_path` (string, optional): PEM
+    ///   client certificate and private key presented to the upstream for
+    ///   mutual TLS. Must be set together, and only with `tls: true`.
+    /// - `ca_cert_path` (string, optional): PEM CA bundle used to verify the
+    ///   upstream's certificate, *replacing* the native root store for this
+    ///   upstream. Requires `tls: true`; rejected together with
+    ///   `ssl_verify: false` (a CA bundle to verify with is contradictory
+    ///   when verification is off).
     ///
     /// Errors if no valid target is configured, if the load-balancing value
-    /// is not a string, or if it names an unknown strategy.
+    /// is not a string, if it names an unknown strategy, if any mTLS key is
+    /// set without `tls: true`, if `client_cert_path`/`client_key_path` are
+    /// not both set, if `ca_cert_path` is set with `ssl_verify: false`, or if
+    /// the configured cert/key/CA files can't be read or parsed.
     ///
     /// ```yaml
     /// type: upstream
@@ -66,6 +94,10 @@ impl UpstreamPlugin {
     ///       port: 3000
     ///   load_balancing: least_connections
     ///   timeout_ms: 60000
+    ///   tls: true
+    ///   client_cert_path: /etc/gateway/client.crt
+    ///   client_key_path: /etc/gateway/client.key
+    ///   ca_cert_path: /etc/gateway/ca.crt
     /// ```
     pub fn from_config(
         config: &HashMap<String, serde_json::Value>,
@@ -118,12 +150,56 @@ impl UpstreamPlugin {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
+        let string_config_value = |key: &str| -> Result<Option<String>, String> {
+            match config.get(key) {
+                None => Ok(None),
+                Some(v) => match v.as_str() {
+                    Some(s) => Ok(Some(s.to_string())),
+                    None => Err(format!("{} must be a string", key)),
+                },
+            }
+        };
+
+        let client_cert_path = string_config_value("client_cert_path")?;
+        let client_key_path = string_config_value("client_key_path")?;
+        let ca_cert_path = string_config_value("ca_cert_path")?;
+
+        let any_mtls_key =
+            client_cert_path.is_some() || client_key_path.is_some() || ca_cert_path.is_some();
+        if any_mtls_key && !tls {
+            return Err(
+                "client_cert_path/client_key_path/ca_cert_path require tls: true".to_string(),
+            );
+        }
+        if client_cert_path.is_some() != client_key_path.is_some() {
+            return Err("client_cert_path and client_key_path must be set together".to_string());
+        }
+        // A CA bundle exists to *verify* the upstream; pairing it with
+        // ssl_verify:false is contradictory, so reject rather than guess.
+        if ca_cert_path.is_some() && !ssl_verify {
+            return Err("ca_cert_path with ssl_verify: false is contradictory".to_string());
+        }
+
+        let tls_identity = if any_mtls_key {
+            let client = client_cert_path.as_deref().zip(client_key_path.as_deref());
+            let identity = crate::outbound::tls::UpstreamTls::load(
+                client,
+                ca_cert_path.as_deref(),
+                ssl_verify,
+            )?;
+            crate::outbound::tls::UpstreamTls::register(&identity);
+            Some(identity)
+        } else {
+            None
+        };
+
         Ok(Self {
             balancer,
             client: resources.outbound.clone(),
             timeout,
             tls,
             ssl_verify,
+            tls_identity,
         })
     }
 }
@@ -167,6 +243,12 @@ impl Plugin for UpstreamPlugin {
                 "__ws_upstream_verify".to_string(),
                 serde_json::json!(self.ssl_verify),
             );
+            if let Some(identity) = &self.tls_identity {
+                ctx.message.insert(
+                    "__ws_upstream_tls_key".to_string(),
+                    serde_json::json!(identity.cache_key()),
+                );
+            }
             ctx.response.status_code = 101;
             return Ok(PluginOutput {
                 context: ctx,
@@ -205,6 +287,7 @@ impl Plugin for UpstreamPlugin {
             body: ctx.request.body.clone(),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: self.tls_identity.clone(),
         };
 
         let response = match self.client.request(outbound).await {
@@ -380,5 +463,117 @@ mod tests {
         let plugin = UpstreamPlugin::from_config(&config, &PluginResources::empty()).unwrap();
         assert!(plugin.tls);
         assert!(!plugin.ssl_verify);
+    }
+
+    fn write_identity(tag: &str) -> (String, String, String) {
+        // Same helper as src/outbound/tls.rs tests: CA + leaf, PEM files in
+        // temp_dir, returns (cert_path, key_path, ca_path).
+        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let leaf_params = rcgen::CertificateParams::new(vec!["client".to_string()]).unwrap();
+        let leaf_key = rcgen::KeyPair::generate().unwrap();
+        let leaf_cert = leaf_params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let cert = dir.join(format!("featherbit_up_{}_{}.crt", tag, pid));
+        let key = dir.join(format!("featherbit_up_{}_{}.key", tag, pid));
+        let ca = dir.join(format!("featherbit_up_{}_{}.ca.crt", tag, pid));
+        std::fs::write(&cert, leaf_cert.pem()).unwrap();
+        std::fs::write(&key, leaf_key.serialize_pem()).unwrap();
+        std::fs::write(&ca, ca_cert.pem()).unwrap();
+        (
+            cert.to_str().unwrap().to_string(),
+            key.to_str().unwrap().to_string(),
+            ca.to_str().unwrap().to_string(),
+        )
+    }
+
+    /// Base config with one target; callers add TLS keys.
+    fn mtls_config() -> HashMap<String, serde_json::Value> {
+        let mut config = HashMap::new();
+        config.insert(
+            "targets".to_string(),
+            serde_json::json!([{"host": "backend", "port": 443}]),
+        );
+        config
+    }
+
+    #[test]
+    fn test_mtls_config_requires_tls_true() {
+        let (cert, key, _) = write_identity("needstls");
+        let mut config = mtls_config();
+        config.insert("client_cert_path".to_string(), serde_json::json!(cert));
+        config.insert("client_key_path".to_string(), serde_json::json!(key));
+        // tls defaults to false -> config error.
+        let err = UpstreamPlugin::from_config(&config, &PluginResources::empty()).unwrap_err();
+        assert!(err.contains("tls"), "err was: {}", err);
+    }
+
+    #[test]
+    fn test_mtls_config_cert_and_key_must_pair() {
+        let (cert, _, _) = write_identity("pair");
+        let mut config = mtls_config();
+        config.insert("tls".to_string(), serde_json::json!(true));
+        config.insert("client_cert_path".to_string(), serde_json::json!(cert));
+        let err = UpstreamPlugin::from_config(&config, &PluginResources::empty()).unwrap_err();
+        assert!(err.contains("together"), "err was: {}", err);
+    }
+
+    #[test]
+    fn test_mtls_config_ca_with_no_verify_rejected() {
+        let (_, _, ca) = write_identity("contradiction");
+        let mut config = mtls_config();
+        config.insert("tls".to_string(), serde_json::json!(true));
+        config.insert("ssl_verify".to_string(), serde_json::json!(false));
+        config.insert("ca_cert_path".to_string(), serde_json::json!(ca));
+        assert!(UpstreamPlugin::from_config(&config, &PluginResources::empty()).is_err());
+    }
+
+    #[test]
+    fn test_mtls_config_loads_identity_and_registers() {
+        let (cert, key, ca) = write_identity("loads");
+        let mut config = mtls_config();
+        config.insert("tls".to_string(), serde_json::json!(true));
+        config.insert("client_cert_path".to_string(), serde_json::json!(cert));
+        config.insert("client_key_path".to_string(), serde_json::json!(key));
+        config.insert("ca_cert_path".to_string(), serde_json::json!(ca));
+        let plugin = UpstreamPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+        let id = plugin.tls_identity.as_ref().expect("identity loaded");
+        // Registered for the WebSocket relay to look up.
+        assert!(crate::outbound::tls::UpstreamTls::lookup(id.cache_key()).is_some());
+    }
+
+    #[test]
+    fn test_mtls_config_absent_means_no_identity() {
+        let mut config = mtls_config();
+        config.insert("tls".to_string(), serde_json::json!(true));
+        let plugin = UpstreamPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+        assert!(plugin.tls_identity.is_none());
+    }
+
+    #[test]
+    fn test_mtls_config_non_string_keys_rejected() {
+        for key in ["client_cert_path", "client_key_path", "ca_cert_path"] {
+            for bad_value in [
+                serde_json::json!(123),
+                serde_json::json!(true),
+                serde_json::json!(["x"]),
+            ] {
+                let mut config = mtls_config();
+                config.insert("tls".to_string(), serde_json::json!(true));
+                config.insert(key.to_string(), bad_value.clone());
+                let err =
+                    UpstreamPlugin::from_config(&config, &PluginResources::empty()).unwrap_err();
+                assert!(
+                    err.contains(&format!("{} must be a string", key)),
+                    "key {} value {:?} produced err: {}",
+                    key,
+                    bad_value,
+                    err
+                );
+            }
+        }
     }
 }

@@ -301,6 +301,7 @@ impl SkywalkingPlugin {
                     body: body.into(),
                     timeout: self.timeout,
                     ssl_verify: self.ssl_verify,
+                    tls: None,
                 };
                 let client = self.client.clone();
                 tokio::spawn(async move {

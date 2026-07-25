@@ -349,6 +349,7 @@ impl AuthzCasdoorPlugin {
             )),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
         let resp = self
             .outbound
@@ -494,6 +495,7 @@ impl AuthzCasdoorPlugin {
             body: Bytes::from(introspect_body(&token)),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
 
         match self.outbound.request(request).await {

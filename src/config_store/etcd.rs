@@ -97,6 +97,7 @@ impl EtcdConfigStore {
             body: Bytes::from(serde_json::to_vec(body).unwrap_or_default()),
             timeout: self.timeout,
             ssl_verify: true,
+            tls: None,
         };
         let resp = self
             .client

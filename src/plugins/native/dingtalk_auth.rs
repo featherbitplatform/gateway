@@ -205,6 +205,7 @@ impl DingtalkAuthPlugin {
             body: Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
         let resp =
             self.resources.outbound.request(req).await.map_err(|e| {
@@ -232,6 +233,7 @@ impl DingtalkAuthPlugin {
             body: Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
         let resp = self
             .resources
