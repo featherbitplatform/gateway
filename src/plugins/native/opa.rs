@@ -419,6 +419,7 @@ impl Plugin for OpaPlugin {
             body,
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
 
         // Block by default when the decision is unavailable.

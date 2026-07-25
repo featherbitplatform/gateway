@@ -276,6 +276,7 @@ impl TrafficSplitPlugin {
             body: ctx.request.body.clone(),
             timeout: self.timeout,
             ssl_verify: true,
+            tls: None,
         };
 
         match self.client.request(outbound).await {

@@ -289,6 +289,7 @@ impl Plugin for WolfRbacPlugin {
             body: Bytes::new(),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
 
         let response = match self.client.request(outbound).await {
