@@ -342,9 +342,7 @@ mod tests {
 
     /// Minimal one-shot HTTPS server that requires a client certificate and
     /// answers any request with `HTTP/1.1 200 OK`. Returns its port.
-    async fn spawn_mtls_server(
-        server_config: Arc<rustls::ServerConfig>,
-    ) -> u16 {
+    async fn spawn_mtls_server(server_config: Arc<rustls::ServerConfig>) -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
@@ -352,7 +350,9 @@ mod tests {
             // Serve connections until the test ends; failed handshakes
             // (missing client cert) just drop the connection.
             loop {
-                let Ok((tcp, _)) = listener.accept().await else { break };
+                let Ok((tcp, _)) = listener.accept().await else {
+                    break;
+                };
                 let acceptor = acceptor.clone();
                 tokio::spawn(async move {
                     if let Ok(mut stream) = acceptor.accept(tcp).await {
@@ -360,9 +360,7 @@ mod tests {
                         let mut buf = [0u8; 4096];
                         let _ = stream.read(&mut buf).await;
                         let _ = stream
-                            .write_all(
-                                b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
-                            )
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
                             .await;
                         let _ = stream.shutdown().await;
                     }
@@ -382,19 +380,24 @@ mod tests {
         let ca_key = rcgen::KeyPair::generate().unwrap();
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
 
-        let server_params =
-            rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
+        let server_params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
         let server_key = rcgen::KeyPair::generate().unwrap();
-        let server_cert = server_params.signed_by(&server_key, &ca_cert, &ca_key).unwrap();
+        let server_cert = server_params
+            .signed_by(&server_key, &ca_cert, &ca_key)
+            .unwrap();
 
         let client_params = rcgen::CertificateParams::new(vec!["gw".to_string()]).unwrap();
         let client_key = rcgen::KeyPair::generate().unwrap();
-        let client_cert = client_params.signed_by(&client_key, &ca_cert, &ca_key).unwrap();
+        let client_cert = client_params
+            .signed_by(&client_key, &ca_cert, &ca_key)
+            .unwrap();
 
         // Server side: require a client cert signed by the CA.
         let mut roots = rustls::RootCertStore::empty();
         roots
-            .add(rustls::pki_types::CertificateDer::from(ca_cert.der().to_vec()))
+            .add(rustls::pki_types::CertificateDer::from(
+                ca_cert.der().to_vec(),
+            ))
             .unwrap();
         let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
             .build()
@@ -402,11 +405,10 @@ mod tests {
         let server_config = rustls::ServerConfig::builder()
             .with_client_cert_verifier(verifier)
             .with_single_cert(
-                vec![rustls::pki_types::CertificateDer::from(server_cert.der().to_vec())],
-                rustls::pki_types::PrivateKeyDer::try_from(
-                    server_key.serialize_der(),
-                )
-                .unwrap(),
+                vec![rustls::pki_types::CertificateDer::from(
+                    server_cert.der().to_vec(),
+                )],
+                rustls::pki_types::PrivateKeyDer::try_from(server_key.serialize_der()).unwrap(),
             )
             .unwrap();
         let port = spawn_mtls_server(Arc::new(server_config)).await;
@@ -444,8 +446,7 @@ mod tests {
         assert_eq!(ok.status, 200);
 
         // Without a client cert (CA-only identity) the handshake is rejected.
-        let ca_only = tls::UpstreamTls::load(None, Some(ca_path.to_str().unwrap()), true)
-            .unwrap();
+        let ca_only = tls::UpstreamTls::load(None, Some(ca_path.to_str().unwrap()), true).unwrap();
         let err = client
             .request(OutboundRequest {
                 method: http::Method::GET,
@@ -457,6 +458,10 @@ mod tests {
                 tls: Some(ca_only),
             })
             .await;
-        assert!(matches!(err, Err(OutboundError::Transport(_))), "got: {:?}", err.map(|r| r.status));
+        assert!(
+            matches!(err, Err(OutboundError::Transport(_))),
+            "got: {:?}",
+            err.map(|r| r.status)
+        );
     }
 }
