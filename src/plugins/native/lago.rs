@@ -205,6 +205,7 @@ impl BatchFlusher for LagoFlusher {
             body: body.into(),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
 
         match self.client.request(req).await {

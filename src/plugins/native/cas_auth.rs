@@ -292,6 +292,7 @@ impl CasAuthPlugin {
             body: Bytes::new(),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
 
         let response = self

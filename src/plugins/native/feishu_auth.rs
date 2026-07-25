@@ -182,6 +182,7 @@ impl FeishuAuthPlugin {
             body: Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
         let resp = self
             .resources
@@ -218,6 +219,7 @@ impl FeishuAuthPlugin {
             body: Bytes::new(),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
         let resp = self
             .resources
