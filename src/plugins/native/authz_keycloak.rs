@@ -309,6 +309,7 @@ impl Plugin for AuthzKeycloakPlugin {
             body: Bytes::from(body),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
 
         match self.outbound.request(request).await {

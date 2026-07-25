@@ -344,6 +344,7 @@ impl TokenManager {
             body: body.into_bytes().into(),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
 
         let resp = self
@@ -426,6 +427,7 @@ impl BatchFlusher for GoogleCloudFlusher {
             body: body.into(),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
 
         match self.client.request(req).await {

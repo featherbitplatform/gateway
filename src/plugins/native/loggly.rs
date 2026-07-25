@@ -83,6 +83,7 @@ impl BatchFlusher for LogglyFlusher {
             body,
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
         match self.client.request(req).await {
             Ok(resp) if resp.status == 200 => Ok(()),

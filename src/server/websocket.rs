@@ -19,6 +19,8 @@
 //! synthesizes one for the upstream handshake). Client-facing `wss://` works
 //! for either, because TLS is terminated before this runs.
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 use http::HeaderMap;
 use http_body_util::Full;
@@ -130,6 +132,10 @@ const ECHO_HEADERS: &[&str] = &[
 /// WebSocket-relevant ones are forwarded. `client_on_upgrade` is the client's
 /// [`OnUpgrade`] captured by the listener before the request was consumed; it
 /// resolves only after the returned response is written back to the client.
+///
+/// `tls_identity`, when set, is the per-upstream client certificate (and
+/// private CA) to present during the `wss` handshake; `None` falls back to
+/// the shared verified/insecure connector selected by `verify`.
 // Each parameter is a distinct, meaningful part of the upstream handshake;
 // bundling them into a struct would only move the same fields around.
 #[allow(clippy::too_many_arguments)]
@@ -139,6 +145,7 @@ pub async fn proxy_upgrade(
     path: String,
     tls: bool,
     verify: bool,
+    tls_identity: Option<Arc<crate::outbound::tls::UpstreamTls>>,
     fwd_headers: &std::collections::HashMap<String, Vec<String>>,
     client_on_upgrade: OnUpgrade,
     client_is_h2: bool,
@@ -152,7 +159,8 @@ pub async fn proxy_upgrade(
         .map_err(|e| WsError::Connect(format!("{}:{}", host, port), e.to_string()))?;
 
     let mut sender = if tls {
-        let connector = crate::outbound::client_tls_connector(verify).map_err(WsError::Tls)?;
+        let connector = crate::outbound::client_tls_connector(verify, tls_identity.as_ref())
+            .map_err(WsError::Tls)?;
         let server_name = rustls::pki_types::ServerName::try_from(host.clone())
             .map_err(|e| WsError::Tls(format!("invalid server name '{}': {}", host, e)))?;
         let tls_stream = connector
