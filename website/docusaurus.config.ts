@@ -15,10 +15,10 @@ const config: Config = {
     v4: true,
   },
 
-  url: 'https://francescodedomenico.github.io',
-  baseUrl: '/featherbit/',
-  organizationName: 'francescodedomenico',
-  projectName: 'featherbit',
+  url: 'https://featherbitplatform.github.io',
+  baseUrl: '/gateway/',
+  organizationName: 'featherbitplatform',
+  projectName: 'gateway',
   trailingSlash: false,
 
   onBrokenLinks: 'throw',
@@ -83,7 +83,7 @@ const config: Config = {
           ],
         },
         {
-          href: 'https://github.com/francescodedomenico/featherbit',
+          href: 'https://github.com/featherbitplatform/gateway',
           label: 'GitHub',
           position: 'right',
         },
