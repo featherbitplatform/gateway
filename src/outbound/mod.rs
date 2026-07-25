@@ -6,6 +6,8 @@
 //! Supports `http` and `https` (rustls, native roots); `ssl_verify: false`
 //! selects a lazily-built client with certificate verification disabled.
 
+pub mod tls;
+
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -228,7 +230,7 @@ pub fn client_tls_connector(verify: bool) -> Result<tokio_rustls::TlsConnector, 
 /// Certificate verifier that accepts everything — only reachable via an
 /// explicit `ssl_verify: false` in plugin config.
 #[derive(Debug)]
-struct NoVerification(rustls::crypto::CryptoProvider);
+pub(crate) struct NoVerification(pub(crate) rustls::crypto::CryptoProvider);
 
 impl rustls::client::danger::ServerCertVerifier for NoVerification {
     fn verify_server_cert(
