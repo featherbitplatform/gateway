@@ -1,0 +1,40 @@
+listener:
+  bind: "0.0.0.0"
+  port: ${GATEWAY_PORT:-8080}
+
+http2:
+  enabled: true
+
+timeouts:
+  connection_seconds: 30
+  read_seconds: 30
+  write_seconds: 30
+  idle_seconds: 300
+
+logging:
+  level: ${LOG_LEVEL:-info}
+  format: text
+
+admin:
+  bind: "0.0.0.0"
+  port: ${ADMIN_PORT:-9090}
+  username: ${ADMIN_USER:-admin}
+  password: ${ADMIN_PASSWORD:-admin}
+
+# Policy-execution tracing + the plugin sandbox. Off by default; toggling
+# requires a restart (system.yaml is not hot-reloaded).
+#
+# Send `x-featherbit-debug: 1` on a request to trace it, then read the trace
+# from GET /api/debug/traces on the admin port. Capturing bodies is the costly
+# part and is gated separately -- bodies are also the one thing redaction
+# cannot clean, so leave it off outside development.
+#
+# Every field can be driven by an env var -- interpolation is a text pass over
+# this file before it is parsed, so it works for numbers and booleans alike.
+# Keep the `:-` defaults: ${FEATHERBIT_DEBUG} with the variable unset expands to
+# empty text, which YAML reads as null and serde rejects for a bool/number.
+debug:
+  enabled: ${FEATHERBIT_DEBUG:-false}
+  trace_all: ${FEATHERBIT_DEBUG_TRACE_ALL:-false}
+  capture_bodies: ${FEATHERBIT_DEBUG_BODIES:-false}
+  max_traces: ${FEATHERBIT_DEBUG_MAX_TRACES:-50}

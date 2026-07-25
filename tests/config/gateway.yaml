@@ -1,0 +1,94 @@
+routes:
+- name: echo-api
+  match:
+    path: /api/*
+    methods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+    headers: {}
+    host: null
+  policy: echo-policy
+policies:
+- name: echo-policy
+  error_handler: error-handler
+  nodes:
+  - id: listener
+    type: listener
+    config: {}
+    position:
+      x: -80.0
+      y: 160.0
+  - id: rewrite-request
+    type: proxy-rewrite
+    config:
+      strip_path_prefix: /api
+      phase: request
+    position:
+      x: 250.0
+      y: 150.0
+  - id: backend
+    type: upstream
+    config:
+      targets:
+      - host: echo-backend
+        port: 3000
+    position:
+      x: 500.0
+      y: 150.0
+  - id: rewrite-response
+    type: proxy-rewrite
+    config:
+      phase: response
+      remove_headers:
+      - x-powered-by
+    position:
+      x: 740.0
+      y: 60.0
+  - id: error-handler
+    type: error-handler
+    config:
+      body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+      status_code: 502
+    position:
+      x: 1250.0
+      y: 375.0
+  - id: client
+    type: client
+    config: {}
+    position:
+      x: 1000.0
+      y: 150.0
+  - id: openid-connect-mrqfwpxq
+    type: openid-connect
+    config:
+      client_id: ${CLIENT_ID}
+      logout_path: /logout
+      bearer_only: false
+      ssl_verify: false
+      redirect_uri: http://localhost:8080/api/callback
+      session_secret: thisisatest
+      discovery: https://keycloak:8443/realms/featherbit/.well-known/openid-configuration
+      client_secret: ${CLIENT_SECRET}
+    position:
+      x: 140.0
+      y: 380.0
+  edges:
+  - from: rewrite-request.success
+    to: backend.in
+  - from: backend.success
+    to: rewrite-response.in
+  - from: rewrite-response.success
+    to: client.in
+  - from: backend.error
+    to: error-handler.in
+  - from: error-handler.success
+    to: client.in
+  - from: listener.success
+    to: openid-connect-mrqfwpxq.in
+  - from: openid-connect-mrqfwpxq.success
+    to: rewrite-request.in
+  - from: openid-connect-mrqfwpxq.error
+    to: client.in
+consumers: []

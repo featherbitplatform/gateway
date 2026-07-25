@@ -1,0 +1,272 @@
+@import "tailwindcss";
+
+/* ============================================================
+   featherbit · Design tokens
+   Dark-first. Mirrors the featherbit design system token layer
+   (tokens/colors.css · typography.css · spacing.css · base.css).
+   Light theme lives under [data-theme="light"].
+   ============================================================ */
+
+:root {
+  /* ---- Brand: Electric Violet ---- */
+  --violet-50:  #f3eeff;
+  --violet-100: #ede6ff;
+  --violet-200: #d6c2ff;
+  --violet-300: #b794ff;
+  --violet-400: #9b5cff;
+  --violet-500: #863bff;
+  --violet-600: #7e14ff;
+  --violet-700: #6a10d6;
+  --violet-800: #530ca6;
+  --violet-900: #3d0a7a;
+
+  /* ---- Secondary accent: Signal Cyan ---- */
+  --cyan-300: #7dd3ff;
+  --cyan-400: #47bfff;
+  --cyan-500: #1ea7f0;
+  --cyan-600: #0d86c7;
+
+  /* ---- Neutral: Ink (cool slate, slight blue undertone) ---- */
+  --ink-950: #080b14;
+  --ink-900: #0d1320;
+  --ink-850: #121a2b;
+  --ink-800: #182235;
+  --ink-750: #1f2b41;
+  --ink-700: #283449;
+  --ink-600: #36435c;
+  --ink-500: #475569;
+  --ink-400: #64748b;
+  --ink-300: #94a3b8;
+  --ink-200: #cbd5e1;
+  --ink-100: #e2e8f0;
+  --ink-50:  #f1f5f9;
+  --white:   #ffffff;
+
+  /* ---- Semantic status ---- */
+  --green-500: #22c55e;
+  --red-500:   #ef4444;
+  --amber-500: #f59e0b;
+
+  /* ---- Plugin-type categorical palette ---- */
+  --plugin-listener:  #8b5cf6;
+  --plugin-client:    #10b981;
+  --plugin-proxy:     #3b82f6;
+  --plugin-upstream:  #f59e0b;
+  --plugin-error:     #ef4444;
+  --plugin-cors:      #06b6d4;
+  --plugin-ratelimit: #f97316;
+  --plugin-ip:        #ec4899;
+  --plugin-size:      #84cc16;
+  --plugin-auth:      #14b8a6;
+  --plugin-logging:   #6b7280;
+  --plugin-script:    #a855f7;
+
+  /* ---- Semantic aliases (dark) ---- */
+  --bg-canvas:       var(--ink-950);
+  --bg-app:          var(--ink-900);
+  --surface:         var(--ink-800);
+  --surface-raised:  var(--ink-750);
+  --surface-sunken:  var(--ink-850);
+  --surface-input:   var(--ink-700);
+  --surface-hover:   rgba(255, 255, 255, 0.04);
+  --surface-active:  rgba(134, 59, 255, 0.12);
+
+  --border:          var(--ink-600);
+  --border-subtle:   var(--ink-700);
+  --border-strong:   var(--ink-500);
+
+  --text-primary:    var(--ink-50);
+  --text-secondary:  var(--ink-300);
+  --text-muted:      var(--ink-400);
+  --text-on-accent:  var(--white);
+
+  --accent:          var(--violet-500);
+  --accent-hover:    var(--violet-400);
+  --accent-press:    var(--violet-600);
+  --accent-soft:     rgba(134, 59, 255, 0.14);
+  --accent-ring:     rgba(134, 59, 255, 0.45);
+  --focus-ring:      var(--violet-400);
+
+  --success:         var(--green-500);
+  --error:           var(--red-500);
+  --warning:         var(--amber-500);
+  --info:            var(--cyan-400);
+
+  --glow-violet:     0 0 24px rgba(134, 59, 255, 0.35);
+
+  /* Canvas dotted grid dot color */
+  --grid-dot:        var(--ink-700);
+
+  /* ---- Type ---- */
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --text-2xs: 10px;
+  --text-xs:  12px;
+  --text-sm:  13px;
+  --text-base: 14px;
+  --text-md:  16px;
+  --text-lg:  18px;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --tracking-tight: -0.01em;
+  --tracking-wider: 0.08em;
+
+  /* ---- Radius / shadow ---- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-pill: 999px;
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.40);
+  --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.50);
+  --shadow-panel: -8px 0 40px rgba(0, 0, 0, 0.45);
+
+  /* ---- Fixed layout rails ---- */
+  --rail-sidebar: 264px;
+  --rail-drawer: 300px;
+  --rail-inspector: 336px;
+  --topbar-h: 56px;
+  --grid-gap: 20px;
+  --node-min-w: 168px;
+
+  /* ---- Motion ---- */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-panel: 240ms;
+}
+
+[data-theme="light"] {
+  --bg-canvas:       #f7f8fb;
+  --bg-app:          #ffffff;
+  --surface:         #ffffff;
+  --surface-raised:  #ffffff;
+  --surface-sunken:  #f3f4f8;
+  --surface-input:   #f1f3f8;
+  --surface-hover:   rgba(15, 19, 32, 0.04);
+  --surface-active:  rgba(134, 59, 255, 0.08);
+
+  --border:          #dfe3ec;
+  --border-subtle:   #ebeef4;
+  --border-strong:   #c6ccd9;
+
+  --text-primary:    #14182a;
+  --text-secondary:  #545b70;
+  --text-muted:      #8a91a6;
+  --text-on-accent:  #ffffff;
+
+  --accent:          var(--violet-600);
+  --accent-hover:    var(--violet-500);
+  --accent-press:    var(--violet-700);
+  --accent-soft:     rgba(134, 59, 255, 0.10);
+  --accent-ring:     rgba(134, 59, 255, 0.35);
+  --focus-ring:      var(--violet-500);
+
+  --glow-violet:     0 0 0 rgba(0, 0, 0, 0);
+  --grid-dot:        #d4d9e4;
+
+  --shadow-xs: 0 1px 2px rgba(20, 24, 42, 0.06);
+  --shadow-sm: 0 1px 3px rgba(20, 24, 42, 0.08), 0 1px 2px rgba(20, 24, 42, 0.06);
+  --shadow-md: 0 4px 12px rgba(20, 24, 42, 0.10);
+  --shadow-lg: 0 12px 28px rgba(20, 24, 42, 0.14);
+  --shadow-panel: -8px 0 40px rgba(20, 24, 42, 0.12);
+}
+
+body {
+  margin: 0;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+code, kbd, pre, samp {
+  font-family: var(--font-mono);
+}
+
+/* Uppercase eyebrow / section label */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Custom scrollbars for the dark control plane */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-600) transparent;
+}
+[data-theme="light"] * {
+  scrollbar-color: #c6ccd9 transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ============ React Flow overrides ============ */
+.react-flow__node {
+  font-size: var(--text-xs);
+}
+
+.react-flow__edge-path {
+  stroke-width: 2;
+}
+
+/* Error edges: flowing dashes */
+.react-flow__edge.animated path {
+  stroke-dasharray: 6 4;
+}
+
+.react-flow__background {
+  background-color: var(--bg-canvas) !important;
+}
+
+.react-flow__minimap {
+  background-color: var(--surface) !important;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.react-flow__controls {
+  box-shadow: var(--shadow-sm);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background: var(--surface) !important;
+  border-bottom: 1px solid var(--border) !important;
+  color: var(--text-secondary);
+}
+.react-flow__controls-button:hover {
+  background: var(--surface-raised) !important;
+}
+.react-flow__controls-button svg {
+  fill: var(--text-secondary);
+}
+
+.react-flow__attribution {
+  background: transparent !important;
+  color: var(--text-muted);
+}

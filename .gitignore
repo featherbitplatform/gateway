@@ -1,0 +1,39 @@
+/target
+.env
+*.swp
+*.swo
+
+# Node
+node_modules/
+ui/dist/
+
+# Rust
+target/
+
+#Grafiphy
+graphify-out/
+
+# Claude
+.claude/
+plan/
+/CLAUDE.md
+
+# Internal notes (root docs/ only -- website/docs is the published site content)
+/docs/
+
+# Generated documentation (rebuilt by `cargo doc` / TypeDoc / website sync script)
+ui/docs/
+website/build/
+
+# e2e suite: staged config + Playwright artifacts (see E2E_TESTBOOK.md)
+e2e/.tmp/
+e2e/test-results/
+e2e/playwright-report/
+website/.docusaurus/
+website/static/api/
+
+# Live PostgreSQL data directory created by tests/docker-compose.yml (Keycloak)
+tests/pg-data-keycloak/
+
+# SAST scan outputs (dev/sast.ps1 / dev/sast.sh)
+sast-out/

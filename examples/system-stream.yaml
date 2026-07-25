@@ -1,0 +1,45 @@
+# Example system.yaml with L4 (TCP/UDP) stream proxying.
+#
+# Each entry under `stream:` binds a port at startup and proxies raw bytes to an
+# upstream pool — independent of the HTTP data plane (no routes, no policies, no
+# plugins). Load balancing (round_robin | least_connections | ip_hash) is shared
+# with the HTTP `upstream` node.
+
+listener:
+  bind: 0.0.0.0
+  port: ${GATEWAY_PORT:-8080}
+
+# L4 stream listeners
+stream:
+  # Raw TCP passthrough — e.g. front a Redis backend.
+  - protocol: tcp
+    bind: 0.0.0.0
+    port: ${REDIS_PROXY_PORT:-6379}
+    upstream:
+      load_balancing: round_robin
+      targets:
+        - host: ${REDIS_HOST:-redis}
+          port: ${REDIS_PORT:-6379}
+
+  # TCP with a two-node pool, least-connections balancing.
+  - protocol: tcp
+    bind: 0.0.0.0
+    port: ${PG_PROXY_PORT:-5432}
+    upstream:
+      load_balancing: least_connections
+      targets:
+        - { host: pg-1, port: 5432 }
+        - { host: pg-2, port: 5432 }
+
+  # UDP datagram proxy — e.g. front a DNS resolver.
+  - protocol: udp
+    bind: 0.0.0.0
+    port: ${DNS_PROXY_PORT:-53}
+    upstream:
+      targets:
+        - host: ${DNS_HOST:-dns}
+          port: 53
+
+logging:
+  level: ${LOG_LEVEL:-info}
+  format: json

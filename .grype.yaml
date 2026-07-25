@@ -1,0 +1,23 @@
+# grype configuration — dependency/CVE scanning over the repo filesystem
+# (Cargo.lock + the three npm lockfiles) and the built container image.
+# High/critical findings fail the scan; lower severities are reported only.
+
+fail-on-severity: high
+
+# Directory scans: skip vendored/generated trees.
+exclude:
+  # Local planning notes (gitignored), incl. the vendored APISIX reference
+  # copy (plan/apisix) — full of upstream fixtures with known CVEs.
+  - ./plan/**
+  - ./target/**
+  - ./**/node_modules/**
+  - ./ui/dist/**
+  - ./website/build/**
+  - ./website/.docusaurus/**
+  - ./graphify-out/**
+  - ./tests/pg-data-keycloak/**
+  - ./sast-out/**
+
+ignore: []
+  # Accepted findings go here, each with a comment explaining why, e.g.:
+  # - vulnerability: CVE-2026-XXXXX

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
+  // npm dependency CVE gate — fails on high/critical, reports the rest.
+  // Same thresholds as the other scanners (see .github/workflows/security.yml
+  // and dev/sast.ps1). Every allowlist entry needs a comment and a removal
+  // condition — no silent suppression.
+  "high": true,
+  "allowlist": [
+    // GHSA-mh99-v99m-4gvg (brace-expansion DoS): the fixed maintenance
+    // backports (1.1.16 / 2.1.2 / 3.0.2) are installed in this tree, but the
+    // advisory currently lists only 5.0.8 as patched, so every older major is
+    // flagged even when fixed. Remove once the advisory's patched ranges
+    // include the maintenance backports.
+    "GHSA-mh99-v99m-4gvg"
+  ]
+}

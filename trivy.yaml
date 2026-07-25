@@ -1,0 +1,20 @@
+# trivy configuration — container image scanning (OS packages + embedded deps).
+# High/critical findings fail the scan (exit-code is passed on the CLI so that
+# report-only invocations remain possible).
+
+severity:
+  - HIGH
+  - CRITICAL
+
+scan:
+  skip-dirs:
+    # Local planning notes, incl. the vendored APISIX reference copy.
+    - plan
+    - target
+    - node_modules
+    - ui/dist
+    - website/build
+    - website/.docusaurus
+    - graphify-out
+    - tests/pg-data-keycloak
+    - sast-out

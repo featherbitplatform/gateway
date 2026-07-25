@@ -1,0 +1,48 @@
+# gitleaks configuration — secrets scanning. Extends the built-in default
+# ruleset; the allowlists below cover known test fixtures, not real secrets.
+# gitleaks auto-loads this file from the repo root.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures and vendored/generated trees — deliberate fake credentials, never production secrets"
+paths = [
+    # Self-signed TLS material generated for the integration tests.
+    '''tests/security/''',
+    # Keycloak realm export used by the auth integration tests: contains the
+    # test realm's client secrets and signing keys (throwaway, local-only).
+    '''tests/realms/''',
+    # Live Postgres data dir created by tests/docker-compose.yml (gitignored).
+    '''tests/pg-data-keycloak/''',
+    # Build outputs and dependency trees.
+    '''target/''',
+    '''node_modules/''',
+    '''ui/dist/''',
+    '''website/build/''',
+    '''website/\.docusaurus/''',
+    '''graphify-out/''',
+    '''sast-out/''',
+    # Local planning notes (gitignored), incl. the vendored APISIX reference
+    # copy (plan/apisix) — full of upstream fixtures that look like GCP keys,
+    # client secrets, etc.
+    '''plan/''',
+    # Local Keycloak test stack env for tests/docker-compose.yml (gitignored):
+    # localhost-only admin/admin credentials and a throwaway client secret.
+    '''tests/\.env''',
+]
+
+[[allowlists]]
+description = "Inline unit-test fixtures in plugin sources (fake PEM/JWT/service-account material)"
+paths = [
+    '''src/plugins/native/google_cloud_logging\.rs''',
+    '''src/plugins/native/openid_connect\.rs''',
+    '''src/plugins/native/csrf\.rs''',
+    '''src/plugins/native/jwe_decrypt\.rs''',
+]
+
+[[allowlists]]
+description = "Documentation examples — `curl -u admin:admin` snippets and sample keys in prose, not live credentials"
+paths = [
+    '''website/docs/''',
+]

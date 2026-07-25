@@ -1,0 +1,185 @@
+name: Security
+
+# SAST suite — the same scanners and thresholds as dev/sast.ps1 / dev/sast.sh.
+# Every tool reads its config from the repo root (deny.toml, .hadolint.yaml,
+# .gitleaks.toml, .grype.yaml, trivy.yaml, .semgrepignore) so local runs and CI
+# can't drift. Jobs fail on high/critical findings; everything else is
+# reported to the Security tab via SARIF.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly re-scan of main: dependency CVEs get published without any code
+  # change, so a green merge can silently go red.
+  schedule:
+    - cron: '30 5 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # Code patterns (Rust + TypeScript + Dockerfile). Blocks on ERROR-severity
+  # findings only; rulesets mirror dev/sast.ps1.
+  semgrep:
+    name: semgrep
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+
+      # --exclude-rule: a WebSocket proxy legitimately handles ws:// everywhere;
+      # that JS rule fires on the string even inside Rust comments.
+      - run: >-
+          semgrep scan
+          --config p/default --config p/rust --config p/typescript --config p/dockerfile
+          --exclude-rule javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+          --severity ERROR --error --metrics=off
+          --sarif --output semgrep.sarif
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  # RustSec advisories + license/ban/source checks on Cargo.lock (deny.toml).
+  # This subsumes cargo-audit: the advisories check queries the same RustSec DB.
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # CVEs in the four lockfiles (Cargo.lock + the three npm package-locks).
+  grype-fs:
+    name: grype (filesystem)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: anchore/scan-action@v7
+        id: scan
+        with:
+          path: '.'
+          fail-build: true
+          severity-cutoff: high
+          output-format: sarif
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif }}
+          category: grype-fs
+
+  # Dockerfile lint: ./Dockerfile, ui/Dockerfile, dev/echo-backend/Dockerfile.
+  # .hadolint.yaml sets failure-threshold: error, so warnings don't block.
+  hadolint:
+    name: hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # hadolint-action publishes no floating major tag -- pin the full version.
+      - uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: Dockerfile
+          recursive: true
+
+  # Secrets scanning over the working tree. Same container invocation as
+  # dev/sast.ps1; allowlisted test fixtures live in .gitleaks.toml.
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: >-
+          docker run --rm -v "$PWD:/src" zricethezav/gitleaks:latest
+          dir /src --config /src/.gitleaks.toml --no-banner --redact
+          --report-format sarif --report-path /src/gitleaks.sarif
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+  # npm dependency CVEs per lockfile tree (no install needed — the audit reads
+  # the lockfile and queries the registry). audit-ci instead of raw `npm audit`
+  # because it supports a documented allowlist (audit-ci.jsonc in each tree);
+  # plain npm audit has no ignore mechanism at all.
+  npm-audit:
+    name: npm audit (${{ matrix.dir }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [ui, e2e, website]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npx --yes audit-ci@^7 --config audit-ci.jsonc
+        working-directory: ${{ matrix.dir }}
+
+  # Build the container image and scan it with both grype and trivy. The
+  # runtime image is FROM scratch, so most findings here would come from the
+  # embedded binary/ca-certs — near-empty is the expected healthy result.
+  image-scan:
+    name: image scan (grype + trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # The Dockerfile COPYs ui/dist into the builder; ui/dist is gitignored,
+      # so it must be built first (same trap as in ci.yml).
+      - name: Build the embedded UI
+        run: npm ci && npm run build
+        working-directory: ui
+
+      - name: Build the image
+        run: docker build -t featherbit:sast .
+
+      - uses: anchore/scan-action@v7
+        id: grype-image
+        with:
+          image: featherbit:sast
+          fail-build: true
+          severity-cutoff: high
+          output-format: sarif
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: ${{ steps.grype-image.outputs.sarif }}
+          category: grype-image
+
+      - uses: aquasecurity/trivy-action@v0.36.0
+        if: always()
+        with:
+          image-ref: featherbit:sast
+          trivy-config: trivy.yaml
+          exit-code: '1'
+          format: sarif
+          output: trivy.sarif
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-image

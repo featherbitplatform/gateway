@@ -1,0 +1,31 @@
+# Example system.yaml for etcd config mode (HA clustering).
+#
+# With `config.source: etcd`, the gateway loads routes/policies/consumers from
+# etcd instead of the local gateway.yaml, and every instance watches the same
+# prefix so a change made on one node (or via etcdctl) converges across the
+# cluster. If the etcd prefix is empty on first start, the gateway seeds it from
+# the local gateway.yaml (bootstrap).
+
+listener:
+  bind: 0.0.0.0
+  port: ${GATEWAY_PORT:-8080}
+
+admin:
+  bind: 0.0.0.0
+  port: ${ADMIN_PORT:-9090}
+  username: ${ADMIN_USER:-admin}
+  password: ${ADMIN_PASSWORD:-admin}
+
+logging:
+  level: ${LOG_LEVEL:-info}
+  format: json
+
+config:
+  source: etcd
+  etcd:
+    endpoints:
+      - ${ETCD_ENDPOINT:-http://127.0.0.1:2379}
+    prefix: ${ETCD_PREFIX:-/featherbit}
+    # user: ${ETCD_USER:-}
+    # password: ${ETCD_PASSWORD:-}
+    timeout_ms: 3000

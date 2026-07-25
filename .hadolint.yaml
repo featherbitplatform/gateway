@@ -1,0 +1,7 @@
+# hadolint configuration — Dockerfile linting for ./Dockerfile, ui/Dockerfile,
+# and dev/echo-backend/Dockerfile. Errors fail the scan; warnings (e.g. DL3018,
+# unpinned `apk add` — alpine package pins churn too fast to be worth it) are
+# reported but do not block.
+failure-threshold: error
+
+ignored: []

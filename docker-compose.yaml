@@ -1,0 +1,38 @@
+services:
+  gateway:
+    build: .
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      - ./config:/etc/gateway
+      - ./examples/plugins:/etc/gateway/plugins
+    environment:
+      - FEATHERBIT_DEBUG=true
+      - FEATHERBIT_DEBUG_BODIES=true
+      - FEATHERBIT_DEBUG_TRACE_ALL=true
+      - FEATHERBIT_DEBUG_MAX_TRACES=10
+      - GATEWAY_PORT=8080
+      - ADMIN_PORT=9090
+      - ADMIN_USER=admin
+      - ADMIN_PASSWORD=admin
+      - ECHO_BACKEND_HOST=echo-backend
+      - ECHO_BACKEND_PORT=3000
+      - LOG_LEVEL=info
+    depends_on:
+      - echo-backend
+
+  frontend:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    ports:
+      - "3001:80"
+    depends_on:
+      - gateway
+
+  echo-backend:
+    build:
+      context: ./dev/echo-backend
+    ports:
+      - "3000:3000"

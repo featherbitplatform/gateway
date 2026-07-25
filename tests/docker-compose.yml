@@ -1,0 +1,75 @@
+services:
+  gateway:
+    build: ..
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      - ./config:/etc/gateway
+      - ../examples/plugins:/etc/gateway/plugins
+    environment:
+      - GATEWAY_PORT=8080
+      - ADMIN_PORT=9090
+      - ADMIN_USER=admin
+      - ADMIN_PASSWORD=admin
+      - ECHO_BACKEND_HOST=echo-backend
+      - ECHO_BACKEND_PORT=3000
+      - LOG_LEVEL=info
+      - CLIENT_ID=${CLIENT_ID}
+      - CLIENT_SECRET=${CLIENT_SECRET}
+    depends_on:
+      - echo-backend
+
+  frontend:
+    build:
+      context: ../ui
+      dockerfile: Dockerfile
+    ports:
+      - "3001:80"
+    depends_on:
+      - gateway
+
+  echo-backend:
+    build:
+      context: ../dev/echo-backend
+    ports:
+      - "3000:3000"
+
+  keycloak:
+    image: keycloak/keycloak:26.6
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: dev-file
+      KC_HOSTNAME: ${KC_HOSTNAME_URL}
+      KC_HOSTNAME_ADMIN: ${KC_HOSTNAME_ADMIN_URL}
+      KC_HTTPS_CERTIFICATE_FILE: /etc/x509/https/tls.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /etc/x509/https/tls.key
+      KC_HTTPS_CLIENT_AUTH: none
+
+    #TO EXPORT ALL
+    # entrypoint: /opt/keycloak/bin/kc.sh
+    # command: export --file=/opt/keycloak/data/import/featherbit-realm.json --realm rust-gateway
+    # TO IMPORT ALL
+    #entrypoint: /opt/keycloak/bin/kc.sh
+    #command: import --file=/opt/keycloak/data/import/featherbit-realm.json
+    ports:
+      - "8443:8443"
+    entrypoint: [ "/bin/bash", "-c" ]
+    command:
+      [ "/opt/keycloak/bin/kc.sh start-dev --hostname-backchannel-dynamic true --import-realm --proxy-headers forwarded --health-enabled=true --http-management-scheme=http"
+      ]
+    volumes:
+      - ./security/cert.pem:/etc/x509/https/tls.crt
+      - ./security/key.pem:/etc/x509/https/tls.key
+      - ./realms:/opt/keycloak/data/import/
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 60s

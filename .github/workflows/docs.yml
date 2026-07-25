@@ -1,0 +1,74 @@
+name: Deploy docs site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            website/package-lock.json
+
+      # rust-embed compiles ui/dist into the binary and ui/dist is gitignored,
+      # so the UI must be built before ANY cargo invocation -- including
+      # cargo doc (same trap as in ci.yml).
+      - name: Build the embedded UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build rustdoc
+        run: cargo doc --no-deps --document-private-items
+
+      - name: Build TypeDoc
+        working-directory: ui
+        run: npm run docs
+
+      - name: Build site
+        working-directory: website
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/build
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

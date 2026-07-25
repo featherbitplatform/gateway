@@ -1,0 +1,172 @@
+/**
+ * featherbit design system applied to Docusaurus/Infima.
+ * Tokens mirror ui/src/index.css: electric violet accent on cool ink
+ * neutrals, IBM Plex Sans/Mono, 4/6/8px radii. Dark is the default theme.
+ */
+
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-sans/700.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+:root {
+  /* Brand — Electric Violet */
+  --fb-violet-300: #b794ff;
+  --fb-violet-400: #9b5cff;
+  --fb-violet-500: #863bff;
+  --fb-violet-600: #7e14ff;
+  --fb-violet-700: #6a10d6;
+  --fb-violet-800: #530ca6;
+
+  /* Neutral — Ink */
+  --fb-ink-950: #080b14;
+  --fb-ink-900: #0d1320;
+  --fb-ink-850: #121a2b;
+  --fb-ink-800: #182235;
+  --fb-ink-750: #1f2b41;
+  --fb-ink-700: #283449;
+  --fb-ink-600: #36435c;
+  --fb-ink-400: #64748b;
+  --fb-ink-300: #94a3b8;
+  --fb-ink-50: #f1f5f9;
+
+  /* Light theme (Infima default mode) */
+  --ifm-color-primary: var(--fb-violet-600);
+  --ifm-color-primary-dark: var(--fb-violet-700);
+  --ifm-color-primary-darker: var(--fb-violet-700);
+  --ifm-color-primary-darkest: var(--fb-violet-800);
+  --ifm-color-primary-light: var(--fb-violet-500);
+  --ifm-color-primary-lighter: var(--fb-violet-400);
+  --ifm-color-primary-lightest: var(--fb-violet-300);
+
+  --ifm-background-color: #ffffff;
+  --ifm-background-surface-color: #f7f8fb;
+  --ifm-font-color-base: #14182a;
+  --ifm-color-content-secondary: #545b70;
+  --ifm-toc-border-color: #dfe3ec;
+  --ifm-hr-border-color: #dfe3ec;
+
+  --ifm-font-family-base: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --ifm-font-family-monospace: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --ifm-code-font-size: 90%;
+  --ifm-global-radius: 8px;
+  --ifm-button-border-radius: 6px;
+  --ifm-code-border-radius: 4px;
+
+  --ifm-navbar-background-color: #ffffff;
+  --ifm-footer-background-color: #f7f8fb;
+  --ifm-footer-color: #545b70;
+
+  --docusaurus-highlighted-code-line-bg: rgba(134, 59, 255, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: var(--fb-violet-500);
+  --ifm-color-primary-dark: var(--fb-violet-600);
+  --ifm-color-primary-darker: var(--fb-violet-600);
+  --ifm-color-primary-darkest: var(--fb-violet-700);
+  --ifm-color-primary-light: var(--fb-violet-400);
+  --ifm-color-primary-lighter: var(--fb-violet-400);
+  --ifm-color-primary-lightest: var(--fb-violet-300);
+
+  --ifm-background-color: var(--fb-ink-900);
+  --ifm-background-surface-color: var(--fb-ink-850);
+  --ifm-font-color-base: var(--fb-ink-50);
+  --ifm-color-content-secondary: var(--fb-ink-300);
+  --ifm-toc-border-color: var(--fb-ink-700);
+  --ifm-hr-border-color: var(--fb-ink-700);
+
+  --ifm-navbar-background-color: var(--fb-ink-900);
+  --ifm-footer-background-color: var(--fb-ink-950);
+  --ifm-footer-color: var(--fb-ink-300);
+
+  --ifm-code-background: var(--fb-ink-850);
+  --ifm-pre-background: var(--fb-ink-850);
+
+  --docusaurus-highlighted-code-line-bg: rgba(134, 59, 255, 0.14);
+}
+
+/* ---- Type & prose ------------------------------------------------------ */
+
+article {
+  text-wrap: pretty;
+}
+
+h1, h2, h3, h4 {
+  letter-spacing: -0.01em;
+}
+
+/* ---- Navbar ------------------------------------------------------------ */
+
+.navbar {
+  border-bottom: 1px solid var(--ifm-toc-border-color);
+  box-shadow: none;
+}
+
+.navbar__title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ---- Admonitions: flat tinted surface + 1px border, no left-bar trope -- */
+
+.theme-admonition {
+  border: 1px solid var(--ifm-toc-border-color);
+  border-left-width: 1px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+/* ---- Sidebar ----------------------------------------------------------- */
+
+.menu {
+  font-size: 0.875rem;
+}
+
+.menu__link--active:not(.menu__link--sublist) {
+  background: rgba(134, 59, 255, 0.12);
+}
+
+/* ---- Tables ------------------------------------------------------------ */
+
+table {
+  font-size: 0.875rem;
+}
+
+table code {
+  white-space: nowrap;
+}
+
+/* ---- Footer ------------------------------------------------------------ */
+
+.footer {
+  border-top: 1px solid var(--ifm-toc-border-color);
+  padding: 1.5rem 0;
+}
+
+.footer__copyright {
+  font-size: 0.8125rem;
+}
+
+/* ---- Plugin color chips (used on plugin reference pages) --------------- */
+
+.plugin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--ifm-toc-border-color);
+  border-radius: 999px;
+}
+
+.plugin-chip::before {
+  content: '';
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--chip-color, var(--ifm-color-primary));
+}

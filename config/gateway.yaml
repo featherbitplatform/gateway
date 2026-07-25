@@ -1,0 +1,56 @@
+routes:
+  - name: echo-api
+    match:
+      path: /api/*
+      methods: [GET, POST, PUT, DELETE]
+    policy: echo-policy
+
+policies:
+  - name: echo-policy
+    error_handler: error-handler
+    nodes:
+      - id: listener
+        type: listener
+
+      - id: rewrite-request
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /api
+
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_BACKEND_HOST:-localhost}
+              port: ${ECHO_BACKEND_PORT:-3000}
+
+      - id: rewrite-response
+        type: proxy-rewrite
+        config:
+          phase: response
+          remove_headers:
+            - x-powered-by
+
+      - id: error-handler
+        type: error-handler
+        config:
+          status_code: 502
+          body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+
+      - id: client
+        type: client
+
+    edges:
+      - from: listener.out
+        to: rewrite-request.in
+      - from: rewrite-request.success
+        to: backend.in
+      - from: backend.success
+        to: rewrite-response.in
+      - from: rewrite-response.success
+        to: client.in
+      - from: backend.error
+        to: error-handler.in
+      - from: error-handler.success
+        to: client.in

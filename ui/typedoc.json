@@ -1,0 +1,18 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["src"],
+  "entryPointStrategy": "expand",
+  "out": "docs",
+  "tsconfig": "tsconfig.app.json",
+  "readme": "README.md",
+  "name": "featherbit UI",
+  "excludeExternals": true,
+  "exclude": ["**/node_modules/**"],
+  "validation": {
+    "notExported": false,
+    "rewrittenLink": false
+  },
+  "navigationLinks": {
+    "Gateway rustdoc": "../target/doc/featherbit/index.html"
+  }
+}
