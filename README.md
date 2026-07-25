@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="banner.png" alt="featherbit — an API gateway where routes are visual node graphs" width="100%">
+</p>
+
 # featherbit
 
 A lightweight, high-performance API gateway delivered as a single binary. Routes are configured as visual node graphs — each plugin is a node, wired together through success and error ports.
