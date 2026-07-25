@@ -18,7 +18,9 @@ graphify-out/
 plan/
 
 # Internal notes (root docs/ only -- website/docs is the published site content)
-/docs/
+/docs/*
+# ...except committed design specs
+!/docs/superpowers/
 
 # Generated documentation (rebuilt by `cargo doc` / TypeDoc / website sync script)
 ui/docs/
