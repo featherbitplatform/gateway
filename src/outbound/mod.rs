@@ -6,6 +6,8 @@
 //! Supports `http` and `https` (rustls, native roots); `ssl_verify: false`
 //! selects a lazily-built client with certificate verification disabled.
 
+pub mod tls;
+
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -30,8 +32,12 @@ pub struct OutboundRequest {
     /// Whole-call deadline. Callers should default to 3s for callouts.
     pub timeout: Duration,
     /// When false, TLS certificate verification is disabled (matching
-    /// APISIX's `ssl_verify: false`). Ignored for plain-http URLs.
+    /// APISIX's `ssl_verify: false`). Ignored for plain-http URLs and when
+    /// `tls` is set (the identity carries its own verify flag).
     pub ssl_verify: bool,
+    /// Per-upstream TLS identity (client cert / private CA). `None` uses the
+    /// shared verified/insecure clients — today's behavior.
+    pub tls: Option<Arc<tls::UpstreamTls>>,
 }
 
 impl OutboundRequest {
@@ -45,6 +51,7 @@ impl OutboundRequest {
             body: Bytes::new(),
             timeout: Duration::from_secs(3),
             ssl_verify: true,
+            tls: None,
         }
     }
 }
@@ -83,6 +90,10 @@ pub struct OutboundClient {
     /// Built on first `ssl_verify: false` request; never constructed on the
     /// common path.
     insecure: OnceLock<PooledClient>,
+    /// Clients for per-upstream TLS identities (mTLS / private CA), keyed by
+    /// the identity's content hash. Never evicted — bounded by the number of
+    /// distinct identities ever configured.
+    custom: std::sync::RwLock<HashMap<u64, PooledClient>>,
 }
 
 impl OutboundClient {
@@ -105,6 +116,7 @@ impl OutboundClient {
         Self {
             verified: Client::builder(TokioExecutor::new()).build(https),
             insecure: OnceLock::new(),
+            custom: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -118,10 +130,14 @@ impl OutboundClient {
             .body(Full::new(req.body))
             .map_err(|e| OutboundError::InvalidRequest(e.to_string()))?;
 
-        let client = if req.ssl_verify {
-            &self.verified
-        } else {
-            self.insecure.get_or_init(build_insecure_client)
+        let custom_client;
+        let client = match &req.tls {
+            Some(identity) => {
+                custom_client = self.identity_client(identity)?;
+                &custom_client
+            }
+            None if req.ssl_verify => &self.verified,
+            None => self.insecure.get_or_init(build_insecure_client),
         };
 
         let deadline = req.timeout;
@@ -157,6 +173,38 @@ impl OutboundClient {
             .await
             .map_err(|_| OutboundError::Timeout(deadline))?
     }
+
+    /// Returns the pooled client for `identity`, building it on first use.
+    /// ALPN advertises h1+h2 like the default client (hyper-rustls sets the
+    /// protocols on the config in `enable_http1`/`enable_http2`).
+    fn identity_client(
+        &self,
+        identity: &Arc<tls::UpstreamTls>,
+    ) -> Result<PooledClient, OutboundError> {
+        if let Some(c) = self.custom.read().unwrap().get(&identity.cache_key()) {
+            return Ok(c.clone());
+        }
+        // Materials were validated at policy compile; failure here is
+        // config-shaped (e.g. native roots unavailable), not transport.
+        let config = identity
+            .client_config()
+            .map_err(OutboundError::InvalidRequest)?;
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(config)
+            .https_or_http()
+            .enable_http1()
+            .enable_http2()
+            .build();
+        let client = Client::builder(TokioExecutor::new()).build(https);
+        // Race-safe: whoever loses uses the winner's client.
+        Ok(self
+            .custom
+            .write()
+            .unwrap()
+            .entry(identity.cache_key())
+            .or_insert(client)
+            .clone())
+    }
 }
 
 impl Default for OutboundClient {
@@ -183,12 +231,36 @@ fn build_insecure_client() -> PooledClient {
 /// Builds a client TLS connector for a raw upstream WebSocket (`wss`) handshake.
 ///
 /// ALPN is pinned to `http/1.1` (the WebSocket upgrade is HTTP/1.1). When
-/// `verify` is false, certificate verification is disabled (matching
-/// `ssl_verify: false`). The verified connector is cached, since loading the
-/// platform's native root store on every connection is wasteful; the insecure
-/// connector is cheap and built on demand.
-pub fn client_tls_connector(verify: bool) -> Result<tokio_rustls::TlsConnector, String> {
+/// `identity` is set, the connector presents that client certificate (and
+/// trusts its private CA, if any) — mirroring `OutboundClient::identity_client`
+/// — and is cached per identity (`UpstreamTls::cache_key`), never evicted. When
+/// `identity` is `None` and `verify` is false, certificate verification is
+/// disabled (matching `ssl_verify: false`). The verified connector is cached,
+/// since loading the platform's native root store on every connection is
+/// wasteful; the insecure connector is cheap and built on demand.
+pub fn client_tls_connector(
+    verify: bool,
+    identity: Option<&Arc<tls::UpstreamTls>>,
+) -> Result<tokio_rustls::TlsConnector, String> {
     crate::server::tls::install_crypto_provider();
+
+    if let Some(id) = identity {
+        static CUSTOM: OnceLock<std::sync::RwLock<HashMap<u64, tokio_rustls::TlsConnector>>> =
+            OnceLock::new();
+        let cache = CUSTOM.get_or_init(|| std::sync::RwLock::new(HashMap::new()));
+        if let Some(c) = cache.read().unwrap().get(&id.cache_key()) {
+            return Ok(c.clone());
+        }
+        let mut config = id.client_config()?;
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        return Ok(cache
+            .write()
+            .unwrap()
+            .entry(id.cache_key())
+            .or_insert(connector)
+            .clone());
+    }
 
     if !verify {
         let config = rustls::ClientConfig::builder()
@@ -228,7 +300,7 @@ pub fn client_tls_connector(verify: bool) -> Result<tokio_rustls::TlsConnector, 
 /// Certificate verifier that accepts everything — only reachable via an
 /// explicit `ssl_verify: false` in plugin config.
 #[derive(Debug)]
-struct NoVerification(rustls::crypto::CryptoProvider);
+pub(crate) struct NoVerification(pub(crate) rustls::crypto::CryptoProvider);
 
 impl rustls::client::danger::ServerCertVerifier for NoVerification {
     fn verify_server_cert(
@@ -282,13 +354,173 @@ mod tests {
     #[test]
     fn test_client_tls_connector_insecure_builds() {
         // Insecure connector never touches the native store — fast/deterministic.
-        assert!(client_tls_connector(false).is_ok());
+        assert!(client_tls_connector(false, None).is_ok());
     }
 
     #[test]
     fn test_client_tls_connector_verified_builds() {
         // On a normal dev/CI host the native root store loads; if an
         // environment has no parsable roots the helper returns Err gracefully.
-        assert!(client_tls_connector(true).is_ok());
+        assert!(client_tls_connector(true, None).is_ok());
+    }
+
+    #[test]
+    fn test_client_tls_connector_with_identity_builds_and_caches() {
+        // Reuse the identity written by the Task 1 helper — write PEMs inline
+        // here the same way (CA + leaf via rcgen, temp files).
+        let (cert, key, ca) = {
+            let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+            ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            let ca_key = rcgen::KeyPair::generate().unwrap();
+            let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+            let leaf_params = rcgen::CertificateParams::new(vec!["client".to_string()]).unwrap();
+            let leaf_key = rcgen::KeyPair::generate().unwrap();
+            let leaf_cert = leaf_params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
+            let dir = std::env::temp_dir();
+            let pid = std::process::id();
+            let cert = dir.join(format!("featherbit_wsid_{}.crt", pid));
+            let key = dir.join(format!("featherbit_wsid_{}.key", pid));
+            let ca = dir.join(format!("featherbit_wsid_{}.ca.crt", pid));
+            std::fs::write(&cert, leaf_cert.pem()).unwrap();
+            std::fs::write(&key, leaf_key.serialize_pem()).unwrap();
+            std::fs::write(&ca, ca_cert.pem()).unwrap();
+            (
+                cert.to_str().unwrap().to_string(),
+                key.to_str().unwrap().to_string(),
+                ca.to_str().unwrap().to_string(),
+            )
+        };
+        let identity = tls::UpstreamTls::load(Some((&cert, &key)), Some(&ca), true).unwrap();
+        assert!(client_tls_connector(true, Some(&identity)).is_ok());
+        // Second call hits the connector cache — still fine.
+        assert!(client_tls_connector(true, Some(&identity)).is_ok());
+        // No identity: existing behavior, both variants still build.
+        assert!(client_tls_connector(true, None).is_ok());
+        assert!(client_tls_connector(false, None).is_ok());
+    }
+
+    /// Minimal one-shot HTTPS server that requires a client certificate and
+    /// answers any request with `HTTP/1.1 200 OK`. Returns its port.
+    async fn spawn_mtls_server(server_config: Arc<rustls::ServerConfig>) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
+            // Serve connections until the test ends; failed handshakes
+            // (missing client cert) just drop the connection.
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else {
+                    break;
+                };
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    if let Ok(mut stream) = acceptor.accept(tcp).await {
+                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                        let mut buf = [0u8; 4096];
+                        let _ = stream.read(&mut buf).await;
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                            .await;
+                        let _ = stream.shutdown().await;
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn test_request_with_client_identity_reaches_mtls_backend() {
+        crate::server::tls::install_crypto_provider();
+
+        // CA, a server cert for "localhost", and a client cert — one CA for both.
+        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+        let server_params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
+        let server_key = rcgen::KeyPair::generate().unwrap();
+        let server_cert = server_params
+            .signed_by(&server_key, &ca_cert, &ca_key)
+            .unwrap();
+
+        let client_params = rcgen::CertificateParams::new(vec!["gw".to_string()]).unwrap();
+        let client_key = rcgen::KeyPair::generate().unwrap();
+        let client_cert = client_params
+            .signed_by(&client_key, &ca_cert, &ca_key)
+            .unwrap();
+
+        // Server side: require a client cert signed by the CA.
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from(
+                ca_cert.der().to_vec(),
+            ))
+            .unwrap();
+        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+            .build()
+            .unwrap();
+        let server_config = rustls::ServerConfig::builder()
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(
+                vec![rustls::pki_types::CertificateDer::from(
+                    server_cert.der().to_vec(),
+                )],
+                rustls::pki_types::PrivateKeyDer::try_from(server_key.serialize_der()).unwrap(),
+            )
+            .unwrap();
+        let port = spawn_mtls_server(Arc::new(server_config)).await;
+
+        // Gateway side: identity = client cert + key, CA bundle for the server.
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let cert_path = dir.join(format!("featherbit_ob_mtls_{}.crt", pid));
+        let key_path = dir.join(format!("featherbit_ob_mtls_{}.key", pid));
+        let ca_path = dir.join(format!("featherbit_ob_mtls_{}.ca.crt", pid));
+        std::fs::write(&cert_path, client_cert.pem()).unwrap();
+        std::fs::write(&key_path, client_key.serialize_pem()).unwrap();
+        std::fs::write(&ca_path, ca_cert.pem()).unwrap();
+
+        let identity = tls::UpstreamTls::load(
+            Some((cert_path.to_str().unwrap(), key_path.to_str().unwrap())),
+            Some(ca_path.to_str().unwrap()),
+            true,
+        )
+        .unwrap();
+
+        let client = OutboundClient::new();
+        let ok = client
+            .request(OutboundRequest {
+                method: http::Method::GET,
+                url: format!("https://localhost:{}/", port),
+                headers: Vec::new(),
+                body: Bytes::new(),
+                timeout: Duration::from_secs(5),
+                ssl_verify: true,
+                tls: Some(identity),
+            })
+            .await
+            .expect("mTLS request should succeed");
+        assert_eq!(ok.status, 200);
+
+        // Without a client cert (CA-only identity) the handshake is rejected.
+        let ca_only = tls::UpstreamTls::load(None, Some(ca_path.to_str().unwrap()), true).unwrap();
+        let err = client
+            .request(OutboundRequest {
+                method: http::Method::GET,
+                url: format!("https://localhost:{}/", port),
+                headers: Vec::new(),
+                body: Bytes::new(),
+                timeout: Duration::from_secs(5),
+                ssl_verify: true,
+                tls: Some(ca_only),
+            })
+            .await;
+        assert!(
+            matches!(err, Err(OutboundError::Transport(_))),
+            "got: {:?}",
+            err.map(|r| r.status)
+        );
     }
 }

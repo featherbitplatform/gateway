@@ -421,6 +421,7 @@ impl BatchFlusher for SlsFlusher {
             body: Bytes::from(body),
             timeout: self.timeout,
             ssl_verify: true,
+            tls: None,
         };
 
         match self.client.request(req).await {

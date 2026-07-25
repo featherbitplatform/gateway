@@ -154,6 +154,7 @@ impl ProxyMirrorPlugin {
             body: ctx.request.body.clone(),
             timeout: MIRROR_TIMEOUT,
             ssl_verify: true,
+            tls: None,
         }
     }
 }

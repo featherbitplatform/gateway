@@ -403,6 +403,7 @@ impl OpenidConnectPlugin {
             body: Bytes::new(),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
         self.resources.outbound.request(req).await
     }
@@ -467,6 +468,7 @@ impl OpenidConnectPlugin {
             body: Bytes::from(body),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
         let resp = self
             .resources
@@ -808,6 +810,7 @@ impl OpenidConnectPlugin {
             body: Bytes::from(body),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
         let resp = self
             .resources

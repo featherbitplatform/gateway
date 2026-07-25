@@ -32,6 +32,38 @@ config:
 
 Config load fails if `targets` yields an empty pool, if `load_balancing` is not a string, or if it names an unknown strategy — values like `random` are rejected with `Unknown load_balancing 'random' — supported: round_robin, least_connections, ip_hash`.
 
+### Mutual TLS to the upstream
+
+When `tls: true`, the node can present a client certificate and/or trust a
+private CA:
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `client_cert_path` | string | PEM client certificate (chain) presented to the upstream. Requires `client_key_path`. |
+| `client_key_path` | string | PEM private key for `client_cert_path`. Requires `client_cert_path`. |
+| `ca_cert_path` | string | PEM CA bundle used to verify the upstream. **Replaces** the system trust store for this upstream. Incompatible with `ssl_verify: false`. |
+
+Files are loaded and validated when the policy compiles: unreadable files,
+cert/key mismatches, or contradictory combinations reject the policy. Rotating
+certificates means touching `gateway.yaml` (hot-reload recompiles the policy)
+or restarting the gateway. `ssl_verify: false` together with a client
+certificate is allowed: the certificate is presented, the upstream's own
+certificate is not verified.
+
+```yaml
+type: upstream
+config:
+  tls: true
+  targets:
+    - host: payments.internal
+      port: 8443
+  client_cert_path: /etc/featherbit/certs/gateway-client.crt
+  client_key_path: /etc/featherbit/certs/gateway-client.key
+  ca_cert_path: /etc/featherbit/certs/private-ca.crt
+```
+
+Both HTTPS proxying and `wss` WebSocket relays present the certificate.
+
 ## Load balancing
 
 - **round_robin** (default) — cycles through targets in order via a monotonic counter.

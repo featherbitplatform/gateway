@@ -329,6 +329,7 @@ impl Plugin for ForwardAuthPlugin {
             body,
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
 
         let response: OutboundResponse = match self.client.request(request).await {
