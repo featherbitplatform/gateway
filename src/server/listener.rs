@@ -382,11 +382,21 @@ async fn handle_request(
             // Resolve the upstream TLS identity registered at policy compile.
             // A missing entry can only mean the key was hand-injected — fall
             // back to the plain connector (verification still applies).
-            let tls_identity = result_ctx
+            let ws_upstream_tls_key = result_ctx
                 .message
                 .get("__ws_upstream_tls_key")
-                .and_then(|v| v.as_u64())
-                .and_then(crate::outbound::tls::UpstreamTls::lookup);
+                .and_then(|v| v.as_u64());
+            let tls_identity = ws_upstream_tls_key.and_then(|key| {
+                let identity = crate::outbound::tls::UpstreamTls::lookup(key);
+                if identity.is_none() {
+                    warn!(
+                        "websocket upstream tls identity key {} not found; \
+                         proceeding without client cert, backend may reject the handshake",
+                        key
+                    );
+                }
+                identity
+            });
             return Ok(
                 match websocket::proxy_upgrade(
                     host,
