@@ -67,12 +67,11 @@ impl UpstreamTls {
                         cert_path
                     ));
                 }
-                let key =
-                    rustls_pemfile::private_key(&mut std::io::BufReader::new(&key_pem[..]))
-                        .map_err(|e| format!("client_key_path '{}': {}", key_path, e))?
-                        .ok_or_else(|| {
-                            format!("client_key_path '{}': no private key found", key_path)
-                        })?;
+                let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(&key_pem[..]))
+                    .map_err(|e| format!("client_key_path '{}': {}", key_path, e))?
+                    .ok_or_else(|| {
+                        format!("client_key_path '{}': no private key found", key_path)
+                    })?;
                 Some((certs, key))
             }
             None => None,
@@ -80,8 +79,8 @@ impl UpstreamTls {
 
         let ca = match ca_path {
             Some(path) => {
-                let pem = std::fs::read(path)
-                    .map_err(|e| format!("ca_cert_path '{}': {}", path, e))?;
+                let pem =
+                    std::fs::read(path).map_err(|e| format!("ca_cert_path '{}': {}", path, e))?;
                 pem.hash(&mut hasher);
                 let certs = rustls_pemfile::certs(&mut std::io::BufReader::new(&pem[..]))
                     .collect::<Result<Vec<_>, _>>()
@@ -120,8 +119,7 @@ impl UpstreamTls {
             match &self.ca {
                 // A configured CA bundle *replaces* the native roots.
                 Some(certs) => {
-                    let (added, _ignored) =
-                        roots.add_parsable_certificates(certs.iter().cloned());
+                    let (added, _ignored) = roots.add_parsable_certificates(certs.iter().cloned());
                     if added == 0 {
                         return Err("ca_cert_path: no usable certificates".to_string());
                     }
