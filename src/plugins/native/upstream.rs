@@ -205,6 +205,7 @@ impl Plugin for UpstreamPlugin {
             body: ctx.request.body.clone(),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
 
         let response = match self.client.request(outbound).await {

@@ -233,6 +233,7 @@ impl BatchFlusher for EsFlusher {
             body: Bytes::from(body),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         };
 
         match self.client.request(req).await {

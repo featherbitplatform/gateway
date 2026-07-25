@@ -171,6 +171,7 @@ impl OpenWhiskPlugin {
             body: ctx.request.body.clone(),
             timeout: self.timeout,
             ssl_verify: self.ssl_verify,
+            tls: None,
         }
     }
 }
