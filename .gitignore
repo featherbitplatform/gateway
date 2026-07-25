@@ -16,7 +16,6 @@ graphify-out/
 # Claude
 .claude/
 plan/
-/CLAUDE.md
 
 # Internal notes (root docs/ only -- website/docs is the published site content)
 /docs/
