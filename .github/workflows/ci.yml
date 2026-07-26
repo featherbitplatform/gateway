@@ -47,6 +47,20 @@ jobs:
       # The tree is clippy-clean today; keep it that way.
       - run: cargo clippy --all-targets --locked -- -D warnings
 
+  # The headless build (no `ui` feature, no ui/dist needed) must keep
+  # compiling — it ships as the -headless Docker variant.
+  headless-check:
+    name: cargo check (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo check --no-default-features --locked
+
   # ESLint over the admin UI. The tree is eslint-clean (errors and warnings);
   # keep it that way.
   ui-lint:
