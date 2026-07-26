@@ -10,7 +10,10 @@ COPY Cargo.toml Cargo.lock* ./
 COPY src/ src/
 COPY ui/dist/ ui/dist/
 
-RUN cargo build --release
+# Headless variant: CARGO_FLAGS=--no-default-features compiles the UI out
+# (word-splitting of the flags is intentional).
+ARG CARGO_FLAGS=""
+RUN cargo build --release ${CARGO_FLAGS}
 
 FROM scratch
 
