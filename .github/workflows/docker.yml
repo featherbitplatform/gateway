@@ -1,0 +1,152 @@
+# Multi-arch Docker images to Docker Hub.
+#
+# Publishing model (gitflow):
+#   vX.Y.Z tag   -> X.Y.Z, X.Y, latest
+#   main push    -> latest
+#   develop push -> edge
+#   workflow_dispatch -> whatever the dispatched ref computes (backfills a tag)
+#
+# Each platform builds natively on its own runner (ubuntu-24.04 /
+# ubuntu-24.04-arm; no QEMU) and pushes by digest only; `merge` stitches the
+# digests into one multi-arch manifest and applies the tags. The Hub page
+# (DOCKERHUB.md) syncs on main pushes, independent of image publishing.
+name: docker
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: docker.io/${{ secrets.DOCKER_USERNAME }}/featherbit
+
+jobs:
+  build:
+    name: build (${{ matrix.platform }})
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # The Dockerfile COPYs ui/dist into the builder; ui/dist is gitignored,
+      # so it must be built first (same trap as in ci.yml / security.yml).
+      - name: Build the embedded UI
+        run: npm ci && npm run build
+        working-directory: ui
+
+      # "linux/amd64" -> "linux-amd64" for artifact names and cache scopes.
+      - name: Prepare platform slug
+        run: |
+          platform='${{ matrix.platform }}'
+          echo "PLATFORM_SLUG=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=docker-${{ env.PLATFORM_SLUG }}
+          cache-to: type=gha,scope=docker-${{ env.PLATFORM_SLUG }},mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest='${{ steps.build.outputs.digest }}'
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_SLUG }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: merge manifest
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/develop' }}
+
+      - name: Create multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect manifest
+        run: docker buildx imagetools inspect '${{ env.IMAGE }}:${{ steps.meta.outputs.version }}'
+
+  readme-sync:
+    name: sync Docker Hub description
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Needs DOCKER_PASSWORD to be an account password or adequately scoped
+      # PAT; with a restricted access token this job fails while images still
+      # publish (no `needs` on purpose). Fix = rotate the secret.
+      - uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+          repository: ${{ secrets.DOCKER_USERNAME }}/featherbit
+          readme-filepath: ./DOCKERHUB.md
+          short-description: Lightweight single-binary API gateway with node-graph routing policies
