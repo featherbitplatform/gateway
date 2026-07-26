@@ -33,7 +33,6 @@ base64 = "0.22"
 
 # Admin API
 axum = { version = "0.8", features = ["ws"] }
-tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "compression-gzip"] }
 
 # Plugins
@@ -83,6 +82,7 @@ ldap3 = { version = "0.12.1", default-features = false, features = ["tls-rustls-
 # (native-tls/schannel does not on Windows). aws-lc-rs is already in the tree.
 reqwest = { version = "0.12", features = ["json", "http2", "rustls-tls"] }
 tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
 # Self-signed certs for TLS listener tests (ring-based, emits PEM).
 rcgen = "0.13"
 # WebSocket echo upstream + client for the in-process WS proxy test
