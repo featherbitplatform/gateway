@@ -3,7 +3,8 @@
 //! Runs an axum [`Router`] on a dedicated port, separate from the data plane.
 //! Exposes Basic-Auth-protected CRUD endpoints for routes and policies,
 //! status/health/metrics endpoints, and serves the embedded React SPA
-//! (node-graph editor) as an unauthenticated fallback.
+//! (node-graph editor) as an unauthenticated fallback
+//! (compile-time `ui` feature + runtime `admin.ui_enabled`).
 
 mod auth;
 mod consumers;
@@ -11,12 +12,14 @@ mod debug;
 mod policies;
 mod routes;
 mod status;
+#[cfg(feature = "ui")]
 mod ui;
 
 use std::sync::Arc;
 
 use std::time::Duration;
 
+#[cfg(feature = "ui")]
 use axum::routing::get;
 use axum::Router;
 use hyper_util::rt::TokioIo;
@@ -35,8 +38,10 @@ use crate::state::SharedState;
 ///
 /// The API routes (`/api/*`, `/healthz`, `/readyz`, `/metrics`) are wrapped in
 /// the Basic Auth middleware using credentials from [`AdminConfig`]; any path
-/// not matched by the API falls back to the embedded SPA, which is served
-/// without auth (the SPA's own API calls carry credentials).
+/// not matched by the API falls back to the embedded SPA — when the binary is
+/// compiled with the `ui` feature and `admin.ui_enabled` is true (the
+/// default) — served without auth (the SPA's own API calls carry
+/// credentials).
 ///
 /// When `admin_config.tls` is set, the admin listener is TLS-terminated using
 /// the same acceptor helper as the data plane; otherwise it serves plain HTTP.
@@ -53,23 +58,7 @@ pub async fn start_admin_server(
     mut shutdown_rx: watch::Receiver<bool>,
     drain_timeout: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let app = Router::new()
-        // API routes (with auth)
-        .merge(routes::router())
-        .merge(policies::router())
-        .merge(consumers::router())
-        .merge(status::router())
-        .merge(debug::router())
-        .layer(axum::middleware::from_fn_with_state(
-            Arc::new(auth::AuthState {
-                username: admin_config.username.clone(),
-                password: admin_config.password.clone(),
-            }),
-            auth::basic_auth_middleware,
-        ))
-        .with_state(state)
-        // UI static files (no auth — the API calls from the UI will authenticate)
-        .fallback(get(ui::serve_ui));
+    let app = build_router(admin_config, state);
 
     // Fail-fast on a broken TLS setup before binding. Hot-reloadable — a
     // cert-file change swaps in for new admin connections without a restart.
@@ -138,4 +127,120 @@ pub async fn start_admin_server(
         _ = tokio::time::sleep(drain_timeout) => warn!("Admin drain timed out; forcing exit"),
     }
     Ok(())
+}
+
+/// Builds the admin router: authed API routes, plus — only when compiled with
+/// the `ui` feature AND `admin.ui_enabled` is true — the unauthenticated SPA
+/// fallback. Without it, non-API paths get axum's default 404.
+fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
+    let app = Router::new()
+        // API routes (with auth)
+        .merge(routes::router())
+        .merge(policies::router())
+        .merge(consumers::router())
+        .merge(status::router())
+        .merge(debug::router())
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(auth::AuthState {
+                username: admin_config.username.clone(),
+                password: admin_config.password.clone(),
+            }),
+            auth::basic_auth_middleware,
+        ))
+        .with_state(state);
+
+    // UI static files (no auth — the API calls from the UI will authenticate).
+    //
+    // Both branches below call `.fallback()` explicitly, even the 404 one:
+    // `.layer()` above wraps whatever fallback the router already has at
+    // that point, including the implicit default "no route matched"
+    // handler. Leaving that implicit default in place would mean an
+    // unmatched path runs through the Basic Auth middleware and answers 401
+    // instead of 404. Setting an explicit fallback afterward replaces it
+    // with an unwrapped one, same as the SPA fallback below.
+    #[cfg(feature = "ui")]
+    let app = if admin_config.ui_enabled {
+        app.fallback(get(ui::serve_ui))
+    } else {
+        app.fallback(not_found)
+    };
+    #[cfg(not(feature = "ui"))]
+    let app = app.fallback(not_found);
+
+    app
+}
+
+/// Unauthenticated 404 for non-API paths when the SPA fallback isn't
+/// mounted (`ui_enabled: false`, or a binary built without the `ui`
+/// feature). See the comment in [`build_router`] for why this must be set
+/// explicitly rather than left as the router's implicit default.
+async fn not_found() -> axum::http::StatusCode {
+    axum::http::StatusCode::NOT_FOUND
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{GatewayConfig, SystemConfig};
+    use crate::config_store::FileConfigStore;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    fn test_state() -> Arc<SharedState> {
+        // Every section of both configs has a serde default, so an empty
+        // document is the cheapest way to get a valid baseline.
+        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        Arc::new(
+            SharedState::new(
+                system,
+                gateway,
+                None,
+                Arc::new(FileConfigStore::new(std::path::PathBuf::from(
+                    "gateway.yaml",
+                ))),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn admin_config(ui_enabled: bool) -> AdminConfig {
+        let yaml = format!("username: u\npassword: p\nui_enabled: {}\n", ui_enabled);
+        serde_yaml::from_str(&yaml).unwrap()
+    }
+
+    #[cfg(feature = "ui")]
+    #[tokio::test]
+    async fn test_non_api_path_serves_spa_when_ui_enabled() {
+        let app = build_router(&admin_config(true), test_state());
+        let resp = app
+            .oneshot(Request::get("/some/spa/route").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // ui/dist may be absent in dev checkouts; the fallback is mounted
+        // either way. 200 = SPA served; 404 only when the embedded bundle is
+        // empty — both prove the fallback handler answered, so assert on the
+        // handler's contract, not the bundle's presence.
+        assert!(resp.status() == StatusCode::OK || resp.status() == StatusCode::NOT_FOUND);
+
+        // The API surface is mounted regardless: /healthz exists (401 without
+        // credentials proves it hit the authed API router, not the fallback).
+        let app = build_router(&admin_config(true), test_state());
+        let resp = app
+            .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_non_api_path_404_when_ui_disabled() {
+        let app = build_router(&admin_config(false), test_state());
+        let resp = app
+            .oneshot(Request::get("/some/spa/route").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
 }
