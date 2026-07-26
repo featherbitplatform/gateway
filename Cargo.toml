@@ -1,6 +1,6 @@
 [package]
 name = "featherbit"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 # Not published to crates.io; also lets cargo-deny's license check skip the
 # workspace crate (deny.toml: private = { ignore = true }).
