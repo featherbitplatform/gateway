@@ -53,9 +53,7 @@ admin:
 
 The `RUST_LOG` environment variable, when set, overrides `logging.level` at startup.
 
-:::note Planned
-`tls` (certificate/key paths, minimum TLS version) and `http2` sections are parsed but TLS termination and HTTP/2 are not yet implemented.
-:::
+The `tls` (certificate/key paths, minimum version, mTLS, SNI) and `http2` sections are fully implemented — see [TLS & HTTP/2](tls.md) for the complete reference.
 
 ## gateway.yaml
 
