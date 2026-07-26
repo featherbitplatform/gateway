@@ -52,6 +52,11 @@ The UI is optional. It is only a client of the admin API, and it edits exactly t
 
 Omitting the `admin` section from `system.yaml` disables the admin server entirely (no API, no UI); the data plane still runs from the YAML configuration.
 
+There are two mechanisms to run without the UI:
+
+1. **Runtime**: Set `admin.ui_enabled: false` in `system.yaml` keeps the admin REST API available but returns 404 for UI paths. A restart is required for this setting to take effect.
+2. **Compile time**: The `-headless` Docker image tags (`latest-headless`, `edge-headless`, `X.Y.Z-headless`) omit the UI entirely at build time, reducing binary size and attack surface.
+
 ## Building the UI
 
 The gateway build embeds whatever is in `ui/dist/`, so build the frontend first:
