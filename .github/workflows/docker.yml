@@ -131,7 +131,9 @@ jobs:
     runs-on: ubuntu-24.04
     needs: build
     steps:
-      - uses: actions/download-artifact@v4
+      # Pinned to a patched release: the floating v4 tag catalogs as "4",
+      # which grype matches against GHSA-cxww-7g56-2vh6 (fixed in 4.1.3).
+      - uses: actions/download-artifact@v4.3.0
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-${{ matrix.variant }}-*
