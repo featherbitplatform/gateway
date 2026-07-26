@@ -18,6 +18,11 @@ exclude:
   - ./tests/pg-data-keycloak/**
   - ./sast-out/**
 
-ignore: []
-  # Accepted findings go here, each with a comment explaining why, e.g.:
-  # - vulnerability: CVE-2026-XXXXX
+# Accepted findings, each with a comment explaining why.
+ignore:
+  # brace-expansion DoS (unbounded expansion OOM). Every release <= 5.0.7 is
+  # vulnerable and the only patched version (5.0.8) is unreachable from the
+  # minimatch 3.x range pinned by docusaurus' serve-handler. Build-time
+  # tooling only — never in the shipped binary/image. Revisit when the
+  # minimatch/serve-handler chain moves to brace-expansion >= 5.0.8.
+  - vulnerability: GHSA-mh99-v99m-4gvg

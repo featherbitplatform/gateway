@@ -48,7 +48,16 @@ Config and script directories are bind-mounted, so editing `config/gateway.yaml`
 
 ## Container image: static binary, `FROM scratch`
 
-The gateway is built as a fully static binary (musl) and shipped in a `FROM scratch` image — no OS, no shell, no extra attack surface. The final image contains only the binary, CA certificates, and the default config:
+Prebuilt multi-arch images (`linux/amd64` + `linux/arm64`) are on [Docker Hub](https://hub.docker.com/r/featherbit/featherbit):
+
+```bash
+docker pull featherbit/featherbit:latest      # newest release (also X.Y.Z / X.Y pins)
+docker pull featherbit/featherbit:edge        # tip of develop
+```
+
+Every tag also exists with a `-headless` suffix — the same gateway compiled without the embedded web editor (`ui` cargo feature off): admin REST API, health/metrics, and the data plane are identical; only the UI is gone. Published by `.github/workflows/docker.yml` on release tags and on every push to `main`/`develop`.
+
+To build the image yourself: the gateway is a fully static binary (musl) shipped in a `FROM scratch` image — no OS, no shell, no extra attack surface. The final image contains only the binary, CA certificates, and the default config:
 
 ```dockerfile
 FROM rust:alpine AS builder

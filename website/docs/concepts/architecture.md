@@ -76,6 +76,4 @@ This runs at startup (the process exits on invalid config — fail fast), after 
 
 All YAML values in both files support `${ENV_VAR:-default}` interpolation, resolved at load time.
 
-:::note Planned
-TLS termination, HTTP/2 tuning, WebSocket/TCP/UDP proxying, etcd-backed clustering, and graceful shutdown appear in the project specification but are not implemented.
-:::
+TLS termination (with hot-reloaded certs, mTLS, and SNI), HTTP/2, WebSocket proxying, L4 TCP/UDP stream proxying, etcd-backed clustering, and graceful shutdown are all implemented — see the [TLS](../guides/tls.md), [stream](../guides/stream.md), and [deployment](../guides/deployment.md) guides. The remaining gaps are tracked honestly on the [roadmap](../reference/roadmap.md).
