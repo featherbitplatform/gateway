@@ -20,6 +20,9 @@ admin:
   port: ${ADMIN_PORT:-9090}
   username: ${ADMIN_USER:-admin}
   password: ${ADMIN_PASSWORD:-admin}
+  # Serve the embedded web UI (node-graph editor). Set false for API-only
+  # deployments; the -headless image never serves it regardless.
+  ui_enabled: ${ADMIN_UI_ENABLED:-true}
 
 # Policy-execution tracing + the plugin sandbox. Off by default; toggling
 # requires a restart (system.yaml is not hot-reloaded).
