@@ -41,6 +41,7 @@ admin:
   port: ${ADMIN_PORT:-9090}
   username: ${ADMIN_USER:-admin}
   password: ${ADMIN_PASSWORD:-admin}
+  ui_enabled: ${ADMIN_UI_ENABLED:-true}
 ```
 
 | Section | Keys and defaults |
@@ -48,7 +49,7 @@ admin:
 | `listener` | `bind` (default `0.0.0.0`), `port` (default `8080`) — the data-plane HTTP listener |
 | `timeouts` | `connection_seconds`, `read_seconds`, `write_seconds` (default `30` each), `idle_seconds` (default `300`) |
 | `logging` | `level` (default `info`), `format` (`json` is the default; any other value produces plain text) |
-| `admin` | `bind` (default `0.0.0.0`), `port` (default `9090`), `username` and `password` (required, typically supplied via `${ENV_VAR}`). Omitting the whole section disables the admin server entirely |
+| `admin` | `bind` (default `0.0.0.0`), `port` (default `9090`), `username` and `password` (required, typically supplied via `${ENV_VAR}`), `ui_enabled` (default `true`) — serve the embedded web UI; `false` gives 404 on non-API paths. Inert in the `-headless` image, whose binary omits the UI entirely. Omitting the whole section disables the admin server entirely |
 
 The `RUST_LOG` environment variable, when set, overrides `logging.level` at startup.
 
