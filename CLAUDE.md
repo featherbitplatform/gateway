@@ -57,7 +57,7 @@ tool configs at the repo root are the shared source of truth):
 
 ## What This Project Is
 
-A high-performance API gateway delivered as a single Rust binary. See `REQUIREMENTS.md` for the full specification.
+A high-performance API gateway delivered as a single Rust binary. (The original `REQUIREMENTS.md` specification no longer exists in the repo; the closest current equivalents are the docs site under `website/docs/` and the honest-state ledger at `website/docs/reference/roadmap.md`.)
 
 Core features:
 - **Node-graph routing policies** — request/response pipelines declared in YAML with success/error port routing
