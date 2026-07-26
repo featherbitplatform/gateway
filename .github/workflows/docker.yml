@@ -130,8 +130,13 @@ jobs:
       # computes zero tags — fail here instead of after pushing digests.
       - name: Guard against empty tag list
         if: steps.meta.outputs.tags == ''
+        # github.ref goes through env, not ${{ }}-interpolation into the
+        # script: ref names may contain shell metacharacters (CodeQL/Semgrep
+        # run-shell-injection).
+        env:
+          GH_REF: ${{ github.ref }}
         run: |
-          echo "::error::No Docker tags computed for ${{ github.ref }} — nothing to publish."
+          echo "::error::No Docker tags computed for $GH_REF — nothing to publish."
           exit 1
 
       - name: Create multi-arch manifest
