@@ -12,6 +12,8 @@ A lightweight, high-performance API gateway delivered as a single binary. Routes
 
 Full documentation lives at [featherbitplatform.github.io/gateway](https://featherbitplatform.github.io/gateway/) — source in [`website/`](website/) (Docusaurus). Run it locally with `cd website && npm install && npm run start`; it deploys to GitHub Pages via `.github/workflows/docs.yml`. API references: `cargo doc --no-deps --document-private-items` (Rust) and `cd ui && npm run docs` (TypeDoc) — both get bundled into the site at `/api/`.
 
+Container images are on [Docker Hub](https://hub.docker.com/r/featherbit/featherbit): `docker pull featherbit/featherbit` (`latest` = newest release, `edge` = tip of develop, `X.Y.Z` = pinned releases; amd64 + arm64). Published by `.github/workflows/docker.yml`, with the Hub page synced from [`DOCKERHUB.md`](DOCKERHUB.md).
+
 ## Features
 
 - **Node-graph routing policies** — design request/response pipelines visually or in YAML. Each node has context in, success output, and error output ports
