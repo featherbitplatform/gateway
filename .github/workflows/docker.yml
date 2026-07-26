@@ -5,6 +5,7 @@
 #   main push    -> latest
 #   develop push -> edge
 #   workflow_dispatch -> whatever the dispatched ref computes (backfills a tag)
+#   (each also as X.Y.Z-headless / latest-headless / edge-headless without the web UI)
 #
 # Each platform builds natively on its own runner (ubuntu-24.04 /
 # ubuntu-24.04-arm; no QEMU) and pushes by digest only; `merge` stitches the
@@ -153,7 +154,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}${{ matrix.tag_suffix }}
             type=semver,pattern={{major}}.{{minor}}${{ matrix.tag_suffix }}
-            type=raw,value=latest${{ matrix.tag_suffix }},enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest${{ matrix.tag_suffix }},enable=${{ github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')) }}
             type=raw,value=edge${{ matrix.tag_suffix }},enable=${{ github.ref == 'refs/heads/develop' }}
 
       # A dispatch on an arbitrary branch, or a glob-matching non-semver tag,
