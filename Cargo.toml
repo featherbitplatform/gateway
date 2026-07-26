@@ -6,6 +6,12 @@ edition = "2021"
 # workspace crate (deny.toml: private = { ignore = true }).
 publish = false
 
+[features]
+# The embedded admin web UI. Headless build (no UI assets, no serving code):
+# `cargo build --release --no-default-features`.
+default = ["ui"]
+ui = ["dep:rust-embed", "dep:mime_guess"]
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
@@ -27,7 +33,6 @@ base64 = "0.22"
 
 # Admin API
 axum = { version = "0.8", features = ["ws"] }
-tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "compression-gzip"] }
 
 # Plugins
@@ -43,9 +48,9 @@ notify = "7"
 # encoder + core collector types are used, which are unchanged.
 prometheus = "0.14"
 
-# Embedded UI
-rust-embed = "8"
-mime_guess = "2"
+# Embedded UI (the `ui` feature; disabled for headless builds)
+rust-embed = { version = "8", optional = true }
+mime_guess = { version = "2", optional = true }
 
 # Lua scripting
 mlua = { version = "0.10", features = ["luau", "serialize"] }
@@ -77,6 +82,7 @@ ldap3 = { version = "0.12.1", default-features = false, features = ["tls-rustls-
 # (native-tls/schannel does not on Windows). aws-lc-rs is already in the tree.
 reqwest = { version = "0.12", features = ["json", "http2", "rustls-tls"] }
 tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
 # Self-signed certs for TLS listener tests (ring-based, emits PEM).
 rcgen = "0.13"
 # WebSocket echo upstream + client for the in-process WS proxy test
