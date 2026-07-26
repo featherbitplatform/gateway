@@ -17,8 +17,19 @@ executable; this image ships it on a `scratch` base.
 | `latest` | The latest release (tip of `main`). |
 | `X.Y.Z`, `X.Y` | Immutable release versions (e.g. `0.2.0`, `0.2`). |
 | `edge` | Tip of `develop` — unreleased, may break. |
+| `latest-headless`, `X.Y.Z-headless`, `X.Y-headless`, `edge-headless` | Same builds without the web UI (see below). |
 
 All tags are multi-arch manifests for `linux/amd64` and `linux/arm64`.
+
+### Headless variant
+
+`-headless` images are compiled without the embedded web editor (`ui` cargo
+feature off): smaller binary, no UI served on the admin port. The admin REST
+API, health/metrics endpoints, and the data plane are identical to the full
+image. In the full image the UI can also be turned off at runtime with
+`admin.ui_enabled: false` in `system.yaml`. Note: pushing any release tag
+re-points `latest`/`latest-headless` at that build, so backfilling an older
+release line will move them.
 
 ## Quick start
 

@@ -20,7 +20,7 @@ admin:
 
 Requests without a matching `Authorization: Basic <base64(user:pass)>` header receive `401 Unauthorized` with a `WWW-Authenticate: Basic realm="featherbit admin"` challenge.
 
-The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on the same port; its API calls carry the credentials.
+The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on the same port; its API calls carry the credentials. The UI can be disabled at runtime with `admin.ui_enabled: false` (restart required), and the `-headless` Docker image omits it at compile time.
 
 ## Endpoint reference
 
