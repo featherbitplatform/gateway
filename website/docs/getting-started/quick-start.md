@@ -5,6 +5,16 @@ description: Run featherbit locally or with Docker Compose and send your first r
 
 featherbit needs two YAML files to start: `system.yaml` (listener, timeouts, logging, admin API) and `gateway.yaml` (routes and policies). The repository ships working examples in the `config/` directory, wired to a small echo backend used for development.
 
+## Run from Docker Hub
+
+The fastest path — multi-arch images (amd64/arm64) are published to [Docker Hub](https://hub.docker.com/r/featherbit/featherbit):
+
+```bash
+docker run --rm -p 8080:8080 -p 9090:9090 featherbit/featherbit
+```
+
+The image ships the example config baked in at `/etc/gateway/`; mount your own `system.yaml`/`gateway.yaml` over it for real use. Tags: `latest` (newest release), `edge` (tip of develop), `X.Y.Z` (pinned releases) — each also available with a `-headless` suffix (no embedded web UI, admin REST API only). See [Deployment](../guides/deployment.md) for compose and production setups.
+
 ## Run locally
 
 ```bash
