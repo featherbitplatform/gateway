@@ -15,7 +15,7 @@ page also needs real documentation.
 
 | Decision | Choice |
 |---|---|
-| Image name | `${DOCKER_USERNAME}/featherbit` (namespace never hardcoded in the workflow) |
+| Image name | `${DOCKER_USERNAME}/featherbit` (namespace never hardcoded in the workflow). Confirmed namespace: `featherbit`, so the public image is `featherbit/featherbit`; documentation uses the literal. |
 | Publish triggers | `v*.*.*` tags; every push to `main`; every push to `develop`; `workflow_dispatch` for backfill |
 | Docker tags | tag `vX.Y.Z` → `X.Y.Z`, `X.Y`, `latest`; `main` push → `latest`; `develop` push → `edge` |
 | Platforms | `linux/amd64` + `linux/arm64`, multi-arch manifest |
@@ -101,7 +101,7 @@ images — Hub does not resolve them):
    routing policies, admin API + embedded web editor).
 2. **Tags** — table: `latest` (latest release / main), `edge` (tip of develop,
    unstable), `X.Y.Z` / `X.Y` (immutable releases).
-3. **Quick start** — `docker run -p 8080:8080 -p 9090:9090 <ns>/featherbit`
+3. **Quick start** — `docker run -p 8080:8080 -p 9090:9090 featherbit/featherbit`
    plus a minimal `docker compose` example with mounted config.
 4. **Configuration** — image ships baked-in example config at `/etc/gateway/`;
    mount your own `system.yaml`/`gateway.yaml` over it; all YAML values support
@@ -113,9 +113,8 @@ images — Hub does not resolve them):
 ## README touch-up
 
 Add a "Docker" line to the README Documentation section: `docker pull
-<namespace>/featherbit` and a link to the Docker Hub page. The literal
-namespace is written into README/DOCKERHUB text (docs can't read secrets);
-the exact value is confirmed at spec review.
+featherbit/featherbit` and a link to the Docker Hub page
+(https://hub.docker.com/r/featherbit/featherbit).
 
 ## Error handling
 
@@ -132,7 +131,7 @@ the exact value is confirmed at spec review.
 2. Local `docker build` smoke test (after `npm run build` in `ui/`) to confirm
    the Dockerfile still builds.
 3. Real verification after merge to `develop`: the push publishes `edge`;
-   inspect with `docker buildx imagetools inspect <ns>/featherbit:edge`
+   inspect with `docker buildx imagetools inspect featherbit/featherbit:edge`
    (expect two platform entries).
 4. Backfill: `gh workflow run docker.yml --ref v0.2.0`, then check `0.2.0`,
    `0.2`, `latest` on the Hub.
