@@ -344,6 +344,17 @@ pub struct AdminConfig {
     pub username: String,
     /// Basic Auth password. Required (typically supplied via `${ENV_VAR}`).
     pub password: String,
+    /// Serve the embedded web UI (node-graph editor) as the unauthenticated
+    /// fallback. `false` returns 404 for non-API paths. Restart-gated like
+    /// the rest of this file; inert in binaries compiled without the `ui`
+    /// feature (the headless image), which never serve the UI.
+    #[serde(default = "default_true")]
+    // Only read by `build_router` when compiled with the `ui` feature (see
+    // src/admin/mod.rs); still parsed and stored either way so a
+    // `system.yaml` with `ui_enabled` set doesn't fail to parse on a
+    // headless build.
+    #[cfg_attr(not(feature = "ui"), allow(dead_code))]
+    pub ui_enabled: bool,
     /// TLS termination for the admin listener; `None` (the default) serves
     /// plain HTTP. Reuses the same [`TlsConfig`] as the data plane.
     #[serde(default)]
@@ -466,5 +477,18 @@ mod tests {
         // Unset fields still fall back to their defaults.
         assert_eq!(cfg.trigger_header, "x-featherbit-debug");
         assert_eq!(cfg.max_steps, 200);
+    }
+
+    #[test]
+    fn test_admin_ui_enabled_defaults_true() {
+        let cfg: AdminConfig = serde_yaml::from_str("username: u\npassword: p\n").unwrap();
+        assert!(cfg.ui_enabled);
+    }
+
+    #[test]
+    fn test_admin_ui_enabled_false_parses() {
+        let cfg: AdminConfig =
+            serde_yaml::from_str("username: u\npassword: p\nui_enabled: false\n").unwrap();
+        assert!(!cfg.ui_enabled);
     }
 }
