@@ -69,6 +69,6 @@ Errors do not abort the pipeline by themselves; they redirect where execution go
 
 The Context is serializable so it can be marshalled to and from Lua scripts (and rendered as JSON). Request and response **bodies are encoded as base64 strings** during serialization, keeping binary payloads intact through JSON/Lua round-trips. Inside a Lua script the context arrives as a native table mirroring the structure above.
 
-:::note Planned
-The `protocol` enum also declares `websocket`, `tcp`, and `udp` variants, but only `http1` and `http2` are currently produced; the rest are reserved for planned WebSocket/TCP/UDP proxying. A Python scripting runtime that would marshal the same Context into Python dicts is also planned but not implemented.
+:::note
+The `protocol` enum produces `http1`, `http2`, and `websocket` (a client WebSocket upgrade runs the policy graph with `protocol: websocket` before the relay starts). The `tcp` and `udp` variants remain reserved: L4 stream proxying is implemented but bypasses the HTTP engine entirely, so no Context is built for raw streams. A Python scripting runtime that would marshal the same Context into Python dicts is planned but not implemented.
 :::
