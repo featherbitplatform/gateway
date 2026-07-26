@@ -22,6 +22,9 @@ concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   IMAGE: docker.io/${{ secrets.DOCKER_USERNAME }}/featherbit
 
@@ -41,7 +44,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
@@ -122,6 +125,14 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=edge,enable=${{ github.ref == 'refs/heads/develop' }}
+
+      # A dispatch on an arbitrary branch, or a glob-matching non-semver tag,
+      # computes zero tags — fail here instead of after pushing digests.
+      - name: Guard against empty tag list
+        if: steps.meta.outputs.tags == ''
+        run: |
+          echo "::error::No Docker tags computed for ${{ github.ref }} — nothing to publish."
+          exit 1
 
       - name: Create multi-arch manifest
         working-directory: ${{ runner.temp }}/digests
