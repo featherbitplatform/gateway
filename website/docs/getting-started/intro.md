@@ -21,7 +21,7 @@ A routing policy can be designed in the embedded web UI (a node-graph editor wit
 
 - design a policy visually, save it, and commit the resulting YAML to version control;
 - edit the YAML by hand (or in CI) and see the same graph rendered in the editor;
-- run fully headless with no UI at all — the YAML is the source of truth either way.
+- run fully headless with no UI at all — the YAML is the source of truth either way (there is even a [`-headless` image variant](../guides/deployment.md#container-image-static-binary-from-scratch) with the editor compiled out).
 
 ## Feature summary
 
@@ -33,8 +33,9 @@ A routing policy can be designed in the embedded web UI (a node-graph editor wit
 | TLS | Termination with hot-reloading certs, per-hostname SNI certificates, and mTLS — the verified client identity (fingerprint, subject CN, SAN DNS) is exposed to the graph |
 | Error handling | Per-node error edges, a policy-level catch-all handler, and a generic 500 fallback — see [Error handling](../concepts/error-handling.md) |
 | Operations | Admin REST API with Basic Auth, `/healthz` and `/readyz` probes, Prometheus metrics per route and per node; graceful shutdown drains in-flight requests on SIGTERM |
+| Debugging | Opt-in per-request **policy-execution traces** (what every node changed, which edge the engine followed, secrets redacted at capture) and a **plugin sandbox** that runs policies against synthetic requests — see [Debugging & sandbox](../guides/debugging.md) |
 | Configuration | Two YAML files (`system.yaml`, `gateway.yaml`) with `${ENV_VAR:-default}` interpolation; hot-reload on file change or via the API |
-| Deployment | Single binary; Docker Compose for local development; optional etcd-backed clustering for HA — see [Deployment](../guides/deployment.md) |
+| Deployment | Single binary; prebuilt multi-arch images on [Docker Hub](https://hub.docker.com/r/featherbit/featherbit) (`latest`, `edge`, version pins, `-headless` twins); Docker Compose for local development; optional etcd-backed clustering for HA — see [Deployment](../guides/deployment.md) |
 
 ## When to use featherbit
 
