@@ -14,7 +14,9 @@ pub use loader::{interpolate_env_json, load_yaml_with_env};
 // featherbit is a binary crate, so `pub` exports nothing externally: re-exports
 // consumed only by `#[cfg(test)]` code read as unused in the bin build.
 #[allow(unused_imports)]
-pub use gateway::{EdgeConfig, GatewayConfig, MatchRule, NodeConfig, PolicyConfig, RouteConfig};
+pub use gateway::{
+    EdgeConfig, GatewayConfig, MatchRule, NodeConfig, PolicyConfig, RouteConfig, SupernodeConfig,
+};
 #[allow(unused_imports)]
 pub use system::{
     AdminConfig, ConfigSourceKind, DebugConfig, EtcdConfig, LoggingConfig, SniCert, SniRoute,

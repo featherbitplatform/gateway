@@ -274,6 +274,7 @@ fn gateway_from_kvs(prefix: &str, kvs: Vec<(String, Vec<u8>)>) -> Result<Gateway
         routes: Vec::new(),
         policies: Vec::new(),
         consumers: Vec::new(),
+        supernodes: Vec::new(),
     };
     for (key, value) in kvs {
         let rest = match key.strip_prefix(&format!("{}/", prefix)) {
@@ -456,7 +457,8 @@ mod tests {
         assert!(is_empty(&GatewayConfig {
             routes: vec![],
             policies: vec![],
-            consumers: vec![]
+            consumers: vec![],
+            supernodes: vec![]
         }));
     }
 }
