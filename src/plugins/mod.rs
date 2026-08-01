@@ -76,7 +76,6 @@ pub trait Plugin: Send + Sync {
 /// Every plugin type [`create_plugin`] can build, for save-time validation of
 /// references to plugin types (e.g. a shared config's `type`). Guarded against
 /// drift from the factory's match arms by `test_known_plugin_types_matches_factory`.
-#[allow(dead_code)]
 pub const KNOWN_PLUGIN_TYPES: &[&str] = &[
     "proxy-rewrite",
     "upstream",

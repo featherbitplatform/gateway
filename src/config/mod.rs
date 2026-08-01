@@ -8,6 +8,7 @@
 
 mod gateway;
 mod loader;
+mod resolve;
 mod system;
 
 pub use loader::{interpolate_env_json, load_yaml_with_env};
@@ -18,6 +19,8 @@ pub use gateway::{
     EdgeConfig, GatewayConfig, MatchRule, NodeConfig, PluginConfigDef, PolicyConfig, Position,
     RouteConfig, SupernodeConfig,
 };
+#[allow(unused_imports)]
+pub use resolve::resolve_plugin_configs;
 #[allow(unused_imports)]
 pub use system::{
     AdminConfig, ConfigSourceKind, DebugConfig, EtcdConfig, LoggingConfig, SniCert, SniRoute,
