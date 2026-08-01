@@ -101,7 +101,7 @@ test.describe('Web UI', () => {
     await deleteRouteIfPresent(api, 'ui-made');
 
     await page.goto('/');
-    await page.getByRole('button', {name: 'New'}).click();
+    await page.getByRole('button', {name: 'New route'}).click();
     await page.getByPlaceholder('echo-api').fill('ui-made');
     await page.getByPlaceholder('/api/*').fill('/ui-made/*');
     await page.getByRole('button', {name: 'Create route'}).click();
