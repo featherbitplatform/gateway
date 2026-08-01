@@ -281,6 +281,8 @@ export default function App() {
         plugins={plugins}
         scripts={scripts}
         onSavePolicy={handleSavePolicy}
+        kind="policy"
+        supernodes={[]}
       />
 
       <Dialog

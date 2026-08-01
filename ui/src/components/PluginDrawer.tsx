@@ -11,7 +11,7 @@
  */
 import { useMemo, useState } from 'react';
 import { ChevronRight, FileCode2, Moon, Search, X } from 'lucide-react';
-import type { PluginType, ScriptFile } from '../types';
+import type { PluginType, ScriptFile, Supernode } from '../types';
 import { getPluginMeta } from '../pluginMeta';
 import { groupPluginsByCategory } from '../pluginCategories';
 
@@ -21,10 +21,14 @@ interface PluginDrawerProps {
   plugins: PluginType[];
   /** Script files from GET /api/scripts; the section is hidden when empty. */
   scripts: ScriptFile[];
+  /** Supernode definitions available as reusable subgraph nodes; the section is hidden when empty. */
+  supernodes: Supernode[];
   /** Fires with the plugin type when a native plugin entry is clicked. */
   onAddPlugin: (type: string) => void;
   /** Fires with the script file when a script entry is clicked. */
   onAddScript: (script: ScriptFile) => void;
+  /** Fires with the supernode definition when a supernode entry is clicked. */
+  onAddSupernode: (sn: Supernode) => void;
   /** Whether the drawer is visible; when false the component renders nothing. */
   isOpen: boolean;
   /** Fires when the close (X) button is clicked. */
@@ -129,7 +133,16 @@ function NodeRow({
  * src/plugins/mod.rs (create_plugin); script entries become `script` nodes
  * executed by src/plugins/script/lua_runtime.rs.
  */
-export function PluginDrawer({ plugins, scripts, onAddPlugin, onAddScript, isOpen, onClose }: PluginDrawerProps) {
+export function PluginDrawer({
+  plugins,
+  scripts,
+  supernodes,
+  onAddPlugin,
+  onAddScript,
+  onAddSupernode,
+  isOpen,
+  onClose,
+}: PluginDrawerProps) {
   const [query, setQuery] = useState('');
   // Labels of categories the user has expanded. Empty = all collapsed.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -157,6 +170,16 @@ export function PluginDrawer({ plugins, scripts, onAddPlugin, onAddScript, isOpe
     [scripts, q],
   );
 
+  const matchedSupernodes = useMemo(
+    () =>
+      q
+        ? supernodes.filter(
+            (sn) => sn.name.toLowerCase().includes(q) || sn.description?.toLowerCase().includes(q),
+          )
+        : supernodes,
+    [supernodes, q],
+  );
+
   if (!isOpen) return null;
 
   const toggle = (label: string) =>
@@ -167,7 +190,8 @@ export function PluginDrawer({ plugins, scripts, onAddPlugin, onAddScript, isOpe
       return next;
     });
 
-  const nothingMatches = searching && groups.length === 0 && matchedScripts.length === 0;
+  const nothingMatches =
+    searching && groups.length === 0 && matchedScripts.length === 0 && matchedSupernodes.length === 0;
 
   return (
     <div
@@ -253,6 +277,27 @@ export function PluginDrawer({ plugins, scripts, onAddPlugin, onAddScript, isOpe
           >
             No plugins match “{query}”.
           </p>
+        )}
+
+        {/* Supernodes */}
+        {matchedSupernodes.length > 0 && (
+          <>
+            <div className="eyebrow px-1 pb-2">Supernodes</div>
+            {matchedSupernodes.map((sn) => {
+              const meta = getPluginMeta('supernode');
+              const Icon = meta.icon;
+              return (
+                <NodeRow
+                  key={sn.name}
+                  onClick={() => onAddSupernode(sn)}
+                  color={meta.color}
+                  icon={<Icon size={15} strokeWidth={1.75} />}
+                  title={sn.name}
+                  subtitle={sn.description ?? ''}
+                />
+              );
+            })}
+          </>
         )}
 
         {/* Native plugins, grouped into collapsible categories */}
