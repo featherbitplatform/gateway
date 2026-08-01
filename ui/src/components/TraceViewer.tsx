@@ -43,6 +43,19 @@ function changeColor(kind: Change['kind']): string {
   return 'var(--accent-hover)';
 }
 
+/** Renders `sec/up` as a muted `sec /` prefix + the inner id, so supernode
+ *  instances group visually; plain ids render unchanged. */
+function NodeId({ id }: { id: string }) {
+  const slash = id.indexOf('/');
+  if (slash === -1) return <>{id}</>;
+  return (
+    <>
+      <span style={{ color: 'var(--text-muted)' }}>{id.slice(0, slash + 1)}</span>
+      {id.slice(slash + 1)}
+    </>
+  );
+}
+
 /** One `path / before / after` row in the Changes pane. */
 function ChangeRow({ change }: { change: Change }) {
   return (
@@ -186,7 +199,7 @@ export function TraceViewer({ trace }: TraceViewerProps) {
                     fontWeight: 500,
                   }}
                 >
-                  {s.node_id}
+                  <NodeId id={s.node_id} />
                 </span>
                 <span
                   className="truncate"
@@ -218,7 +231,7 @@ export function TraceViewer({ trace }: TraceViewerProps) {
                   color: 'var(--text-primary)',
                 }}
               >
-                {step.node_id}{' '}
+                <NodeId id={step.node_id} />{' '}
                 <span style={{ color: 'var(--text-muted)' }}>({step.node_type})</span>
               </div>
               <div
@@ -229,7 +242,12 @@ export function TraceViewer({ trace }: TraceViewerProps) {
                 }}
               >
                 {EDGE_LABEL[step.edge]}
-                {step.next_node_id ? ` ${step.next_node_id}` : ''}
+                {step.next_node_id ? (
+                  <>
+                    {' '}
+                    <NodeId id={step.next_node_id} />
+                  </>
+                ) : ''}
                 {step.outcome.kind === 'error' && (
                   <>
                     {' · '}
