@@ -274,6 +274,19 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy, kind, supe
     setDrawerOpen(false);
   }, []);
 
+  // Supernode definitions can't contain endpoint nodes (spec §6): a
+  // supernode has no listener to bind and its instance already stands in
+  // for a client via the success/error ports. PluginDrawer filters
+  // 'listener'/'script' internally for every mode; the 'client' exclusion
+  // is supernode-only, so it's applied here rather than inside the drawer.
+  const drawerPlugins = useMemo(
+    () =>
+      kind === 'supernode'
+        ? plugins.filter((p) => p.type !== 'listener' && p.type !== 'client')
+        : plugins,
+    [plugins, kind]
+  );
+
   // The parent keys this component by policy name, so a different policy
   // remounts the canvas and nodes/edges/selection all start fresh from the
   // prop. Refetches of the same policy keep the local (unsaved) graph state.
@@ -533,14 +546,14 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy, kind, supe
               onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
             >
               <Save size={13} />
-              Save Policy
+              {kind === 'supernode' ? 'Save Supernode' : 'Save Policy'}
             </button>
           </div>
         </Panel>
       </ReactFlow>
 
       <PluginDrawer
-        plugins={plugins}
+        plugins={drawerPlugins}
         scripts={scripts}
         supernodes={kind === 'policy' ? supernodes : []}
         onAddPlugin={handleAddPlugin}
