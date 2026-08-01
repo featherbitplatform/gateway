@@ -35,6 +35,10 @@ pub struct GatewayConfig {
     /// nodes configured with `use_consumers: true`.
     #[serde(default)]
     pub consumers: Vec<crate::consumers::ConsumerConfig>,
+    /// Reusable named subgraphs, referenced from policies by nodes of
+    /// `type: supernode`; inlined at compile time (see src/graph/expand.rs).
+    #[serde(default)]
+    pub supernodes: Vec<SupernodeConfig>,
 }
 
 /// Binds a request match rule to a named policy.
@@ -123,4 +127,73 @@ pub struct EdgeConfig {
     pub from: String,
     /// Target endpoint, `node_id.port`.
     pub to: String,
+}
+
+/// A reusable named subgraph with a fixed boundary: exactly one `input`,
+/// one `output`, and one `error` pseudo-node (declared in `nodes` like a
+/// policy declares `listener`/`client`, so the UI can persist positions).
+///
+/// Instances appear in policies as nodes of `type: supernode` with
+/// `config: { name: <this name> }` and are inlined at compile time —
+/// stored configuration always keeps the compact reference form.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SupernodeConfig {
+    /// Unique supernode name, referenced from policy nodes' `config.name`.
+    pub name: String,
+    /// Optional human-readable description (shown in the UI library).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Inner plugin nodes plus the three boundary pseudo-nodes.
+    #[serde(default)]
+    pub nodes: Vec<NodeConfig>,
+    /// Directed connections; boundary edges use `input.out`, `output.in`,
+    /// `error.in` endpoints.
+    #[serde(default)]
+    pub edges: Vec<EdgeConfig>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Old configs without a `supernodes:` section must stay valid, and a
+    /// definition must round-trip through YAML unchanged.
+    #[test]
+    fn test_supernodes_default_empty_and_roundtrip() {
+        let gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(gw.supernodes.is_empty());
+
+        let yaml = r#"
+supernodes:
+  - name: secured-call
+    description: "auth + upstream"
+    nodes:
+      - { id: input,  type: input }
+      - { id: output, type: output }
+      - { id: error,  type: error }
+      - { id: up, type: upstream, config: { url: "http://svc" } }
+    edges:
+      - { from: input.out,  to: up.in }
+      - { from: up.success, to: output.in }
+      - { from: up.error,   to: error.in }
+"#;
+        let gw: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(gw.supernodes.len(), 1);
+        let sn = &gw.supernodes[0];
+        assert_eq!(sn.name, "secured-call");
+        assert_eq!(sn.description.as_deref(), Some("auth + upstream"));
+        assert_eq!(sn.nodes.len(), 4);
+        assert_eq!(sn.edges.len(), 3);
+
+        let out = serde_yaml::to_string(&GatewayConfig {
+            routes: vec![],
+            policies: vec![],
+            consumers: vec![],
+            supernodes: gw.supernodes.clone(),
+        })
+        .unwrap();
+        let back: GatewayConfig = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(back.supernodes[0].name, "secured-call");
+        assert_eq!(back.supernodes[0].nodes.len(), 4);
+    }
 }

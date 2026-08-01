@@ -296,6 +296,18 @@ for the same reason, and is unit-tested in `src/admin/debug.rs` instead.
 | E2E-DEBUG-15 | Sandbox an unknown policy | `404` |
 | E2E-DEBUG-16 | Sandbox with neither/both of `nodes` and `policy` | `400` |
 
+## Supernodes — `tests/supernodes.spec.ts`
+
+Reusable node-group definitions (`/api/supernodes`), inlined into the compiled
+graph at policy-compile time. A `type: supernode` node in a policy expands to
+the definition's inner nodes namespaced `<instance-id>/<inner-id>` (e.g.
+`sec/up`) — the engine itself never sees a `supernode` node type, and the
+namespacing is what a trace's `node_id`s reveal.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-SN-01 | Create a supernode wrapping the seeded echo upstream, reference it from a policy (`type: supernode`) attached to a route, then request through it | `200` from the expanded pipeline; a traced request (`x-featherbit-debug`) reports a step whose `node_id` starts with `sec/` — proving compile-time expansion, not a live indirection; `GET /api/config/export` contains `supernodes:`, the definition's name and `type: supernode`, but never the expanded `sec/up` id (expansion is never persisted); deleting the supernode while referenced is `400`; deleting it once the route and policy are removed succeeds |
+
 ## Deliberately out of scope
 
 Covered by the Rust suite with real sockets, or unreachable from Playwright:

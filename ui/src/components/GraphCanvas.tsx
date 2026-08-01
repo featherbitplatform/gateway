@@ -28,7 +28,7 @@ import { PluginNode, type PluginNodeData } from './PluginNode';
 import { PluginDrawer } from './PluginDrawer';
 import { NodeInspector } from './NodeInspector';
 import { ThemeToggle } from './ThemeToggle';
-import type { Policy, PluginType, ScriptFile } from '../types';
+import type { Policy, PluginType, ScriptFile, Supernode } from '../types';
 
 /**
  * Builds the shared inline style for floating-toolbar buttons.
@@ -59,6 +59,10 @@ interface GraphCanvasProps {
   scripts: ScriptFile[];
   /** Fires when the user clicks Save Policy, with the graph converted back to the Policy contract. */
   onSavePolicy: (policy: Policy) => void;
+  /** Whether the canvas is editing a policy or a supernode definition. */
+  kind: 'policy' | 'supernode';
+  /** Supernode definitions offered in the policy palette (empty in supernode mode). */
+  supernodes: Supernode[];
 }
 
 /** ReactFlow custom node-type registry; every policy node renders as a {@link PluginNode}. */
@@ -108,8 +112,8 @@ function policyToNodes(policy: Policy, onSelect: (id: string) => void): Node[] {
     if (errNext) layout(errNext, row + 1.5);
   }
 
-  const listenerNode = policy.nodes.find((n) => n.type === 'listener');
-  if (listenerNode) layout(listenerNode.id, 1);
+  const entryNode = policy.nodes.find((n) => n.type === 'listener' || n.type === 'input');
+  if (entryNode) layout(entryNode.id, 1);
 
   // Place any unvisited nodes
   for (const node of policy.nodes) {
@@ -124,7 +128,10 @@ function policyToNodes(policy: Policy, onSelect: (id: string) => void): Node[] {
     type: 'pluginNode',
     position: node.position || positions.get(node.id) || { x: 0, y: 0 },
     data: {
-      label: node.id,
+      label:
+        node.type === 'supernode' && typeof node.config?.name === 'string'
+          ? `⬡ ${node.config.name}`
+          : node.id,
       pluginType: node.type,
       config: node.config || {},
       onSelect: onSelect,
@@ -257,7 +264,7 @@ function nodesToPolicy(
  * Success/error handles correspond to the port routing model executed by
  * CompiledGraph::execute in src/graph/engine.rs.
  */
-export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCanvasProps) {
+export function GraphCanvas({ policy, plugins, scripts, onSavePolicy, kind, supernodes }: GraphCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -266,6 +273,19 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
     setSelectedNodeId(id);
     setDrawerOpen(false);
   }, []);
+
+  // Supernode definitions can't contain endpoint nodes (spec §6): a
+  // supernode has no listener to bind and its instance already stands in
+  // for a client via the success/error ports. PluginDrawer filters
+  // 'listener'/'script' internally for every mode; the 'client' exclusion
+  // is supernode-only, so it's applied here rather than inside the drawer.
+  const drawerPlugins = useMemo(
+    () =>
+      kind === 'supernode'
+        ? plugins.filter((p) => p.type !== 'listener' && p.type !== 'client')
+        : plugins,
+    [plugins, kind]
+  );
 
   // The parent keys this component by policy name, so a different policy
   // remounts the canvas and nodes/edges/selection all start fresh from the
@@ -289,8 +309,9 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
         const targetType = (targetNode?.data as unknown as PluginNodeData)?.pluginType;
         const isClient = targetType === 'client';
         const isErrorHandler = targetType === 'error-handler';
+        const isBoundaryExit = targetType === 'output' || targetType === 'error';
 
-        if (!isClient && !isErrorHandler) {
+        if (!isClient && !isErrorHandler && !isBoundaryExit) {
           const alreadyConnected = eds.some(
             (e) => e.target === connection.target && e.targetHandle === (connection.targetHandle || 'in')
           );
@@ -362,6 +383,24 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
           runtime: script.runtime,
           source: script.file,
         },
+        onSelect: handleSelect,
+      } satisfies PluginNodeData,
+    };
+    setNodes((nds) => [...nds, newNode]);
+    setSelectedNodeId(id);
+    setDrawerOpen(false);
+  };
+
+  const handleAddSupernode = (sn: Supernode) => {
+    const id = `${sn.name}-${Date.now().toString(36)}`;
+    const newNode: Node = {
+      id,
+      type: 'pluginNode',
+      position: { x: 300, y: 200 + nodes.length * 80 },
+      data: {
+        label: `⬡ ${sn.name}`,
+        pluginType: 'supernode',
+        config: { name: sn.name },
         onSelect: handleSelect,
       } satisfies PluginNodeData,
     };
@@ -507,17 +546,19 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
               onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
             >
               <Save size={13} />
-              Save Policy
+              {kind === 'supernode' ? 'Save Supernode' : 'Save Policy'}
             </button>
           </div>
         </Panel>
       </ReactFlow>
 
       <PluginDrawer
-        plugins={plugins}
+        plugins={drawerPlugins}
         scripts={scripts}
+        supernodes={kind === 'policy' ? supernodes : []}
         onAddPlugin={handleAddPlugin}
         onAddScript={handleAddScript}
+        onAddSupernode={handleAddSupernode}
         isOpen={drawerOpen}
         onClose={() => setDrawerOpen(false)}
       />
