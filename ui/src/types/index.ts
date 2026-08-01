@@ -87,6 +87,25 @@ export interface PolicyEdge {
 }
 
 /**
+ * A reusable named subgraph with a fixed input/output/error boundary,
+ * usable in any policy as a single node of type `supernode`.
+ *
+ * @remarks
+ * Served and persisted by the CRUD handlers in src/admin/supernodes.rs;
+ * inlined into policies at compile time by src/graph/expand.rs.
+ */
+export interface Supernode {
+  /** Unique supernode name, referenced from policy nodes' `config.name`. */
+  name: string;
+  /** Optional human-readable description shown in the library. */
+  description?: string;
+  /** Inner plugin nodes plus the `input`/`output`/`error` boundary nodes. */
+  nodes: PolicyNode[];
+  /** Directed connections; boundary edges use `input.out` / `output.in` / `error.in`. */
+  edges: PolicyEdge[];
+}
+
+/**
  * A plugin type available on the gateway, as listed by `GET /api/plugins`.
  *
  * @remarks
