@@ -66,6 +66,7 @@ Core features:
 - **Admin API** — axum-based REST API on separate port with Basic Auth, CRUD for routes/policies, health/ready/metrics endpoints
 - **Hot-reload** — file watcher (notify) triggers config reload on gateway.yaml changes
 - **Prometheus metrics** — per-route and per-node counters/histograms at `/metrics`
+- **Supernodes** — reusable named subgraphs inlined into policies at compile time
 
 ## Architecture
 
