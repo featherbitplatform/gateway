@@ -51,7 +51,7 @@ From the policy's point of view `sec` behaves like any other node — it has one
 
 ## Black-box error routing
 
-A supernode instance exposes a single `error` port. Inside the definition, any inner node whose `error` port is left unwired automatically routes out through the supernode's `error` boundary — that's the `auth.error -> error.in` edge above. The policy wiring the instance only ever sees one error exit, no matter how many inner nodes could fail.
+A supernode instance exposes a single `error` port. `auth.error -> error.in` above is an explicit edge the definition itself wires — nothing implicit about it. The implicit case is `up`: its `error` port is left unwired inside the definition entirely. At expansion time, any inner node with no error edge of its own gets an implicit edge straight to wherever the policy connected the instance's `error` port — but only if the policy wired that port. If it didn't, those unhandled inner errors aren't silently swallowed; they fall through to the policy's `error_handler`, or a 500 if there isn't one. Either way, the policy wiring the instance only ever sees one error exit, no matter how many inner nodes could fail.
 
 ## Compile-time expansion
 

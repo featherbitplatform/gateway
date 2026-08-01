@@ -283,9 +283,10 @@ impl ConfigStore for EtcdConfigStore {
 
 /// Assembles a [`GatewayConfig`] from the etcd key/value pairs under `prefix`.
 ///
-/// Keys are `<prefix>/{routes,policies,consumers}/<name>`; values are the
-/// resource JSON. Unknown key shapes are skipped. Malformed resource JSON is an
-/// error (so a bad write surfaces rather than silently dropping config).
+/// Keys are `<prefix>/{routes,policies,consumers,supernodes}/<name>`; values
+/// are the resource JSON. Unknown key shapes are skipped. Malformed resource
+/// JSON is an error (so a bad write surfaces rather than silently dropping
+/// config).
 fn gateway_from_kvs(prefix: &str, kvs: Vec<(String, Vec<u8>)>) -> Result<GatewayConfig, String> {
     let mut gw = GatewayConfig {
         routes: Vec::new(),
