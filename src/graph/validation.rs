@@ -318,6 +318,7 @@ mod tests {
             id: "listener".to_string(),
             node_type: "listener".to_string(),
             config: HashMap::new(),
+            config_ref: None,
             position: None,
         }
     }
@@ -327,6 +328,7 @@ mod tests {
             id: "client".to_string(),
             node_type: "client".to_string(),
             config: HashMap::new(),
+            config_ref: None,
             position: None,
         }
     }
@@ -336,6 +338,7 @@ mod tests {
             id: "backend".to_string(),
             node_type: "upstream".to_string(),
             config: HashMap::new(),
+            config_ref: None,
             position: None,
         }
     }
@@ -347,6 +350,7 @@ mod tests {
                 id: t.to_string(),
                 node_type: t.to_string(),
                 config: HashMap::new(),
+                config_ref: None,
                 position: None,
             })
             .collect()
@@ -357,6 +361,7 @@ mod tests {
             id: id.to_string(),
             node_type: ty.to_string(),
             config: HashMap::new(),
+            config_ref: None,
             position: None,
         }
     }
