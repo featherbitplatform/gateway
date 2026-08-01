@@ -127,7 +127,8 @@ pub fn expand_policy(
             .ok_or_else(|| {
                 format!(
                     "supernode '{}' has no edge from input node '{}'",
-                    def.name, input_node_id.as_str()
+                    def.name,
+                    input_node_id.as_str()
                 )
             })?;
         let (entry_target, _) = split_endpoint(&entry_edge.to);
@@ -171,46 +172,60 @@ pub fn expand_policy(
         );
     }
 
-    // Detect pass-through cycles: if pass-through instance A points to pass-through
-    // instance B which points back to A, reject the cycle. Follow the appropriate target
-    // (success_to for output pass-through, error_to for error pass-through).
-    for inst_id in splices.keys() {
-        let mut path = vec![*inst_id];
-        let mut curr = *inst_id;
-        while let Some(s) = splices.get(curr) {
-            if let Some(pass_type) = &s.pass_through_type {
-                // This is a pass-through; check where it leads based on boundary type.
-                let target_endpoint = match pass_type.as_str() {
-                    "output" => &s.success_to,
-                    "error" => &s.error_to,
-                    _ => &None,
-                };
-                if let Some(endpoint) = target_endpoint {
-                    let (target_node, _) = split_endpoint(endpoint);
-                    if splices.contains_key(target_node) {
-                        if path.contains(&target_node) {
-                            let cycle_str = path
-                                .iter()
-                                .chain(std::iter::once(&target_node))
-                                .copied()
-                                .collect::<Vec<_>>()
-                                .join(" -> ");
-                            return Err(format!(
-                                "policy '{}': supernode pass-through cycle: {}",
-                                policy.name, cycle_str
-                            ));
-                        }
-                        path.push(target_node);
-                        curr = target_node;
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            } else {
-                break;
+    // Resolves `target` (an edge endpoint) to the concrete endpoint it
+    // ultimately reaches, iterating through chained pass-through instances
+    // to a fixed point (a non-instance endpoint, or a normal instance's
+    // already-resolved entry). `Ok(None)` means the chain terminates in an
+    // unwired outer port, so the edge referencing `target` must be dropped.
+    // `Err` means the chain cycles back on an instance already visited.
+    fn resolve_target(
+        splices: &HashMap<&str, Splice>,
+        target: &str,
+    ) -> Result<Option<String>, String> {
+        let mut current = target.to_string();
+        // Ordered so a cycle error can name the full loop, not just the
+        // repeated node.
+        let mut path: Vec<String> = Vec::new();
+        loop {
+            let (target_node, _) = split_endpoint(&current);
+            let s = match splices.get(target_node) {
+                Some(s) => s,
+                None => return Ok(Some(current)),
+            };
+            if let Some(entry) = &s.entry {
+                // Normal instance: entry is already a concrete inlined node.
+                return Ok(Some(entry.clone()));
             }
+            let pass_type = match &s.pass_through_type {
+                Some(t) => t,
+                None => return Ok(Some(current)),
+            };
+            if path.iter().any(|p| p == target_node) {
+                path.push(target_node.to_string());
+                return Err(format!(
+                    "supernode pass-through cycle: {}",
+                    path.join(" -> ")
+                ));
+            }
+            path.push(target_node.to_string());
+            let next = match pass_type.as_str() {
+                "output" => &s.success_to,
+                "error" => &s.error_to,
+                _ => &None,
+            };
+            match next {
+                Some(t) => current = t.clone(),
+                None => return Ok(None),
+            }
+        }
+    }
+
+    // Proactively walk every pass-through instance's chain so a cycle is
+    // reported even if no outer edge happens to traverse it.
+    for (id, s) in &splices {
+        if s.pass_through_type.is_some() {
+            resolve_target(&splices, &format!("{id}.in"))
+                .map_err(|err| format!("policy '{}': {}", policy.name, err))?;
         }
     }
 
@@ -222,34 +237,9 @@ pub fn expand_policy(
         .cloned()
         .collect();
 
-    // Shared target resolver: all edge targets must go through this to resolve
-    // instance references to their actual entry/exit points.
-    let resolve_target = |target: &str| -> String {
-        let (target_node, _) = split_endpoint(target);
-        if let Some(target_splice) = splices.get(target_node) {
-            if let Some(entry) = &target_splice.entry {
-                entry.clone()
-            } else if let Some(pass_type) = &target_splice.pass_through_type {
-                // Target is pass-through; use the appropriate target based on boundary type.
-                let target_endpoint = match pass_type.as_str() {
-                    "output" => &target_splice.success_to,
-                    "error" => &target_splice.error_to,
-                    _ => &None,
-                };
-                target_endpoint
-                    .as_ref()
-                    .map(|t| t.to_string())
-                    .unwrap_or_else(|| target.to_string())
-            } else {
-                target.to_string()
-            }
-        } else {
-            target.to_string()
-        }
-    };
-
     // Outer edges: those leaving an instance are replaced by inner exit
-    // edges; those entering one are redirected to its entry node or pass-through target.
+    // edges; those entering one are redirected to its resolved entry point,
+    // following chained pass-throughs to a fixed point.
     let mut edges: Vec<EdgeConfig> = Vec::new();
     for e in &policy.edges {
         let (from_node, _) = split_endpoint(&e.from);
@@ -257,31 +247,17 @@ pub fn expand_policy(
             continue;
         }
         let (to_node, _) = split_endpoint(&e.to);
-        match splices.get(to_node) {
-            Some(s) => {
-                if let Some(entry) = &s.entry {
-                    edges.push(EdgeConfig {
-                        from: e.from.clone(),
-                        to: entry.clone(),
-                    });
-                } else {
-                    // Pass-through: redirect to appropriate target based on boundary type.
-                    if let Some(pass_type) = &s.pass_through_type {
-                        let target = match pass_type.as_str() {
-                            "output" => &s.success_to,
-                            "error" => &s.error_to,
-                            _ => &None,
-                        };
-                        if let Some(t) = target {
-                            edges.push(EdgeConfig {
-                                from: e.from.clone(),
-                                to: resolve_target(t),
-                            });
-                        }
-                    }
-                }
+        if splices.contains_key(to_node) {
+            if let Some(resolved) = resolve_target(&splices, &e.to)
+                .map_err(|err| format!("policy '{}': {}", policy.name, err))?
+            {
+                edges.push(EdgeConfig {
+                    from: e.from.clone(),
+                    to: resolved,
+                });
             }
-            None => edges.push(e.clone()),
+        } else {
+            edges.push(e.clone());
         }
     }
 
@@ -326,18 +302,20 @@ pub fn expand_policy(
             match to_node_type {
                 Some("output") => {
                     if let Some(t) = &s.success_to {
-                        edges.push(EdgeConfig {
-                            from,
-                            to: resolve_target(t),
-                        });
+                        if let Some(resolved) = resolve_target(&splices, t)
+                            .map_err(|err| format!("policy '{}': {}", policy.name, err))?
+                        {
+                            edges.push(EdgeConfig { from, to: resolved });
+                        }
                     }
                 }
                 Some("error") => {
                     if let Some(t) = &s.error_to {
-                        edges.push(EdgeConfig {
-                            from,
-                            to: resolve_target(t),
-                        });
+                        if let Some(resolved) = resolve_target(&splices, t)
+                            .map_err(|err| format!("policy '{}': {}", policy.name, err))?
+                        {
+                            edges.push(EdgeConfig { from, to: resolved });
+                        }
                     }
                 }
                 _ => edges.push(EdgeConfig {
@@ -350,16 +328,20 @@ pub fn expand_policy(
         // Black-box guarantee: unwired inner error ports exit through the
         // instance's error output when the policy connected one.
         if let Some(t) = &s.error_to {
-            for n in &s.def.nodes {
-                if BOUNDARY_TYPES.contains(&n.node_type.as_str())
-                    || handled_errors.contains(n.id.as_str())
-                {
-                    continue;
+            if let Some(resolved) = resolve_target(&splices, t)
+                .map_err(|err| format!("policy '{}': {}", policy.name, err))?
+            {
+                for n in &s.def.nodes {
+                    if BOUNDARY_TYPES.contains(&n.node_type.as_str())
+                        || handled_errors.contains(n.id.as_str())
+                    {
+                        continue;
+                    }
+                    edges.push(EdgeConfig {
+                        from: format!("{}.error", prefix(&n.id)),
+                        to: resolved.clone(),
+                    });
                 }
-                edges.push(EdgeConfig {
-                    from: format!("{}.error", prefix(&n.id)),
-                    to: resolve_target(t),
-                });
             }
         }
     }
@@ -912,5 +894,76 @@ mod tests {
                 .map(|e| format!("{}->{}", e.from, e.to))
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// Multi-hop pass-through chain (Round-3 re-review Finding 1): x and y
+    /// are both error-pass-throughs, z is a normal instance. resolve_target
+    /// must iterate through both pass-through hops to reach z's real entry,
+    /// not stop after resolving just one hop.
+    #[test]
+    fn test_multi_hop_pass_through_chain_resolves_to_fixed_point() {
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("x", "error-passthrough"),
+                supernode_instance("y", "error-passthrough"),
+                supernode_instance("z", "secured-call"),
+                node("eh", "error-handler"),
+            ],
+            edges: vec![
+                edge("listener.out", "x.in"),
+                edge("x.error", "y.in"),
+                edge("y.error", "z.in"),
+                edge("z.success", "eh.in"),
+            ],
+        };
+        let out = expand_policy(&p, &[error_pass_through(), secured_call()]).unwrap();
+        let edge_strs: Vec<String> = out
+            .edges
+            .iter()
+            .map(|e| format!("{}->{}", e.from, e.to))
+            .collect();
+        // listener.out must resolve all the way through x and y to z's real entry.
+        assert!(
+            out.edges
+                .iter()
+                .any(|e| e.from == "listener.out" && e.to == "z/auth.in"),
+            "listener.out should splice to z/auth.in; edges: {edge_strs:?}"
+        );
+        // No edge may reference the bare (now-removed) instance ids.
+        assert!(
+            !out.edges.iter().any(|e| e.from == "x.in"
+                || e.to == "x.in"
+                || e.from == "y.in"
+                || e.to == "y.in"
+                || e.from == "z.in"
+                || e.to == "z.in"),
+            "no edge should reference a bare instance port; edges: {edge_strs:?}"
+        );
+    }
+
+    /// Cyclic multi-hop pass-through chain: x -> y -> x, both error-pass-throughs.
+    /// resolve_target's cycle guard must catch this even though it takes two
+    /// hops to loop back, not just an immediate self-reference.
+    #[test]
+    fn test_multi_hop_pass_through_cycle_is_error() {
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("x", "error-passthrough"),
+                supernode_instance("y", "error-passthrough"),
+            ],
+            edges: vec![
+                edge("listener.out", "x.in"),
+                edge("x.error", "y.in"),
+                edge("y.error", "x.in"), // cycle: x -> y -> x
+            ],
+        };
+        let err = expand_policy(&p, &[error_pass_through()]).unwrap_err();
+        assert!(err.contains("cycle"), "got: {err}");
     }
 }
