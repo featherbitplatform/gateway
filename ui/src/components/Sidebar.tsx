@@ -133,6 +133,7 @@ export function Sidebar({
           <span className="eyebrow">Routes</span>
           <button
             onClick={onCreateRoute}
+            aria-label="New route"
             className="flex items-center gap-1 transition-colors"
             style={{
               fontSize: 'var(--text-xs)',
@@ -214,6 +215,7 @@ export function Sidebar({
           <span className="eyebrow">Supernodes</span>
           <button
             onClick={onCreateSupernode}
+            aria-label="New supernode"
             className="flex items-center gap-1 transition-colors"
             style={{
               fontSize: 'var(--text-xs)',
