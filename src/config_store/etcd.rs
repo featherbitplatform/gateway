@@ -4,9 +4,11 @@
 //! `/v3/auth/authenticate` endpoints) through the shared [`OutboundClient`] —
 //! no gRPC, `protoc`, or `tonic` dependency. Config lives under per-resource
 //! keys (`<prefix>/routes/<name>`, `<prefix>/policies/<name>`,
-//! `<prefix>/consumers/<name>`), each value the resource's JSON. Every gateway
-//! instance loads from the same prefix and a background poll task keeps the
-//! cluster converged (see [`spawn_watch`]).
+//! `<prefix>/consumers/<name>`, `<prefix>/supernodes/<name>`), each value the
+//! resource's JSON. Every gateway instance loads from the same prefix and a
+//! background poll task keeps the cluster converged (see [`spawn_watch`]).
+//! Note: an older build sharing the same prefix garbage-collects unknown key
+//! families on its next commit.
 //!
 //! # Route ordering
 //! etcd returns keys in lexicographic order, so in etcd mode routes are matched
@@ -30,7 +32,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use crate::config::{EtcdConfig, GatewayConfig, SystemConfig};
-use crate::config::{PolicyConfig, RouteConfig};
+use crate::config::{PolicyConfig, RouteConfig, SupernodeConfig};
 use crate::config_store::ConfigStore;
 use crate::consumers::ConsumerConfig;
 use crate::outbound::{OutboundClient, OutboundRequest};
@@ -199,6 +201,9 @@ impl EtcdConfigStore {
     fn consumer_key(&self, name: &str) -> String {
         format!("{}/consumers/{}", self.prefix, name)
     }
+    fn supernode_key(&self, name: &str) -> String {
+        format!("{}/supernodes/{}", self.prefix, name)
+    }
 
     /// Writes every resource in `gw` to etcd (used to seed an empty prefix).
     async fn write_all(&self, gw: &GatewayConfig) -> Result<(), String> {
@@ -213,6 +218,13 @@ impl EtcdConfigStore {
         for c in &gw.consumers {
             self.put(&self.consumer_key(&c.name), &serde_json::to_vec(c).unwrap())
                 .await?;
+        }
+        for s in &gw.supernodes {
+            self.put(
+                &self.supernode_key(&s.name),
+                &serde_json::to_vec(s).unwrap(),
+            )
+            .await?;
         }
         Ok(())
     }
@@ -252,6 +264,11 @@ impl ConfigStore for EtcdConfigStore {
         for c in &candidate.consumers {
             let key = self.consumer_key(&c.name);
             self.put(&key, &serde_json::to_vec(c).unwrap()).await?;
+            desired.insert(key);
+        }
+        for s in &candidate.supernodes {
+            let key = self.supernode_key(&s.name);
+            self.put(&key, &serde_json::to_vec(s).unwrap()).await?;
             desired.insert(key);
         }
         for stale in current.difference(&desired) {
@@ -301,6 +318,11 @@ fn gateway_from_kvs(prefix: &str, kvs: Vec<(String, Vec<u8>)>) -> Result<Gateway
                     .map_err(|e| format!("bad consumer '{}': {}", key, e))?;
                 gw.consumers.push(c);
             }
+            "supernodes" => {
+                let s: SupernodeConfig = serde_json::from_slice(&value)
+                    .map_err(|e| format!("bad supernode '{}': {}", key, e))?;
+                gw.supernodes.push(s);
+            }
             _ => {}
         }
     }
@@ -323,7 +345,10 @@ fn prefix_range_end(prefix: &[u8]) -> Vec<u8> {
 }
 
 fn is_empty(gw: &GatewayConfig) -> bool {
-    gw.routes.is_empty() && gw.policies.is_empty() && gw.consumers.is_empty()
+    gw.routes.is_empty()
+        && gw.policies.is_empty()
+        && gw.consumers.is_empty()
+        && gw.supernodes.is_empty()
 }
 
 /// Builds the etcd store and the initial gateway config.
@@ -460,5 +485,41 @@ mod tests {
             consumers: vec![],
             supernodes: vec![]
         }));
+    }
+
+    #[test]
+    fn test_gateway_from_kvs_parses_supernodes() {
+        let sn = serde_json::json!({
+            "name": "secured-call",
+            "nodes": [ { "id": "input", "type": "input", "config": {} } ],
+            "edges": []
+        });
+        let kvs = vec![(
+            "gw/supernodes/secured-call".to_string(),
+            serde_json::to_vec(&sn).unwrap(),
+        )];
+        let gw = gateway_from_kvs("gw", kvs).unwrap();
+        assert_eq!(gw.supernodes.len(), 1);
+        assert_eq!(gw.supernodes[0].name, "secured-call");
+    }
+
+    #[test]
+    fn test_gateway_from_kvs_bad_supernode_json_is_error() {
+        let kvs = vec![("gw/supernodes/x".to_string(), b"not json".to_vec())];
+        let err = gateway_from_kvs("gw", kvs).unwrap_err();
+        assert!(err.contains("bad supernode"), "{err}");
+    }
+
+    #[test]
+    fn test_is_empty_counts_supernodes() {
+        let mut gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(is_empty(&gw));
+        gw.supernodes.push(SupernodeConfig {
+            name: "s".into(),
+            description: None,
+            nodes: vec![],
+            edges: vec![],
+        });
+        assert!(!is_empty(&gw));
     }
 }
