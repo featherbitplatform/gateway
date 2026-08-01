@@ -249,10 +249,26 @@ async fn run_sandbox(
         return bad_request(errors.join("; "));
     }
 
-    // Inline supernode references the same way compile_routes does — the
-    // sandbox must never diverge from what the data plane executes.
-    let supernodes = { state.gateway.read().await.supernodes.clone() };
-    let policy = match crate::graph::expand_policy(&policy, &supernodes) {
+    // Resolve shared plugin configs and inline supernode references the same
+    // way compile_routes does — the sandbox must never diverge from what the
+    // data plane executes. Resolution runs on a synthetic single-policy
+    // gateway so ad-hoc nodes and stored policies behave identically.
+    let (supernodes, plugin_configs) = {
+        let gw = state.gateway.read().await;
+        (gw.supernodes.clone(), gw.plugin_configs.clone())
+    };
+    let resolved = {
+        let mut tmp: crate::config::GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        tmp.policies = vec![policy];
+        tmp.supernodes = supernodes;
+        tmp.plugin_configs = plugin_configs;
+        match crate::config::resolve_plugin_configs(&tmp) {
+            Ok(r) => r,
+            Err(e) => return bad_request(e),
+        }
+    };
+    let policy = resolved.policies.into_iter().next().expect("one policy in");
+    let policy = match crate::graph::expand_policy(&policy, &resolved.supernodes) {
         Ok(p) => p,
         Err(e) => return bad_request(e),
     };
@@ -654,6 +670,68 @@ policies:
                 .iter()
                 .any(|s| s["node_id"].as_str().unwrap_or("").starts_with("sec/")),
             "expected a namespaced sec/* step, got: {v}"
+        );
+    }
+
+    /// A sandbox run resolves config_ref exactly like the data plane: the
+    /// mocking node inherits the shared config and answers with its body.
+    #[tokio::test]
+    async fn test_sandbox_resolves_plugin_configs() {
+        let system = SystemConfig {
+            debug: DebugConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            ..serde_yaml::from_str::<SystemConfig>("{}").unwrap()
+        };
+        let gateway: GatewayConfig = serde_yaml::from_str(
+            r#"
+plugin_configs:
+  - name: m
+    type: mocking
+    config: { response_status: 200, response_example: "from-shared", content_type: "text/plain" }
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: mock, type: mocking, config_ref: m }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: mock.in }
+      - { from: mock.success, to: client.in }
+"#,
+        )
+        .unwrap();
+        let s = Arc::new(
+            SharedState::new(
+                system,
+                gateway,
+                None,
+                Arc::new(FileConfigStore::new(std::path::PathBuf::from(
+                    "gateway.yaml",
+                ))),
+            )
+            .unwrap(),
+        );
+
+        let req = SandboxRequest {
+            policy: Some("p".to_string()),
+            ..Default::default()
+        };
+        let resp = run_sandbox(State(s), Json(req)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let steps = v["trace"]["steps"].as_array().unwrap();
+        // The mocking node ran with the shared body -> response body captured
+        // in the final snapshot contains it (bodies off => assert via status).
+        assert!(
+            steps
+                .iter()
+                .any(|s| s["node_id"] == "mock" && s["outcome"]["kind"] == "success"),
+            "{v}"
         );
     }
 }

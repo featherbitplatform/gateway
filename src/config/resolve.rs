@@ -18,7 +18,6 @@ use super::gateway::{GatewayConfig, NodeConfig, PluginConfigDef};
 
 /// Types that may not be used as a shared config's `type`: pipeline endpoints,
 /// supernode instances, and supernode boundary pseudo-nodes.
-#[allow(dead_code)]
 const RESERVED_TYPES: [&str; 6] = [
     "listener",
     "client",
@@ -34,7 +33,6 @@ const RESERVED_TYPES: [&str; 6] = [
 /// and not a reserved type. Reference rules: the named def must exist and its
 /// type must equal the node's type; `supernode` instance nodes cannot carry a
 /// ref. All errors name the offending policy/supernode and node.
-#[allow(dead_code)]
 pub fn resolve_plugin_configs(gw: &GatewayConfig) -> Result<GatewayConfig, String> {
     // consumed by SharedState::compile_routes in Task 4
     let mut seen = std::collections::HashSet::new();
@@ -76,7 +74,6 @@ pub fn resolve_plugin_configs(gw: &GatewayConfig) -> Result<GatewayConfig, Strin
 
 /// Materializes `config_ref` on each node in place: shared config first, then
 /// the node's own keys written over it (local wins), ref cleared.
-#[allow(dead_code)]
 fn resolve_nodes(
     nodes: &mut [NodeConfig],
     by_name: &HashMap<&str, &PluginConfigDef>,
