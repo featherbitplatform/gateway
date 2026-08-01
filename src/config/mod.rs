@@ -15,7 +15,8 @@ pub use loader::{interpolate_env_json, load_yaml_with_env};
 // consumed only by `#[cfg(test)]` code read as unused in the bin build.
 #[allow(unused_imports)]
 pub use gateway::{
-    EdgeConfig, GatewayConfig, MatchRule, NodeConfig, PolicyConfig, RouteConfig, SupernodeConfig,
+    EdgeConfig, GatewayConfig, MatchRule, NodeConfig, PolicyConfig, Position, RouteConfig,
+    SupernodeConfig,
 };
 #[allow(unused_imports)]
 pub use system::{
