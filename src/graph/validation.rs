@@ -10,13 +10,16 @@ use crate::config::{PolicyConfig, SupernodeConfig};
 /// Validates a policy's node graph structure, collecting all violations.
 ///
 /// Enforced rules:
+/// - no two nodes share an id;
 /// - the policy has a `listener` node (entry) and a `client` node (exit);
 /// - every edge endpoint references an existing node;
 /// - each input port has at most one incoming edge, except inputs of
 ///   `client` and `error-handler` nodes, which accept multiple;
 /// - no orphan nodes (a node with neither incoming nor outgoing edges;
 ///   being named as the policy-level `error_handler` counts as connected);
-/// - `error_handler`, if set, references an existing node.
+/// - `error_handler`, if set, references an existing node that is not a
+///   `type: supernode` instance (expansion removes instance nodes, so a
+///   catch-all pointed at one would dangle at request time).
 ///
 /// Returns `Ok(())` when valid, otherwise `Err` with one message per
 /// violation (validation does not stop at the first error).
@@ -24,6 +27,15 @@ pub fn validate_policy(policy: &PolicyConfig) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
 
     let node_ids: HashSet<&str> = policy.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    // Duplicate node ids collapse silently in compile — with supernodes they
+    // would silently drop an expansion — so reject each duplicate up front.
+    let mut seen_ids: HashSet<&str> = HashSet::new();
+    for node in &policy.nodes {
+        if !seen_ids.insert(node.id.as_str()) {
+            errors.push(format!("Duplicate node id '{}'", node.id));
+        }
+    }
 
     // Must have a listener node
     let has_listener = policy.nodes.iter().any(|n| n.node_type == "listener");
@@ -132,6 +144,13 @@ pub fn validate_policy(policy: &PolicyConfig) -> Result<(), Vec<String>> {
                 "Policy error_handler references unknown node: '{}'",
                 handler
             ));
+        } else if let Some(node) = policy.nodes.iter().find(|n| n.id == *handler) {
+            if node.node_type == "supernode" {
+                errors.push(format!(
+                    "Policy error_handler cannot reference supernode instance '{}' — point it at a concrete node",
+                    handler
+                ));
+            }
         }
     }
 
@@ -156,7 +175,6 @@ pub fn validate_policy(policy: &PolicyConfig) -> Result<(), Vec<String>> {
 ///   and `error-handler`-typed inner nodes (fan-in allowed);
 /// - no orphan inner nodes (unconnected `output`/`error` boundaries are
 ///   fine — not every subgraph uses both exits).
-#[allow(dead_code)]
 pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
 
@@ -633,6 +651,75 @@ mod tests {
         let errors = validate_policy(&policy2).unwrap_err();
         assert!(
             errors.iter().any(|e| e.contains("reserved for supernode")),
+            "{errors:?}"
+        );
+    }
+
+    /// I-1: a policy whose `error_handler` names a `type: supernode`
+    /// instance passes structural checks against the un-expanded node list
+    /// but dangles after expansion (the instance node is removed). Must be
+    /// rejected at validate_policy time, before expansion ever runs.
+    #[test]
+    fn test_error_handler_rejects_supernode_instance() {
+        let mut sn_instance = inner("sec", "supernode");
+        sn_instance
+            .config
+            .insert("name".to_string(), serde_json::json!("secured-call"));
+
+        let policy = PolicyConfig {
+            name: "test".to_string(),
+            error_handler: Some("sec".to_string()),
+            nodes: vec![listener_node(), sn_instance, client_node()],
+            edges: vec![
+                EdgeConfig {
+                    from: "listener.out".to_string(),
+                    to: "sec.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "sec.success".to_string(),
+                    to: "client.in".to_string(),
+                },
+            ],
+        };
+        let errors = validate_policy(&policy).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("error_handler") && e.contains("sec")),
+            "{errors:?}"
+        );
+    }
+
+    /// FINDING D: two nodes sharing an id collapse silently in compile —
+    /// with supernodes this would silently drop an expansion — so
+    /// validate_policy must reject every duplicate.
+    #[test]
+    fn test_duplicate_node_ids_rejected() {
+        let policy = PolicyConfig {
+            name: "test".to_string(),
+            error_handler: None,
+            nodes: vec![
+                listener_node(),
+                upstream_node(),
+                upstream_node(),
+                client_node(),
+            ],
+            edges: vec![
+                EdgeConfig {
+                    from: "listener.out".to_string(),
+                    to: "backend.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "backend.success".to_string(),
+                    to: "client.in".to_string(),
+                },
+            ],
+        };
+        let errors = validate_policy(&policy).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Duplicate node id 'backend'")),
             "{errors:?}"
         );
     }
