@@ -9,6 +9,7 @@
 import type {
   Route,
   Policy,
+  Supernode,
   PluginType,
   ScriptFile,
   GatewayStatus,
@@ -115,6 +116,18 @@ export const api = {
   /** `DELETE /api/policies/{name}` — removes the named policy; returns the API's JSON acknowledgement. */
   deletePolicy: (name: string) =>
     request(`/api/policies/${name}`, { method: 'DELETE' }),
+
+  // Supernodes
+  /** `GET /api/supernodes` — returns all supernode definitions. */
+  listSupernodes: () => request<Supernode[]>('/api/supernodes'),
+  /** `GET /api/supernodes/{name}` — returns the named definition. */
+  getSupernode: (name: string) => request<Supernode>(`/api/supernodes/${name}`),
+  /** `PUT /api/supernodes/{name}` — upserts the named definition (also used to create). */
+  updateSupernode: (name: string, sn: Supernode) =>
+    request(`/api/supernodes/${name}`, { method: 'PUT', body: JSON.stringify(sn) }),
+  /** `DELETE /api/supernodes/{name}` — removes the definition; 400 while referenced. */
+  deleteSupernode: (name: string) =>
+    request(`/api/supernodes/${name}`, { method: 'DELETE' }),
 
   // Plugins
   /** `GET /api/plugins` — returns the catalog of available plugin types, unwrapped from `{ plugins: [...] }`. */
