@@ -134,7 +134,8 @@ export function NodeInspector({ node, onUpdateConfig, onDeleteNode, onClose }: N
   const data = node.data as unknown as PluginNodeData;
   const meta = getPluginMeta(data.pluginType);
   const schema = getPluginConfigSchema(data.pluginType);
-  const isFixed = data.pluginType === 'listener' || data.pluginType === 'client';
+  const isFixed = ['listener', 'client', 'input', 'output', 'error'].includes(data.pluginType);
+  const isSupernode = data.pluginType === 'supernode';
 
   return (
     <div
@@ -214,6 +215,26 @@ export function NodeInspector({ node, onUpdateConfig, onDeleteNode, onClose }: N
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', margin: 0 }}>
             This node takes no configuration.
           </p>
+        ) : isSupernode ? (
+          <div>
+            <label style={labelStyle}>Supernode</label>
+            <div
+              style={{
+                padding: '6px 10px',
+                borderRadius: 'var(--radius-sm)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--text-sm)',
+                background: 'var(--surface-input)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              {String(data.config?.name ?? '')}
+            </div>
+            <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 6 }}>
+              Reusable subgraph — edit its definition from the Supernodes section in the sidebar.
+            </p>
+          </div>
         ) : schema.length > 0 ? (
           <SchemaForm
             schema={schema}

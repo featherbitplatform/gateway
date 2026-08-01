@@ -248,6 +248,15 @@ async fn run_sandbox(
     if let Err(errors) = validate_policy(&policy) {
         return bad_request(errors.join("; "));
     }
+
+    // Inline supernode references the same way compile_routes does — the
+    // sandbox must never diverge from what the data plane executes.
+    let supernodes = { state.gateway.read().await.supernodes.clone() };
+    let policy = match crate::graph::expand_policy(&policy, &supernodes) {
+        Ok(p) => p,
+        Err(e) => return bad_request(e),
+    };
+
     let graph = match compile_policy(&policy, state.resources.clone()) {
         Ok(g) => g,
         Err(e) => return bad_request(e),
@@ -577,6 +586,73 @@ mod tests {
                 .into_response()
                 .status(),
             StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// A sandbox run of a policy that uses a supernode must expand it the
+    /// same way the data plane does — namespaced inner steps in the trace.
+    #[tokio::test]
+    async fn test_sandbox_expands_supernodes() {
+        let system = SystemConfig {
+            debug: DebugConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            ..serde_yaml::from_str::<SystemConfig>("{}").unwrap()
+        };
+        let gateway: GatewayConfig = serde_yaml::from_str(
+            r#"
+supernodes:
+  - name: secured-call
+    nodes:
+      - { id: input,  type: input }
+      - { id: output, type: output }
+      - { id: error,  type: error }
+      - { id: c, type: cors }
+    edges:
+      - { from: input.out, to: c.in }
+      - { from: c.success, to: output.in }
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: sec, type: supernode, config: { name: secured-call } }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: sec.in }
+      - { from: sec.success, to: client.in }
+"#,
+        )
+        .unwrap();
+        let s = Arc::new(
+            SharedState::new(
+                system,
+                gateway,
+                None,
+                Arc::new(FileConfigStore::new(std::path::PathBuf::from(
+                    "gateway.yaml",
+                ))),
+            )
+            .unwrap(),
+        );
+
+        let req = SandboxRequest {
+            policy: Some("p".to_string()),
+            ..Default::default()
+        };
+        let resp = run_sandbox(State(s), Json(req)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let steps = v["trace"]["steps"].as_array().unwrap();
+        assert!(
+            steps
+                .iter()
+                .any(|s| s["node_id"].as_str().unwrap_or("").starts_with("sec/")),
+            "expected a namespaced sec/* step, got: {v}"
         );
     }
 }

@@ -12,7 +12,7 @@ import { Dialog, DialogButton, DialogField } from './components/Dialog';
 import { DebugPanel } from './components/DebugPanel';
 import { Toast, type ToastData } from './components/Toast';
 import { api } from './api/client';
-import type { Route, Policy, PluginType, ScriptFile, DebugConfig } from './types';
+import type { Route, Policy, Supernode, PluginType, ScriptFile, DebugConfig } from './types';
 
 /**
  * Top-level application component and single owner of server state.
@@ -41,9 +41,11 @@ import type { Route, Policy, PluginType, ScriptFile, DebugConfig } from './types
 export default function App() {
   const [routes, setRoutes] = useState<Route[]>([]);
   const [policies, setPolicies] = useState<Policy[]>([]);
+  const [supernodes, setSupernodes] = useState<Supernode[]>([]);
   const [plugins, setPlugins] = useState<PluginType[]>([]);
   const [scripts, setScripts] = useState<ScriptFile[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
+  const [selectedSupernode, setSelectedSupernode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastData | null>(null);
 
@@ -55,6 +57,13 @@ export default function App() {
   // Delete-route confirmation state
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
+  // Create-supernode dialog state
+  const [createSupernodeOpen, setCreateSupernodeOpen] = useState(false);
+  const [newSupernodeName, setNewSupernodeName] = useState('');
+
+  // Delete-supernode confirmation state
+  const [deleteSupernodeTarget, setDeleteSupernodeTarget] = useState<string | null>(null);
+
   // View-YAML dialog state: null when closed, the exported YAML string when open.
   const [yamlView, setYamlView] = useState<string | null>(null);
 
@@ -65,14 +74,16 @@ export default function App() {
 
   const loadData = useCallback(async () => {
     try {
-      const [r, p, pl, sc] = await Promise.all([
+      const [r, p, sn, pl, sc] = await Promise.all([
         api.listRoutes(),
         api.listPolicies(),
+        api.listSupernodes(),
         api.listPlugins(),
         api.listScripts(),
       ]);
       setRoutes(r);
       setPolicies(p);
+      setSupernodes(sn);
       setPlugins(pl);
       setScripts(sc);
       setError(null);
@@ -100,6 +111,25 @@ export default function App() {
     if (!route) return null;
     return policies.find((p) => p.name === route.policy) || null;
   })();
+
+  const selectedSupernodeDef = supernodes.find((s) => s.name === selectedSupernode) || null;
+  // A supernode is edited through the same canvas contract as a policy.
+  const canvasPolicy: Policy | null = selectedSupernodeDef
+    ? { name: selectedSupernodeDef.name, nodes: selectedSupernodeDef.nodes, edges: selectedSupernodeDef.edges }
+    : selectedPolicy;
+
+  // Selection is mutually exclusive between the routes list and the
+  // supernodes list: picking one clears the other so the canvas always
+  // reflects a single, unambiguous selection.
+  const handleSelectRoute = (name: string) => {
+    setSelectedSupernode(null);
+    setSelectedRoute(name);
+  };
+
+  const handleSelectSupernode = (name: string) => {
+    setSelectedRoute(null);
+    setSelectedSupernode(name);
+  };
 
   const handleCreateRoute = () => {
     setNewName('');
@@ -150,6 +180,53 @@ export default function App() {
       setToast({ tone: 'success', title: 'Route deleted', message: name });
     } catch (e) {
       setToast({ tone: 'error', title: 'Failed to delete route', message: `${e}` });
+    }
+  };
+
+  const handleCreateSupernode = () => {
+    setNewSupernodeName('');
+    setCreateSupernodeOpen(true);
+  };
+
+  const submitCreateSupernode = async () => {
+    const name = newSupernodeName.trim();
+    if (!name) return;
+    setCreateSupernodeOpen(false);
+
+    try {
+      // Seed a minimal pass-through definition: input -> output directly,
+      // with an unwired error boundary node. This validates and compiles
+      // fine as-is (expansion supports the pass-through input.out ->
+      // output.in form) — it is a deliberately minimal starting point, not
+      // something to "fill in" further here.
+      await api.updateSupernode(name, {
+        name,
+        nodes: [
+          { id: 'input', type: 'input', config: {}, position: { x: 0, y: 150 } },
+          { id: 'output', type: 'output', config: {}, position: { x: 500, y: 150 } },
+          { id: 'error', type: 'error', config: {}, position: { x: 500, y: 330 } },
+        ],
+        edges: [{ from: 'input.out', to: 'output.in' }],
+      });
+      await loadData();
+      handleSelectSupernode(name);
+      setToast({ tone: 'success', title: 'Supernode created', message: name });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to create supernode', message: `${e}` });
+    }
+  };
+
+  const submitDeleteSupernode = async () => {
+    const name = deleteSupernodeTarget;
+    setDeleteSupernodeTarget(null);
+    if (!name) return;
+    try {
+      await api.deleteSupernode(name);
+      await loadData();
+      if (selectedSupernode === name) setSelectedSupernode(null);
+      setToast({ tone: 'success', title: 'Supernode deleted', message: name });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to delete supernode', message: `${e}` });
     }
   };
 
@@ -205,6 +282,25 @@ export default function App() {
     } catch (e) {
       setToast({ tone: 'error', title: 'Failed to save policy', message: `${e}` });
     }
+  };
+
+  const handleSaveGraph = async (graph: Policy) => {
+    if (selectedSupernodeDef) {
+      try {
+        await api.updateSupernode(graph.name, {
+          name: graph.name,
+          description: selectedSupernodeDef.description,
+          nodes: graph.nodes,
+          edges: graph.edges,
+        });
+        await loadData();
+        setToast({ tone: 'success', title: 'Supernode saved', message: graph.name });
+      } catch (e) {
+        setToast({ tone: 'error', title: 'Failed to save supernode', message: `${e}` });
+      }
+      return;
+    }
+    await handleSavePolicy(graph);
   };
 
   if (error) {
@@ -265,22 +361,30 @@ export default function App() {
       <Sidebar
         routes={routes}
         selectedRoute={selectedRoute}
-        onSelectRoute={setSelectedRoute}
+        onSelectRoute={handleSelectRoute}
         onCreateRoute={handleCreateRoute}
         onDeleteRoute={(name) => setDeleteTarget(name)}
+        supernodes={supernodes}
+        selectedSupernode={selectedSupernode}
+        onSelectSupernode={handleSelectSupernode}
+        onCreateSupernode={handleCreateSupernode}
+        onDeleteSupernode={(name) => setDeleteSupernodeTarget(name)}
         onReload={handleReload}
         onViewYaml={handleViewYaml}
         onOpenDebug={() => setDebugOpen(true)}
         debugEnabled={debugConfig?.enabled ?? false}
       />
-      {/* Keyed by policy name: switching policies remounts the canvas so
-          nodes/edges/selection re-sync from the prop (see GraphCanvas docs). */}
+      {/* Keyed by policy/supernode name: switching the selection remounts
+          the canvas so nodes/edges/selection re-sync from the prop (see
+          GraphCanvas docs). */}
       <GraphCanvas
-        key={selectedPolicy?.name ?? ''}
-        policy={selectedPolicy}
+        key={canvasPolicy?.name ?? ''}
+        policy={canvasPolicy}
         plugins={plugins}
         scripts={scripts}
-        onSavePolicy={handleSavePolicy}
+        onSavePolicy={handleSaveGraph}
+        kind={selectedSupernodeDef ? 'supernode' : 'policy'}
+        supernodes={supernodes}
       />
 
       <Dialog
@@ -318,6 +422,49 @@ export default function App() {
         <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: 0 }}>
           Delete route <code style={{ color: 'var(--text-primary)' }}>{deleteTarget}</code>? Its
           policy is kept and can be reattached.
+        </p>
+      </Dialog>
+
+      <Dialog
+        open={createSupernodeOpen}
+        title="New supernode"
+        onClose={() => setCreateSupernodeOpen(false)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setCreateSupernodeOpen(false)}>
+              Cancel
+            </DialogButton>
+            <DialogButton onClick={submitCreateSupernode}>Create supernode</DialogButton>
+          </>
+        }
+      >
+        <DialogField
+          label="Supernode name"
+          value={newSupernodeName}
+          onChange={setNewSupernodeName}
+          placeholder="rate-limit-bundle"
+          autoFocus
+        />
+      </Dialog>
+
+      <Dialog
+        open={deleteSupernodeTarget !== null}
+        title="Delete supernode"
+        onClose={() => setDeleteSupernodeTarget(null)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setDeleteSupernodeTarget(null)}>
+              Cancel
+            </DialogButton>
+            <DialogButton variant="danger" onClick={submitDeleteSupernode}>
+              Delete
+            </DialogButton>
+          </>
+        }
+      >
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: 0 }}>
+          Delete supernode <code style={{ color: 'var(--text-primary)' }}>{deleteSupernodeTarget}</code>?
+          Deletion fails while any policy still references it.
         </p>
       </Dialog>
 
