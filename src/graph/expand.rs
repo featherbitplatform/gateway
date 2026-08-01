@@ -66,6 +66,9 @@ pub fn expand_policy(
         boundary_map: HashMap<String, String>,
         /// Prefixed entry endpoint, e.g. `sec/auth.in`, or None for pass-through boundaries.
         entry: Option<String>,
+        /// For pass-through instances: which boundary type the entry resolves to ("output" or "error").
+        /// None if not a pass-through.
+        pass_through_type: Option<String>,
         /// `to` endpoint of the outer `inst.success`/`inst.out` edge.
         success_to: Option<String>,
         /// `to` endpoint of the outer `inst.error` edge.
@@ -107,19 +110,32 @@ pub fn expand_policy(
             }
         }
 
+        // Find the input boundary node (by type, not literal id).
+        let input_node_id = boundary_map
+            .iter()
+            .find(|(_, ty)| ty.as_str() == "input")
+            .map(|(id, _)| id.as_str())
+            .ok_or_else(|| format!("supernode '{}' has no input boundary node", def.name))?;
+
         // Find the target of input.out edge.
         let entry_edge = def
             .edges
             .iter()
-            .find(|e| split_endpoint(&e.from).0 == "input")
-            .ok_or_else(|| format!("supernode '{}' has no edge from input.out", def.name))?;
+            .find(|e| split_endpoint(&e.from).0 == input_node_id)
+            .ok_or_else(|| {
+                format!(
+                    "supernode '{}' has no edge from input node '{}'",
+                    def.name, input_node_id
+                )
+            })?;
         let (entry_target, _) = split_endpoint(&entry_edge.to);
 
-        // Check if entry target is a boundary (pass-through case).
-        let entry = if boundary_map.contains_key(entry_target) {
-            None
+        // Check if entry target is a boundary (pass-through case) and track which type.
+        let (entry, pass_through_type) = if let Some(boundary_type) = boundary_map.get(entry_target)
+        {
+            (None, Some(boundary_type.clone()))
         } else {
-            Some(format!("{}/{}.in", inst.id, entry_target))
+            (Some(format!("{}/{}.in", inst.id, entry_target)), None)
         };
 
         let mut success_to = None;
@@ -145,6 +161,7 @@ pub fn expand_policy(
                 def,
                 boundary_map,
                 entry,
+                pass_through_type,
                 success_to,
                 error_to,
             },
@@ -152,15 +169,21 @@ pub fn expand_policy(
     }
 
     // Detect pass-through cycles: if pass-through instance A points to pass-through
-    // instance B which points back to A, reject the cycle.
+    // instance B which points back to A, reject the cycle. Follow the appropriate target
+    // (success_to for output pass-through, error_to for error pass-through).
     for inst_id in splices.keys() {
         let mut path = vec![*inst_id];
         let mut curr = *inst_id;
         while let Some(s) = splices.get(curr) {
-            if s.entry.is_none() {
-                // This is a pass-through; check where it leads.
-                if let Some(target_endpoint) = &s.success_to {
-                    let (target_node, _) = split_endpoint(target_endpoint);
+            if let Some(pass_type) = &s.pass_through_type {
+                // This is a pass-through; check where it leads based on boundary type.
+                let target_endpoint = match pass_type.as_str() {
+                    "output" => &s.success_to,
+                    "error" => &s.error_to,
+                    _ => &None,
+                };
+                if let Some(endpoint) = target_endpoint {
+                    let (target_node, _) = split_endpoint(endpoint);
                     if splices.contains_key(target_node) {
                         if path.contains(&target_node) {
                             let cycle_str = path
@@ -213,12 +236,19 @@ pub fn expand_policy(
                         to: entry.clone(),
                     });
                 } else {
-                    // Pass-through: redirect to success target or drop.
-                    if let Some(t) = &s.success_to {
-                        edges.push(EdgeConfig {
-                            from: e.from.clone(),
-                            to: t.clone(),
-                        });
+                    // Pass-through: redirect to appropriate target based on boundary type.
+                    if let Some(pass_type) = &s.pass_through_type {
+                        let target = match pass_type.as_str() {
+                            "output" => &s.success_to,
+                            "error" => &s.error_to,
+                            _ => &None,
+                        };
+                        if let Some(t) = target {
+                            edges.push(EdgeConfig {
+                                from: e.from.clone(),
+                                to: t.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -228,7 +258,7 @@ pub fn expand_policy(
 
     for inst in &instances {
         let s = &splices[inst.id.as_str()];
-        if s.entry.is_none() {
+        if s.pass_through_type.is_some() {
             // Pass-through supernode: skip inner edge processing; they're handled above.
             continue;
         }
@@ -241,13 +271,19 @@ pub fn expand_policy(
             if let Some(target_splice) = splices.get(target_node) {
                 if let Some(entry) = &target_splice.entry {
                     entry.clone()
-                } else {
-                    // Target is pass-through; use its success_to.
-                    target_splice
-                        .success_to
+                } else if let Some(pass_type) = &target_splice.pass_through_type {
+                    // Target is pass-through; use the appropriate target based on boundary type.
+                    let target_endpoint = match pass_type.as_str() {
+                        "output" => &target_splice.success_to,
+                        "error" => &target_splice.error_to,
+                        _ => &None,
+                    };
+                    target_endpoint
                         .as_ref()
                         .map(|t| t.to_string())
                         .unwrap_or_else(|| target.to_string())
+                } else {
+                    target.to_string()
                 }
             } else {
                 target.to_string()
@@ -705,5 +741,118 @@ mod tests {
             err.contains("nested") && err.contains("nesting not supported"),
             "got: {err}"
         );
+    }
+
+    /// Error-boundary pass-through: input.out -> error.in (F3 fix).
+    fn error_pass_through() -> SupernodeConfig {
+        SupernodeConfig {
+            name: "error-passthrough".into(),
+            description: None,
+            nodes: vec![
+                node("input", "input"),
+                node("output", "output"),
+                node("error", "error"),
+            ],
+            edges: vec![edge("input.out", "error.in")],
+        }
+    }
+
+    #[test]
+    fn test_error_boundary_pass_through_with_wired_outer_error() {
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("err_pass", "error-passthrough"),
+                node("eh", "error-handler"),
+            ],
+            edges: vec![
+                edge("listener.out", "err_pass.in"),
+                edge("err_pass.error", "eh.in"),
+            ],
+        };
+        let out = expand_policy(&p, &[error_pass_through()]).unwrap();
+        // Instance node must be removed; no inner nodes inlined.
+        assert!(!out.nodes.iter().any(|n| n.id.contains("err_pass")));
+        // Outer in-edge must be redirected to error target.
+        assert!(
+            out.edges
+                .iter()
+                .any(|e| e.from == "listener.out" && e.to == "eh.in"),
+            "edges: {:?}",
+            out.edges
+                .iter()
+                .map(|e| format!("{}->{}", e.from, e.to))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_error_boundary_pass_through_with_unwired_outer_error() {
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("err_pass", "error-passthrough"),
+                node("client", "client"),
+            ],
+            edges: vec![
+                edge("listener.out", "err_pass.in"),
+                edge("err_pass.success", "client.in"), // Only success wired, not error
+            ],
+        };
+        let out = expand_policy(&p, &[error_pass_through()]).unwrap();
+        // Outer in-edge is dropped because error target is unwired.
+        assert!(!out.edges.iter().any(|e| e.from == "listener.out"));
+    }
+
+    /// Mismatched-id input boundary: {id: in1, type: input} (F4 fix).
+    fn mismatched_input_id() -> SupernodeConfig {
+        SupernodeConfig {
+            name: "custom-input".into(),
+            description: None,
+            nodes: vec![
+                node("in1", "input"), // id != type
+                node("output", "output"),
+                node("error", "error"),
+                node("process", "upstream"),
+            ],
+            edges: vec![
+                edge("in1.out", "process.in"),
+                edge("process.success", "output.in"),
+            ],
+        }
+    }
+
+    #[test]
+    fn test_mismatched_id_input_boundary_expands_correctly() {
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("custom", "custom-input"),
+                node("client", "client"),
+            ],
+            edges: vec![
+                edge("listener.out", "custom.in"),
+                edge("custom.success", "client.in"),
+            ],
+        };
+        let out = expand_policy(&p, &[mismatched_input_id()]).unwrap();
+        // Inlining must work: process node should be present.
+        let ids: HashSet<&str> = out.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(ids.contains("custom/process"), "process node not inlined");
+        assert!(
+            !ids.contains("custom/in1"),
+            "input boundary should not be inlined"
+        );
+        // Edge from process.success must splice to client.in.
+        assert!(out
+            .edges
+            .iter()
+            .any(|e| e.from == "custom/process.success" && e.to == "client.in"));
     }
 }
