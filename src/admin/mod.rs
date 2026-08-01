@@ -12,6 +12,7 @@ mod debug;
 mod policies;
 mod routes;
 mod status;
+mod supernodes;
 #[cfg(feature = "ui")]
 mod ui;
 
@@ -137,6 +138,7 @@ fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
         // API routes (with auth)
         .merge(routes::router())
         .merge(policies::router())
+        .merge(supernodes::router())
         .merge(consumers::router())
         .merge(status::router())
         .merge(debug::router())
