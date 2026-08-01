@@ -289,6 +289,7 @@ pub fn synthesize_policy(
         id: "listener".to_string(),
         node_type: "listener".to_string(),
         config: HashMap::new(),
+        config_ref: None,
         position: None,
     });
     all.extend(user_nodes);
@@ -296,6 +297,7 @@ pub fn synthesize_policy(
         id: "client".to_string(),
         node_type: "client".to_string(),
         config: HashMap::new(),
+        config_ref: None,
         position: None,
     });
 
@@ -316,6 +318,7 @@ mod tests {
             id: id.to_string(),
             node_type: node_type.to_string(),
             config: HashMap::new(),
+            config_ref: None,
             position: None,
         }
     }

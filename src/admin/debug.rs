@@ -576,6 +576,7 @@ mod tests {
                 id: "x".to_string(),
                 node_type: "no-such-plugin".to_string(),
                 config: Default::default(),
+                config_ref: None,
                 position: None,
             }]),
             ..Default::default()
