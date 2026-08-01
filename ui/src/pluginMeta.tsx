@@ -176,6 +176,11 @@ export const pluginMeta: Record<string, PluginMeta> = {
   'azure-functions':    { color: '#0062ad', icon: Cloud },
   openwhisk:            { color: '#3c873a', icon: Zap },
   openfunction:         { color: '#00b4a0', icon: Boxes },
+  // Supernodes and their boundary pseudo-nodes (src/graph/expand.rs)
+  supernode:            { color: '#8b5cf6', icon: Boxes },
+  input:                { color: '#64748b', icon: LogIn },
+  output:               { color: '#64748b', icon: LogOut },
+  error:                { color: '#b91c1c', icon: TriangleAlert },
 };
 
 /**
