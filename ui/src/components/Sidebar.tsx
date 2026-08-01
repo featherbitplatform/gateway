@@ -7,7 +7,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Plus, RotateCw, X, FileCode, Bug } from 'lucide-react';
-import type { Route, GatewayStatus } from '../types';
+import type { Route, Supernode, GatewayStatus } from '../types';
 import { api } from '../api/client';
 
 /** Props for Sidebar. Route data and mutations are owned by the parent (App). */
@@ -22,6 +22,16 @@ interface SidebarProps {
   onCreateRoute: () => void;
   /** Called with the route's name when its hover-revealed delete button is clicked. */
   onDeleteRoute: (name: string) => void;
+  /** Supernode library to list, as fetched from the admin API's GET /api/supernodes. */
+  supernodes: Supernode[];
+  /** Name of the currently selected supernode, or null when none is selected. */
+  selectedSupernode: string | null;
+  /** Called with a supernode's name when its row is clicked. */
+  onSelectSupernode: (name: string) => void;
+  /** Called when the supernodes "New" button is clicked; the parent opens the create-supernode dialog. */
+  onCreateSupernode: () => void;
+  /** Called with the supernode's name when its hover-revealed delete button is clicked. */
+  onDeleteSupernode: (name: string) => void;
   /** Called when "Reload Config" is clicked; the parent triggers POST /api/config/reload. */
   onReload: () => void;
   /** Called when "View YAML" is clicked; the parent fetches GET /api/config/export and shows it. */
@@ -50,6 +60,11 @@ export function Sidebar({
   onSelectRoute,
   onCreateRoute,
   onDeleteRoute,
+  supernodes,
+  selectedSupernode,
+  onSelectSupernode,
+  onCreateSupernode,
+  onDeleteSupernode,
   onReload,
   onViewYaml,
   onOpenDebug,
@@ -118,6 +133,7 @@ export function Sidebar({
           <span className="eyebrow">Routes</span>
           <button
             onClick={onCreateRoute}
+            aria-label="New route"
             className="flex items-center gap-1 transition-colors"
             style={{
               fontSize: 'var(--text-xs)',
@@ -185,6 +201,88 @@ export function Sidebar({
                 className="opacity-0 group-hover:opacity-100 flex items-center justify-center rounded transition-all"
                 style={{ width: 22, height: 22, color: 'var(--error)' }}
                 aria-label={`Delete route ${route.name}`}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Supernodes */}
+      <div className="shrink-0" style={{ borderTop: '1px solid var(--border)', maxHeight: 260, overflowY: 'auto' }}>
+        <div className="p-3 flex items-center justify-between">
+          <span className="eyebrow">Supernodes</span>
+          <button
+            onClick={onCreateSupernode}
+            aria-label="New supernode"
+            className="flex items-center gap-1 transition-colors"
+            style={{
+              fontSize: 'var(--text-xs)',
+              fontWeight: 'var(--weight-medium)' as never,
+              padding: '3px 8px',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--accent)',
+              color: 'var(--text-on-accent)',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-hover)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--accent)')}
+          >
+            <Plus size={12} />
+            New
+          </button>
+        </div>
+        {supernodes.map((supernode) => {
+          const isSelected = selectedSupernode === supernode.name;
+          return (
+            <div
+              key={supernode.name}
+              onClick={() => onSelectSupernode(supernode.name)}
+              className="mx-2 mb-1 cursor-pointer flex items-center justify-between group"
+              style={{
+                padding: '8px 10px',
+                borderRadius: 'var(--radius-sm)',
+                background: isSelected ? 'var(--surface-active)' : 'transparent',
+                boxShadow: isSelected ? 'inset 0 0 0 1px var(--accent-ring)' : 'none',
+                transition: 'background var(--dur-fast) var(--ease-out)',
+              }}
+              onMouseEnter={(e) => {
+                if (!isSelected) e.currentTarget.style.background = 'var(--surface-hover)';
+              }}
+              onMouseLeave={(e) => {
+                if (!isSelected) e.currentTarget.style.background = 'transparent';
+              }}
+            >
+              <div className="flex flex-col min-w-0">
+                <span
+                  className="truncate"
+                  style={{
+                    fontSize: 'var(--text-sm)',
+                    fontWeight: 'var(--weight-medium)' as never,
+                    color: 'var(--text-primary)',
+                  }}
+                >
+                  {supernode.name}
+                </span>
+                <span
+                  className="truncate"
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-xs)',
+                    color: 'var(--text-muted)',
+                  }}
+                >
+                  {supernode.description || `${supernode.nodes.length} nodes`}
+                </span>
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteSupernode(supernode.name);
+                }}
+                className="opacity-0 group-hover:opacity-100 flex items-center justify-center rounded transition-all"
+                style={{ width: 22, height: 22, color: 'var(--error)' }}
+                aria-label={`Delete supernode ${supernode.name}`}
               >
                 <X size={13} />
               </button>

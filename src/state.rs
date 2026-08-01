@@ -8,7 +8,9 @@ use tokio::sync::RwLock;
 use crate::config::{GatewayConfig, RouteConfig, SystemConfig};
 use crate::config_store::ConfigStore;
 use crate::debug::DebugState;
-use crate::graph::{compile_policy, validate_policy, CompiledGraph};
+use crate::graph::{
+    compile_policy, expand_policy, validate_policy, validate_supernode, CompiledGraph,
+};
 use crate::metrics::GatewayMetrics;
 use crate::plugins::resources::PluginResources;
 
@@ -155,12 +157,26 @@ impl SharedState {
         gateway: &GatewayConfig,
         resources: &Arc<PluginResources>,
     ) -> Result<Vec<(RouteConfig, Arc<CompiledGraph>)>, String> {
+        // Supernode definitions are validated first: policies expand against
+        // them, so a broken definition must fail before any policy does.
+        let mut seen = std::collections::HashSet::new();
+        for sn in &gateway.supernodes {
+            if !seen.insert(sn.name.as_str()) {
+                return Err(format!("Duplicate supernode name '{}'", sn.name));
+            }
+            if let Err(errors) = validate_supernode(sn) {
+                return Err(format!("Invalid supernode '{}': {:?}", sn.name, errors));
+            }
+        }
+
         let mut policy_map = std::collections::HashMap::new();
         for policy in &gateway.policies {
             if let Err(errors) = validate_policy(policy) {
                 return Err(format!("Invalid policy '{}': {:?}", policy.name, errors));
             }
-            let compiled = compile_policy(policy, resources.clone())?;
+            // Inline supernode instances; the engine never sees them.
+            let expanded = expand_policy(policy, &gateway.supernodes)?;
+            let compiled = compile_policy(&expanded, resources.clone())?;
             policy_map.insert(policy.name.clone(), Arc::new(compiled));
         }
 
@@ -176,5 +192,127 @@ impl SharedState {
             routes.push((route.clone(), graph));
         }
         Ok(routes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_from_yaml(gateway_yaml: &str) -> Result<(), String> {
+        let system: crate::config::SystemConfig = serde_yaml::from_str("{}").unwrap();
+        let gw: crate::config::GatewayConfig = serde_yaml::from_str(gateway_yaml).unwrap();
+        let state = SharedState::new(
+            system,
+            serde_yaml::from_str("{}").unwrap(),
+            None,
+            std::sync::Arc::new(crate::config_store::FileConfigStore::new(
+                std::path::PathBuf::from("gateway.yaml"),
+            )),
+        )
+        .unwrap();
+        state.validate_gateway(&gw)
+    }
+
+    const SUPERNODE_GATEWAY: &str = r#"
+supernodes:
+  - name: secured-call
+    nodes:
+      - { id: input,  type: input }
+      - { id: output, type: output }
+      - { id: error,  type: error }
+      - { id: up, type: upstream, config: { targets: [{ host: "127.0.0.1", port: 9 }] } }
+    edges:
+      - { from: input.out,  to: up.in }
+      - { from: up.success, to: output.in }
+routes:
+  - name: r
+    match: { path: "/*" }
+    policy: p
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: sec, type: supernode, config: { name: secured-call } }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: sec.in }
+      - { from: sec.success, to: client.in }
+"#;
+
+    #[test]
+    fn test_policy_with_supernode_compiles() {
+        assert_eq!(state_from_yaml(SUPERNODE_GATEWAY), Ok(()));
+    }
+
+    #[test]
+    fn test_unknown_supernode_reference_rejected() {
+        let yaml = SUPERNODE_GATEWAY.replace("name: secured-call } }", "name: nope } }");
+        let err = state_from_yaml(&yaml).unwrap_err();
+        assert!(err.contains("unknown supernode"), "{err}");
+    }
+
+    #[test]
+    fn test_invalid_supernode_definition_rejected() {
+        // Missing the input boundary node -> validate_supernode must fail.
+        let yaml = r#"
+supernodes:
+  - name: secured-call
+    nodes:
+      - { id: output, type: output }
+      - { id: error,  type: error }
+      - { id: up, type: upstream, config: { targets: [{ host: "127.0.0.1", port: 9 }] } }
+    edges:
+      - { from: up.success, to: output.in }
+routes:
+  - name: r
+    match: { path: "/*" }
+    policy: p
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: sec, type: supernode, config: { name: secured-call } }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: sec.in }
+      - { from: sec.success, to: client.in }
+"#;
+        let err = state_from_yaml(yaml).unwrap_err();
+        assert!(err.contains("Invalid supernode"), "{err}");
+    }
+
+    #[test]
+    fn test_duplicate_supernode_names_rejected() {
+        let yaml = r#"
+supernodes:
+  - name: secured-call
+    nodes:
+      - { id: input,  type: input }
+      - { id: output, type: output }
+      - { id: error,  type: error }
+      - { id: up, type: upstream, config: { targets: [{ host: "127.0.0.1", port: 9 }] } }
+    edges:
+      - { from: input.out,  to: up.in }
+      - { from: up.success, to: output.in }
+  - name: secured-call
+    nodes: []
+    edges: []
+routes:
+  - name: r
+    match: { path: "/*" }
+    policy: p
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: sec, type: supernode, config: { name: secured-call } }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: sec.in }
+      - { from: sec.success, to: client.in }
+"#;
+        let err = state_from_yaml(yaml).unwrap_err();
+        assert!(err.contains("Duplicate supernode"), "{err}");
     }
 }

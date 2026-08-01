@@ -44,11 +44,11 @@ const handleStyle = (color: string): React.CSSProperties => ({
  * Renders one plugin node on the canvas.
  *
  * Handle layout encodes the port model:
- * - `in` (left, target) — omitted on `listener`, the pipeline entry point.
- * - `success` (right, source) — omitted on `client`, the terminal node;
- *   centered on `listener`, otherwise paired with the error handle.
+ * - `in` (left, target) — omitted on entry-like nodes (`listener`, `input`).
+ * - `success` (right, source) — omitted on terminal-like nodes (`client`, `output`, `error`);
+ *   centered on entry-like nodes, otherwise paired with the error handle.
  * - `error` (right, source, lower) — only on regular plugin nodes, i.e.
- *   neither `listener` nor `client`.
+ *   neither entry-like nor terminal-like.
  *
  * Clicking the node invokes `data.onSelect(id)`; selection is shown with an
  * accent border and ring.
@@ -56,13 +56,21 @@ const handleStyle = (color: string): React.CSSProperties => ({
  * @remarks
  * These handle ids are the ports serialized as `node_id.port` edge endpoints,
  * matching the success/error routing executed in src/graph/engine.rs.
+ * Entry-like and terminal-like nodes are part of the supernode boundary
+ * pseudo-nodes (src/graph/expand.rs) alongside listener/client.
  */
 export function PluginNode({ id, data, selected }: NodeProps) {
   const nodeData = data as unknown as PluginNodeData;
   const meta = getPluginMeta(nodeData.pluginType);
   const Icon = meta.icon;
-  const isListener = nodeData.pluginType === 'listener';
-  const isClient = nodeData.pluginType === 'client';
+  // Entry-like nodes have no input handle; terminal-like nodes have no
+  // outputs. `input`/`output`/`error` are supernode boundary pseudo-nodes
+  // (see src/graph/expand.rs) and mirror listener/client on the canvas.
+  const isEntry = nodeData.pluginType === 'listener' || nodeData.pluginType === 'input';
+  const isTerminal =
+    nodeData.pluginType === 'client' ||
+    nodeData.pluginType === 'output' ||
+    nodeData.pluginType === 'error';
 
   return (
     <div
@@ -116,8 +124,8 @@ export function PluginNode({ id, data, selected }: NodeProps) {
         {nodeData.label}
       </div>
 
-      {/* Input handle — not on listener (it's the entry point) */}
-      {!isListener && (
+      {/* Input handle — not on entry-like nodes (listener, input) */}
+      {!isEntry && (
         <Handle
           type="target"
           position={Position.Left}
@@ -126,21 +134,21 @@ export function PluginNode({ id, data, selected }: NodeProps) {
         />
       )}
 
-      {/* Success output — not on client (it's the terminal) */}
-      {!isClient && (
+      {/* Success output — not on terminal-like nodes (client, output, error) */}
+      {!isTerminal && (
         <Handle
           type="source"
           position={Position.Right}
           id="success"
           style={{
             ...handleStyle('var(--success)'),
-            top: isListener ? '50%' : '36%',
+            top: isEntry ? '50%' : '36%',
           }}
         />
       )}
 
       {/* Error output — only on regular plugin nodes */}
-      {!isListener && !isClient && (
+      {!isEntry && !isTerminal && (
         <Handle
           type="source"
           position={Position.Right}

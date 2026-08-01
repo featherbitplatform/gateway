@@ -64,7 +64,15 @@ impl BatchFlusher for FileFlusher {
             .map_err(|e| FlushError {
                 message: format!("failed to write log file {}: {e}", self.path.display()),
                 first_fail: None,
-            })
+            })?;
+        // tokio::fs::File buffers writes through a background blocking task and
+        // does NOT guarantee delivery on drop — without this await, the batch
+        // can still be in flight when flush() returns (lost lines on exit, and
+        // a race observed as CI flakiness in flusher_appends_to_file).
+        file.flush().await.map_err(|e| FlushError {
+            message: format!("failed to flush log file {}: {e}", self.path.display()),
+            first_fail: None,
+        })
     }
 }
 
