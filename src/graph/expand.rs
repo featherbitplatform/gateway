@@ -14,13 +14,11 @@ use crate::config::{EdgeConfig, NodeConfig, PolicyConfig, SupernodeConfig};
 
 /// Reserved boundary pseudo-node types (and required ids) in a definition.
 /// Consumed by [`expand_policy`] and downstream tasks.
-#[allow(dead_code)]
 pub(crate) const BOUNDARY_TYPES: [&str; 3] = ["input", "output", "error"];
 
 /// Splits `node_id.port` on the **last** dot, defaulting the port to `out`.
 /// Mirror of `engine::parse_edge_endpoint` — the two must agree.
 /// Consumed by [`expand_policy`] and downstream tasks.
-#[allow(dead_code)]
 pub(crate) fn split_endpoint(s: &str) -> (&str, &str) {
     match s.rfind('.') {
         Some(i) => (&s[..i], &s[i + 1..]),
@@ -42,7 +40,6 @@ pub(crate) fn split_endpoint(s: &str) -> (&str, &str) {
 ///   edge to the outer error target when one is wired (black-box guarantee).
 ///
 /// Consumed by [`compile_policy`] at graph-compilation time.
-#[allow(dead_code)]
 pub fn expand_policy(
     policy: &PolicyConfig,
     supernodes: &[SupernodeConfig],

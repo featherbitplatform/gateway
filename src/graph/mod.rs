@@ -12,10 +12,6 @@ mod expand;
 mod validation;
 
 pub use engine::{compile_policy, CompiledGraph};
-// featherbit is a binary crate; expand_policy, validate_supernode and related items
-// are consumed at graph-compilation time but flagged as unused by clippy in the bin build.
-#[allow(unused_imports)]
 pub use expand::expand_policy;
 pub use validation::validate_policy;
-#[allow(unused_imports)]
 pub use validation::validate_supernode;
