@@ -72,21 +72,42 @@ Prefix families — one entry per actual value present on the request/response, 
 
 `$var`/`${var}` interpolation keeps working, unchanged, in the 15 fields that have always
 supported it — see [Templates → the 15 legacy fields](./templates.md#the-15-legacy-fields)
-for the exhaustive, per-plugin list (it now includes fields such as
-[`forward-auth`](./plugins/forward-auth.md)'s `extra_headers` and
-[`response-rewrite`](./plugins/response-rewrite.md)'s header maps, which used to be
-raw-JSON-only and are now ordinary schema-form fields with a popover, same as the rest).
-Every one of those 15 fields also accepts the new `{{namespace.path}}` syntax — the two
-compose safely (see [Templates → legacy interop](./templates.md#legacy-var-interop)).
+for the exhaustive, per-plugin list. Every one of the 15 also accepts the new
+`{{namespace.path}}` syntax — the two compose safely (see
+[Templates → legacy interop](./templates.md#legacy-var-interop)).
+
+:::note Some interpolating fields are raw JSON/YAML, not schema-form fields
+A handful of config values that genuinely interpolate `$var`/`${var}` (and now also
+`{{namespace.path}}`) templates aren't backed by a schema-form field the popover can attach
+to, because they're edited as a raw JSON/YAML blob instead — the [`logging`](./plugins/logging.md)
+family's `log_format`, [`forward-auth`](./plugins/forward-auth.md)'s `extra_headers`, and
+[`response-rewrite`](./plugins/response-rewrite.md)'s header maps are the current examples.
+Both syntaxes still work there exactly as documented on this page and on
+[Templates](./templates.md) — you just type them by hand, without a dropdown or live
+preview.
+:::
 
 No other field ever interpolated `$var`, and that hasn't changed: the sweep that made
 `{{...}}` render **everywhere** left the legacy `$` pass exactly where it always was.
-What *has* changed is autocomplete coverage — the web UI now offers `{{...}}` suggestions
-(context-aware where the field is genuinely templated, `{{env.NAME}}`-only elsewhere) in
-config fields that previously had no popover at all. See
+What *has* changed is autocomplete coverage — the web UI now offers suggestions in config
+fields that previously had no popover at all, though not the same suggestions everywhere:
+context-aware `{{...}}` completion where a field is genuinely templated, and — on every
+other text-like field — an `env`-only popover that inserts the legacy `${NAME}` form (not
+`{{env.NAME}}`; see the next paragraph for why). See
 [Templates → where the web UI offers suggestions](./templates.md#where-the-web-ui-offers-suggestions).
 
-Env-var and secret-looking fields (API keys, tokens, connection strings) still only ever get `{{env.NAME}}` suggestions, never live request/response/message context, to avoid nudging you toward putting request data where credentials go — the new syntax makes that harmless from a corruption standpoint, but it stays a bad practice.
+Env-var and secret-looking fields (API keys, tokens, connection strings), and every other
+field the plugin doesn't parse into a `Template`, still only ever get `env`-group
+suggestions, never live request/response/message context — to avoid nudging you toward
+putting request data where credentials go, and because those fields can't render request
+data even if you typed a valid `{{...}}` reference into them. Picking one inserts
+`${NAME}`, not `{{env.NAME}}`: `{{env.NAME}}` only resolves in a field the plugin actually
+parses as a `Template`, and these fields never are, so `{{env.NAME}}` would sit there as
+inert text forever. `${NAME}`/`${NAME:-default}` is a different, older mechanism —
+`interpolate_env`/`interpolate_env_json` in `src/config/loader.rs` — that substitutes every
+string leaf of every node's config, templated or not, at compile time; it's what actually
+resolves in these fields. See
+[Templates → exclusions](./templates.md#exclusions) for the full accounting.
 
 ## Autocomplete and live value preview
 

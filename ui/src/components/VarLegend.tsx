@@ -524,10 +524,14 @@ export function VarLegend({ open, onClose, catalog, suggestions, availability }:
             <li><code>$name</code> / <code>{'${name}'}</code> completion is only offered on the
               handful of fields still flagged legacy; everywhere else in the node inspector only the
               <code> {'{{path}}'}</code> syntax is available.</li>
-            <li>Text fields the engine doesn&apos;t render offer only{' '}
-              <code>{'{{env.NAME}}'}</code> completion; dropdowns, switches, and numeric fields offer
-              no completion at all. Context suggestions (request/response/message/client) appear only
-              in fields the engine actually templates.</li>
+            <li>Text fields the engine doesn&apos;t render still open the popover on{' '}
+              <code>{'{{'}</code>, but only offer the <code>env</code> group there, and picking one
+              inserts <code>{'${NAME}'}</code> instead of <code>{'{{env.NAME}}'}</code> — the field is
+              never parsed as a <code>Template</code>, so only the universal{' '}
+              <code>{'${NAME}'}</code>/<code>{'${NAME:-default}'}</code> environment substitution
+              (applied to every config field, templated or not) actually resolves there. Dropdowns,
+              switches, and numeric fields offer no completion at all. Context suggestions
+              (request/response/message/client) appear only in fields the engine actually templates.</li>
             <li>Values shown here are previews (whitespace collapsed, truncated to ~80 chars) from
               the most recent request handled by this policy — not the current one.</li>
             <li>Auth/cookie/token headers (e.g. Authorization, Cookie, Set-Cookie, X-Api-Key) show
