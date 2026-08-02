@@ -134,6 +134,7 @@ function policyToNodes(policy: Policy, onSelect: (id: string) => void): Node[] {
           : node.id,
       pluginType: node.type,
       config: node.config || {},
+      configRef: node.config_ref,
       onSelect: onSelect,
     } satisfies PluginNodeData,
   }));
@@ -232,6 +233,7 @@ function nodesToPolicy(
         id: n.id,
         type: data.pluginType,
         config: data.config || {},
+        ...(data.configRef ? { config_ref: data.configRef } : {}),
         position: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
       };
     }),
