@@ -26,13 +26,16 @@ use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundClient, OutboundRequest, OutboundResponse};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 use super::faas;
 
 /// Forwards the request to an Azure Function and maps its reply into
 /// `Context.response`.
 pub struct AzureFunctionsPlugin {
-    function_uri: String,
+    /// Supports `{{namespace.path}}` template references, rendered per
+    /// request.
+    function_uri: Template,
     apikey: Option<String>,
     clientid: Option<String>,
     ssl_verify: bool,
@@ -69,8 +72,10 @@ impl AzureFunctionsPlugin {
             .get("function_uri")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "azure-functions plugin requires 'function_uri'".to_string())?
-            .to_string();
+            .ok_or_else(|| "azure-functions plugin requires 'function_uri'".to_string())?;
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let function_uri = Template::parse(function_uri).0;
 
         let authz = config.get("authorization").and_then(|v| v.as_object());
         let apikey = authz
@@ -109,7 +114,8 @@ impl AzureFunctionsPlugin {
     /// Builds the outbound request: the client's method/body/query forwarded to
     /// `function_uri` plus the Azure function key headers.
     fn build_request(&self, ctx: &Context) -> Result<OutboundRequest, String> {
-        let (mut headers, url, method) = faas::forward_parts(&self.function_uri, ctx)?;
+        let function_uri = self.function_uri.render(ctx);
+        let (mut headers, url, method) = faas::forward_parts(&function_uri, ctx)?;
         let client_has = |name: &str| {
             ctx.request
                 .headers
@@ -250,6 +256,19 @@ mod tests {
         assert_eq!(get("x-functions-clientid"), Some("C"));
         // Host overridden with the function endpoint.
         assert_eq!(get("host"), Some("app.azurewebsites.net"));
+    }
+
+    #[test]
+    fn test_function_uri_renders_template() {
+        let p = plugin(serde_json::json!({
+            "function_uri": "https://app.azurewebsites.net/api/{{request.headers.x-fn}}"
+        }));
+        let mut c = ctx();
+        c.request
+            .headers
+            .insert("x-fn".to_string(), vec!["Trigger".to_string()]);
+        let req = p.build_request(&c).unwrap();
+        assert_eq!(req.url, "https://app.azurewebsites.net/api/Trigger");
     }
 
     #[test]
