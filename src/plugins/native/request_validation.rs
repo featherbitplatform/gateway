@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 use crate::context::{Context, GatewayError};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Validates `context.request` headers and body against compiled JSON
 /// Schemas. On failure the request is rejected through the `error` port with
@@ -29,7 +30,11 @@ pub struct RequestValidationPlugin {
     header_schema: Option<jsonschema::Validator>,
     body_schema: Option<jsonschema::Validator>,
     rejected_code: u16,
-    rejected_msg: Option<String>,
+    /// Fixed message returned instead of the validator's error description.
+    /// Supports `{{namespace.path}}` references (no legacy `$var`
+    /// interpolation — this field never supported it, so this sweep must not
+    /// start).
+    rejected_msg: Option<Template>,
 }
 
 /// Compiles an optional schema key into a validator, failing fast with the
@@ -126,7 +131,8 @@ impl RequestValidationPlugin {
     /// - `rejected_code` (integer 200–599, default `400`): response status
     ///   for rejected requests.
     /// - `rejected_msg` (string): fixed message returned instead of the
-    ///   validator's error description.
+    ///   validator's error description. Supports `{{namespace.path}}`
+    ///   references.
     ///
     /// At least one of `header_schema` / `body_schema` is required; both are
     /// compiled here so malformed schemas fail at config load.
@@ -166,7 +172,9 @@ impl RequestValidationPlugin {
         let rejected_msg = config
             .get("rejected_msg")
             .and_then(|v| v.as_str())
-            .map(String::from);
+            // Discard warnings here — the compile-time walk (a later task)
+            // reports well-formed-but-unknown references; execution must not.
+            .map(|s| Template::parse(s).0);
 
         Ok(Self {
             header_schema,
@@ -179,7 +187,11 @@ impl RequestValidationPlugin {
     /// Writes the rejection onto the response and returns the error that
     /// routes the context through the node's `error` port.
     fn reject(&self, mut ctx: Context, detail: String) -> PluginExecutionError {
-        let message = self.rejected_msg.clone().unwrap_or(detail);
+        let message = self
+            .rejected_msg
+            .as_ref()
+            .map(|t| t.render(&ctx).into_owned())
+            .unwrap_or(detail);
         ctx.response.status_code = self.rejected_code;
         ctx.response.body = Bytes::from(
             serde_json::json!({ "error": "validation_failed", "message": message }).to_string(),
@@ -426,6 +438,26 @@ mod tests {
         let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
         assert_eq!(err.context.response.status_code, 422);
         assert_eq!(err.error.message, "bad payload");
+    }
+
+    #[tokio::test]
+    async fn test_request_validation_rejected_msg_renders_template() {
+        let mut config = HashMap::new();
+        config.insert(
+            "body_schema".to_string(),
+            serde_json::json!({ "type": "object", "required": ["name"] }),
+        );
+        config.insert(
+            "rejected_msg".to_string(),
+            serde_json::json!("bad payload for {{request.path}}"),
+        );
+        let p = RequestValidationPlugin::from_config(&config).unwrap();
+
+        let ctx = test_context(r#"{"age": 3}"#, Some("application/json"));
+        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
+        assert_eq!(err.error.message, "bad payload for /api");
+        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        assert_eq!(body["message"], "bad payload for /api");
     }
 
     #[test]

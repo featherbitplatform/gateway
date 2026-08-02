@@ -36,8 +36,11 @@ use crate::vars::template::Template;
 /// at execution time.
 pub struct ResponseRewritePlugin {
     status_code: Option<u16>,
-    /// Replacement body, already base64-decoded when `body_base64` was set.
-    body: Option<Bytes>,
+    /// Replacement body. The plain-text form is a `{{namespace.path}}`
+    /// template rendered per request; a `body_base64` body is decoded once
+    /// at config load and used verbatim — it is opaque binary content
+    /// (images, protobufs, ...), not text, so it is never templated.
+    body: Option<ResponseBody>,
     filters: Vec<BodyFilter>,
     /// Header name → value template; supports `{{namespace.path}}`
     /// references and legacy `$var` interpolation (see
@@ -49,10 +52,23 @@ pub struct ResponseRewritePlugin {
     vars: Option<vars::Expr>,
 }
 
+/// The configured replacement body: either a plain-text template rendered
+/// fresh per request, or fixed bytes decoded once from `body_base64` (opaque
+/// binary content, never templated — see [`ResponseRewritePlugin::body`]).
+enum ResponseBody {
+    Plain(Template),
+    Base64(Bytes),
+}
+
 /// One compiled body filter: a regex substitution applied once or globally.
 struct BodyFilter {
     regex: Regex,
-    replace: String,
+    /// `replace` template: `{{namespace.path}}` references render first (via
+    /// plain [`Template::render`]); the rendered string is then handed to
+    /// the regex engine's own replacement syntax, so `$1`/`$2` capture-group
+    /// references are untouched by templating and still resolved by `regex`
+    /// at substitution time.
+    replace: Template,
     global: bool,
 }
 
@@ -178,8 +194,10 @@ fn parse_filter(v: &serde_json::Value) -> Result<BodyFilter, String> {
     let replace = obj
         .get("replace")
         .and_then(|v| v.as_str())
-        .ok_or("filters entries require a 'replace' string")?
-        .to_string();
+        .ok_or("filters entries require a 'replace' string")?;
+    // Discard warnings here — the compile-time walk (a later task) reports
+    // well-formed-but-unknown references; execution must not.
+    let replace = Template::parse(replace).0;
 
     let global = match obj.get("scope").and_then(|v| v.as_str()) {
         None | Some("once") => false,
@@ -225,10 +243,14 @@ impl ResponseRewritePlugin {
     /// Accepted keys (all optional):
     /// - `status_code` (integer, 200-598): new response status code.
     /// - `body` (string): new response body. Wins over `filters` — configuring
-    ///   both is rejected (as in APISIX).
+    ///   both is rejected (as in APISIX). Supports `{{namespace.path}}`
+    ///   references, rendered per request — unless `body_base64` is set (see
+    ///   below), in which case it is opaque binary content and is never
+    ///   templated.
     /// - `body_base64` (bool, default `false`): when true, `body` is decoded
-    ///   from base64 at config load; invalid or empty base64 content fails
-    ///   here.
+    ///   from base64 at config load and used verbatim as fixed bytes on every
+    ///   request (never templated — a base64 body is binary content such as
+    ///   an image, not text); invalid or empty base64 content fails here.
     /// - `headers` — either the structured shape or the deprecated flat map:
     ///   - `add` (array of `"Name: value"` strings): appended alongside
     ///     existing values. The value must be non-empty and colon-free.
@@ -241,10 +263,13 @@ impl ResponseRewritePlugin {
     ///   legacy `$var` / `${var}` interpolation at execution time (e.g.
     ///   `$remote_addr`, `$status`, `$http_x_id`).
     /// - `filters` (array): regex substitutions applied to the response body.
-    ///   Each entry: `regex` (required, non-empty), `replace` (required),
-    ///   `scope` (`once` | `global`, default `once`), `options` (only `"i"`
-    ///   for case-insensitive; anything else is rejected). Regexes are
-    ///   compiled here, so invalid patterns fail at config load.
+    ///   Each entry: `regex` (required, non-empty), `replace` (required;
+    ///   supports `{{namespace.path}}` references, rendered before the regex
+    ///   engine applies its own `$1`/`$2` capture-group substitution, so
+    ///   those stay untouched by templating), `scope` (`once` | `global`,
+    ///   default `once`), `options` (only `"i"` for case-insensitive;
+    ///   anything else is rejected). Regexes are compiled here, so invalid
+    ///   patterns fail at config load.
     /// - `vars` (array, APISIX triple-array expression): gate — when present
     ///   and it evaluates to false, the node passes the context through
     ///   unchanged.
@@ -315,9 +340,15 @@ impl ResponseRewritePlugin {
                     let decoded = BASE64
                         .decode(s.trim())
                         .map_err(|_| "invalid base64 content".to_string())?;
-                    Some(Bytes::from(decoded))
+                    // Base64 content is opaque binary data, decoded once here
+                    // and used verbatim — never templated (documented on
+                    // `ResponseBody`).
+                    Some(ResponseBody::Base64(Bytes::from(decoded)))
                 } else {
-                    Some(Bytes::from(s.to_string()))
+                    // Discard warnings here — the compile-time walk (a later
+                    // task) reports well-formed-but-unknown references;
+                    // execution must not.
+                    Some(ResponseBody::Plain(Template::parse(s).0))
                 }
             }
         };
@@ -415,10 +446,11 @@ impl ResponseRewritePlugin {
         };
 
         for filter in &self.filters {
+            let replace = filter.replace.render(ctx);
             text = if filter.global {
-                filter.regex.replace_all(&text, filter.replace.as_str())
+                filter.regex.replace_all(&text, replace.as_ref())
             } else {
-                filter.regex.replace(&text, filter.replace.as_str())
+                filter.regex.replace(&text, replace.as_ref())
             }
             .into_owned();
         }
@@ -456,7 +488,10 @@ impl Plugin for ResponseRewritePlugin {
         }
 
         if let Some(body) = &self.body {
-            ctx.response.body = body.clone();
+            ctx.response.body = match body {
+                ResponseBody::Plain(tpl) => Bytes::from(tpl.render(&ctx).into_owned()),
+                ResponseBody::Base64(bytes) => bytes.clone(),
+            };
             clear_body_derived_headers(&mut ctx);
         } else if !self.filters.is_empty() {
             self.apply_filters(&mut ctx);
@@ -546,6 +581,36 @@ mod tests {
         let ctx = test_context(200, b"x");
         let out = p.execute(ctx, &HashMap::new()).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"hello world");
+    }
+
+    #[tokio::test]
+    async fn test_response_rewrite_body_renders_template() {
+        let p = plugin(serde_json::json!({
+            "body": "path={{request.path}} price=$19.99"
+        }));
+        let mut ctx = test_context(200, b"original");
+        ctx.request.path = "/orders".to_string();
+        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        assert_eq!(
+            out.context.response.body.as_ref(),
+            b"path=/orders price=$19.99"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_response_rewrite_body_base64_never_templated() {
+        // A base64 body is decoded FIRST at config load, then never
+        // templated — the literal bytes `{{request.path}}` inside the
+        // decoded payload must survive undecoded/unrendered.
+        let literal = BASE64.encode(b"{{request.path}}");
+        let p = plugin(serde_json::json!({
+            "body": literal,
+            "body_base64": true
+        }));
+        let mut ctx = test_context(200, b"x");
+        ctx.request.path = "/should-not-appear".to_string();
+        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        assert_eq!(out.context.response.body.as_ref(), b"{{request.path}}");
     }
 
     #[test]
@@ -717,6 +782,23 @@ mod tests {
         let ctx = test_context(200, b"foo Foo fOO");
         let out = p.execute(ctx, &HashMap::new()).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"bar bar bar");
+    }
+
+    #[tokio::test]
+    async fn test_response_rewrite_filters_replace_template_and_capture_group() {
+        // `replace` must render `{{...}}` references while leaving `$1`
+        // (a regex capture-group backreference) for the regex engine's own
+        // substitution — the template pass runs first and never touches `$`.
+        let p = plugin(serde_json::json!({
+            "filters": [{ "regex": r"user=(\w+)", "replace": "user=$1 path={{request.path}}" }]
+        }));
+        let mut ctx = test_context(200, b"user=jack");
+        ctx.request.path = "/api/users".to_string();
+        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        assert_eq!(
+            out.context.response.body.as_ref(),
+            b"user=jack path=/api/users"
+        );
     }
 
     #[tokio::test]
