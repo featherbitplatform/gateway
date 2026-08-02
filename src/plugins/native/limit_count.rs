@@ -42,8 +42,10 @@ pub struct LimitCountPlugin {
     group: Option<String>,
     /// Status returned when a request is rejected.
     rejected_code: u16,
-    /// Optional custom message used in the rejection body.
-    rejected_msg: Option<String>,
+    /// Optional custom message used in the rejection body. Supports
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// this field never supported it, so this sweep must not start).
+    rejected_msg: Option<Template>,
     /// Whether to emit the `X-RateLimit-*` quota headers.
     show_limit_quota_header: bool,
     /// When true, a counter-backend error lets the request through instead of
@@ -71,7 +73,8 @@ impl LimitCountPlugin {
     /// - `rejected_code` (integer 200-599, default `503`): status for
     ///   over-limit requests.
     /// - `rejected_msg` (string, optional): message placed in the rejection
-    ///   body (`{"error_msg": ...}`).
+    ///   body (`{"error_msg": ...}`). Supports `{{namespace.path}}`
+    ///   references.
     /// - `show_limit_quota_header` (bool, default `true`): emit the
     ///   `X-RateLimit-*` headers onto the response.
     /// - `allow_degradation` (bool, default `false`): on a counter-backend
@@ -137,7 +140,9 @@ impl LimitCountPlugin {
             .get("rejected_msg")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(String::from);
+            // Discard warnings here — the compile-time walk (a later task)
+            // reports well-formed-but-unknown references; execution must not.
+            .map(|s| Template::parse(s).0);
 
         let show_limit_quota_header = config
             .get("show_limit_quota_header")
@@ -258,7 +263,8 @@ impl Plugin for LimitCountPlugin {
         self.set_quota_headers(&mut ctx, 0, result.reset);
         let msg = self
             .rejected_msg
-            .clone()
+            .as_ref()
+            .map(|t| t.render(&ctx).into_owned())
             .unwrap_or_else(|| "Requests over the limit".to_string());
         let body = serde_json::json!({ "error_msg": msg }).to_string();
         ctx.response.status_code = self.rejected_code;
@@ -425,6 +431,20 @@ mod tests {
         let body = String::from_utf8(err.context.response.body.to_vec()).unwrap();
         assert!(body.contains("slow down"), "{body}");
         assert_eq!(err.error.message, "slow down");
+    }
+
+    #[tokio::test]
+    async fn test_rejected_msg_renders_template() {
+        // `rejected_msg` must render `{{...}}` references per request (Sweep B).
+        let p = plugin(serde_json::json!({
+            "count": 1, "time_window": 60, "rejected_msg": "blocked method {{request.method}}"
+        }))
+        .unwrap();
+        assert!(p.execute(test_ctx(), &HashMap::new()).await.is_ok());
+        let err = p.execute(test_ctx(), &HashMap::new()).await.unwrap_err();
+        let body = String::from_utf8(err.context.response.body.to_vec()).unwrap();
+        assert!(body.contains("blocked method GET"), "{body}");
+        assert_eq!(err.error.message, "blocked method GET");
     }
 
     #[tokio::test]

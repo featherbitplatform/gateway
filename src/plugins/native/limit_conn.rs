@@ -77,7 +77,10 @@ pub struct LimitConnPlugin {
     /// Status returned when the limit is exceeded.
     rejected_code: u16,
     /// Optional human-readable rejection message (JSON `{"error_msg": ...}`).
-    rejected_msg: Option<String>,
+    /// Supports `{{namespace.path}}` references (no legacy `$var`
+    /// interpolation — this field never supported it, so this sweep must not
+    /// start).
+    rejected_msg: Option<Template>,
     resources: Arc<PluginResources>,
 }
 
@@ -102,7 +105,8 @@ impl LimitConnPlugin {
     /// - `rejected_code` (integer, default `503`): status for over-limit
     ///   requests.
     /// - `rejected_msg` (string, optional): message returned as a JSON body
-    ///   `{"error_msg": "..."}` on rejection.
+    ///   `{"error_msg": "..."}` on rejection. Supports `{{namespace.path}}`
+    ///   references.
     /// - `default_conn_delay` (number, optional): accepted for APISIX config
     ///   compatibility but ignored — featherbit rejects rather than delays.
     ///
@@ -188,7 +192,9 @@ impl LimitConnPlugin {
         let rejected_msg = config
             .get("rejected_msg")
             .and_then(|v| v.as_str())
-            .map(String::from);
+            // Discard warnings here — the compile-time walk (a later task)
+            // reports well-formed-but-unknown references; execution must not.
+            .map(|s| Template::parse(s).0);
 
         Ok(Self {
             role,
@@ -238,7 +244,10 @@ impl Plugin for LimitConnPlugin {
 
                     ctx.response.status_code = self.rejected_code;
                     let body = match &self.rejected_msg {
-                        Some(msg) => format!(r#"{{"error_msg":{}}}"#, json_string(msg)),
+                        Some(msg) => {
+                            let rendered = msg.render(&ctx).into_owned();
+                            format!(r#"{{"error_msg":{}}}"#, json_string(&rendered))
+                        }
                         None => r#"{"error":"limit_conn_exceeded"}"#.to_string(),
                     };
                     ctx.response.body = Bytes::from(body);
@@ -368,6 +377,29 @@ mod tests {
             &r
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rejected_msg_renders_template() {
+        let r = PluginResources::empty();
+        let acquire = LimitConnPlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("acquire")),
+                ("conn", serde_json::json!(1)),
+                ("key", serde_json::json!("const-conn")),
+                ("key_type", serde_json::json!("constant")),
+                (
+                    "rejected_msg",
+                    serde_json::json!("too many from {{client.ip}}"),
+                ),
+            ]),
+            &r,
+        )
+        .unwrap();
+        acquire.execute(ctx(), &HashMap::new()).await.unwrap();
+        let err = acquire.execute(ctx(), &HashMap::new()).await.unwrap_err();
+        let body = String::from_utf8(err.context.response.body.to_vec()).unwrap();
+        assert!(body.contains("too many from 10.0.0.1"), "{body}");
     }
 
     #[tokio::test]
