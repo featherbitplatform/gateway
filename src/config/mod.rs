@@ -10,6 +10,7 @@ mod gateway;
 mod loader;
 mod resolve;
 mod system;
+mod warnings;
 
 pub use loader::{interpolate_env_json, load_yaml_with_env};
 // featherbit is a binary crate, so `pub` exports nothing externally: re-exports
@@ -27,3 +28,5 @@ pub use system::{
     StreamListenerConfig, StreamProtocol, StreamUpstreamConfig, SystemConfig, TimeoutConfig,
     TlsConfig,
 };
+#[allow(unused_imports)]
+pub use warnings::collect_template_warnings;
