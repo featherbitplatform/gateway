@@ -20,6 +20,7 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Masks request query parameters, headers, and JSON body fields according
 /// to a list of rules. Masking is best-effort and never fails at execution
@@ -40,14 +41,46 @@ enum Target {
 }
 
 /// What a rule does to the matched field.
+///
+/// `Replace`/`Regex` values support `{{namespace.path}}` template references,
+/// rendered per request via plain [`Template::render`] (never `$var`
+/// interpolation — these fields have no legacy `$` history). `Regex` values
+/// may also carry `$1`-style capture references: `render` never touches `$`
+/// syntax, so a capture reference in the configured value survives rendering
+/// byte-identical and is resolved afterwards by the regex engine itself.
 enum Action {
     /// Delete the field entirely.
     Remove,
-    /// Overwrite the field with a fixed value.
-    Replace(String),
+    /// Overwrite the field with a fixed (templated) value.
+    Replace(Template),
     /// Rewrite the first regex match inside a string value (mirrors APISIX's
-    /// `ngx.re.sub`, which substitutes only the first occurrence).
-    Regex { regex: Regex, value: String },
+    /// `ngx.re.sub`, which substitutes only the first occurrence). `value` is
+    /// rendered before being handed to the regex engine, which then resolves
+    /// any `$1`-style capture references itself.
+    Regex { regex: Regex, value: Template },
+}
+
+/// A rule's [`Action`] with its template(s) rendered against the current
+/// request — the shape [`apply_to_json`]/[`apply_to_multimap`] operate on.
+enum ResolvedAction<'a> {
+    Remove,
+    Replace(String),
+    Regex { regex: &'a Regex, value: String },
+}
+
+impl Action {
+    /// Renders this action's template(s) against `ctx`, producing the
+    /// concrete strings this request's rule application should use.
+    fn resolve(&self, ctx: &Context) -> ResolvedAction<'_> {
+        match self {
+            Action::Remove => ResolvedAction::Remove,
+            Action::Replace(tpl) => ResolvedAction::Replace(tpl.render(ctx).into_owned()),
+            Action::Regex { regex, value } => ResolvedAction::Regex {
+                regex,
+                value: value.render(ctx).into_owned(),
+            },
+        }
+    }
 }
 
 /// One masking rule from the `request` array.
@@ -97,7 +130,7 @@ fn parse_dotted_path(raw: &str) -> Result<Vec<PathSeg>, String> {
 /// (missing key, out-of-range index, type mismatch) are silently skipped,
 /// as are regex actions on non-string values — mirroring the Lua plugin's
 /// warn-and-continue behavior.
-fn apply_to_json(root: &mut serde_json::Value, path: &[PathSeg], action: &Action) -> bool {
+fn apply_to_json(root: &mut serde_json::Value, path: &[PathSeg], action: &ResolvedAction) -> bool {
     let (last, parents) = match path.split_last() {
         Some(pair) => pair,
         None => return false,
@@ -124,12 +157,12 @@ fn apply_to_json(root: &mut serde_json::Value, path: &[PathSeg], action: &Action
                 return false;
             }
             match action {
-                Action::Remove => map.remove(k.as_str()).is_some(),
-                Action::Replace(value) => {
+                ResolvedAction::Remove => map.remove(k.as_str()).is_some(),
+                ResolvedAction::Replace(value) => {
                     map.insert(k.clone(), serde_json::Value::String(value.clone()));
                     true
                 }
-                Action::Regex { regex, value } => {
+                ResolvedAction::Regex { regex, value } => {
                     if let Some(serde_json::Value::String(s)) = map.get_mut(k.as_str()) {
                         regex_mask(s, regex, value)
                     } else {
@@ -143,15 +176,15 @@ fn apply_to_json(root: &mut serde_json::Value, path: &[PathSeg], action: &Action
                 return false;
             }
             match action {
-                Action::Remove => {
+                ResolvedAction::Remove => {
                     arr.remove(*i);
                     true
                 }
-                Action::Replace(value) => {
+                ResolvedAction::Replace(value) => {
                     arr[*i] = serde_json::Value::String(value.clone());
                     true
                 }
-                Action::Regex { regex, value } => {
+                ResolvedAction::Regex { regex, value } => {
                     if let serde_json::Value::String(s) = &mut arr[*i] {
                         regex_mask(s, regex, value)
                     } else {
@@ -177,17 +210,21 @@ fn regex_mask(s: &mut String, regex: &Regex, replacement: &str) -> bool {
 /// Applies a rule to a multi-valued map (query params or headers). Regex
 /// actions run against every value of the field; `replace` collapses the
 /// field to the single configured value.
-fn apply_to_multimap(map: &mut HashMap<String, Vec<String>>, name: &str, action: &Action) -> bool {
+fn apply_to_multimap(
+    map: &mut HashMap<String, Vec<String>>,
+    name: &str,
+    action: &ResolvedAction,
+) -> bool {
     if !map.contains_key(name) {
         return false;
     }
     match action {
-        Action::Remove => map.remove(name).is_some(),
-        Action::Replace(value) => {
+        ResolvedAction::Remove => map.remove(name).is_some(),
+        ResolvedAction::Replace(value) => {
             map.insert(name.to_string(), vec![value.clone()]);
             true
         }
-        Action::Regex { regex, value } => {
+        ResolvedAction::Regex { regex, value } => {
             let mut masked = false;
             if let Some(values) = map.get_mut(name) {
                 for v in values.iter_mut() {
@@ -295,11 +332,13 @@ fn parse_rule(item: &serde_json::Value) -> Result<MaskRule, String> {
         }
     }
 
+    // Discard warnings here — the compile-time walk (a later task) reports
+    // well-formed-but-unknown references; execution must not.
     let action = match get_str("action") {
         Some("remove") => Action::Remove,
         Some("replace") => {
             let value = get_str("value").ok_or("'value' is required for action 'replace'")?;
-            Action::Replace(value.to_string())
+            Action::Replace(Template::parse(value).0)
         }
         Some("regex") => {
             let pattern = get_str("regex").ok_or("'regex' is required for action 'regex'")?;
@@ -308,7 +347,7 @@ fn parse_rule(item: &serde_json::Value) -> Result<MaskRule, String> {
                 Regex::new(pattern).map_err(|e| format!("invalid regex '{}': {}", pattern, e))?;
             Action::Regex {
                 regex,
-                value: value.to_string(),
+                value: Template::parse(value).0,
             }
         }
         Some(other) => return Err(format!("unknown action '{}' (remove|replace|regex)", other)),
@@ -345,16 +384,13 @@ impl Plugin for DataMaskPlugin {
         let mut body_masked = false;
 
         for rule in &self.rules {
+            let action = rule.action.resolve(&ctx);
             match rule.target {
                 Target::Query => {
-                    apply_to_multimap(&mut ctx.request.query_params, &rule.name, &rule.action);
+                    apply_to_multimap(&mut ctx.request.query_params, &rule.name, &action);
                 }
                 Target::Header => {
-                    apply_to_multimap(
-                        &mut ctx.request.headers,
-                        &rule.name.to_lowercase(),
-                        &rule.action,
-                    );
+                    apply_to_multimap(&mut ctx.request.headers, &rule.name.to_lowercase(), &action);
                 }
                 Target::Body => {
                     if ctx.request.body.is_empty() || ctx.request.body.len() > self.max_body_size {
@@ -367,7 +403,7 @@ impl Plugin for DataMaskPlugin {
                         }
                     }
                     if let Some(doc) = json_body.as_mut() {
-                        if apply_to_json(doc, &rule.path, &rule.action) {
+                        if apply_to_json(doc, &rule.path, &action) {
                             body_masked = true;
                         }
                     }
@@ -543,6 +579,28 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         // mirrors ngx.re.sub: only the first occurrence is rewritten
         assert_eq!(parsed["note"], "id=*** id=456");
+    }
+
+    /// TDD (Task 3): a regex-action `value` supports `{{...}}` template
+    /// references (rendered per request) while `$1`-style capture references
+    /// stay literal through the plain `render` pass and are still resolved by
+    /// the regex engine — the safety property this sweep exists to prove.
+    #[tokio::test]
+    async fn test_data_mask_regex_value_template_and_capture_ref() {
+        let body = r#"{"note":"id=42"}"#;
+        let p = plugin(serde_json::json!([
+            { "type": "body", "body_format": "json", "name": "note",
+              "action": "regex", "regex": r"id=(\d+)",
+              "value": "{{request.path}}:$1" }
+        ]));
+        let out = p
+            .execute(test_context(body), &HashMap::new())
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
+        // {{request.path}} renders; $1 is preserved and resolved by the regex
+        // engine's own backreference handling, not by the template engine.
+        assert_eq!(parsed["note"], "/api:42");
     }
 
     #[test]
