@@ -47,7 +47,7 @@ Setting a local key to `null` still counts as the node setting it, so it's the w
 
 ## Typing
 
-A shared config's `type` must match the `type` of every node that references it — a `key-auth` node cannot reference an `openid-connect` profile. This is checked at save time (`PUT`, `POST`, or a `gateway.yaml` reload), not deferred to the first request that hits the node, and it's what lets the web UI's node inspector offer only the profiles that fit the node it's editing.
+A shared config's `type` must match the `type` of every node that references it — a `key-auth` node cannot reference an `openid-connect` profile. This is checked at save time (`PUT`, or a `gateway.yaml` reload), not deferred to the first request that hits the node, and it's what lets the web UI's node inspector offer only the profiles that fit the node it's editing.
 
 ## Inside supernodes
 
@@ -59,7 +59,7 @@ Resolution follows the same discipline as supernode expansion: `config_ref` is m
 
 ## Delete protection
 
-Deleting a shared config that's still referenced anywhere — a policy node or a supernode-definition node — fails commit validation: the Admin API responds `400` and nothing changes, the same mechanism [supernodes](supernodes.md#using-a-supernode-from-a-policy) use to protect a definition still in use.
+Deleting a shared config that's still referenced anywhere — a policy node or a supernode-definition node — fails commit validation: the [Admin API](../guides/admin-api.md) responds `400` and nothing changes, the same mechanism supernodes use to protect a definition still in use.
 
 ## V1 limits
 
