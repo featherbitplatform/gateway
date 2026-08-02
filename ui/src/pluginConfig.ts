@@ -78,16 +78,24 @@ export interface FieldSchema {
    * context autocomplete (`VarInput`) in the first place.
    *
    * - `'full'` — every suggestion group (request/response/message/env/...).
-   * - `'env-only'` — only the `env` group, for fields that should reference
-   *   environment variables (secrets, credential material, DSL/schema
-   *   blobs, regexes, external endpoints, file paths, ...) but not
-   *   request-derived context.
+   *   Reserved for fields the Rust plugin genuinely renders through
+   *   `crate::vars::template::Template` at request time — set explicitly
+   *   here, one per field, cross-checked against the plugin's source (see
+   *   Tasks 2-5's sweep reports for the file:line of each render call).
+   * - `'env-only'` — only the `env` group, for every other text-like field:
+   *   secrets/credential material, DSL/schema blobs, regexes, external
+   *   endpoints, file paths, and — critically — anything not in the sweep
+   *   above, since those fields are never re-rendered per request and
+   *   offering full request/response/message suggestions on them would be
+   *   dishonest (the suggestion would never actually resolve).
+   *   `{{env.NAME}}` still applies to these fields at config-load time.
    * - `'none'` — plain input, no `VarInput`/autocomplete at all.
    *
-   * When absent, the default is type-based: `'full'` for `text`/`textarea`
-   * (and, for `list`/`objects`, their `text`-typed `item`/sub-fields);
-   * `radio`/`select`/`switch`/`number` fields are structurally `'none'` and
-   * never get a `template` override.
+   * When absent, the default is type-based: **`'env-only'`** for
+   * `text`/`textarea` (and, for `list`/`objects`, their `text`-typed
+   * `item`/sub-fields) — `'full'` is never a default, only an explicit,
+   * verified opt-in; `radio`/`select`/`switch`/`number` fields are
+   * structurally `'none'` and never get a `template` override.
    */
   template?: 'full' | 'env-only' | 'none';
   /**
@@ -114,10 +122,11 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   'proxy-rewrite': [
     { key: 'phase', label: 'Phase', type: 'radio', options: ['request', 'response'], default: 'request' },
     { key: 'strip_path_prefix', label: 'Strip path prefix', type: 'text', placeholder: '/api', hint: 'removed from the matched path' },
+    { key: 'add_path_prefix', label: 'Add path prefix', type: 'text', placeholder: '/{{request.headers.x-tenant}}', hint: 'prepended to the matched path', template: 'full' },
     { key: 'add_headers', label: 'Add headers', type: 'objects', addLabel: 'Header', itemLabel: 'Header',
       fields: [
         { key: 'name', label: 'Name', type: 'text', placeholder: 'x-request-id' },
-        { key: 'value', label: 'Value', type: 'text', placeholder: '$uuid' },
+        { key: 'value', label: 'Value', type: 'text', placeholder: '$uuid', template: 'full' },
       ] },
     { key: 'remove_headers', label: 'Remove headers', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'x-powered-by' } },
   ],
@@ -137,8 +146,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   ],
   cors: [
     { key: 'allowed_origins', label: 'Allowed origins', type: 'list', addLabel: 'Origin', item: { type: 'text', placeholder: 'https://app.example.com', template: 'env-only' }, hint: 'defaults to * when empty' },
-    { key: 'allowed_methods', label: 'Allowed methods', type: 'list', addLabel: 'Method', item: { type: 'text', placeholder: 'GET' }, hint: 'defaults to GET, POST, PUT, DELETE, OPTIONS' },
-    { key: 'allowed_headers', label: 'Allowed headers', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'content-type' }, hint: 'defaults to * when empty' },
+    { key: 'allowed_methods', label: 'Allowed methods', type: 'list', addLabel: 'Method', item: { type: 'text', placeholder: 'GET', template: 'full' }, hint: 'defaults to GET, POST, PUT, DELETE, OPTIONS' },
+    { key: 'allowed_headers', label: 'Allowed headers', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'content-type', template: 'full' }, hint: 'defaults to * when empty' },
     { key: 'allow_credentials', label: 'Credentials', type: 'switch', switchLabel: 'Allow credentials', default: false },
     { key: 'max_age', label: 'Max age (s)', type: 'number', default: 3600 },
   ],
@@ -161,7 +170,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   ],
   'basic-auth': [
     { key: 'use_consumers', label: 'Use consumers', type: 'switch', switchLabel: 'Resolve credentials against consumers', default: false },
-    { key: 'realm', label: 'Realm', type: 'text', default: 'restricted' },
+    { key: 'realm', label: 'Realm', type: 'text', default: 'restricted', template: 'full' },
     { key: 'users', label: 'Users', type: 'objects', addLabel: 'User', itemLabel: 'User',
       fields: [
         { key: 'username', label: 'Username', type: 'text' },
@@ -186,7 +195,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'keep_headers', label: 'Keep headers', type: 'switch', switchLabel: 'Forward X-HMAC-* headers', default: false },
     { key: 'hide_credentials', label: 'Hide credentials', type: 'switch', switchLabel: 'Strip Authorization header', default: false },
     { key: 'anonymous_consumer', label: 'Anonymous consumer', type: 'text', placeholder: 'guest' },
-    { key: 'realm', label: 'Realm', type: 'text', default: 'hmac' },
+    { key: 'realm', label: 'Realm', type: 'text', default: 'hmac', template: 'full' },
   ],
   'multi-auth': [
     { key: 'auth_plugins', label: 'Auth plugins', type: 'list', addLabel: 'Plugin', item: { type: 'text', placeholder: 'key-auth' }, hint: 'YAML-only: each entry is a single-key map {plugin-type: {config}} — edit as YAML' },
@@ -208,16 +217,16 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
         { key: 'methods', label: 'Methods', type: 'list', addLabel: 'Method', item: { type: 'text', placeholder: 'GET' } },
       ] },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 403 },
-    { key: 'rejected_msg', label: 'Rejected message', type: 'text' },
+    { key: 'rejected_msg', label: 'Rejected message', type: 'text', template: 'full' },
   ],
   acl: [
     { key: 'allowed_by', label: 'Allowed groups', type: 'list', addLabel: 'Group', item: { type: 'text', placeholder: 'partners' }, hint: 'when set, only these consumer groups pass' },
     { key: 'denied_by', label: 'Denied groups', type: 'list', addLabel: 'Group', item: { type: 'text', placeholder: 'banned' }, hint: 'checked first — deny wins' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 403 },
-    { key: 'rejected_msg', label: 'Rejected message', type: 'text' },
+    { key: 'rejected_msg', label: 'Rejected message', type: 'text', template: 'full' },
   ],
   'attach-consumer-label': [
-    { key: 'header_prefix', label: 'Header prefix', type: 'text', default: 'X-Consumer-', hint: 'prepended to each consumer label key to form the upstream header name' },
+    { key: 'header_prefix', label: 'Header prefix', type: 'text', default: 'X-Consumer-', hint: 'prepended to each consumer label key to form the upstream header name', template: 'full' },
   ],
   // ---- Plugin catalog (Wave 7: serverless & FaaS) -------------------
   'serverless-pre-function': [
@@ -233,10 +242,10 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   'oas-validator': [
     { key: 'spec', label: 'OpenAPI spec (JSON)', type: 'textarea', rows: 12, placeholder: '{ "openapi": "3.0.0", "paths": { } }', hint: 'inline OpenAPI 3 document (JSON object)', template: 'env-only' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 400 },
-    { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'optional fixed message' },
+    { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'optional fixed message', template: 'full' },
   ],
   'aws-lambda': [
-    { key: 'function_uri', label: 'Function URI', type: 'text', placeholder: 'https://xyz.lambda-url.us-east-1.on.aws/' },
+    { key: 'function_uri', label: 'Function URI', type: 'text', placeholder: 'https://xyz.lambda-url.us-east-1.on.aws/', template: 'full' },
     { key: 'authorization.apikey', label: 'API key', type: 'text', hint: 'sent as x-api-key; leave empty to use IAM', template: 'env-only' },
     { key: 'authorization.iam.accesskey', label: 'IAM access key', type: 'text', template: 'env-only' },
     { key: 'authorization.iam.secretkey', label: 'IAM secret key', type: 'text', template: 'env-only' },
@@ -246,24 +255,24 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
   ],
   'azure-functions': [
-    { key: 'function_uri', label: 'Function URI', type: 'text', placeholder: 'https://app.azurewebsites.net/api/HttpTrigger' },
+    { key: 'function_uri', label: 'Function URI', type: 'text', placeholder: 'https://app.azurewebsites.net/api/HttpTrigger', template: 'full' },
     { key: 'authorization.apikey', label: 'API key (x-functions-key)', type: 'text', template: 'env-only' },
     { key: 'authorization.clientid', label: 'Client id (x-functions-clientid)', type: 'text' },
     { key: 'ssl_verify', label: 'Verify TLS', type: 'switch', switchLabel: 'ssl_verify', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
   ],
   openwhisk: [
-    { key: 'api_host', label: 'API host', type: 'text', placeholder: 'https://ow.example.com' },
+    { key: 'api_host', label: 'API host', type: 'text', placeholder: 'https://ow.example.com', template: 'full' },
     { key: 'service_token', label: 'Service token (user:pass)', type: 'text', template: 'env-only' },
-    { key: 'namespace', label: 'Namespace', type: 'text', default: '_' },
-    { key: 'package', label: 'Package', type: 'text' },
-    { key: 'action', label: 'Action', type: 'text' },
+    { key: 'namespace', label: 'Namespace', type: 'text', default: '_', template: 'full' },
+    { key: 'package', label: 'Package', type: 'text', template: 'full' },
+    { key: 'action', label: 'Action', type: 'text', template: 'full' },
     { key: 'result', label: 'Inline result', type: 'switch', switchLabel: 'result', default: true },
     { key: 'ssl_verify', label: 'Verify TLS', type: 'switch', switchLabel: 'ssl_verify', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
   ],
   openfunction: [
-    { key: 'function_uri', label: 'Function URI', type: 'text', placeholder: 'http://openfunction.svc/default/hello' },
+    { key: 'function_uri', label: 'Function URI', type: 'text', placeholder: 'http://openfunction.svc/default/hello', template: 'full' },
     { key: 'authorization.service_token', label: 'Service token', type: 'text', hint: 'sent as Authorization: Basic base64(token)', template: 'env-only' },
     { key: 'ssl_verify', label: 'Verify TLS', type: 'switch', switchLabel: 'ssl_verify', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
@@ -456,13 +465,13 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'policy', label: 'Policy', type: 'select', options: ['local'], default: 'local' },
     { key: 'group', label: 'Group', type: 'text', placeholder: 'shared-counter', hint: 'prefixes the key so nodes share a counter' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 503 },
-    { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'Requests over the limit' },
+    { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'Requests over the limit', template: 'full' },
     { key: 'show_limit_quota_header', label: 'Show quota headers', type: 'switch', switchLabel: 'Emit X-RateLimit-* headers', default: true },
     { key: 'allow_degradation', label: 'Allow degradation', type: 'switch', switchLabel: 'Pass through on counter error', default: false },
   ],
   'proxy-mirror': [
-    { key: 'host', label: 'Shadow host', type: 'text', placeholder: 'http://shadow:8080', hint: 'scheme + host + optional port; no trailing path' },
-    { key: 'path', label: 'Path override', type: 'text', placeholder: '/mirror', hint: 'optional; original query string is always appended' },
+    { key: 'host', label: 'Shadow host', type: 'text', placeholder: 'http://shadow:8080', hint: 'scheme + host + optional port; no trailing path', template: 'full' },
+    { key: 'path', label: 'Path override', type: 'text', placeholder: '/mirror', hint: 'optional; original query string is always appended', template: 'full' },
     { key: 'sample_ratio', label: 'Sample ratio', type: 'number', default: 1, hint: '0.0-1.0 fraction of requests mirrored (pseudo-random)' },
   ],
   'traffic-split': [
@@ -484,13 +493,13 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'key', label: 'Key', type: 'text', default: '$remote_addr', hint: 'both nodes of the pair must share this key', template: 'full', legacyDollar: true },
     { key: 'key_type', label: 'Key type', type: 'select', options: ['var', 'constant'], default: 'var' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 503 },
-    { key: 'rejected_msg', label: 'Rejected message', type: 'text' },
+    { key: 'rejected_msg', label: 'Rejected message', type: 'text', template: 'full' },
   ],
   'api-breaker': [
     { key: 'phase', label: 'Phase', type: 'radio', options: ['check', 'observe'], default: 'check', hint: 'check before upstream, observe after' },
     { key: 'id', label: 'Breaker id', type: 'text', placeholder: 'orders-api', hint: 'check and observe nodes must share this id' },
     { key: 'break_response_code', label: 'Break response code', type: 'number', default: 502 },
-    { key: 'break_response_body', label: 'Break response body', type: 'textarea', rows: 2 },
+    { key: 'break_response_body', label: 'Break response body', type: 'textarea', rows: 2, template: 'full' },
     { key: 'break_base_sec', label: 'Base cooldown (s)', type: 'number', default: 2, hint: 'grows as base * 2^trip' },
     { key: 'max_breaker_sec', label: 'Max cooldown (s)', type: 'number', default: 300 },
   ],
@@ -507,8 +516,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   'forward-auth': [
     { key: 'uri', label: 'Auth service URI', type: 'text', placeholder: 'http://auth-service:8080/verify' },
     { key: 'request_method', label: 'Request method', type: 'select', options: ['GET', 'POST'], default: 'GET' },
-    { key: 'request_headers', label: 'Request headers', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'authorization' } },
-    { key: 'upstream_headers', label: 'Upstream headers', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'x-user-id' } },
+    { key: 'request_headers', label: 'Request headers', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'authorization', template: 'full' } },
+    { key: 'upstream_headers', label: 'Upstream headers', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'x-user-id', template: 'full' } },
     { key: 'client_headers', label: 'Client headers', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'www-authenticate' } },
     { key: 'ssl_verify', label: 'SSL verify', type: 'switch', switchLabel: 'Verify TLS certificates', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
@@ -519,7 +528,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'host', label: 'OPA host', type: 'text', placeholder: 'http://opa:8181' },
     { key: 'policy', label: 'Policy path', type: 'text', placeholder: 'example/allow' },
     { key: 'with_consumer', label: 'With consumer', type: 'switch', switchLabel: 'Include consumer object in input', default: false },
-    { key: 'send_headers_upstream', label: 'Send headers upstream', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'x-user-id' } },
+    { key: 'send_headers_upstream', label: 'Send headers upstream', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'x-user-id', template: 'full' } },
     { key: 'ssl_verify', label: 'SSL verify', type: 'switch', switchLabel: 'Verify TLS certificates', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
   ],
@@ -559,7 +568,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'uid', label: 'UID attribute', type: 'text', default: 'cn' },
     { key: 'use_tls', label: 'Use TLS', type: 'switch', switchLabel: 'Negotiate StartTLS', default: false },
     { key: 'tls_verify', label: 'Verify TLS cert', type: 'switch', default: false },
-    { key: 'realm', label: 'Realm', type: 'text', default: 'ldap' },
+    { key: 'realm', label: 'Realm', type: 'text', default: 'ldap', template: 'full' },
   ],
   'wolf-rbac': [
     { key: 'server', label: 'Wolf server', type: 'text', default: 'http://127.0.0.1:12180' },
@@ -611,7 +620,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'ssl_verify', label: 'SSL verify', type: 'switch', default: true },
   ],
   'feishu-auth': [
-    { key: 'app_id', label: 'App ID', type: 'text', placeholder: '${FEISHU_APP_ID}' },
+    { key: 'app_id', label: 'App ID', type: 'text', placeholder: '${FEISHU_APP_ID}', template: 'env-only' },
     { key: 'app_secret', label: 'App secret', type: 'text', placeholder: '${FEISHU_APP_SECRET}', template: 'env-only' },
     { key: 'auth_redirect_uri', label: 'Auth redirect URI', type: 'text', placeholder: 'https://app.example.com/callback', hint: 'part of the token-exchange body' },
     { key: 'code_header', label: 'Code header', type: 'text', default: 'X-Feishu-Code' },
@@ -637,12 +646,12 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   // status_map) carry nested-map config the SchemaForm cannot render; those
   // keys are documented as YAML-only on their reference pages.
   'request-id': [
-    { key: 'header_name', label: 'Header name', type: 'text', default: 'X-Request-Id' },
+    { key: 'header_name', label: 'Header name', type: 'text', default: 'X-Request-Id', template: 'full' },
     { key: 'include_in_response', label: 'Response', type: 'switch', switchLabel: 'Echo id on the response', default: true },
     { key: 'algorithm', label: 'Algorithm', type: 'select', options: ['uuid'], default: 'uuid', hint: 'only uuid (v4) is supported' },
   ],
   'real-ip': [
-    { key: 'source', label: 'Source', type: 'text', placeholder: 'http_x_forwarded_for', hint: 'required — variable holding the real address, e.g. http_x_real_ip' },
+    { key: 'source', label: 'Source', type: 'text', placeholder: 'http_x_forwarded_for', hint: 'required — variable holding the real address, e.g. http_x_real_ip', template: 'none' },
     { key: 'trusted_addresses', label: 'Trusted addresses', type: 'list', addLabel: 'CIDR', item: { type: 'text', placeholder: '10.0.0.0/8' }, hint: 'rewrite only when the direct peer matches; empty means always' },
     { key: 'recursive', label: 'Recursive', type: 'switch', switchLabel: 'Walk X-Forwarded-For skipping trusted hops', default: false },
   ],
@@ -653,13 +662,13 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'append_query_string', label: 'Query string', type: 'switch', switchLabel: 'Append original query string', default: false },
   ],
   echo: [
-    { key: 'body', label: 'Body', type: 'textarea', rows: 4, hint: 'replaces the upstream response body' },
-    { key: 'before_body', label: 'Before body', type: 'text', hint: 'prepended to the body' },
-    { key: 'after_body', label: 'After body', type: 'text', hint: 'appended to the body' },
+    { key: 'body', label: 'Body', type: 'textarea', rows: 4, hint: 'replaces the upstream response body', template: 'full' },
+    { key: 'before_body', label: 'Before body', type: 'text', hint: 'prepended to the body', template: 'full' },
+    { key: 'after_body', label: 'After body', type: 'text', hint: 'appended to the body', template: 'full' },
     { key: 'headers', label: 'Headers', type: 'objects', addLabel: 'Header', itemLabel: 'Header',
       fields: [
         { key: 'name', label: 'Name', type: 'text', placeholder: 'x-served-by' },
-        { key: 'value', label: 'Value', type: 'text' },
+        { key: 'value', label: 'Value', type: 'text', template: 'full' },
       ] },
   ],
   'ua-restriction': [
@@ -667,34 +676,34 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'denylist', label: 'Denylist', type: 'list', addLabel: 'Regex', item: { type: 'text', placeholder: 'curl/.*', template: 'env-only' }, hint: 'matching User-Agents are rejected' },
     { key: 'bypass_missing', label: 'Missing User-Agent', type: 'switch', switchLabel: 'Bypass when header absent', default: false },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 403 },
-    { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'Not allowed' },
+    { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'Not allowed', template: 'full' },
   ],
   'referer-restriction': [
     { key: 'whitelist', label: 'Whitelist', type: 'list', addLabel: 'Host', item: { type: 'text', placeholder: '*.example.com' }, hint: 'only these Referer hosts pass; set exactly one list' },
     { key: 'blacklist', label: 'Blacklist', type: 'list', addLabel: 'Host', item: { type: 'text', placeholder: 'evil.com' }, hint: 'these Referer hosts are rejected' },
     { key: 'bypass_missing', label: 'Missing Referer', type: 'switch', switchLabel: 'Bypass when missing or malformed', default: false },
-    { key: 'message', label: 'Rejected message', type: 'text', placeholder: 'Your referer host is not allowed' },
+    { key: 'message', label: 'Rejected message', type: 'text', placeholder: 'Your referer host is not allowed', template: 'full' },
   ],
   'uri-blocker': [
     { key: 'block_rules', label: 'Block rules', type: 'list', addLabel: 'Regex', item: { type: 'text', placeholder: '^/admin/', template: 'env-only' }, hint: 'required; matched against path + query string' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 403 },
-    { key: 'rejected_msg', label: 'Rejected message', type: 'text', hint: 'when set, body is {"error_msg": ...}; empty body otherwise' },
+    { key: 'rejected_msg', label: 'Rejected message', type: 'text', hint: 'when set, body is {"error_msg": ...}; empty body otherwise', template: 'full' },
     { key: 'case_insensitive', label: 'Case', type: 'switch', switchLabel: 'Case-insensitive matching', default: false },
   ],
   csrf: [
     { key: 'key', label: 'Secret key', type: 'text', placeholder: '${CSRF_SECRET}', hint: 'required; HMAC secret for signing tokens', template: 'env-only' },
     { key: 'expires', label: 'Expires (s)', type: 'number', default: 7200, hint: '0 disables the expiry check' },
-    { key: 'name', label: 'Token name', type: 'text', default: 'featherbit-csrf-token', hint: 'cookie and request-header name' },
+    { key: 'name', label: 'Token name', type: 'text', default: 'featherbit-csrf-token', hint: 'cookie and request-header name', template: 'full' },
     { key: 'phase', label: 'Phase', type: 'radio', options: ['request', 'response'], default: 'request', hint: 'request validates unsafe methods; response issues the cookie (place after upstream)' },
   ],
   'response-rewrite': [
     { key: 'status_code', label: 'Status code', type: 'number', hint: '200-598; empty keeps the current status' },
-    { key: 'body', label: 'Body', type: 'textarea', rows: 4, hint: 'replaces the body; mutually exclusive with filters' },
+    { key: 'body', label: 'Body', type: 'textarea', rows: 4, hint: 'replaces the body; mutually exclusive with filters', template: 'full' },
     { key: 'body_base64', label: 'Base64', type: 'switch', switchLabel: 'Decode body from base64', default: false },
     { key: 'filters', label: 'Body filters', type: 'objects', addLabel: 'Filter', itemLabel: 'Filter',
       fields: [
         { key: 'regex', label: 'Regex', type: 'text', template: 'env-only' },
-        { key: 'replace', label: 'Replace', type: 'text' },
+        { key: 'replace', label: 'Replace', type: 'text', template: 'full' },
         { key: 'scope', label: 'Scope', type: 'radio', options: ['once', 'global'], default: 'once' },
         { key: 'options', label: 'Options', type: 'select', options: [{ value: '', label: 'none' }, { value: 'i', label: 'i (case-insensitive)' }], default: '' },
       ] },
@@ -727,7 +736,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   ],
   mocking: [
     { key: 'response_status', label: 'Status', type: 'number', default: 200 },
-    { key: 'content_type', label: 'Content type', type: 'select', options: ['application/json;charset=utf8', 'application/json', 'text/plain', 'text/html', 'application/xml', 'text/xml'], default: 'application/json;charset=utf8' },
+    { key: 'content_type', label: 'Content type', type: 'select', options: ['application/json;charset=utf8', 'application/json', 'text/plain', 'text/html', 'application/xml', 'text/xml'], default: 'application/json;charset=utf8', template: 'full' },
     { key: 'response_example', label: 'Response body', type: 'textarea', rows: 6, placeholder: '{"user": "$arg_name"}', hint: 'required; supports $var interpolation', template: 'full', legacyDollar: true },
     { key: 'response_headers', label: 'Response headers', type: 'objects', addLabel: 'Header', itemLabel: 'Header',
       fields: [
@@ -744,7 +753,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
         { key: 'name', label: 'Name / body path', type: 'text', placeholder: 'user.card_number', hint: 'dotted path for body rules; numeric segments index arrays' },
         { key: 'action', label: 'Action', type: 'select', options: ['remove', 'replace', 'regex'], default: 'remove' },
         { key: 'regex', label: 'Regex', type: 'text', placeholder: '^(\\d{4})\\d+(\\d{4})$', hint: 'required for action regex', template: 'env-only' },
-        { key: 'value', label: 'Value', type: 'text', placeholder: '***', hint: 'required for replace/regex; $1 captures allowed' },
+        { key: 'value', label: 'Value', type: 'text', placeholder: '***', hint: 'required for replace/regex; $1 captures allowed', template: 'full' },
         { key: 'body_format', label: 'Body format', type: 'select', options: ['json'], default: 'json', hint: 'required for body rules' },
       ] },
     { key: 'max_body_size', label: 'Max body size (bytes)', type: 'number', default: 1048576, hint: 'larger bodies skip body rules' },
@@ -753,7 +762,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'header_schema', label: 'Header schema (JSON)', type: 'textarea', rows: 6, placeholder: '{"type":"object","required":["x-api-version"]}', hint: 'JSON Schema; headers seen as {name: first_value}, lowercase names', template: 'env-only' },
     { key: 'body_schema', label: 'Body schema (JSON)', type: 'textarea', rows: 8, placeholder: '{"type":"object","required":["name"]}', hint: 'JSON Schema; at least one schema is required', template: 'env-only' },
     { key: 'rejected_code', label: 'Rejected status', type: 'number', default: 400 },
-    { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'invalid payload', hint: 'fixed message instead of validator detail' },
+    { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'invalid payload', hint: 'fixed message instead of validator detail', template: 'full' },
   ],
   'body-transformer': [
     { key: 'request', label: 'Request transform', type: 'objects', addLabel: 'Transform', itemLabel: 'Request',
@@ -768,9 +777,9 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
       ] },
   ],
   degraphql: [
-    { key: 'query', label: 'GraphQL query', type: 'textarea', rows: 6, placeholder: 'query ($name: String!) { persons(filter: { name: $name }) { id name } }', hint: 'required; sent upstream as the query document' },
-    { key: 'variables', label: 'Variables', type: 'list', addLabel: 'Variable', item: { type: 'text', placeholder: 'name' }, hint: 'resolved from query params first, then JSON body fields' },
-    { key: 'operation_name', label: 'Operation name', type: 'text', placeholder: 'ListPersons', hint: 'for multi-operation documents' },
+    { key: 'query', label: 'GraphQL query', type: 'textarea', rows: 6, placeholder: 'query ($name: String!) { persons(filter: { name: $name }) { id name } }', hint: 'required; sent upstream as the query document', template: 'full' },
+    { key: 'variables', label: 'Variables', type: 'list', addLabel: 'Variable', item: { type: 'text', placeholder: 'name', template: 'full' }, hint: 'resolved from query params first, then JSON body fields' },
+    { key: 'operation_name', label: 'Operation name', type: 'text', placeholder: 'ListPersons', hint: 'for multi-operation documents', template: 'full' },
   ],
 };
 

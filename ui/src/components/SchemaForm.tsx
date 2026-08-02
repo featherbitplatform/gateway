@@ -38,17 +38,26 @@ interface SchemaFormProps {
 
 /**
  * Resolves a field's effective template mode: the explicit `template` flag
- * when set, else a type-based default — `'full'` for `text`/`textarea`
- * (list/objects items are resolved by their own `item.type`/`sub.type`),
- * `'none'` for every other control (`radio`/`select`/`switch`/`number`),
- * since those never render `VarInput` regardless of any stray override.
+ * when set, else a type-based default.
+ *
+ * The default is **`'env-only'`** for `text`/`textarea` (list/objects items
+ * are resolved by their own `item.type`/`sub.type`) — offering full
+ * request/response/message context suggestions is only honest on fields the
+ * Rust plugin actually renders through `Template`; every other text-like
+ * field only ever reaches `{{env.*}}` substitution (at parse/load time, not
+ * request time), so `'env-only'` is the non-misleading default. Fields the
+ * engine genuinely templates carry an explicit `template: 'full'` in
+ * `pluginConfig.ts`, verified against each plugin's Rust source (see Tasks
+ * 2-5's sweep reports). `'none'` is the default for every other control
+ * (`radio`/`select`/`switch`/`number`), which never render `VarInput`
+ * regardless of any stray override.
  */
 function resolveTemplateMode(
   explicit: 'full' | 'env-only' | 'none' | undefined,
   type: string | undefined
 ): 'full' | 'env-only' | 'none' {
   if (explicit) return explicit;
-  return type === 'text' || type === 'textarea' ? 'full' : 'none';
+  return type === 'text' || type === 'textarea' ? 'env-only' : 'none';
 }
 
 const inputStyle: React.CSSProperties = {
