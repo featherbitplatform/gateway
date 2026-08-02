@@ -385,6 +385,8 @@ export default function App() {
         onSavePolicy={handleSaveGraph}
         kind={selectedSupernodeDef ? 'supernode' : 'policy'}
         supernodes={supernodes}
+        // TODO(Task 9): wire up the real list from GET /api/plugin-configs via App state.
+        pluginConfigs={[]}
       />
 
       <Dialog
