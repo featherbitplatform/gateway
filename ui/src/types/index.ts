@@ -192,6 +192,30 @@ export interface BodyCapture {
   binary?: boolean;
 }
 
+/**
+ * One row of the context-variable catalog served by `GET /api/vars`.
+ *
+ * @remarks
+ * Mirrors `src/vars/catalog.rs::VarEntry` field for field. `kind: 'static'`
+ * entries are fixed names (`uri`, `status`, ...); `kind: 'family'` entries
+ * are `prefix_*` patterns (`http_*`, `arg_*`, ...) whose members are only
+ * known once a trace is available, in which case `family_source` names the
+ * context collection (`request_headers`, `query_params`, ...) that supplies
+ * the live members.
+ */
+export interface VarEntry {
+  /** Variable name, e.g. `uri`, or a `prefix_*` pattern for families. */
+  name: string;
+  /** Whether this is a single fixed name or a `prefix_*` family. */
+  kind: 'static' | 'family';
+  /** For families, the context collection that populates live members. */
+  family_source?: string;
+  /** One-line human-readable explanation. */
+  description: string;
+  /** Example `$var` usage shown in the UI. */
+  example: string;
+}
+
 /** Redacted point-in-time view of the gateway Context. */
 export interface ContextSnapshot {
   request: {
