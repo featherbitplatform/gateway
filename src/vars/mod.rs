@@ -36,8 +36,10 @@ use crate::context::Context;
 /// - `query_string` — rebuilt from `query_params`
 /// - `status` — response status code
 /// - `resp_body` — response body (lossy UTF-8)
+/// - `request_body` — request body (lossy UTF-8)
 /// - `arg_<name>` — first query parameter value
 /// - `http_<name>` — first request header value (underscores map to dashes)
+/// - `sent_http_<name>` — first response header value (underscores map to dashes)
 /// - `cookie_<name>` — value from the `Cookie` request header
 /// - `post_arg_<name>` — form field, only for
 ///   `application/x-www-form-urlencoded` request bodies
@@ -81,6 +83,9 @@ pub fn resolve<'a>(ctx: &'a Context, name: &str) -> Option<Cow<'a, str>> {
         "resp_body" => Some(Cow::Owned(
             String::from_utf8_lossy(&ctx.response.body).into_owned(),
         )),
+        "request_body" => Some(Cow::Owned(
+            String::from_utf8_lossy(&ctx.request.body).into_owned(),
+        )),
         "consumer_name" => message_str(ctx, "consumer.name"),
         "consumer_group_id" => message_str(ctx, "consumer.group"),
         _ => {
@@ -88,6 +93,13 @@ pub fn resolve<'a>(ctx: &'a Context, name: &str) -> Option<Cow<'a, str>> {
                 ctx.request
                     .query_params
                     .get(arg)
+                    .and_then(|v| v.first())
+                    .map(|v| Cow::Borrowed(v.as_str()))
+            } else if let Some(header) = name.strip_prefix("sent_http_") {
+                let header = header.replace('_', "-").to_lowercase();
+                ctx.response
+                    .headers
+                    .get(&header)
                     .and_then(|v| v.first())
                     .map(|v| Cow::Borrowed(v.as_str()))
             } else if let Some(header) = name.strip_prefix("http_") {
@@ -623,5 +635,46 @@ mod tests {
         assert_eq!(split_remote_addr("1.2.3.4"), ("1.2.3.4", None));
         assert_eq!(split_remote_addr("[::1]:8080"), ("::1", Some("8080")));
         assert_eq!(split_remote_addr("::1"), ("::1", None));
+    }
+
+    #[test]
+    fn test_sent_http_resolves_response_header() {
+        let mut ctx = test_ctx();
+        ctx.response.headers.insert(
+            "x-cache-status".to_string(),
+            vec!["HIT".to_string(), "second".to_string()],
+        );
+        assert_eq!(
+            resolve(&ctx, "sent_http_x_cache_status").as_deref(),
+            Some("HIT"),
+            "underscore->dash mapping and first-value pick must mirror http_*"
+        );
+        assert!(resolve(&ctx, "sent_http_missing").is_none());
+    }
+
+    #[test]
+    fn test_request_body_lossy_utf8() {
+        let mut ctx = test_ctx();
+        ctx.request.body = bytes::Bytes::from_static(b"hello=world");
+        assert_eq!(
+            resolve(&ctx, "request_body").as_deref(),
+            Some("hello=world")
+        );
+
+        ctx.request.body = bytes::Bytes::from_static(&[0xff, 0x61]);
+        assert_eq!(resolve(&ctx, "request_body").as_deref(), Some("\u{fffd}a"));
+    }
+
+    #[test]
+    fn test_interpolate_sent_http_and_request_body() {
+        let mut ctx = test_ctx();
+        ctx.response
+            .headers
+            .insert("x-id".to_string(), vec!["42".to_string()]);
+        ctx.request.body = bytes::Bytes::from_static(b"B");
+        assert_eq!(
+            interpolate(&ctx, "h=$sent_http_x_id b=$request_body"),
+            "h=42 b=B"
+        );
     }
 }
