@@ -488,6 +488,7 @@ export default function App() {
           kind={selectedSupernodeDef ? 'supernode' : 'policy'}
           supernodes={supernodes}
           pluginConfigs={pluginConfigs}
+          debugConfig={debugConfig}
         />
       )}
 
