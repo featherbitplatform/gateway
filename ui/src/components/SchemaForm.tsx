@@ -299,7 +299,7 @@ export function SchemaForm({ schema, value, onChange, varContext }: SchemaFormPr
               placeholder={field.placeholder}
               multiline
               rows={field.rows ?? 4}
-              style={inputStyle}
+              style={{ ...inputStyle, fontSize: 'var(--text-xs)' }}
               {...varContext}
             />
           );

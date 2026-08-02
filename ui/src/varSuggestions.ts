@@ -48,6 +48,18 @@
  * edge comes from the listener" (preview from `trace.initial`, there being
  * no prior node step), and a string is a real predecessor node id.
  *
+ * `headerFamily` (backing both `http_*` and `sent_http_*`) skips-with-a-note
+ * any captured header whose name contains `_`: the suggested var name is
+ * built by lowercasing and mapping `-` to `_` (`X-Trace-Id` → `http_x_trace_id`),
+ * but `resolve()` on the gateway side maps `_` back to `-` when it looks the
+ * header up (`src/vars/mod.rs`), so a header that had a literal `_` in it
+ * (e.g. `X_Trace_Id`) is not the header that `$http_x_trace_id` actually
+ * resolves — it would look up `x-trace-id` instead and most likely miss. The
+ * chosen fix is a per-row note ("header name contains '_' — not resolvable
+ * via $http_*") rather than omitting the row outright, so the header is
+ * still visible in the popover/legend but is never shown with a (misleading)
+ * live value.
+ *
  * @module varSuggestions
  */
 import { useEffect, useState } from 'react';
@@ -321,6 +333,20 @@ function headerFamily(
   if (names.length === 0) return [familyRow(`${prefix}*`, group, description)];
   return names.map((h) => {
     const varName = `${prefix}${h.toLowerCase().replace(/-/g, '_')}`;
+    // A header name that itself contains '_' can't round-trip through
+    // resolve()'s '_' -> '-' mapping (see module doc): the suggested
+    // `$http_*`/`$sent_http_*` var would resolve a *different* header (with
+    // '-' where this one has '_') and most likely come back empty. Surface
+    // the name so it's still discoverable, but never attach a value/insert
+    // that would look resolvable.
+    if (h.includes('_')) {
+      return familyRow(
+        varName,
+        group,
+        description,
+        "header name contains '_' — not resolvable via $http_*",
+      );
+    }
     const value = headers![h][0];
     return {
       name: varName,
@@ -543,7 +569,10 @@ export function useContextSuggestions(args: {
       }
 
       try {
-        const traces = await api.listTraces({ policy: policyName, limit: 1 });
+        // `source: 'request'` excludes sandbox-run traces from the preview:
+        // the docs promise "the latest handled request", and a sandbox trace
+        // is a synthetic, user-triggered probe rather than real traffic.
+        const traces = await api.listTraces({ policy: policyName, limit: 1, source: 'request' });
         if (cancelled) return;
         if (traces.length === 0) {
           setAvailability('no-trace');

@@ -170,14 +170,17 @@ export const api = {
   debugConfig: () => request<DebugConfig>('/api/debug/config'),
   /**
    * `GET /api/debug/traces` — recorded traces, newest first, unwrapped from
-   * `{ traces: [...] }`. Optional `filter.policy` / `filter.limit` are sent
-   * as query params; called with no args, behavior is unchanged from before
-   * (all traces, default server-side limit).
+   * `{ traces: [...] }`. Optional `filter.policy` / `filter.limit` /
+   * `filter.source` are sent as query params (`source` maps to the
+   * server-side `TraceFilter.source`, e.g. `"request"` | `"sandbox"` —
+   * see `src/admin/debug.rs`); called with no args, behavior is unchanged
+   * from before (all traces, default server-side limit).
    */
-  listTraces: (filter?: { policy?: string; limit?: number }) => {
+  listTraces: (filter?: { policy?: string; limit?: number; source?: string }) => {
     const q = new URLSearchParams();
     if (filter?.policy) q.set('policy', filter.policy);
     if (filter?.limit) q.set('limit', String(filter.limit));
+    if (filter?.source) q.set('source', filter.source);
     const qs = q.toString();
     return request<{ traces: TraceSummary[] }>(`/api/debug/traces${qs ? '?' + qs : ''}`).then(
       (r) => r.traces,
