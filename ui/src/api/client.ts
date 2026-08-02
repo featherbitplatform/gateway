@@ -15,6 +15,7 @@ import type {
   ScriptFile,
   GatewayStatus,
   DebugConfig,
+  VarEntry,
   TraceSummary,
   TraceDetail,
   SandboxResult,
@@ -160,12 +161,28 @@ export const api = {
   /** `GET /api/config/export` — returns the live in-memory config (routes + policies) as a YAML string. */
   exportConfig: () => requestText('/api/config/export'),
 
+  // Vars
+  /** `GET /api/vars` — the context-variable catalog, unwrapped from `{ vars: [...] }`. */
+  listVars: () => request<{ vars: VarEntry[] }>('/api/vars').then((r) => r.vars),
+
   // Debug mode
   /** `GET /api/debug/config` — effective debug settings; answers even when debug is disabled. */
   debugConfig: () => request<DebugConfig>('/api/debug/config'),
-  /** `GET /api/debug/traces` — recorded traces, newest first, unwrapped from `{ traces: [...] }`. */
-  listTraces: () =>
-    request<{ traces: TraceSummary[] }>('/api/debug/traces').then((r) => r.traces),
+  /**
+   * `GET /api/debug/traces` — recorded traces, newest first, unwrapped from
+   * `{ traces: [...] }`. Optional `filter.policy` / `filter.limit` are sent
+   * as query params; called with no args, behavior is unchanged from before
+   * (all traces, default server-side limit).
+   */
+  listTraces: (filter?: { policy?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (filter?.policy) q.set('policy', filter.policy);
+    if (filter?.limit) q.set('limit', String(filter.limit));
+    const qs = q.toString();
+    return request<{ traces: TraceSummary[] }>(`/api/debug/traces${qs ? '?' + qs : ''}`).then(
+      (r) => r.traces,
+    );
+  },
   /** `GET /api/debug/traces/{id}` — one trace with per-step computed changes. */
   getTrace: (id: string) => request<TraceDetail>(`/api/debug/traces/${id}`),
   /** `DELETE /api/debug/traces` — empties the trace buffer. */
