@@ -1,8 +1,10 @@
 /**
- * Controlled `<input>`/`<textarea>` with a `$var` autocomplete popover.
+ * Controlled `<input>`/`<textarea>` with a `{{path}}` (and, on opted-in
+ * fields, legacy `$var`) autocomplete popover.
  *
- * Detects an in-progress `$name` / `${name` token at the caret and offers
- * matching {@link Suggestion} rows (name + trace-derived live preview, from
+ * Detects an in-progress `{{path` token — or, when `legacyDollar` is true,
+ * also a `$name` / `${name` token — at the caret and offers matching
+ * {@link Suggestion} rows (name + trace-derived live preview, from
  * {@link useContextSuggestions} in varSuggestions.ts) to complete it. This
  * component only owns token detection, filtering, keyboard navigation, and
  * insertion — the suggestion list, live values, and availability messaging
@@ -31,6 +33,25 @@ interface VarInputProps {
   availability: Availability;
   /** Opens the full context-vars legend/reference dialog. */
   onOpenLegend: () => void;
+  /**
+   * Whether this field also accepts legacy `$name`/`${name}` completions.
+   * `false` (default) means only `{{path}}` tokens open the popover; a `$`
+   * or `${` at the caret is left untouched (no popover, no gating of typing).
+   * The 15 legacy-`$` fields (Task 2) pass `true` so their existing
+   * `$`-completion behavior keeps working unchanged.
+   */
+  legacyDollar?: boolean;
+  /**
+   * Which suggestion groups this field offers, on top of the `trigger`
+   * filter: `'full'` (default) offers every group; `'env-only'` restricts
+   * the popover to the `env` group (for fields that may only reference
+   * environment variables, not request/response/message context — see
+   * Task 9, which decides which fields pass this). `'none'` fields are not
+   * expected to render `VarInput` at all; it's accepted here only so a
+   * caller can pass a field's mode through without a conditional, and is
+   * treated the same as `'full'` if one ever does render with it.
+   */
+  templateMode?: 'full' | 'env-only' | 'none';
   /** Spread onto the input/textarea element (callers pass their shared field style). */
   style?: React.CSSProperties;
 }
@@ -43,8 +64,15 @@ const AVAILABILITY_MESSAGE: Record<Exclude<Availability, 'ok'>, string> = {
   'supernode-definition': 'Live values unavailable while editing a supernode definition',
 };
 
-/** Matches an in-progress `$name` or `${name` token ending exactly at the caret. */
-const TOKEN_RE = /\$\{?([A-Za-z0-9_.]*)$/;
+/**
+ * Matches an in-progress token ending exactly at the caret: either a `{{`
+ * token (group 2; always active — this is the universal-template trigger)
+ * or a legacy `$name` / `${name` token (group 3; only ever matched when the
+ * caller opts the field into `legacyDollar` — see {@link syncTokenFromCaret}
+ * below, which rejects a group-3 match when that prop is false rather than
+ * maintaining two separate regexes).
+ */
+const TOKEN_RE = /(\{\{\s*([A-Za-z0-9_.-]*)|\$\{?([A-Za-z0-9_.]*))$/;
 
 /** Delay before a blur closes the popover, so a row's `click` lands first. */
 const BLUR_CLOSE_DELAY_MS = 120;
@@ -95,12 +123,13 @@ function ValueCell({ suggestion }: { suggestion: Suggestion }) {
 }
 
 /**
- * Controlled field + `$var` autocomplete popover.
+ * Controlled field + `{{path}}` (and, on opted-in fields, legacy `$var`)
+ * autocomplete popover.
  *
  * @remarks Token detection re-runs on every change and every selection
  * change (mouse click, arrow keys) against `value.slice(0, selectionStart)`,
  * per the behavior contract in task-5-brief.md. Insertion replaces the
- * matched `$...` span with `suggestion.insert`, restores focus, and places
+ * matched token span with `suggestion.insert`, restores focus, and places
  * the caret right after the inserted text.
  */
 export function VarInput({
@@ -112,12 +141,20 @@ export function VarInput({
   suggestions,
   availability,
   onOpenLegend,
+  legacyDollar = false,
+  templateMode = 'full',
   style,
 }: VarInputProps) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const [tokenStart, setTokenStart] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
+  // Which token syntax the currently-open popover is completing — decides
+  // which half of `suggestions` (see `Suggestion.trigger` in
+  // varSuggestions.ts) `filtered` below draws from. Only meaningful while
+  // `open`; reset alongside every other token-derived piece of state in
+  // `syncTokenFromCaret`.
+  const [activeTrigger, setActiveTrigger] = useState<Suggestion['trigger']>('brace');
 
   const elRef = useRef<FieldEl | null>(null);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -135,7 +172,12 @@ export function VarInput({
   const justInserted = useRef(false);
 
   const lowerFilter = filter.toLowerCase();
-  const filtered = suggestions.filter((s) => s.name.toLowerCase().includes(lowerFilter));
+  const filtered = suggestions.filter(
+    (s) =>
+      s.trigger === activeTrigger &&
+      (templateMode !== 'env-only' || s.group === 'env') &&
+      s.name.toLowerCase().includes(lowerFilter),
+  );
 
   useEffect(() => {
     const el = elRef.current;
@@ -172,8 +214,20 @@ export function VarInput({
       setOpen(false);
       return;
     }
+    // Group 2 only participates when the `{{` alternative matched; group 3
+    // only when the `$`/`${` alternative matched (see TOKEN_RE's doc
+    // comment) — exactly one of the two is ever defined.
+    const isDollarToken = match[3] !== undefined;
+    if (isDollarToken && !legacyDollar) {
+      // This field never offers `$` completions — treat it as no match at
+      // all rather than opening a popover for a token the field doesn't
+      // support (and doesn't want its typing gated on).
+      setOpen(false);
+      return;
+    }
     setTokenStart(pos - match[0].length);
-    setFilter(match[1]);
+    setFilter((isDollarToken ? match[3] : match[2]) ?? '');
+    setActiveTrigger(isDollarToken ? 'dollar' : 'brace');
     setActiveIndex(0);
     setOpen(true);
   }
@@ -182,15 +236,26 @@ export function VarInput({
     if (!suggestion) return;
     const el = elRef.current;
     const caret = el?.selectionStart ?? tokenStart;
-    // If the in-progress token began with the brace form (`${`) and the
-    // character sitting right at the caret is that token's own closing
-    // `}`, consume it too — otherwise the inserted text leaves a stray `}`
-    // behind (`${foo` + completion + already-typed `}` -> double brace).
-    // Gated on the *matched* token's opening delimiter (not on whether this
-    // suggestion's own `insert` happens to use braces), so completing a
-    // plain `$token` never eats an unrelated, legitimate `}` at the caret.
-    const isBraceToken = value[tokenStart] === '$' && value[tokenStart + 1] === '{';
-    const spliceEnd = isBraceToken && value[caret] === '}' ? caret + 1 : caret;
+    // If the in-progress token began with a brace form and the caret sits
+    // right before that token's own closing brace(s), consume them too —
+    // otherwise the inserted text leaves stray brace(s) behind (`${foo` +
+    // completion + already-typed `}` -> double brace; same idea for `{{foo`
+    // + completion + already-typed `}}`). Gated on the *matched* token's
+    // opening delimiter (not on whether this suggestion's own `insert`
+    // happens to use braces), so completing a plain `$token` never eats an
+    // unrelated, legitimate `}` at the caret.
+    const isDollarBraceToken = value[tokenStart] === '$' && value[tokenStart + 1] === '{';
+    const isDoubleBraceToken = value[tokenStart] === '{' && value[tokenStart + 1] === '{';
+    let spliceEnd = caret;
+    if (isDollarBraceToken && value[caret] === '}') {
+      spliceEnd = caret + 1;
+    } else if (isDoubleBraceToken) {
+      if (value.slice(caret, caret + 2) === '}}') {
+        spliceEnd = caret + 2;
+      } else if (value[caret] === '}') {
+        spliceEnd = caret + 1;
+      }
+    }
     const nextValue = `${value.slice(0, tokenStart)}${suggestion.insert}${value.slice(spliceEnd)}`;
     setOpen(false);
     if (nextValue === value) {
