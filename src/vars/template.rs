@@ -190,7 +190,6 @@ impl Template {
     /// Parses `s` and returns only the warnings, discarding the template.
     /// Used by the compile-time walk that surfaces warnings without
     /// duplicating render behavior.
-    #[allow(dead_code)] // consumed by the plugin sweep (next tasks)
     pub fn source_warnings_only(s: &str) -> Vec<String> {
         Self::parse(s).1
     }
