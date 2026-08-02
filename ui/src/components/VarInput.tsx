@@ -50,6 +50,15 @@ interface VarInputProps {
    * expected to render `VarInput` at all; it's accepted here only so a
    * caller can pass a field's mode through without a conditional, and is
    * treated the same as `'full'` if one ever does render with it.
+   *
+   * Also decides *which form* an `env`-group suggestion inserts (see
+   * `insertSuggestion` and `Suggestion.insertEnvOnly` in varSuggestions.ts):
+   * `'env-only'` fields are never parsed into a `Template` by the Rust
+   * plugin, so `{{env.NAME}}` — which only `Template::parse` resolves —
+   * would sit there unresolved forever; only the universal `${NAME}` env
+   * pass (`interpolate_env_json`, applied to every field's config
+   * regardless of templating) actually works there. `'full'` fields insert
+   * `{{env.NAME}}` as before.
    */
   templateMode?: 'full' | 'env-only' | 'none';
   /** Spread onto the input/textarea element (callers pass their shared field style). */
@@ -234,6 +243,21 @@ export function VarInput({
 
   function insertSuggestion(suggestion: Suggestion | undefined) {
     if (!suggestion) return;
+    // `env` rows carry two insertion forms (see `insertEnvOnly` on
+    // `Suggestion`): `{{env.NAME}}` only ever resolves in a field the plugin
+    // parses into a `Template` ('full'); an 'env-only' field never reaches
+    // `Template::parse`; only the universal `${NAME}` env pass
+    // (`interpolate_env_json`, applied to every field regardless of
+    // templating) resolves there. Inserting the brace form into an
+    // 'env-only' field would look identical to a working suggestion but
+    // never actually substitute — the exact "dishonest suggestion" this
+    // component otherwise goes out of its way to avoid (see `templateMode`'s
+    // doc comment above). Every other suggestion (non-`env` groups, or `env`
+    // in a `'full'` field) is unaffected.
+    const insertText =
+      templateMode === 'env-only' && suggestion.insertEnvOnly !== undefined
+        ? suggestion.insertEnvOnly
+        : suggestion.insert;
     const el = elRef.current;
     const caret = el?.selectionStart ?? tokenStart;
     // If the in-progress token began with a brace form and the caret sits
@@ -256,7 +280,7 @@ export function VarInput({
         spliceEnd = caret + 1;
       }
     }
-    const nextValue = `${value.slice(0, tokenStart)}${suggestion.insert}${value.slice(spliceEnd)}`;
+    const nextValue = `${value.slice(0, tokenStart)}${insertText}${value.slice(spliceEnd)}`;
     setOpen(false);
     if (nextValue === value) {
       // No-op insertion (the token was already fully typed out verbatim):
@@ -266,7 +290,7 @@ export function VarInput({
       pendingCaret.current = null;
       return;
     }
-    pendingCaret.current = tokenStart + suggestion.insert.length;
+    pendingCaret.current = tokenStart + insertText.length;
     justInserted.current = true;
     onChange(nextValue);
     el?.focus();

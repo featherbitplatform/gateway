@@ -90,9 +90,13 @@
  *
  * A new `'env'` group (fed by `GET /api/env-vars` via {@link
  * useContextSuggestions}, module-cached the same way as the catalog) is
- * `'brace'`-only: `{{env.NAME}}` has no `$`-syntax equivalent, so every
+ * `'brace'`-only: `{{env.NAME}}` has no `$`-syntax equivalent (the `{{` token
+ * is still what opens the popover on an `'env-only'` field), so every
  * `env.*` row is tagged `'brace'` and carries no `value` (env-var values are
- * never fetched or shown — only names).
+ * never fetched or shown — only names). It does, however, carry a second
+ * *insertion* form, `insertEnvOnly` (`${NAME}`), that `VarInput` swaps in for
+ * `'env-only'` fields — see `Suggestion.insertEnvOnly`'s doc comment for why
+ * `{{env.NAME}}` itself would never actually resolve there.
  *
  * `VarInput`'s new `templateMode` prop (`'full' | 'env-only' | 'none'`,
  * default `'full'`) is a second, orthogonal filter applied on top of
@@ -129,6 +133,24 @@ export interface Suggestion {
    * rows.
    */
   insert: string;
+  /**
+   * Alternate insertion text used only for `group: 'env'` rows when the
+   * field's `templateMode` is `'env-only'` — `${NAME}`, the legacy
+   * `${VAR}`/`${VAR:-default}` form `interpolate_env`/`interpolate_env_json`
+   * (`src/config/loader.rs`) substitutes at config-compile time for *every*
+   * string leaf of *every* node's config, templated or not. `insert`
+   * (`{{env.NAME}}`) only ever resolves in fields the plugin actually parses
+   * into a `Template` (`template: 'full'` fields) — `Template::parse` is what
+   * substitutes `env.*` references, and an `'env-only'` field's raw string
+   * never reaches `Template::parse` at all, so `{{env.NAME}}` would sit
+   * there as inert, unresolved literal text forever. `VarInput` picks
+   * between the two at insertion time based on its `templateMode` prop; see
+   * that component and Templates → Load-time vs request-time resolution /
+   * Exclusions on the docs site for the full explanation. `undefined` for
+   * every non-`env` row (they have no env-only field they'd ever appear in —
+   * the `env` group is the only one offered on `'env-only'` fields).
+   */
+  insertEnvOnly?: string;
   /** Section this row belongs to: `request` | `response` | `message` | `env`. */
   group: string;
   /** One-line human-readable explanation, from the catalog entry. */
@@ -729,11 +751,20 @@ function loadEnvNames(): Promise<string[]> {
  * Builds the `'env'` group: one `'brace'`-only row per environment variable
  * *name* (never a value — `GET /api/env-vars` never returns values, and
  * this function has none to show even if it did).
+ *
+ * Carries both insertion forms: `insert` (`{{env.NAME}}`, resolved by
+ * `Template::parse` — only reachable in `template: 'full'` fields) and
+ * `insertEnvOnly` (`${NAME}`, resolved by the universal `interpolate_env`/
+ * `interpolate_env_json` pass that runs over every string leaf of every
+ * node's config regardless of templating — the only form that actually
+ * resolves in an `'env-only'` field). See the `insertEnvOnly` doc comment on
+ * {@link Suggestion} for why the two aren't interchangeable.
  */
 function envSuggestions(names: string[]): Suggestion[] {
   return names.map((name) => ({
     name: `env.${name}`,
     insert: `{{env.${name}}}`,
+    insertEnvOnly: `\${${name}}`,
     group: ENV,
     trigger: 'brace',
   }));
