@@ -3,6 +3,18 @@ title: Context vars
 description: Every $var name plugin config templates can interpolate, the ${...} syntax rules, and the web UI's autocomplete + live value preview.
 ---
 
+:::info New syntax available — see Templates
+The legacy `$var`/`${var}` syntax documented on this page only ever worked in a fixed
+set of ~15 plugin config fields. The gateway now also renders **`{{namespace.path}}`**
+templates — the same request/response/message/client data, unambiguous syntax, and
+applied to every traffic-bound plugin config field, not just a chosen few. New configs
+should prefer `{{...}}`; this page remains the reference for the legacy syntax (which
+still works, unchanged, in the fields that always supported it) and for the full var
+catalog both syntaxes share. See **[Templates](./templates.md)** for the `{{...}}`
+grammar, namespaces, load- vs request-time resolution, pass-through/warning semantics,
+exclusions, and the [legacy `$var` → `{{path}}` mapping table](./templates.md#legacy-var--path-mapping).
+:::
+
 Plugin configs reference live request/response data through `$var` interpolation — `$uri`, `$http_user_agent`, `$arg_page`, and friends — resolved by [`src/vars/mod.rs`](../concepts/context-object.md) against the request's [`Context`](../concepts/context-object.md) at execution time. This page is the full catalog: every name the resolver understands, the two ways to write a reference, which plugin config fields actually interpolate, and how the web UI's autocomplete popover and var legend help you avoid typos.
 
 The catalog below is generated from the same source the gateway serves at `GET /api/vars` (Admin API, authed) and a Rust test (`test_catalog_matches_resolver` in `src/vars/catalog.rs`) keeps it from drifting out of sync with the resolver — if you see a var here, it works, and nothing the resolver accepts is missing from this list.
@@ -58,24 +70,23 @@ Prefix families — one entry per actual value present on the request/response, 
 
 ## Where `$var` templates work
 
-The web UI's SchemaForm attaches autocomplete to fields the plugin author has explicitly flagged as accepting `$var` templates (`vars: true` in `ui/src/pluginConfig.ts`). As of this writing, that's:
+`$var`/`${var}` interpolation keeps working, unchanged, in the 15 fields that have always
+supported it — see [Templates → the 15 legacy fields](./templates.md#the-15-legacy-fields)
+for the exhaustive, per-plugin list (it now includes fields such as
+[`forward-auth`](./plugins/forward-auth.md)'s `extra_headers` and
+[`response-rewrite`](./plugins/response-rewrite.md)'s header maps, which used to be
+raw-JSON-only and are now ordinary schema-form fields with a popover, same as the rest).
+Every one of those 15 fields also accepts the new `{{namespace.path}}` syntax — the two
+compose safely (see [Templates → legacy interop](./templates.md#legacy-var-interop)).
 
-- [`lago`](./plugins/lago.md) — `event_transaction_id`, `subscription_id`
-- [`limit-count`](./plugins/limit-count.md) — `key`
-- [`limit-conn`](./plugins/limit-conn.md) — `key`
-- [`proxy-cache`](./plugins/proxy-cache.md) — `cache_key` (each list item)
-- [`redirect`](./plugins/redirect.md) — `uri`
-- [`exit-transformer`](./plugins/exit-transformer.md) — `body`
-- [`fault-injection`](./plugins/fault-injection.md) — `abort` (JSON body/headers)
-- [`traffic-label`](./plugins/traffic-label.md) — `rules` (JSON, `set_headers`/`set_labels` values)
-- [`mocking`](./plugins/mocking.md) — `response_example`, each `response_headers` value
-- [`body-transformer`](./plugins/body-transformer.md) — each transform's `template`
+No other field ever interpolated `$var`, and that hasn't changed: the sweep that made
+`{{...}}` render **everywhere** left the legacy `$` pass exactly where it always was.
+What *has* changed is autocomplete coverage — the web UI now offers `{{...}}` suggestions
+(context-aware where the field is genuinely templated, `{{env.NAME}}`-only elsewhere) in
+config fields that previously had no popover at all. See
+[Templates → where the web UI offers suggestions](./templates.md#where-the-web-ui-offers-suggestions).
 
-:::note Some interpolating fields are raw JSON/YAML, not schema-form fields
-A handful of config values that genuinely interpolate `$var` templates aren't backed by a schema-form field the popover can attach to, because they're edited as a raw JSON/YAML blob instead — the [`logging`](./plugins/logging.md) family's `log_format`, [`forward-auth`](./plugins/forward-auth.md)'s `extra_headers`, and [`response-rewrite`](./plugins/response-rewrite.md)'s header maps are the current examples. The vars still work there exactly as documented on this page — you just type them by hand, without a dropdown or live preview.
-:::
-
-Env-var and secret-looking fields (API keys, tokens, connection strings) are deliberately left unflagged even where the underlying string is technically templated the same way, to avoid nudging you toward putting request data where credentials go.
+Env-var and secret-looking fields (API keys, tokens, connection strings) still only ever get `{{env.NAME}}` suggestions, never live request/response/message context, to avoid nudging you toward putting request data where credentials go — the new syntax makes that harmless from a corruption standpoint, but it stays a bad practice.
 
 ## Autocomplete and live value preview
 
