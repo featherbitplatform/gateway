@@ -34,7 +34,10 @@ pub struct EchoPlugin {
     /// Appended to the (possibly replaced) body. Same rendering as `body`.
     after_body: Option<Template>,
     /// Response headers to set (names lowercased, values replace existing).
-    headers: HashMap<String, String>,
+    /// Values support `{{namespace.path}}` references (no legacy `$var`
+    /// interpolation — response headers never supported it, so this sweep
+    /// must not start).
+    headers: HashMap<String, Template>,
 }
 
 /// Reads an optional string key, rejecting non-string values.
@@ -62,9 +65,10 @@ impl EchoPlugin {
     ///   `{{namespace.path}}` references.
     /// - `headers` (map `{name: value}` **or** array `[{name, value}]`, the
     ///   UI editor's form): response headers to set. Values must be scalars
-    ///   (strings, numbers, bools — stringified); names are lowercased;
-    ///   array entries with a blank `name` are skipped. Existing values for
-    ///   the same header are replaced.
+    ///   (strings, numbers, bools — stringified) and support
+    ///   `{{namespace.path}}` references; names are lowercased; array entries
+    ///   with a blank `name` are skipped. Existing values for the same
+    ///   header are replaced.
     ///
     /// ```yaml
     /// type: echo
@@ -101,7 +105,7 @@ impl EchoPlugin {
             }
         };
 
-        let headers = match config.get("headers") {
+        let headers: HashMap<String, String> = match config.get("headers") {
             None => HashMap::new(),
             // Map form (YAML): headers: { x-foo: bar }
             Some(serde_json::Value::Object(m)) => m
@@ -135,6 +139,12 @@ impl EchoPlugin {
                 )
             }
         };
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let headers = headers
+            .into_iter()
+            .map(|(name, value)| (name, Template::parse(&value).0))
+            .collect();
 
         Ok(Self {
             body,
@@ -195,10 +205,13 @@ impl Plugin for EchoPlugin {
         ctx.response.headers.remove("content-encoding");
 
         // Header rewrites (set semantics, like ngx.header[name] = value).
-        for (name, value) in &self.headers {
-            ctx.response
-                .headers
-                .insert(name.clone(), vec![value.clone()]);
+        let rendered: Vec<(String, String)> = self
+            .headers
+            .iter()
+            .map(|(name, tmpl)| (name.clone(), tmpl.render(&ctx).into_owned()))
+            .collect();
+        for (name, value) in rendered {
+            ctx.response.headers.insert(name, vec![value]);
         }
 
         Ok(PluginOutput {
@@ -398,6 +411,28 @@ mod tests {
         assert!(!headers
             .values()
             .any(|v| v.contains(&"ignored blank row".to_string())));
+    }
+
+    #[tokio::test]
+    async fn test_echo_header_value_renders_template_and_leaves_dollar_untouched() {
+        // Header values must render `{{...}}` references per request while a
+        // `$` money string in the same value survives byte-identically —
+        // response headers never supported legacy `$var` interpolation, and
+        // this sweep must not start.
+        let plugin = EchoPlugin::from_config(&config(serde_json::json!({
+            "body": "x",
+            "headers": {"x-path": "path={{request.path}} price=$19.99"}
+        })))
+        .unwrap();
+
+        let mut ctx = test_context("upstream");
+        ctx.request.path = "/api/orders".to_string();
+
+        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        assert_eq!(
+            result.context.response.headers.get("x-path"),
+            Some(&vec!["path=/api/orders price=$19.99".to_string()])
+        );
     }
 
     #[tokio::test]

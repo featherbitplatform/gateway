@@ -65,6 +65,7 @@ use crate::consumers::attach_consumer;
 use crate::context::{Context, GatewayError};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// The X-HMAC-* header names (lowercased) used as the alternative to the
 /// `Authorization: Signature ...` presentation.
@@ -111,8 +112,10 @@ pub struct HmacAuthPlugin {
     keep_headers: bool,
     /// When true, the `Authorization` header is stripped before proxying.
     hide_credentials: bool,
-    /// Realm advertised in the `WWW-Authenticate` challenge.
-    realm: String,
+    /// Realm advertised in the `WWW-Authenticate` challenge. Supports
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// `realm` never supported it, so this sweep must not start).
+    realm: Template,
     resources: Arc<PluginResources>,
 }
 
@@ -233,7 +236,8 @@ impl HmacAuthPlugin {
     ///   header before proxying.
     /// - `anonymous_consumer` (string, optional): consumer attached when no
     ///   credential matches, instead of rejecting.
-    /// - `realm` (string, default `"hmac"`): `WWW-Authenticate` realm.
+    /// - `realm` (string, default `"hmac"`): `WWW-Authenticate` realm;
+    ///   supports `{{namespace.path}}` references.
     ///
     /// ```yaml
     /// type: hmac-auth
@@ -305,6 +309,9 @@ impl HmacAuthPlugin {
             .and_then(|v| v.as_str())
             .unwrap_or("hmac")
             .to_string();
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let realm = Template::parse(&realm).0;
 
         Ok(Self {
             access_key,
@@ -324,6 +331,7 @@ impl HmacAuthPlugin {
     /// Builds the 401 rejection routed through the error port with code
     /// `HMAC_INVALID`.
     fn reject(&self, mut ctx: Context, msg: &str) -> PluginResult {
+        let realm = self.realm.render(&ctx).into_owned();
         ctx.response.status_code = 401;
         ctx.response.body = Bytes::from(format!(
             r#"{{"error": "unauthorized", "message": "{}"}}"#,
@@ -335,7 +343,7 @@ impl HmacAuthPlugin {
         );
         ctx.response.headers.insert(
             "www-authenticate".to_string(),
-            vec![format!("hmac realm=\"{}\"", self.realm)],
+            vec![format!("hmac realm=\"{}\"", realm)],
         );
         Err(PluginExecutionError {
             context: ctx,
@@ -766,6 +774,22 @@ mod tests {
         let err = plugin.execute(ctx, &HashMap::new()).await.unwrap_err();
         assert_eq!(err.error.code, "HMAC_INVALID");
         assert_eq!(err.context.response.status_code, 401);
+    }
+
+    #[tokio::test]
+    async fn test_reject_realm_renders_template() {
+        // `realm` must render `{{request.host}}` per request.
+        let plugin = inline_plugin(serde_json::json!({ "realm": "realm-{{request.host}}" }));
+        let date = http_date(now() as i64);
+        let mut ctx = signed_request("wrong", "ak1", HmacAlgorithm::Sha256, &date);
+        ctx.request.host = "tenant-b.example.com".to_string();
+        let err = plugin.execute(ctx, &HashMap::new()).await.unwrap_err();
+        assert_eq!(
+            err.context.response.headers.get("www-authenticate"),
+            Some(&vec![
+                "hmac realm=\"realm-tenant-b.example.com\"".to_string()
+            ])
+        );
     }
 
     #[tokio::test]

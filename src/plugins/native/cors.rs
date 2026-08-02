@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Applies CORS response headers based on the request's `Origin` header.
 ///
@@ -20,12 +21,17 @@ use crate::plugins::{Plugin, PluginOutput, PluginResult};
 /// short-circuits with a 204 empty response. Does not write to
 /// `context.message` and always succeeds.
 pub struct CorsPlugin {
-    /// Origins granted CORS access; `"*"` matches any origin.
+    /// Origins granted CORS access; `"*"` matches any origin. Never
+    /// templated — semantic tokens (`*`/origin-echo) stay literal.
     allowed_origins: Vec<String>,
-    /// Methods advertised in preflight responses.
-    allowed_methods: Vec<String>,
+    /// Methods advertised in preflight responses. Values support
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// these headers never supported it, so this sweep must not start).
+    allowed_methods: Vec<Template>,
     /// Request headers advertised in preflight responses; may be `"*"`.
-    allowed_headers: Vec<String>,
+    /// Values support `{{namespace.path}}` references, same as
+    /// `allowed_methods`.
+    allowed_headers: Vec<Template>,
     /// Preflight cache lifetime in seconds (`access-control-max-age`).
     max_age: u64,
     /// Whether to emit `access-control-allow-credentials: true`.
@@ -37,10 +43,13 @@ impl CorsPlugin {
     /// default.
     ///
     /// Accepted keys:
-    /// - `allowed_origins` (array of strings, default `["*"]`)
+    /// - `allowed_origins` (array of strings, default `["*"]`) — never
+    ///   templated; semantic tokens (`*`/origin-echo) stay literal.
     /// - `allowed_methods` (array of strings, default
-    ///   `["GET", "POST", "PUT", "DELETE", "OPTIONS"]`)
-    /// - `allowed_headers` (array of strings, default `["*"]`)
+    ///   `["GET", "POST", "PUT", "DELETE", "OPTIONS"]`); values support
+    ///   `{{namespace.path}}` references.
+    /// - `allowed_headers` (array of strings, default `["*"]`); values
+    ///   support `{{namespace.path}}` references.
     /// - `max_age` (integer seconds, default `3600`)
     /// - `allow_credentials` (bool, default `false`)
     ///
@@ -63,7 +72,9 @@ impl CorsPlugin {
             })
             .unwrap_or_else(|| vec!["*".to_string()]);
 
-        let allowed_methods = config
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let allowed_methods: Vec<String> = config
             .get("allowed_methods")
             .and_then(|v| v.as_array())
             .map(|seq| {
@@ -80,8 +91,12 @@ impl CorsPlugin {
                     "OPTIONS".to_string(),
                 ]
             });
+        let allowed_methods = allowed_methods
+            .into_iter()
+            .map(|s| Template::parse(&s).0)
+            .collect();
 
-        let allowed_headers = config
+        let allowed_headers: Vec<String> = config
             .get("allowed_headers")
             .and_then(|v| v.as_array())
             .map(|seq| {
@@ -90,6 +105,10 @@ impl CorsPlugin {
                     .collect()
             })
             .unwrap_or_else(|| vec!["*".to_string()]);
+        let allowed_headers = allowed_headers
+            .into_iter()
+            .map(|s| Template::parse(&s).0)
+            .collect();
 
         let max_age = config
             .get("max_age")
@@ -157,14 +176,24 @@ impl Plugin for CorsPlugin {
             }
 
             if is_preflight {
-                ctx.response.headers.insert(
-                    "access-control-allow-methods".to_string(),
-                    vec![self.allowed_methods.join(", ")],
-                );
-                ctx.response.headers.insert(
-                    "access-control-allow-headers".to_string(),
-                    vec![self.allowed_headers.join(", ")],
-                );
+                let methods = self
+                    .allowed_methods
+                    .iter()
+                    .map(|tmpl| tmpl.render(&ctx))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let headers = self
+                    .allowed_headers
+                    .iter()
+                    .map(|tmpl| tmpl.render(&ctx))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ctx.response
+                    .headers
+                    .insert("access-control-allow-methods".to_string(), vec![methods]);
+                ctx.response
+                    .headers
+                    .insert("access-control-allow-headers".to_string(), vec![headers]);
                 ctx.response.headers.insert(
                     "access-control-max-age".to_string(),
                     vec![self.max_age.to_string()],
@@ -328,6 +357,40 @@ mod tests {
         );
         assert_eq!(hdr(&out.context, "access-control-max-age"), Some("50"));
         assert!(out.context.response.body.is_empty());
+    }
+
+    /// `allowed_methods`/`allowed_headers` values render `{{namespace.path}}`
+    /// references per request.
+    #[tokio::test]
+    async fn test_preflight_headers_and_methods_render_template() {
+        let out = plugin(serde_json::json!({
+            "allowed_origins": ["http://sub.domain.com"],
+            "allowed_methods": ["GET", "{{request.headers.x-extra-method}}"],
+            "allowed_headers": ["{{request.headers.x-extra-header}}"]
+        }))
+        .execute(
+            {
+                let mut c = ctx("OPTIONS", Some("http://sub.domain.com"));
+                c.request
+                    .headers
+                    .insert("x-extra-method".to_string(), vec!["PATCH".to_string()]);
+                c.request
+                    .headers
+                    .insert("x-extra-header".to_string(), vec!["x-custom".to_string()]);
+                c
+            },
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            hdr(&out.context, "access-control-allow-methods"),
+            Some("GET, PATCH")
+        );
+        assert_eq!(
+            hdr(&out.context, "access-control-allow-headers"),
+            Some("x-custom")
+        );
     }
 
     /// A preflight for a *disallowed* origin is not short-circuited (no 204, no
