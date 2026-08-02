@@ -160,9 +160,23 @@ above.
 
 Structural fields — values compiled into something other than a string at load time, or
 config with its own established templating dialect — don't route through the universal
-`Template` engine. `{{env.NAME}}` still applies to these at config-load time (it's a text
-substitution before the value is ever parsed into its structural form), but `{{request.*}}`/
-`{{response.*}}`/`{{message.*}}`/`{{client.*}}` do not apply to them.
+`Template` engine, so `{{request.*}}`/`{{response.*}}`/`{{message.*}}`/`{{client.*}}` never
+resolve there, and **neither does `{{env.NAME}}`**: that substitution happens only inside
+`Template::parse`, which only ever runs on a field the plugin actually swept onto
+`Template` — an excluded field's config string is never handed to `Template::parse` at all,
+so a literal `{{env.NAME}}` written into one would sit there as inert text forever, not
+resolve.
+
+What *does* apply to every field in this table — the same as every other field in the
+gateway's config, templated or not — is the **older, separate** `${NAME}`/`${NAME:-default}`
+substitution (`interpolate_env`/`interpolate_env_json` in `src/config/loader.rs`), the same
+mechanism `gateway.yaml` itself uses for `${ENV_VAR:-default}` at the top level. It runs
+once, generically, over every string leaf of every node's config at compile time —
+before any plugin-specific parsing, `Template::parse` included — with no notion of which
+fields are templated and which aren't. So an excluded field can still be parameterized by
+environment, just with `${NAME}` (brace form only — no bare `$NAME`, and no relation to the
+legacy `$var` *context*-variable interpolation described on [Context vars](./context-vars.md)),
+never `{{env.NAME}}`.
 
 | Class | Examples | Reason |
 |---|---|---|
@@ -173,7 +187,7 @@ substitution before the value is ever parsed into its structural form), but `{{r
 | Balancer targets/ports, numeric fields | `upstream` `targets[].port`, every `type: number` field | Not strings; `Template` only ever operates on `String` config values |
 | IP lists | `ip-restriction` allow/deny, `real-ip` `trusted_addresses` | Parsed into CIDR matchers at load |
 | TLS material | cert/key file paths across the config | Filesystem paths read once at load, not per-request data |
-| Logger endpoints/file paths | every logger's `endpoint_addr`/`uri`/`path`/host fields | Connection targets resolved once; the UI still offers `{{env.NAME}}` suggestions on these (`template: 'env-only'`) since parameterizing a collector endpoint by environment is a real use case, but not by live request data |
+| Logger endpoints/file paths | every logger's `endpoint_addr`/`uri`/`path`/host fields | Connection targets resolved once; the UI still offers `env`-group suggestions on these (`template: 'env-only'`, inserting `${NAME}` — see above) since parameterizing a collector endpoint by environment is a real use case, but not by live request data |
 | `cors.allowed_origins` | the list itself | Each origin is compared verbatim against the request's `Origin` header at the CORS decision point — value equality is the whole point, and no plugin here has ever suggested templating it (unlike `allowed_methods`/`allowed_headers`, which *are* templated, since those are inserted into response headers, not compared against request data) |
 | `body-transformer`'s own `{{...}}` | `body-transformer` `request.template`/`response.template` | Predates this feature and keeps its **own**, different `{{...}}` dialect (e.g. `{{body.user.name}}`, not `{{request.body}}`) — deliberately not migrated, to avoid breaking existing body-transformer configs whose `{{...}}` already means something else. Documented follow-up (out of scope here): its dialect resolves `{{request.method}}`-shaped input to empty rather than either rendering it or passing it through, which is a minor inconsistency with every other field on this page |
 | `error-handler`'s own body engine | `error-handler` `body_template` | Also predates this feature and keeps its own light templating (`{{error.code}}`) rather than adopting the universal namespace grammar |
@@ -199,7 +213,9 @@ value or an `{{env.NAME}}` reference for `api_host`.
   ```json
   { "names": ["HOME", "PATH", "REGION", "..."] }
   ```
-  This is what powers the web UI's `{{env.NAME}}` suggestions in every text-like field.
+  This is what powers the web UI's env-name suggestions in every text-like field — inserted
+  as `{{env.NAME}}` on a `template: 'full'` field, `${NAME}` on a `template: 'env-only'`
+  field (see [Where the web UI offers suggestions](#where-the-web-ui-offers-suggestions)).
 - **`GET /api/vars`** — the same catalog documented on [Context vars](./context-vars.md),
   now with a `path` field on each entry giving its `{{...}}` equivalent (empty string for
   the handful of legacy names with no direct template mapping — see the table below).
@@ -250,22 +266,40 @@ byte-identical for any template with no `{{...}}` references. Fields that never 
 anything before this feature are unaffected either way; adding a `{{...}}` reference to one
 of them is new capability, not a behavior change to opt out of.
 
-One env-var quirk worth calling out explicitly: `{{env.NAME}}` has no `${NAME:-default}`-style
-default fallback the way `gateway.yaml`'s own env interpolation does — an unset name always
+One env-var quirk worth calling out explicitly: `{{env.NAME}}` (the `Template::parse`-time
+form, only usable in a templated field — see [Exclusions](#exclusions)) has no
+`${NAME:-default}`-style default fallback the way `${NAME}` does — an unset name always
 takes the pass-through-plus-warning path (see [Pass-through](#pass-through--warnings)), never
-a substituted default value. If you need a default, set the environment variable itself, or
-fall back to a literal in the config.
+a substituted default value. `${NAME:-default}` — the older, universal mechanism that works
+in every field regardless of templating — does support a default; if you need one and the
+field isn't templated, that's the only form available to you anyway.
 
 ## Where the web UI offers suggestions
 
-The node inspector's `{{`-triggered popover (and `{{env.NAME}}` suggestions) don't appear
-uniformly on every text field — only on the ones the Rust plugin genuinely renders through
-`Template` at request time do you get full `request`/`response`/`message`/`client` context
-suggestions with live preview; every other text-like field still offers `{{env.NAME}}`
-suggestions (config-load-time substitution still applies there), and a few structural
-fields (dropdowns, switches, numbers, and `real-ip`'s `source`) offer no template
-suggestions at all, since they're never interpolated as strings in the first place. See
-[Web UI](../guides/web-ui.md#editor-workflow) for the popover mechanics and
+The node inspector's `{{`-triggered popover doesn't offer the same thing on every text
+field, and — since the fix for a cross-task inconsistency below — doesn't always *insert*
+the text it displays, either:
+
+- On a field the Rust plugin genuinely renders through `Template` at request time
+  (`template: 'full'`), you get full `request`/`response`/`message`/`client` context
+  suggestions with live preview, plus the `env` group; picking an `env` row inserts
+  `{{env.NAME}}`, which resolves there.
+- On every other text-like field (`template: 'env-only'` — secrets, regexes, schema blobs,
+  file paths, logger endpoints, and anything else not in the sweep), the popover still opens
+  on `{{` and still offers the `env` group **only** — no request/response/message/client
+  rows — but picking a row inserts `${NAME}` instead of `{{env.NAME}}`. This is deliberate:
+  these fields are never parsed into a `Template`, so `{{env.NAME}}` would never actually
+  resolve there — only `${NAME}` (the universal mechanism from
+  [Exclusions](#exclusions)) does. Inserting a form that looks identical to a working
+  suggestion but silently never resolves would be exactly the dishonest-suggestion problem
+  the `'full'`/`'env-only'` split exists to avoid in the first place (see
+  `ui/src/pluginConfig.ts`'s `template` field doc comment); `Suggestion.insertEnvOnly` /
+  `VarInput`'s `insertSuggestion` in the UI source is where the swap happens.
+- A few structural fields (dropdowns, switches, numbers, and `real-ip`'s `source`)
+  (`template: 'none'`) offer no suggestions at all, since they're never interpolated as
+  strings in the first place.
+
+See [Web UI](../guides/web-ui.md#editor-workflow) for the popover mechanics and
 [Context vars](./context-vars.md#autocomplete-and-live-value-preview) for the live-preview
 requirements (debug mode, an incoming edge, an existing trace) — both apply the same way to
 `{{...}}` suggestions as they always did to `$var` ones.
