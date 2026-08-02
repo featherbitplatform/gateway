@@ -10,6 +10,7 @@ import type {
   Route,
   Policy,
   Supernode,
+  PluginConfigDef,
   PluginType,
   ScriptFile,
   GatewayStatus,
@@ -128,6 +129,18 @@ export const api = {
   /** `DELETE /api/supernodes/{name}` — removes the definition; 400 while referenced. */
   deleteSupernode: (name: string) =>
     request(`/api/supernodes/${name}`, { method: 'DELETE' }),
+
+  // Plugin configs
+  /** `GET /api/plugin-configs` — returns all shared plugin configs. */
+  listPluginConfigs: () => request<PluginConfigDef[]>('/api/plugin-configs'),
+  /** `GET /api/plugin-configs/{name}` — returns the named shared config. */
+  getPluginConfig: (name: string) => request<PluginConfigDef>(`/api/plugin-configs/${name}`),
+  /** `PUT /api/plugin-configs/{name}` — upserts the named shared config (also used to create). */
+  updatePluginConfig: (name: string, def: PluginConfigDef) =>
+    request(`/api/plugin-configs/${name}`, { method: 'PUT', body: JSON.stringify(def) }),
+  /** `DELETE /api/plugin-configs/{name}` — removes the shared config; 400 while referenced. */
+  deletePluginConfig: (name: string) =>
+    request(`/api/plugin-configs/${name}`, { method: 'DELETE' }),
 
   // Plugins
   /** `GET /api/plugins` — returns the catalog of available plugin types, unwrapped from `{ plugins: [...] }`. */
