@@ -25,6 +25,8 @@ use regex::Regex;
 
 use crate::context::Context;
 
+pub mod catalog;
+
 /// Resolves a variable name against the context.
 ///
 /// Supported names (mirroring APISIX's `ctx.var` where featherbit has an
