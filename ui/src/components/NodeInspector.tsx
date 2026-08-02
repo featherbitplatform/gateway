@@ -53,7 +53,7 @@ const labelStyle: React.CSSProperties = {
  * @param config - Current node config used to seed the textarea.
  * @param onApply - Receives the parsed config object on successful apply.
  */
-function JsonConfigEditor({
+export function JsonConfigEditor({
   config,
   onApply,
 }: {
