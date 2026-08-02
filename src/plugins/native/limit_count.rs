@@ -18,7 +18,7 @@ use crate::context::{Context, GatewayError};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 use crate::ratelimit::CounterStore;
-use crate::vars::interpolate;
+use crate::vars::template::Template;
 
 /// Enforces a per-key request count within a fixed time window.
 ///
@@ -34,9 +34,10 @@ pub struct LimitCountPlugin {
     count: u64,
     /// Length of the fixed window.
     window: Duration,
-    /// Key template (`$var` interpolated); empty result falls back to the
-    /// client remote address.
-    key_template: String,
+    /// Key template: supports `{{namespace.path}}` references and legacy
+    /// `$var` interpolation (see [`Template::render_with_legacy`]); empty
+    /// result falls back to the client remote address.
+    key_template: Template,
     /// Optional counter-key prefix so multiple nodes share one counter.
     group: Option<String>,
     /// Status returned when a request is rejected.
@@ -58,8 +59,9 @@ impl LimitCountPlugin {
     /// Accepted keys:
     /// - `count` (integer > 0, **required**): requests allowed per window.
     /// - `time_window` (integer > 0, **required**): window length in seconds.
-    /// - `key` (string, default `"$remote_addr"`): a `$var` template resolved
-    ///   per request (e.g. `$remote_addr`, `$consumer_name`,
+    /// - `key` (string, default `"$remote_addr"`): a template resolved per
+    ///   request — supports `{{namespace.path}}` references plus legacy
+    ///   `$var` interpolation (e.g. `$remote_addr`, `$consumer_name`,
     ///   `$http_x_api_key`). An empty resolved value falls back to the client
     ///   remote address.
     /// - `policy` (string, default `"local"`): counter backend. Only `local`
@@ -105,8 +107,10 @@ impl LimitCountPlugin {
             .get("key")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .unwrap_or("$remote_addr")
-            .to_string();
+            .unwrap_or("$remote_addr");
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let key_template = Template::parse(key_template).0;
 
         let policy = config
             .get("policy")
@@ -163,9 +167,9 @@ impl LimitCountPlugin {
     /// (matching APISIX). The `group` prefix, when set, is prepended so nodes
     /// in the same group share one counter.
     fn resolve_key(&self, ctx: &Context) -> String {
-        let mut key = interpolate(ctx, &self.key_template);
+        let mut key = self.key_template.render_with_legacy(ctx);
         if key.is_empty() {
-            key = interpolate(ctx, "$remote_addr");
+            key = crate::vars::interpolate(ctx, "$remote_addr");
         }
         match &self.group {
             Some(group) => format!("{}:{}", group, key),
@@ -361,6 +365,18 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(p.resolve_key(&ctx), "svc:10.1.2.3");
+    }
+
+    #[test]
+    fn test_key_superset_template_and_legacy_dollar() {
+        // `key` must render both the new `{{...}}` template syntax and the
+        // legacy `$var` syntax in the same value (superset behavior).
+        let ctx = test_ctx();
+        let p = plugin(serde_json::json!({
+            "count": 10, "time_window": 60, "key": "{{client.ip}}:$http_x_api_key"
+        }))
+        .unwrap();
+        assert_eq!(p.resolve_key(&ctx), "10.1.2.3:abc123");
     }
 
     #[tokio::test]

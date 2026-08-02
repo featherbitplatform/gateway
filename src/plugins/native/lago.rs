@@ -29,18 +29,23 @@ use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
-use crate::vars;
+use crate::vars::template::Template;
 
 /// Emits one Lago billing event per request, delivered in batches.
 pub struct LagoPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
-    event_transaction_id: String,
-    subscription_id: String,
+    /// Template for the event's transaction id: supports
+    /// `{{namespace.path}}` references and legacy `$var` interpolation (see
+    /// [`Template::render_with_legacy`]).
+    event_transaction_id: Template,
+    /// Template for the subscription id: same rendering as
+    /// `event_transaction_id`.
+    subscription_id: Template,
     event_code: String,
 }
 
@@ -62,13 +67,13 @@ impl LagoPlugin {
     /// |---|---|---|---|
     /// | `endpoint` | string | — (required) | Lago API base, e.g. `http://127.0.0.1:3000`. |
     /// | `token` | string | — (required) | Lago API key, sent as `Authorization: Bearer <token>`. |
-    /// | `event_transaction_id` | string | — (required) | `$var` template for the event's idempotency/transaction id, e.g. `req_$request_uri`. |
-    /// | `subscription_id` | string | — (required) | `$var` template identifying the customer subscription, e.g. `cus_$consumer_name`. |
+    /// | `event_transaction_id` | string | — (required) | Template (`{{namespace.path}}` or legacy `$var`) for the event's idempotency/transaction id, e.g. `req_$request_uri`. |
+    /// | `subscription_id` | string | — (required) | Template (`{{namespace.path}}` or legacy `$var`) identifying the customer subscription, e.g. `cus_$consumer_name`. |
     /// | `event_code` | string | — (required) | Lago billable-metric code the event bills against. |
     /// | `endpoint_uri` | string | `/api/v1/events/batch` | Batch-send path appended to `endpoint`. |
     /// | `ssl_verify` | bool | `true` | Verify the Lago TLS certificate. |
     /// | `timeout` | int (ms) | `3000` | Per-flush HTTP timeout. |
-    /// | `log_format` | object | — | Custom `name -> "$var template"` entry used for the event `properties`. |
+    /// | `log_format` | object | — | Custom `name -> "template"` entry (`{{namespace.path}}` references plus legacy `$var` interpolation) used for the event `properties`. |
     /// | `include_req_body` / `include_resp_body` | bool | `false` | Include bodies in the default `properties` entry. |
     ///
     /// Batch keys default `batch_max_size` to **100** (Lago's batch limit)
@@ -91,8 +96,10 @@ impl LagoPlugin {
             .trim_end_matches('/')
             .to_string();
         let token = required_str(config, "token")?.to_string();
-        let event_transaction_id = required_str(config, "event_transaction_id")?.to_string();
-        let subscription_id = required_str(config, "subscription_id")?.to_string();
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let event_transaction_id = Template::parse(required_str(config, "event_transaction_id")?).0;
+        let subscription_id = Template::parse(required_str(config, "subscription_id")?).0;
         let event_code = required_str(config, "event_code")?.to_string();
 
         let endpoint_uri = config
@@ -233,8 +240,8 @@ impl Plugin for LagoPlugin {
     }
 
     async fn execute(&self, ctx: Context, _named_inputs: &HashMap<String, Value>) -> PluginResult {
-        let transaction_id = vars::interpolate(&ctx, &self.event_transaction_id);
-        let external_subscription_id = vars::interpolate(&ctx, &self.subscription_id);
+        let transaction_id = self.event_transaction_id.render_with_legacy(&ctx);
+        let external_subscription_id = self.subscription_id.render_with_legacy(&ctx);
         let properties = build_entry(
             &ctx,
             self.log_format.as_ref(),
@@ -301,7 +308,31 @@ mod tests {
     async fn from_config_ok() {
         let p = LagoPlugin::from_config(&full_cfg(), &PluginResources::empty()).unwrap();
         assert_eq!(p.event_code, "api_calls");
-        assert_eq!(p.event_transaction_id, "req_$request_uri");
+        // event_transaction_id is pre-parsed into a Template at construction;
+        // verify it still carries the configured legacy `$var` template by
+        // rendering it against a request whose path makes the substitution
+        // observable.
+        let ctx = crate::context::Context {
+            request: crate::context::GatewayRequest {
+                method: "GET".to_string(),
+                path: "/foo".to_string(),
+                host: "example.com".to_string(),
+                scheme: "http".to_string(),
+                headers: HashMap::new(),
+                query_params: HashMap::new(),
+                body: bytes::Bytes::new(),
+                remote_addr: "127.0.0.1:1".to_string(),
+                protocol: crate::context::Protocol::Http1,
+            },
+            response: crate::context::GatewayResponse {
+                status_code: 0,
+                headers: HashMap::new(),
+                body: bytes::Bytes::new(),
+            },
+            message: HashMap::new(),
+            errors: Vec::new(),
+        };
+        assert_eq!(p.event_transaction_id.render_with_legacy(&ctx), "req_/foo");
     }
 
     #[test]
