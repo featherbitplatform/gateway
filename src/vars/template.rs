@@ -21,6 +21,10 @@
 //! within a known namespace, or an unclosed `{{` — passes through literally.
 //! A malformed remainder within a *known* namespace (and an unset `env.*`)
 //! additionally produces a warning string from [`Template::parse`].
+//!
+//! [`Template::render_with_legacy`] applies the legacy `interpolate` pass to
+//! the template's literal segments only; rendered `{{...}}` output is never
+//! `$`-processed, so runtime data can never become a `$var` read primitive.
 
 use std::borrow::Cow;
 
@@ -143,13 +147,30 @@ impl Template {
         Cow::Owned(out)
     }
 
-    /// Renders `{{...}}` references first, then applies the legacy
-    /// `$var`/`${var}` pass over the result. Used only by fields that
-    /// historically supported `$` interpolation.
+    /// Applies the legacy `$var`/`${var}` pass to the template's *literal*
+    /// segments only; rendered `{{...}}` output is appended inert and is
+    /// never `$`-processed. Used only by fields that historically supported
+    /// `$` interpolation.
+    ///
+    /// This composition is deliberate, not an optimization: `$`-processing
+    /// the fully rendered string would let runtime data (a header, cookie,
+    /// query param, ...) that happens to contain `$var`/`${var}` syntax act
+    /// as a read primitive against the context (e.g. a client-supplied
+    /// header value of `$http_authorization` would leak the Authorization
+    /// header) and would corrupt values like `pa$sword4` or `{"$ref":1}`
+    /// flowing through a ref — exactly the classes this engine exists to
+    /// prevent. For a template with no refs (a single literal segment, or
+    /// none), this is byte-identical to the old whole-string pass.
     #[allow(dead_code)] // consumed by the plugin sweep (next tasks)
     pub fn render_with_legacy(&self, ctx: &Context) -> String {
-        let rendered = self.render(ctx);
-        crate::vars::interpolate(ctx, &rendered)
+        let mut out = String::new();
+        for seg in &self.segments {
+            match seg {
+                Segment::Literal(s) => out.push_str(&crate::vars::interpolate(ctx, s)),
+                Segment::Ref(r) => render_ref(r, ctx, &mut out),
+            }
+        }
+        out
     }
 
     /// Borrows the single literal chunk of a literal-only template (or ""
@@ -593,5 +614,42 @@ mod tests {
         let (tpl, _) = Template::parse("$uri");
         let ctx = test_ctx();
         assert_eq!(tpl.render(&ctx), "$uri");
+    }
+
+    #[test]
+    fn test_legacy_does_not_interpolate_ref_output() {
+        // A ref's rendered value (`pa$sword4`, arriving as runtime data through
+        // a header) must survive byte-identical, while a legacy `$uri` literal
+        // in the same template still resolves — proving the `$` pass only
+        // touches literal segments, not ref output.
+        let mut ctx = test_ctx();
+        ctx.request
+            .headers
+            .insert("x-password".to_string(), vec!["pa$sword4".to_string()]);
+        let (tpl, _) = Template::parse("{{request.headers.x-password}} $uri");
+        assert_eq!(tpl.render_with_legacy(&ctx), "pa$sword4 /api/users");
+    }
+
+    #[test]
+    fn test_legacy_ref_output_cannot_read_other_vars() {
+        // A client-controlled header value that looks like a `$var` reference
+        // must not be able to read another part of the context back out when
+        // it flows through a ref in a legacy-enabled field.
+        let mut ctx = test_ctx();
+        ctx.request.headers.insert(
+            "authorization".to_string(),
+            vec!["Bearer secret-token-xyz".to_string()],
+        );
+        ctx.request.headers.insert(
+            "x-tenant".to_string(),
+            vec!["$http_authorization".to_string()],
+        );
+        let (tpl, _) = Template::parse("tenant={{request.headers.x-tenant}}");
+        let rendered = tpl.render_with_legacy(&ctx);
+        assert_eq!(rendered, "tenant=$http_authorization");
+        assert!(
+            !rendered.contains("secret-token-xyz"),
+            "ref output must not be re-interpolated as a $var read primitive: {rendered}"
+        );
     }
 }
