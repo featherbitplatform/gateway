@@ -4,8 +4,8 @@
 //! `/v3/auth/authenticate` endpoints) through the shared [`OutboundClient`] —
 //! no gRPC, `protoc`, or `tonic` dependency. Config lives under per-resource
 //! keys (`<prefix>/routes/<name>`, `<prefix>/policies/<name>`,
-//! `<prefix>/consumers/<name>`, `<prefix>/supernodes/<name>`), each value the
-//! resource's JSON. Every gateway instance loads from the same prefix and a
+//! `<prefix>/consumers/<name>`, `<prefix>/supernodes/<name>`, `<prefix>/plugin_configs/<name>`),
+//! each value the resource's JSON. Every gateway instance loads from the same prefix and a
 //! background poll task keeps the cluster converged (see [`spawn_watch`]).
 //! Note: an older build sharing the same prefix garbage-collects unknown key
 //! families on its next commit.
@@ -31,7 +31,7 @@ use bytes::Bytes;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use crate::config::{EtcdConfig, GatewayConfig, SystemConfig};
+use crate::config::{EtcdConfig, GatewayConfig, PluginConfigDef, SystemConfig};
 use crate::config::{PolicyConfig, RouteConfig, SupernodeConfig};
 use crate::config_store::ConfigStore;
 use crate::consumers::ConsumerConfig;
@@ -204,6 +204,9 @@ impl EtcdConfigStore {
     fn supernode_key(&self, name: &str) -> String {
         format!("{}/supernodes/{}", self.prefix, name)
     }
+    fn plugin_config_key(&self, name: &str) -> String {
+        format!("{}/plugin_configs/{}", self.prefix, name)
+    }
 
     /// Writes every resource in `gw` to etcd (used to seed an empty prefix).
     async fn write_all(&self, gw: &GatewayConfig) -> Result<(), String> {
@@ -223,6 +226,13 @@ impl EtcdConfigStore {
             self.put(
                 &self.supernode_key(&s.name),
                 &serde_json::to_vec(s).unwrap(),
+            )
+            .await?;
+        }
+        for pc in &gw.plugin_configs {
+            self.put(
+                &self.plugin_config_key(&pc.name),
+                &serde_json::to_vec(pc).unwrap(),
             )
             .await?;
         }
@@ -271,6 +281,11 @@ impl ConfigStore for EtcdConfigStore {
             self.put(&key, &serde_json::to_vec(s).unwrap()).await?;
             desired.insert(key);
         }
+        for pc in &candidate.plugin_configs {
+            let key = self.plugin_config_key(&pc.name);
+            self.put(&key, &serde_json::to_vec(pc).unwrap()).await?;
+            desired.insert(key);
+        }
         for stale in current.difference(&desired) {
             self.delete(stale).await?;
         }
@@ -283,7 +298,7 @@ impl ConfigStore for EtcdConfigStore {
 
 /// Assembles a [`GatewayConfig`] from the etcd key/value pairs under `prefix`.
 ///
-/// Keys are `<prefix>/{routes,policies,consumers,supernodes}/<name>`; values
+/// Keys are `<prefix>/{routes,policies,consumers,supernodes,plugin_configs}/<name>`; values
 /// are the resource JSON. Unknown key shapes are skipped. Malformed resource
 /// JSON is an error (so a bad write surfaces rather than silently dropping
 /// config).
@@ -324,6 +339,11 @@ fn gateway_from_kvs(prefix: &str, kvs: Vec<(String, Vec<u8>)>) -> Result<Gateway
                 let s: SupernodeConfig = serde_json::from_slice(&value)
                     .map_err(|e| format!("bad supernode '{}': {}", key, e))?;
                 gw.supernodes.push(s);
+            }
+            "plugin_configs" => {
+                let pc: PluginConfigDef = serde_json::from_slice(&value)
+                    .map_err(|e| format!("bad plugin config '{}': {}", key, e))?;
+                gw.plugin_configs.push(pc);
             }
             _ => {}
         }
@@ -523,6 +543,38 @@ mod tests {
             description: None,
             nodes: vec![],
             edges: vec![],
+        });
+        assert!(!is_empty(&gw));
+    }
+
+    #[test]
+    fn test_gateway_from_kvs_parses_plugin_configs() {
+        let def = serde_json::json!({ "name": "corp", "type": "cors", "config": {} });
+        let kvs = vec![(
+            "gw/plugin_configs/corp".to_string(),
+            serde_json::to_vec(&def).unwrap(),
+        )];
+        let gw = gateway_from_kvs("gw", kvs).unwrap();
+        assert_eq!(gw.plugin_configs.len(), 1);
+        assert_eq!(gw.plugin_configs[0].name, "corp");
+    }
+
+    #[test]
+    fn test_gateway_from_kvs_bad_plugin_config_json_is_error() {
+        let kvs = vec![("gw/plugin_configs/x".to_string(), b"not json".to_vec())];
+        let err = gateway_from_kvs("gw", kvs).unwrap_err();
+        assert!(err.contains("bad plugin config"), "{err}");
+    }
+
+    #[test]
+    fn test_is_empty_counts_plugin_configs() {
+        let mut gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(is_empty(&gw));
+        gw.plugin_configs.push(PluginConfigDef {
+            name: "c".into(),
+            plugin_type: "cors".into(),
+            description: None,
+            config: Default::default(),
         });
         assert!(!is_empty(&gw));
     }
