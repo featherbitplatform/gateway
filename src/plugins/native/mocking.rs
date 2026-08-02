@@ -35,7 +35,13 @@ const SUPPORTED_CONTENT_TYPES: [&str; 5] = [
 pub struct MockingPlugin {
     delay: Duration,
     response_status: u16,
-    content_type: String,
+    /// Supports `{{namespace.path}}` references (no legacy `$var`
+    /// interpolation — mocking's `content_type` never supported it, so this
+    /// sweep must not start). The `supported_content_type` allowlist below is
+    /// only enforced when the configured value is a literal (no `{{...}}`
+    /// references) — a templated value is resolved per request and cannot be
+    /// checked at load time.
+    content_type: Template,
     /// Body template: supports `{{namespace.path}}` references and legacy
     /// `$var` interpolation (see [`Template::render_with_legacy`]).
     response_example: Template,
@@ -53,8 +59,10 @@ impl MockingPlugin {
     ///   (e.g. `$uri`, `$arg_name`).
     /// - `response_status` (integer >= 100, default `200`).
     /// - `content_type` (string, default `application/json;charset=utf8`):
-    ///   base type must be one of `application/json`, `application/xml`,
-    ///   `text/plain`, `text/html`, `text/xml`.
+    ///   supports `{{namespace.path}}` references; a **literal** value's base
+    ///   type must be one of `application/json`, `application/xml`,
+    ///   `text/plain`, `text/html`, `text/xml` (a templated value is resolved
+    ///   per request and is not checked at load time).
     /// - `response_headers` (map `{name: value}` or array `[{name, value}]`):
     ///   extra response headers; string values support `{{namespace.path}}`
     ///   references plus legacy `$var` interpolation.
@@ -111,14 +119,25 @@ impl MockingPlugin {
             })
             .transpose()?
             .unwrap_or_else(|| "application/json;charset=utf8".to_string());
-        let base_type = content_type.split(';').next().unwrap_or("").trim();
-        if !SUPPORTED_CONTENT_TYPES.contains(&base_type) {
-            return Err(format!(
-                "unsupported content type '{}' — supported: {}",
-                content_type,
-                SUPPORTED_CONTENT_TYPES.join(", ")
-            ));
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let content_type_tpl = Template::parse(&content_type).0;
+        // The allowlist can only be checked against a literal value — a
+        // templated content type is resolved per request, and a literal
+        // template's raw config string is exactly what it renders (no refs
+        // means every `{{...}}` occurrence, if any, already passed through
+        // unchanged).
+        if content_type_tpl.is_literal() {
+            let base_type = content_type.split(';').next().unwrap_or("").trim();
+            if !SUPPORTED_CONTENT_TYPES.contains(&base_type) {
+                return Err(format!(
+                    "unsupported content type '{}' — supported: {}",
+                    content_type,
+                    SUPPORTED_CONTENT_TYPES.join(", ")
+                ));
+            }
         }
+        let content_type = content_type_tpl;
 
         let response_headers = match config.get("response_headers") {
             None => Vec::new(),
@@ -227,9 +246,10 @@ impl Plugin for MockingPlugin {
 
         ctx.response.status_code = self.response_status;
         ctx.response.body = Bytes::from(body);
-        ctx.response
-            .headers
-            .insert("content-type".to_string(), vec![self.content_type.clone()]);
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec![self.content_type.render(&ctx).into_owned()],
+        );
         if self.with_mock_header {
             ctx.response.headers.insert(
                 "x-mock-by".to_string(),
@@ -330,6 +350,24 @@ mod tests {
         assert_eq!(
             resp.headers.get("x-combo"),
             Some(&vec!["example.com-/api/users".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_content_type_renders_template() {
+        let p = plugin(serde_json::json!({
+            "response_example": "{}",
+            "content_type": "text/plain;charset={{request.headers.x-charset}}"
+        }))
+        .unwrap();
+        let mut ctx = test_ctx();
+        ctx.request
+            .headers
+            .insert("x-charset".to_string(), vec!["utf-16".to_string()]);
+        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        assert_eq!(
+            out.context.response.headers.get("content-type"),
+            Some(&vec!["text/plain;charset=utf-16".to_string()])
         );
     }
 
