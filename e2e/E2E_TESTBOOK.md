@@ -308,6 +308,17 @@ namespacing is what a trace's `node_id`s reveal.
 |---|---|---|
 | E2E-SN-01 | Create a supernode wrapping the seeded echo upstream, reference it from a policy (`type: supernode`) attached to a route, then request through it | `200` from the expanded pipeline; a traced request (`x-featherbit-debug`) reports a step whose `node_id` starts with `sec/` — proving compile-time expansion, not a live indirection; `GET /api/config/export` contains `supernodes:`, the definition's name and `type: supernode`, but never the expanded `sec/up` id (expansion is never persisted); deleting the supernode while referenced is `400`; deleting it once the route and policy are removed succeeds |
 
+## Plugin configs — `tests/plugin-configs.spec.ts`
+
+Shared plugin config definitions (`/api/plugin-configs`), resolved at policy-compile
+time: a node's `config_ref` pulls the named definition's `config` and any keys set
+directly on the node override it (local-wins merge), whether the referencing node
+sits directly in a policy or inside a supernode's inner nodes.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-PC-01 | Create a shared `mocking` config, reference it directly from one policy (with a local `response_status` override) and via a supernode's inner node from a second policy, then request both routes | Both serve the shared body; the direct reference's local override wins on status only. Editing the shared config **once** changes both routes' response body. `GET /api/config/export` keeps the reference form — `plugin_configs:` and `config_ref: e2e-shared-mock` present, the body text appearing only once (not duplicated by materialization). Deleting the shared config while referenced by a policy is `400`; still `400` once the policies are gone but the supernode definition still references it; succeeds once the supernode is deleted too |
+
 ## Deliberately out of scope
 
 Covered by the Rust suite with real sockets, or unreachable from Playwright:
