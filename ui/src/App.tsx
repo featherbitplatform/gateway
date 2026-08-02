@@ -145,6 +145,11 @@ export default function App() {
   // create dialog's type picker excludes the boundary/no-config types —
   // mirrors the node palette's exclusions (supernode and other boundary
   // types are not in the catalog at all).
+  // - listener/client: pipeline endpoints, not real plugin nodes — mirrors
+  //   RESERVED_TYPES in src/config/resolve.rs (supernode/boundary types
+  //   never appear in the catalog either).
+  // - script: excluded because a script node's config is file-bound
+  //   (runtime + source path), a poor fit for a shared, reusable profile.
   const pluginConfigTypeOptions = plugins.filter(
     (p) => p.type !== 'listener' && p.type !== 'client' && p.type !== 'script'
   );
