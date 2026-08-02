@@ -16,6 +16,7 @@ mod status;
 mod supernodes;
 #[cfg(feature = "ui")]
 mod ui;
+mod vars;
 
 use std::sync::Arc;
 
@@ -144,6 +145,7 @@ fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
         .merge(consumers::router())
         .merge(status::router())
         .merge(debug::router())
+        .merge(vars::router())
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(auth::AuthState {
                 username: admin_config.username.clone(),

@@ -8,7 +8,6 @@ use serde::Serialize;
 /// Whether an entry is a fixed name or a `prefix_*` family.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-#[allow(dead_code)] // consumed by GET /api/vars (next task)
 pub enum VarKind {
     Static,
     Family,
@@ -17,7 +16,6 @@ pub enum VarKind {
 /// One catalog row. `family_source` names the context collection that
 /// populates a family's live suggestions in the UI.
 #[derive(Debug, Serialize)]
-#[allow(dead_code)] // consumed by GET /api/vars (next task)
 pub struct VarEntry {
     pub name: &'static str,
     pub kind: VarKind,
@@ -27,12 +25,9 @@ pub struct VarEntry {
     pub example: &'static str,
 }
 
-#[allow(dead_code)] // consumed by GET /api/vars (next task)
 const S: VarKind = VarKind::Static;
-#[allow(dead_code)] // consumed by GET /api/vars (next task)
 const F: VarKind = VarKind::Family;
 
-#[allow(dead_code)] // consumed by GET /api/vars (next task)
 fn e(
     name: &'static str,
     kind: VarKind,
@@ -50,7 +45,6 @@ fn e(
 }
 
 /// Every variable `resolve()` accepts, statics first, then families.
-#[allow(dead_code)] // consumed by GET /api/vars (next task)
 pub fn var_catalog() -> Vec<VarEntry> {
     vec![
         e("uri", S, None, "Request path (no query string)", "$uri"),
