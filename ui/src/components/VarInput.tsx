@@ -125,6 +125,14 @@ export function VarInput({
   // insertion — the DOM's own value only updates after this component
   // re-renders with the new prop, so `setSelectionRange` has to wait for it.
   const pendingCaret = useRef<number | null>(null);
+  // One-shot guard: `setSelectionRange` in the caret effect below fires a
+  // native `select` event on the field, which would otherwise reach
+  // `syncTokenFromCaret` and immediately reopen the popover on the
+  // freshly-inserted `$name`. Set right before the insertion's `onChange`,
+  // consumed (and cleared) by the very next `syncTokenFromCaret` call —
+  // which is that synthetic reopen — so any *later*, real caret movement or
+  // typing still opens the popover normally.
+  const justInserted = useRef(false);
 
   const lowerFilter = filter.toLowerCase();
   const filtered = suggestions.filter((s) => s.name.toLowerCase().includes(lowerFilter));
@@ -150,6 +158,13 @@ export function VarInput({
 
   /** Re-derives the popover's open/filter/token state from the caret position. */
   function syncTokenFromCaret(el: FieldEl) {
+    if (justInserted.current) {
+      // Swallow exactly the synthetic `select` event fired by this
+      // component's own post-insert `setSelectionRange` (see the ref's
+      // comment) and nothing after it.
+      justInserted.current = false;
+      return;
+    }
     const pos = el.selectionStart ?? el.value.length;
     const head = el.value.slice(0, pos);
     const match = head.match(TOKEN_RE);
@@ -167,9 +182,27 @@ export function VarInput({
     if (!suggestion) return;
     const el = elRef.current;
     const caret = el?.selectionStart ?? tokenStart;
-    const nextValue = `${value.slice(0, tokenStart)}${suggestion.insert}${value.slice(caret)}`;
-    pendingCaret.current = tokenStart + suggestion.insert.length;
+    // If the in-progress token began with the brace form (`${`) and the
+    // character sitting right at the caret is that token's own closing
+    // `}`, consume it too — otherwise the inserted text leaves a stray `}`
+    // behind (`${foo` + completion + already-typed `}` -> double brace).
+    // Gated on the *matched* token's opening delimiter (not on whether this
+    // suggestion's own `insert` happens to use braces), so completing a
+    // plain `$token` never eats an unrelated, legitimate `}` at the caret.
+    const isBraceToken = value[tokenStart] === '$' && value[tokenStart + 1] === '{';
+    const spliceEnd = isBraceToken && value[caret] === '}' ? caret + 1 : caret;
+    const nextValue = `${value.slice(0, tokenStart)}${suggestion.insert}${value.slice(spliceEnd)}`;
     setOpen(false);
+    if (nextValue === value) {
+      // No-op insertion (the token was already fully typed out verbatim):
+      // `onChange` won't fire, so the `[value]`-keyed caret effect never
+      // runs either. Clear the pending caret here instead of leaving it to
+      // be misapplied on some later, unrelated value change.
+      pendingCaret.current = null;
+      return;
+    }
+    pendingCaret.current = tokenStart + suggestion.insert.length;
+    justInserted.current = true;
     onChange(nextValue);
     el?.focus();
   }
@@ -196,6 +229,13 @@ export function VarInput({
         return;
       case 'Enter':
       case 'Tab':
+        if (filtered.length === 0) {
+          // Nothing to insert — let Enter/Tab do its normal thing (newline,
+          // focus move, form submit, ...) instead of swallowing it just
+          // because the popover happens to be open with no matches.
+          setOpen(false);
+          return;
+        }
         e.preventDefault();
         insertSuggestion(filtered[activeIndex]);
         return;
