@@ -63,11 +63,40 @@ export interface FieldSchema {
   /** Singular noun used to title each `objects` row. */
   itemLabel?: string;
   /** Scalar item control for `list` fields. */
-  item?: { type: 'text' | 'number'; placeholder?: string; vars?: boolean };
+  item?: {
+    type: 'text' | 'number';
+    placeholder?: string;
+    /** See {@link FieldSchema.template}; resolved the same way for the item control. */
+    template?: 'full' | 'env-only' | 'none';
+    /** See {@link FieldSchema.legacyDollar}. */
+    legacyDollar?: boolean;
+  };
   /** Sub-fields of each record for `objects` fields. */
   fields?: FieldSchema[];
-  /** Field accepts $var interpolation — enables context autocomplete. */
-  vars?: boolean;
+  /**
+   * Which template-suggestion groups this field's control offers, enabling
+   * context autocomplete (`VarInput`) in the first place.
+   *
+   * - `'full'` — every suggestion group (request/response/message/env/...).
+   * - `'env-only'` — only the `env` group, for fields that should reference
+   *   environment variables (secrets, credential material, DSL/schema
+   *   blobs, regexes, external endpoints, file paths, ...) but not
+   *   request-derived context.
+   * - `'none'` — plain input, no `VarInput`/autocomplete at all.
+   *
+   * When absent, the default is type-based: `'full'` for `text`/`textarea`
+   * (and, for `list`/`objects`, their `text`-typed `item`/sub-fields);
+   * `radio`/`select`/`switch`/`number` fields are structurally `'none'` and
+   * never get a `template` override.
+   */
+  template?: 'full' | 'env-only' | 'none';
+  /**
+   * Field is one of the 15 legacy `$var`/`${var}` fields (Task 2) — passed
+   * through to `VarInput`'s `legacyDollar` prop so its `$`-completion keeps
+   * working alongside `{{path}}`. Meaningless (and unused) on `'env-only'`
+   * fields, since none of the 15 legacy fields are also env-only.
+   */
+  legacyDollar?: boolean;
 }
 
 /**
@@ -95,7 +124,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   upstream: [
     { key: 'targets', label: 'Targets', type: 'objects', addLabel: 'Target', itemLabel: 'Target',
       fields: [
-        { key: 'host', label: 'Host', type: 'text', placeholder: 'localhost' },
+        { key: 'host', label: 'Host', type: 'text', placeholder: 'localhost', template: 'env-only' },
         { key: 'port', label: 'Port', type: 'number', default: 3000 },
       ] },
     { key: 'load_balancing', label: 'Load balancing', type: 'select', options: ['round_robin', 'least_connections', 'ip_hash'], default: 'round_robin' },
@@ -104,10 +133,10 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   'error-handler': [
     { key: 'status_code', label: 'Status code', type: 'number', default: 502 },
     { key: 'content_type', label: 'Content type', type: 'select', options: ['application/json', 'text/plain', 'text/html'], default: 'application/json' },
-    { key: 'body_template', label: 'Body template', type: 'textarea', rows: 4, default: '{"error": "{{error.code}}"}' },
+    { key: 'body_template', label: 'Body template', type: 'textarea', rows: 4, default: '{"error": "{{error.code}}"}', template: 'env-only' },
   ],
   cors: [
-    { key: 'allowed_origins', label: 'Allowed origins', type: 'list', addLabel: 'Origin', item: { type: 'text', placeholder: 'https://app.example.com' }, hint: 'defaults to * when empty' },
+    { key: 'allowed_origins', label: 'Allowed origins', type: 'list', addLabel: 'Origin', item: { type: 'text', placeholder: 'https://app.example.com', template: 'env-only' }, hint: 'defaults to * when empty' },
     { key: 'allowed_methods', label: 'Allowed methods', type: 'list', addLabel: 'Method', item: { type: 'text', placeholder: 'GET' }, hint: 'defaults to GET, POST, PUT, DELETE, OPTIONS' },
     { key: 'allowed_headers', label: 'Allowed headers', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'content-type' }, hint: 'defaults to * when empty' },
     { key: 'allow_credentials', label: 'Credentials', type: 'switch', switchLabel: 'Allow credentials', default: false },
@@ -128,7 +157,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   ],
   'key-auth': [
     { key: 'header_name', label: 'Header name', type: 'text', default: 'x-api-key' },
-    { key: 'keys', label: 'Valid keys', type: 'list', addLabel: 'Key', item: { type: 'text', placeholder: 'sk_live_…' } },
+    { key: 'keys', label: 'Valid keys', type: 'list', addLabel: 'Key', item: { type: 'text', placeholder: 'sk_live_…', template: 'env-only' } },
   ],
   'basic-auth': [
     { key: 'use_consumers', label: 'Use consumers', type: 'switch', switchLabel: 'Resolve credentials against consumers', default: false },
@@ -136,21 +165,21 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'users', label: 'Users', type: 'objects', addLabel: 'User', itemLabel: 'User',
       fields: [
         { key: 'username', label: 'Username', type: 'text' },
-        { key: 'password', label: 'Password', type: 'text' },
+        { key: 'password', label: 'Password', type: 'text', template: 'env-only' },
       ] },
     { key: 'anonymous_consumer', label: 'Anonymous consumer', type: 'text', placeholder: 'guest' },
     { key: 'hide_credentials', label: 'Hide credentials', type: 'switch', switchLabel: 'Strip Authorization header', default: false },
   ],
   'jwt-auth': [
     { key: 'use_consumers', label: 'Use consumers', type: 'switch', switchLabel: 'Verify with per-consumer secrets', default: false },
-    { key: 'secret', label: 'Secret', type: 'text', placeholder: '${JWT_SECRET}', hint: 'inline HMAC secret; optional when using consumers' },
+    { key: 'secret', label: 'Secret', type: 'text', placeholder: '${JWT_SECRET}', hint: 'inline HMAC secret; optional when using consumers', template: 'env-only' },
     { key: 'algorithm', label: 'Algorithm', type: 'select', options: ['HS256', 'HS384', 'HS512'], default: 'HS256' },
     { key: 'header_name', label: 'Header name', type: 'text', default: 'authorization' },
   ],
   'hmac-auth': [
     { key: 'use_consumers', label: 'Use consumers', type: 'switch', switchLabel: 'Resolve access key against consumers', default: false },
-    { key: 'access_key', label: 'Access key', type: 'text', placeholder: 'my-key-id', hint: 'inline single credential; requires secret key' },
-    { key: 'secret_key', label: 'Secret key', type: 'text', placeholder: '${HMAC_SECRET}', hint: 'paired with access key' },
+    { key: 'access_key', label: 'Access key', type: 'text', placeholder: 'my-key-id', hint: 'inline single credential; requires secret key', template: 'env-only' },
+    { key: 'secret_key', label: 'Secret key', type: 'text', placeholder: '${HMAC_SECRET}', hint: 'paired with access key', template: 'env-only' },
     { key: 'algorithm', label: 'Algorithm', type: 'select', options: ['hmac-sha1', 'hmac-sha256', 'hmac-sha512'], default: 'hmac-sha256' },
     { key: 'clock_skew', label: 'Clock skew (s)', type: 'number', default: 300, hint: '0 disables the Date check' },
     { key: 'signed_headers', label: 'Signed headers', type: 'list', addLabel: 'Header', item: { type: 'text', placeholder: 'date' } },
@@ -166,7 +195,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'header', label: 'Header', type: 'text', default: 'Authorization' },
     { key: 'forward_header', label: 'Forward header', type: 'text', default: 'Authorization' },
     { key: 'strict', label: 'Strict', type: 'switch', switchLabel: 'Reject requests with no token', default: true },
-    { key: 'key', label: 'Inline key (base64, 32 bytes)', type: 'text', placeholder: 'base64 AES-256 key', hint: 'set this or enable Use consumers' },
+    { key: 'key', label: 'Inline key (base64, 32 bytes)', type: 'text', placeholder: 'base64 AES-256 key', hint: 'set this or enable Use consumers', template: 'env-only' },
     { key: 'use_consumers', label: 'Use consumers', type: 'switch', switchLabel: 'Resolve key from consumer store via kid', default: false },
   ],
   'consumer-restriction': [
@@ -192,25 +221,25 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   ],
   // ---- Plugin catalog (Wave 7: serverless & FaaS) -------------------
   'serverless-pre-function': [
-    { key: 'functions', label: 'Functions', type: 'list', addLabel: 'Function', item: { type: 'text', placeholder: 'function execute(ctx) ... end' }, hint: 'Lua source; each defines execute(ctx), threaded in order' },
+    { key: 'functions', label: 'Functions', type: 'list', addLabel: 'Function', item: { type: 'text', placeholder: 'function execute(ctx) ... end', template: 'env-only' }, hint: 'Lua source; each defines execute(ctx), threaded in order' },
     { key: 'timeout_ms', label: 'Timeout (ms)', type: 'number', default: 5000 },
     { key: 'phase', label: 'Phase', type: 'text', hint: 'accepted for config compatibility; inert (phase = graph position)' },
   ],
   'serverless-post-function': [
-    { key: 'functions', label: 'Functions', type: 'list', addLabel: 'Function', item: { type: 'text', placeholder: 'function execute(ctx) ... end' }, hint: 'Lua source; each defines execute(ctx), threaded in order' },
+    { key: 'functions', label: 'Functions', type: 'list', addLabel: 'Function', item: { type: 'text', placeholder: 'function execute(ctx) ... end', template: 'env-only' }, hint: 'Lua source; each defines execute(ctx), threaded in order' },
     { key: 'timeout_ms', label: 'Timeout (ms)', type: 'number', default: 5000 },
     { key: 'phase', label: 'Phase', type: 'text', hint: 'accepted for config compatibility; inert (phase = graph position)' },
   ],
   'oas-validator': [
-    { key: 'spec', label: 'OpenAPI spec (JSON)', type: 'textarea', rows: 12, placeholder: '{ "openapi": "3.0.0", "paths": { } }', hint: 'inline OpenAPI 3 document (JSON object)' },
+    { key: 'spec', label: 'OpenAPI spec (JSON)', type: 'textarea', rows: 12, placeholder: '{ "openapi": "3.0.0", "paths": { } }', hint: 'inline OpenAPI 3 document (JSON object)', template: 'env-only' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 400 },
     { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'optional fixed message' },
   ],
   'aws-lambda': [
     { key: 'function_uri', label: 'Function URI', type: 'text', placeholder: 'https://xyz.lambda-url.us-east-1.on.aws/' },
-    { key: 'authorization.apikey', label: 'API key', type: 'text', hint: 'sent as x-api-key; leave empty to use IAM' },
-    { key: 'authorization.iam.accesskey', label: 'IAM access key', type: 'text' },
-    { key: 'authorization.iam.secretkey', label: 'IAM secret key', type: 'text' },
+    { key: 'authorization.apikey', label: 'API key', type: 'text', hint: 'sent as x-api-key; leave empty to use IAM', template: 'env-only' },
+    { key: 'authorization.iam.accesskey', label: 'IAM access key', type: 'text', template: 'env-only' },
+    { key: 'authorization.iam.secretkey', label: 'IAM secret key', type: 'text', template: 'env-only' },
     { key: 'authorization.iam.aws_region', label: 'AWS region', type: 'text', default: 'us-east-1' },
     { key: 'authorization.iam.aws_service', label: 'AWS service', type: 'text', default: 'lambda' },
     { key: 'ssl_verify', label: 'Verify TLS', type: 'switch', switchLabel: 'ssl_verify', default: false },
@@ -218,14 +247,14 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   ],
   'azure-functions': [
     { key: 'function_uri', label: 'Function URI', type: 'text', placeholder: 'https://app.azurewebsites.net/api/HttpTrigger' },
-    { key: 'authorization.apikey', label: 'API key (x-functions-key)', type: 'text' },
+    { key: 'authorization.apikey', label: 'API key (x-functions-key)', type: 'text', template: 'env-only' },
     { key: 'authorization.clientid', label: 'Client id (x-functions-clientid)', type: 'text' },
     { key: 'ssl_verify', label: 'Verify TLS', type: 'switch', switchLabel: 'ssl_verify', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
   ],
   openwhisk: [
     { key: 'api_host', label: 'API host', type: 'text', placeholder: 'https://ow.example.com' },
-    { key: 'service_token', label: 'Service token (user:pass)', type: 'text' },
+    { key: 'service_token', label: 'Service token (user:pass)', type: 'text', template: 'env-only' },
     { key: 'namespace', label: 'Namespace', type: 'text', default: '_' },
     { key: 'package', label: 'Package', type: 'text' },
     { key: 'action', label: 'Action', type: 'text' },
@@ -235,7 +264,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   ],
   openfunction: [
     { key: 'function_uri', label: 'Function URI', type: 'text', placeholder: 'http://openfunction.svc/default/hello' },
-    { key: 'authorization.service_token', label: 'Service token', type: 'text', hint: 'sent as Authorization: Basic base64(token)' },
+    { key: 'authorization.service_token', label: 'Service token', type: 'text', hint: 'sent as Authorization: Basic base64(token)', template: 'env-only' },
     { key: 'ssl_verify', label: 'Verify TLS', type: 'switch', switchLabel: 'ssl_verify', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
   ],
@@ -276,9 +305,9 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   // batch keys (batch_max_size, inactive_timeout, buffer_duration,
   // max_retry_count, retry_delay) and log_format (YAML-only nested map).
   'http-logger': [
-    { key: 'uri', label: 'Endpoint URI', type: 'text', placeholder: 'http://collector:3000/logs' },
+    { key: 'uri', label: 'Endpoint URI', type: 'text', placeholder: 'http://collector:3000/logs', template: 'env-only' },
     { key: 'method', label: 'Method', type: 'select', options: ['POST', 'PUT', 'PATCH'], default: 'POST' },
-    { key: 'auth_header', label: 'Authorization header', type: 'text' },
+    { key: 'auth_header', label: 'Authorization header', type: 'text', template: 'env-only' },
     { key: 'concat_method', label: 'Body format', type: 'radio', options: ['json', 'new_line'], default: 'json' },
     { key: 'ssl_verify', label: 'TLS verify', type: 'switch', switchLabel: 'Verify certificates', default: false },
     { key: 'timeout', label: 'Timeout (s)', type: 'number', default: 3 },
@@ -287,23 +316,23 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
   ],
   'loki-logger': [
-    { key: 'endpoint_addrs', label: 'Endpoint addresses', type: 'list', addLabel: 'Add address', item: { type: 'text', placeholder: 'http://loki:3100' } },
-    { key: 'endpoint_uri', label: 'Push path', type: 'text', default: '/loki/api/v1/push' },
+    { key: 'endpoint_addrs', label: 'Endpoint addresses', type: 'list', addLabel: 'Add address', item: { type: 'text', placeholder: 'http://loki:3100', template: 'env-only' } },
+    { key: 'endpoint_uri', label: 'Push path', type: 'text', default: '/loki/api/v1/push', template: 'env-only' },
     { key: 'tenant_id', label: 'Tenant ID', type: 'text', default: 'fake' },
     { key: 'ssl_verify', label: 'TLS verify', type: 'switch', switchLabel: 'Verify certificates', default: false },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
   ],
   'splunk-hec-logging': [
-    { key: 'endpoint.uri', label: 'HEC URI', type: 'text', placeholder: 'https://splunk:8088/services/collector' },
-    { key: 'endpoint.token', label: 'HEC token', type: 'text' },
+    { key: 'endpoint.uri', label: 'HEC URI', type: 'text', placeholder: 'https://splunk:8088/services/collector', template: 'env-only' },
+    { key: 'endpoint.token', label: 'HEC token', type: 'text', template: 'env-only' },
     { key: 'endpoint.channel', label: 'Channel', type: 'text' },
     { key: 'source', label: 'Source', type: 'text', default: 'featherbit-splunk-hec-logging' },
     { key: 'ssl_verify', label: 'TLS verify', type: 'switch', switchLabel: 'Verify certificates', default: true },
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
   ],
   datadog: [
-    { key: 'host', label: 'Agent host', type: 'text', default: '127.0.0.1' },
+    { key: 'host', label: 'Agent host', type: 'text', default: '127.0.0.1', template: 'env-only' },
     { key: 'port', label: 'DogStatsD port', type: 'number', default: 8125 },
     { key: 'namespace', label: 'Namespace', type: 'text', default: 'featherbit' },
     { key: 'constant_tags', label: 'Constant tags', type: 'list', addLabel: 'Add tag', item: { type: 'text', placeholder: 'source:featherbit' } },
@@ -312,18 +341,18 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
   ],
   loggly: [
-    { key: 'customer_token', label: 'Customer token', type: 'text' },
+    { key: 'customer_token', label: 'Customer token', type: 'text', template: 'env-only' },
     { key: 'tags', label: 'Tags', type: 'list', addLabel: 'Add tag', item: { type: 'text', placeholder: 'featherbit' } },
-    { key: 'host', label: 'Host', type: 'text', default: 'logs-01.loggly.com' },
+    { key: 'host', label: 'Host', type: 'text', default: 'logs-01.loggly.com', template: 'env-only' },
     { key: 'ssl_verify', label: 'TLS verify', type: 'switch', switchLabel: 'Verify certificates', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 5000 },
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
   ],
   'elasticsearch-logger': [
-    { key: 'endpoint_addr', label: 'Endpoint', type: 'text', placeholder: 'http://es:9200' },
+    { key: 'endpoint_addr', label: 'Endpoint', type: 'text', placeholder: 'http://es:9200', template: 'env-only' },
     { key: 'field.index', label: 'Index', type: 'text', placeholder: 'services' },
     { key: 'auth.username', label: 'Username', type: 'text' },
-    { key: 'auth.password', label: 'Password', type: 'text', placeholder: '${ES_PASSWORD}' },
+    { key: 'auth.password', label: 'Password', type: 'text', placeholder: '${ES_PASSWORD}', template: 'env-only' },
     { key: 'ssl_verify', label: 'SSL verify', type: 'switch', switchLabel: 'Verify TLS certificates', default: true },
     { key: 'timeout', label: 'Timeout (s)', type: 'number', default: 10 },
     { key: 'include_req_body', label: 'Request body', type: 'switch', switchLabel: 'Include request body', default: false },
@@ -331,37 +360,37 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
   ],
   'clickhouse-logger': [
-    { key: 'endpoint_addr', label: 'Endpoint', type: 'text', placeholder: 'http://clickhouse:8123' },
+    { key: 'endpoint_addr', label: 'Endpoint', type: 'text', placeholder: 'http://clickhouse:8123', template: 'env-only' },
     { key: 'database', label: 'Database', type: 'text', placeholder: 'default' },
     { key: 'logtable', label: 'Log table', type: 'text', placeholder: 'gateway_logs' },
     { key: 'user', label: 'User', type: 'text', default: '' },
-    { key: 'password', label: 'Password', type: 'text', placeholder: '${CLICKHOUSE_PASSWORD}' },
+    { key: 'password', label: 'Password', type: 'text', placeholder: '${CLICKHOUSE_PASSWORD}', template: 'env-only' },
     { key: 'ssl_verify', label: 'SSL verify', type: 'switch', switchLabel: 'Verify TLS certificates', default: true },
     { key: 'timeout', label: 'Timeout (s)', type: 'number', default: 3 },
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
   ],
   'sls-logger': [
-    { key: 'host', label: 'Host', type: 'text', placeholder: 'cn-hangzhou.log.aliyuncs.com' },
+    { key: 'host', label: 'Host', type: 'text', placeholder: 'cn-hangzhou.log.aliyuncs.com', template: 'env-only' },
     { key: 'port', label: 'Port', type: 'number', default: 443 },
     { key: 'project', label: 'Project', type: 'text', placeholder: 'my-project' },
     { key: 'logstore', label: 'Logstore', type: 'text', placeholder: 'gateway' },
-    { key: 'access_key_id', label: 'Access key id', type: 'text', placeholder: '${SLS_KEY_ID}' },
-    { key: 'access_key_secret', label: 'Access key secret', type: 'text', placeholder: '${SLS_KEY_SECRET}' },
+    { key: 'access_key_id', label: 'Access key id', type: 'text', placeholder: '${SLS_KEY_ID}', template: 'env-only' },
+    { key: 'access_key_secret', label: 'Access key secret', type: 'text', placeholder: '${SLS_KEY_SECRET}', template: 'env-only' },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 5000 },
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
   ],
   'tencent-cloud-cls': [
-    { key: 'cls_host', label: 'CLS host', type: 'text', placeholder: 'ap-guangzhou.cls.tencentcs.com' },
+    { key: 'cls_host', label: 'CLS host', type: 'text', placeholder: 'ap-guangzhou.cls.tencentcs.com', template: 'env-only' },
     { key: 'cls_topic', label: 'CLS topic', type: 'text', placeholder: 'xxxxxxxx-xxxx-xxxx' },
-    { key: 'secret_id', label: 'Secret id', type: 'text', placeholder: '${CLS_SECRET_ID}' },
-    { key: 'secret_key', label: 'Secret key', type: 'text', placeholder: '${CLS_SECRET_KEY}' },
+    { key: 'secret_id', label: 'Secret id', type: 'text', placeholder: '${CLS_SECRET_ID}', template: 'env-only' },
+    { key: 'secret_key', label: 'Secret key', type: 'text', placeholder: '${CLS_SECRET_KEY}', template: 'env-only' },
     { key: 'scheme', label: 'Scheme', type: 'select', options: ['http', 'https'], default: 'https' },
     { key: 'ssl_verify', label: 'SSL verify', type: 'switch', switchLabel: 'Verify TLS certificates', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 10000 },
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
   ],
   'tcp-logger': [
-    { key: 'host', label: 'Host', type: 'text', placeholder: '127.0.0.1' },
+    { key: 'host', label: 'Host', type: 'text', placeholder: '127.0.0.1', template: 'env-only' },
     { key: 'port', label: 'Port', type: 'number', default: 5044 },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 1000 },
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
@@ -369,7 +398,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'include_resp_body', label: 'Response body', type: 'switch', switchLabel: 'Include response body', default: false },
   ],
   'udp-logger': [
-    { key: 'host', label: 'Host', type: 'text', placeholder: '127.0.0.1' },
+    { key: 'host', label: 'Host', type: 'text', placeholder: '127.0.0.1', template: 'env-only' },
     { key: 'port', label: 'Port', type: 'number', default: 5140 },
     { key: 'timeout', label: 'Timeout (s)', type: 'number', default: 3 },
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
@@ -377,7 +406,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'include_resp_body', label: 'Response body', type: 'switch', switchLabel: 'Include response body', default: false },
   ],
   syslog: [
-    { key: 'host', label: 'Host', type: 'text', placeholder: '127.0.0.1' },
+    { key: 'host', label: 'Host', type: 'text', placeholder: '127.0.0.1', template: 'env-only' },
     { key: 'port', label: 'Port', type: 'number', default: 5140 },
     { key: 'sock_type', label: 'Transport', type: 'select', options: ['tcp', 'udp'], default: 'tcp' },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
@@ -385,36 +414,36 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'include_req_body', label: 'Request body', type: 'switch', switchLabel: 'Include request body', default: false },
   ],
   'file-logger': [
-    { key: 'path', label: 'File path', type: 'text', placeholder: '/var/log/featherbit/access.log' },
+    { key: 'path', label: 'File path', type: 'text', placeholder: '/var/log/featherbit/access.log', template: 'env-only' },
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000, hint: 'set 1 for immediate per-request writes' },
     { key: 'include_req_body', label: 'Request body', type: 'switch', switchLabel: 'Include request body', default: false },
     { key: 'include_resp_body', label: 'Response body', type: 'switch', switchLabel: 'Include response body', default: false },
   ],
   'error-log-logger': [
-    { key: 'host', label: 'Host', type: 'text', placeholder: '127.0.0.1' },
+    { key: 'host', label: 'Host', type: 'text', placeholder: '127.0.0.1', template: 'env-only' },
     { key: 'port', label: 'Port', type: 'number', default: 5044 },
     { key: 'timeout', label: 'Timeout (s)', type: 'number', default: 3 },
     { key: 'level', label: 'Level', type: 'select', options: ['STDERR','EMERG','ALERT','CRIT','ERR','ERROR','WARN','NOTICE','INFO','DEBUG'], default: 'WARN', hint: 'accepted for compatibility; not enforced' },
     { key: 'batch_max_size', label: 'Batch max size', type: 'number', default: 1000 },
   ],
   'google-cloud-logging': [
-    { key: 'auth_file', label: 'Auth file', type: 'text', placeholder: '/etc/gateway/gcp-sa.json', hint: 'path to service-account JSON; or set auth_config in YAML' },
+    { key: 'auth_file', label: 'Auth file', type: 'text', placeholder: '/etc/gateway/gcp-sa.json', hint: 'path to service-account JSON; or set auth_config in YAML', template: 'env-only' },
     { key: 'log_id', label: 'Log ID', type: 'text', default: 'featherbit%2Flogs' },
     { key: 'ssl_verify', label: 'SSL verify', type: 'switch', default: true },
     { key: 'timeout', label: 'Timeout (s)', type: 'number', default: 10 },
   ],
   'skywalking-logger': [
-    { key: 'endpoint_addr', label: 'OAP endpoint', type: 'text', placeholder: 'http://127.0.0.1:12800', hint: 'required' },
+    { key: 'endpoint_addr', label: 'OAP endpoint', type: 'text', placeholder: 'http://127.0.0.1:12800', hint: 'required', template: 'env-only' },
     { key: 'service_name', label: 'Service name', type: 'text', default: 'featherbit' },
     { key: 'service_instance_name', label: 'Instance name', type: 'text', default: 'featherbit Instance Name' },
     { key: 'ssl_verify', label: 'SSL verify', type: 'switch', default: true },
     { key: 'timeout', label: 'Timeout (s)', type: 'number', default: 3 },
   ],
   lago: [
-    { key: 'endpoint', label: 'Lago endpoint', type: 'text', placeholder: 'http://127.0.0.1:3000', hint: 'required' },
-    { key: 'token', label: 'API token', type: 'text', hint: 'required - Lago API key' },
-    { key: 'event_transaction_id', label: 'Transaction ID', type: 'text', placeholder: 'req_$request_uri', hint: 'required - $var template', vars: true },
-    { key: 'subscription_id', label: 'Subscription ID', type: 'text', placeholder: 'cus_$consumer_name', hint: 'required - $var template', vars: true },
+    { key: 'endpoint', label: 'Lago endpoint', type: 'text', placeholder: 'http://127.0.0.1:3000', hint: 'required', template: 'env-only' },
+    { key: 'token', label: 'API token', type: 'text', hint: 'required - Lago API key', template: 'env-only' },
+    { key: 'event_transaction_id', label: 'Transaction ID', type: 'text', placeholder: 'req_$request_uri', hint: 'required - $var template', template: 'full', legacyDollar: true },
+    { key: 'subscription_id', label: 'Subscription ID', type: 'text', placeholder: 'cus_$consumer_name', hint: 'required - $var template', template: 'full', legacyDollar: true },
     { key: 'event_code', label: 'Event code', type: 'text', hint: 'required - billable metric code' },
     { key: 'ssl_verify', label: 'SSL verify', type: 'switch', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
@@ -423,7 +452,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   'limit-count': [
     { key: 'count', label: 'Count', type: 'number', hint: 'requests allowed per window' },
     { key: 'time_window', label: 'Time window (s)', type: 'number', hint: 'window length in seconds' },
-    { key: 'key', label: 'Key', type: 'text', default: '$remote_addr', placeholder: '$remote_addr', hint: '$var template; empty falls back to client address', vars: true },
+    { key: 'key', label: 'Key', type: 'text', default: '$remote_addr', placeholder: '$remote_addr', hint: '$var template; empty falls back to client address', template: 'full', legacyDollar: true },
     { key: 'policy', label: 'Policy', type: 'select', options: ['local'], default: 'local' },
     { key: 'group', label: 'Group', type: 'text', placeholder: 'shared-counter', hint: 'prefixes the key so nodes share a counter' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 503 },
@@ -452,7 +481,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'phase', label: 'Phase', type: 'radio', options: ['acquire', 'release'], default: 'acquire', hint: 'acquire before upstream, release after (on success and error)' },
     { key: 'conn', label: 'Max concurrent', type: 'number', default: 20 },
     { key: 'burst', label: 'Burst', type: 'number', default: 0, hint: 'extra concurrency above conn; ceiling is conn + burst' },
-    { key: 'key', label: 'Key', type: 'text', default: '$remote_addr', hint: 'both nodes of the pair must share this key', vars: true },
+    { key: 'key', label: 'Key', type: 'text', default: '$remote_addr', hint: 'both nodes of the pair must share this key', template: 'full', legacyDollar: true },
     { key: 'key_type', label: 'Key type', type: 'select', options: ['var', 'constant'], default: 'var' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 503 },
     { key: 'rejected_msg', label: 'Rejected message', type: 'text' },
@@ -468,7 +497,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   'proxy-cache': [
     { key: 'phase', label: 'Phase', type: 'radio', options: ['lookup', 'store'], default: 'lookup', hint: 'lookup before upstream, store after' },
     { key: 'id', label: 'Cache id', type: 'text', placeholder: 'catalog', hint: 'lookup and store nodes must share this id' },
-    { key: 'cache_key', label: 'Cache key', type: 'list', addLabel: 'Component', item: { type: 'text', placeholder: '$uri', vars: true }, hint: 'defaults to $request_method + $host + $uri' },
+    { key: 'cache_key', label: 'Cache key', type: 'list', addLabel: 'Component', item: { type: 'text', placeholder: '$uri', template: 'full', legacyDollar: true }, hint: 'defaults to $request_method + $host + $uri' },
     { key: 'cache_ttl', label: 'Cache TTL (s)', type: 'number', default: 300 },
     { key: 'cache_http_statuses', label: 'Cacheable statuses', type: 'list', addLabel: 'Status', item: { type: 'number' }, hint: 'defaults to 200, 301, 404' },
     { key: 'cache_method', label: 'Cacheable methods', type: 'list', addLabel: 'Method', item: { type: 'text', placeholder: 'GET' }, hint: 'defaults to GET, HEAD' },
@@ -495,10 +524,10 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
   ],
   'authz-casbin': [
-    { key: 'model_path', label: 'Model file path', type: 'text', placeholder: '/etc/featherbit/model.conf', hint: 'with policy_path; host file mode' },
-    { key: 'policy_path', label: 'Policy file path', type: 'text', placeholder: '/etc/featherbit/policy.csv' },
-    { key: 'model', label: 'Model (inline)', type: 'text', hint: 'inline Casbin model config; with policy' },
-    { key: 'policy', label: 'Policy (inline)', type: 'text', hint: 'inline CSV policy' },
+    { key: 'model_path', label: 'Model file path', type: 'text', placeholder: '/etc/featherbit/model.conf', hint: 'with policy_path; host file mode', template: 'env-only' },
+    { key: 'policy_path', label: 'Policy file path', type: 'text', placeholder: '/etc/featherbit/policy.csv', template: 'env-only' },
+    { key: 'model', label: 'Model (inline)', type: 'text', hint: 'inline Casbin model config; with policy', template: 'env-only' },
+    { key: 'policy', label: 'Policy (inline)', type: 'text', hint: 'inline CSV policy', template: 'env-only' },
     { key: 'username_header', label: 'Username header', type: 'text', default: 'x-user', hint: 'subject fallback when no consumer' },
   ],
   'authz-keycloak': [
@@ -513,11 +542,11 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   'authz-casdoor': [
     { key: 'endpoint_addr', label: 'Casdoor endpoint', type: 'text', placeholder: 'https://casdoor.example.com' },
     { key: 'client_id', label: 'Client ID', type: 'text' },
-    { key: 'client_secret', label: 'Client secret', type: 'text', placeholder: '${CASDOOR_CLIENT_SECRET}' },
+    { key: 'client_secret', label: 'Client secret', type: 'text', placeholder: '${CASDOOR_CLIENT_SECRET}', template: 'env-only' },
     { key: 'callback_url', label: 'Callback URL', type: 'text', hint: 'required for interactive mode; the OAuth redirect path' },
     { key: 'ssl_verify', label: 'Verify TLS', type: 'switch', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
-    { key: 'session_secret', label: 'Session secret', type: 'text', placeholder: '${CASDOOR_SESSION_SECRET}', hint: 'set to enable interactive OAuth SSO login (encrypted cookie session); leave blank for stateless bearer-token introspection' },
+    { key: 'session_secret', label: 'Session secret', type: 'text', placeholder: '${CASDOOR_SESSION_SECRET}', hint: 'set to enable interactive OAuth SSO login (encrypted cookie session); leave blank for stateless bearer-token introspection', template: 'env-only' },
     { key: 'scope', label: 'OAuth scope', type: 'text', default: 'read', hint: 'interactive mode only' },
     { key: 'session_cookie_name', label: 'Session cookie name', type: 'text', default: 'casdoor_session', hint: 'interactive mode only; flow cookie is <name>_flow' },
     { key: 'session_cookie_path', label: 'Session cookie path', type: 'text', default: '/', hint: 'interactive mode only; scope to a subpath (e.g. /app_a) for independent per-app sessions; must cover the callback URL path' },
@@ -543,7 +572,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'service', label: 'Service URL', type: 'text', placeholder: 'https://app.example.org/', hint: 'defaults to request scheme/host/path' },
     { key: 'ticket_param', label: 'Ticket param', type: 'text', default: 'ticket' },
     { key: 'ssl_verify', label: 'Verify TLS cert', type: 'switch', default: true },
-    { key: 'session_secret', label: 'Session secret', type: 'text', placeholder: '${CAS_SESSION_SECRET}', hint: 'set to enable interactive SSO login (encrypted cookie session); leave blank for stateless ticket validation' },
+    { key: 'session_secret', label: 'Session secret', type: 'text', placeholder: '${CAS_SESSION_SECRET}', hint: 'set to enable interactive SSO login (encrypted cookie session); leave blank for stateless ticket validation', template: 'env-only' },
     { key: 'session_cookie_name', label: 'Session cookie name', type: 'text', default: 'cas_session', hint: 'interactive mode only' },
     { key: 'session_cookie_path', label: 'Session cookie path', type: 'text', default: '/', hint: 'interactive mode only; scope to a subpath (e.g. /app_a) for independent per-app sessions' },
     { key: 'session_cookie_lifetime', label: 'Session lifetime (s)', type: 'number', default: 3600, hint: 'interactive mode only' },
@@ -554,14 +583,14 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'jwks_uri', label: 'JWKS URI', type: 'text', placeholder: 'https://idp.example.com/jwks' },
     { key: 'introspection_endpoint', label: 'Introspection endpoint', type: 'text', hint: 'used only when no JWKS source is set' },
     { key: 'client_id', label: 'Client ID', type: 'text' },
-    { key: 'client_secret', label: 'Client secret', type: 'text', placeholder: '${OIDC_CLIENT_SECRET}', hint: 'required for introspection' },
+    { key: 'client_secret', label: 'Client secret', type: 'text', placeholder: '${OIDC_CLIENT_SECRET}', hint: 'required for introspection', template: 'env-only' },
     { key: 'bearer_only', label: 'Bearer only', type: 'switch', switchLabel: 'Off = interactive login flow', default: true },
     { key: 'token_signing_alg_values_expected', label: 'Allowed algorithms', type: 'text', default: 'RS256', placeholder: 'RS256, ES256' },
     { key: 'set_userinfo_header', label: 'Set X-Userinfo header', type: 'switch', default: true },
     { key: 'set_access_token_header', label: 'Forward access token', type: 'switch', default: true },
     { key: 'access_token_in_authorization_header', label: 'Token in Authorization', type: 'switch', switchLabel: 'Keep in Authorization instead of X-Access-Token', default: false },
     { key: 'redirect_uri', label: 'Redirect URI', type: 'text', placeholder: 'https://app.example.com/oidc/callback', hint: 'interactive mode: callback URL; its path must be on this route' },
-    { key: 'session_secret', label: 'Session secret', type: 'text', placeholder: '${SESSION_SECRET}', hint: 'interactive mode: seals the session cookie; same on every instance' },
+    { key: 'session_secret', label: 'Session secret', type: 'text', placeholder: '${SESSION_SECRET}', hint: 'interactive mode: seals the session cookie; same on every instance', template: 'env-only' },
     { key: 'session_cookie_name', label: 'Session cookie name', type: 'text', default: 'oidc_session', hint: 'interactive mode: session cookie name (flow cookie is <name>_flow); give two apps distinct names for independent sessions' },
     { key: 'session_cookie_path', label: 'Session cookie path', type: 'text', default: '/', hint: 'interactive mode: cookie Path; scope to a subpath (e.g. /app_a) so nodes on different subpaths keep separate sessions; must cover the redirect URI path' },
     { key: 'session_cookie_lifetime', label: 'Session lifetime (s)', type: 'number', default: 3600, hint: 'interactive mode: session cookie lifetime' },
@@ -571,8 +600,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'timeout', label: 'Timeout (s)', type: 'number', default: 3 },
   ],
   'dingtalk-auth': [
-    { key: 'app_key', label: 'App key', type: 'text', placeholder: '${DINGTALK_APP_KEY}' },
-    { key: 'app_secret', label: 'App secret', type: 'text', placeholder: '${DINGTALK_APP_SECRET}' },
+    { key: 'app_key', label: 'App key', type: 'text', placeholder: '${DINGTALK_APP_KEY}', template: 'env-only' },
+    { key: 'app_secret', label: 'App secret', type: 'text', placeholder: '${DINGTALK_APP_SECRET}', template: 'env-only' },
     { key: 'code_header', label: 'Code header', type: 'text', default: 'X-DingTalk-Code' },
     { key: 'code_query', label: 'Code query param', type: 'text', default: 'code' },
     { key: 'access_token_url', label: 'Access token URL', type: 'text', default: 'https://api.dingtalk.com/v1.0/oauth2/accessToken' },
@@ -583,7 +612,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   ],
   'feishu-auth': [
     { key: 'app_id', label: 'App ID', type: 'text', placeholder: '${FEISHU_APP_ID}' },
-    { key: 'app_secret', label: 'App secret', type: 'text', placeholder: '${FEISHU_APP_SECRET}' },
+    { key: 'app_secret', label: 'App secret', type: 'text', placeholder: '${FEISHU_APP_SECRET}', template: 'env-only' },
     { key: 'auth_redirect_uri', label: 'Auth redirect URI', type: 'text', placeholder: 'https://app.example.com/callback', hint: 'part of the token-exchange body' },
     { key: 'code_header', label: 'Code header', type: 'text', default: 'X-Feishu-Code' },
     { key: 'code_query', label: 'Code query param', type: 'text', default: 'code' },
@@ -600,7 +629,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   ],
   script: [
     { key: 'runtime', label: 'Runtime', type: 'select', options: ['lua', 'python'], default: 'lua' },
-    { key: 'source', label: 'Source file', type: 'text', placeholder: '/etc/gateway/plugins/custom.lua', hint: 'path on the gateway host' },
+    { key: 'source', label: 'Source file', type: 'text', placeholder: '/etc/gateway/plugins/custom.lua', hint: 'path on the gateway host', template: 'env-only' },
     { key: 'inline', label: 'Inline script', type: 'textarea', rows: 8, placeholder: 'function execute(ctx) … end', hint: 'used when no source file is set' },
   ],
   // ---- Plugin catalog (Wave 1) --------------------------------------
@@ -618,7 +647,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'recursive', label: 'Recursive', type: 'switch', switchLabel: 'Walk X-Forwarded-For skipping trusted hops', default: false },
   ],
   redirect: [
-    { key: 'uri', label: 'Target URI', type: 'text', placeholder: 'https://$host/new$uri', hint: 'template with $vars; set this or HTTP to HTTPS, not both', vars: true },
+    { key: 'uri', label: 'Target URI', type: 'text', placeholder: 'https://$host/new$uri', hint: 'template with $vars; set this or HTTP to HTTPS, not both', template: 'full', legacyDollar: true },
     { key: 'http_to_https', label: 'HTTP to HTTPS', type: 'switch', switchLabel: 'Redirect plain HTTP to https', default: false },
     { key: 'ret_code', label: 'Status code', type: 'number', default: 302, hint: 'ignored by http_to_https (301 GET/HEAD, 308 otherwise)' },
     { key: 'append_query_string', label: 'Query string', type: 'switch', switchLabel: 'Append original query string', default: false },
@@ -634,8 +663,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
       ] },
   ],
   'ua-restriction': [
-    { key: 'allowlist', label: 'Allowlist', type: 'list', addLabel: 'Regex', item: { type: 'text', placeholder: 'Mozilla.*' }, hint: 'only matching User-Agents pass; set exactly one list' },
-    { key: 'denylist', label: 'Denylist', type: 'list', addLabel: 'Regex', item: { type: 'text', placeholder: 'curl/.*' }, hint: 'matching User-Agents are rejected' },
+    { key: 'allowlist', label: 'Allowlist', type: 'list', addLabel: 'Regex', item: { type: 'text', placeholder: 'Mozilla.*', template: 'env-only' }, hint: 'only matching User-Agents pass; set exactly one list' },
+    { key: 'denylist', label: 'Denylist', type: 'list', addLabel: 'Regex', item: { type: 'text', placeholder: 'curl/.*', template: 'env-only' }, hint: 'matching User-Agents are rejected' },
     { key: 'bypass_missing', label: 'Missing User-Agent', type: 'switch', switchLabel: 'Bypass when header absent', default: false },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 403 },
     { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'Not allowed' },
@@ -647,13 +676,13 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'message', label: 'Rejected message', type: 'text', placeholder: 'Your referer host is not allowed' },
   ],
   'uri-blocker': [
-    { key: 'block_rules', label: 'Block rules', type: 'list', addLabel: 'Regex', item: { type: 'text', placeholder: '^/admin/' }, hint: 'required; matched against path + query string' },
+    { key: 'block_rules', label: 'Block rules', type: 'list', addLabel: 'Regex', item: { type: 'text', placeholder: '^/admin/', template: 'env-only' }, hint: 'required; matched against path + query string' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 403 },
     { key: 'rejected_msg', label: 'Rejected message', type: 'text', hint: 'when set, body is {"error_msg": ...}; empty body otherwise' },
     { key: 'case_insensitive', label: 'Case', type: 'switch', switchLabel: 'Case-insensitive matching', default: false },
   ],
   csrf: [
-    { key: 'key', label: 'Secret key', type: 'text', placeholder: '${CSRF_SECRET}', hint: 'required; HMAC secret for signing tokens' },
+    { key: 'key', label: 'Secret key', type: 'text', placeholder: '${CSRF_SECRET}', hint: 'required; HMAC secret for signing tokens', template: 'env-only' },
     { key: 'expires', label: 'Expires (s)', type: 'number', default: 7200, hint: '0 disables the expiry check' },
     { key: 'name', label: 'Token name', type: 'text', default: 'featherbit-csrf-token', hint: 'cookie and request-header name' },
     { key: 'phase', label: 'Phase', type: 'radio', options: ['request', 'response'], default: 'request', hint: 'request validates unsafe methods; response issues the cookie (place after upstream)' },
@@ -664,7 +693,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'body_base64', label: 'Base64', type: 'switch', switchLabel: 'Decode body from base64', default: false },
     { key: 'filters', label: 'Body filters', type: 'objects', addLabel: 'Filter', itemLabel: 'Filter',
       fields: [
-        { key: 'regex', label: 'Regex', type: 'text' },
+        { key: 'regex', label: 'Regex', type: 'text', template: 'env-only' },
         { key: 'replace', label: 'Replace', type: 'text' },
         { key: 'scope', label: 'Scope', type: 'radio', options: ['once', 'global'], default: 'once' },
         { key: 'options', label: 'Options', type: 'select', options: [{ value: '', label: 'none' }, { value: 'i', label: 'i (case-insensitive)' }], default: '' },
@@ -683,27 +712,27 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'vary', label: 'Vary', type: 'switch', switchLabel: 'Add Vary: Accept-Encoding', default: false },
   ],
   'exit-transformer': [
-    { key: 'body', label: 'Body template', type: 'textarea', rows: 4, placeholder: '{"status": $status, "path": "$uri"}', hint: '$var interpolation; $status is the remapped status. status_map is YAML-only.', vars: true },
+    { key: 'body', label: 'Body template', type: 'textarea', rows: 4, placeholder: '{"status": $status, "path": "$uri"}', hint: '$var interpolation; $status is the remapped status. status_map is YAML-only.', template: 'full', legacyDollar: true },
     { key: 'always', label: 'Scope', type: 'switch', switchLabel: 'Apply to all responses, not just gateway exits', default: false },
   ],
   'fault-injection': [
-    { key: 'abort', label: 'Abort', type: 'textarea', rows: 6, placeholder: '{"http_status": 503, "body": "injected", "percentage": 10}', hint: 'JSON object: http_status (required), body, headers, percentage 0-100, vars', vars: true },
+    { key: 'abort', label: 'Abort', type: 'textarea', rows: 6, placeholder: '{"http_status": 503, "body": "injected", "percentage": 10}', hint: 'JSON object: http_status (required), body, headers, percentage 0-100, vars', template: 'full', legacyDollar: true },
     { key: 'delay', label: 'Delay', type: 'textarea', rows: 4, placeholder: '{"duration": 0.5, "percentage": 30}', hint: 'JSON object: duration seconds (required), percentage, vars' },
   ],
   workflow: [
     { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"case": [["uri", "~~", "^/admin"]], "actions": [["return", {"code": 403}]]}]', hint: 'JSON array; actions: ["return", {code}] or ["limit-count", {count, time_window, key, rejected_code}]' },
   ],
   'traffic-label': [
-    { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"match": [["arg_channel", "==", "beta"]], "actions": [{"set_headers": {"x-server-id": "beta"}, "set_labels": {"tier": "beta"}}]}]', hint: 'JSON array; set_headers → request headers, set_labels → message label.<key>', vars: true },
+    { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"match": [["arg_channel", "==", "beta"]], "actions": [{"set_headers": {"x-server-id": "beta"}, "set_labels": {"tier": "beta"}}]}]', hint: 'JSON array; set_headers → request headers, set_labels → message label.<key>', template: 'full', legacyDollar: true },
   ],
   mocking: [
     { key: 'response_status', label: 'Status', type: 'number', default: 200 },
     { key: 'content_type', label: 'Content type', type: 'select', options: ['application/json;charset=utf8', 'application/json', 'text/plain', 'text/html', 'application/xml', 'text/xml'], default: 'application/json;charset=utf8' },
-    { key: 'response_example', label: 'Response body', type: 'textarea', rows: 6, placeholder: '{"user": "$arg_name"}', hint: 'required; supports $var interpolation', vars: true },
+    { key: 'response_example', label: 'Response body', type: 'textarea', rows: 6, placeholder: '{"user": "$arg_name"}', hint: 'required; supports $var interpolation', template: 'full', legacyDollar: true },
     { key: 'response_headers', label: 'Response headers', type: 'objects', addLabel: 'Header', itemLabel: 'Header',
       fields: [
         { key: 'name', label: 'Name', type: 'text' },
-        { key: 'value', label: 'Value', type: 'text', vars: true },
+        { key: 'value', label: 'Value', type: 'text', template: 'full', legacyDollar: true },
       ] },
     { key: 'with_mock_header', label: 'Mock header', type: 'switch', switchLabel: 'Add x-mock-by header', default: true },
     { key: 'delay', label: 'Delay (s)', type: 'number', default: 0 },
@@ -714,27 +743,27 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
         { key: 'type', label: 'Target', type: 'select', options: ['query', 'header', 'body'], default: 'query' },
         { key: 'name', label: 'Name / body path', type: 'text', placeholder: 'user.card_number', hint: 'dotted path for body rules; numeric segments index arrays' },
         { key: 'action', label: 'Action', type: 'select', options: ['remove', 'replace', 'regex'], default: 'remove' },
-        { key: 'regex', label: 'Regex', type: 'text', placeholder: '^(\\d{4})\\d+(\\d{4})$', hint: 'required for action regex' },
+        { key: 'regex', label: 'Regex', type: 'text', placeholder: '^(\\d{4})\\d+(\\d{4})$', hint: 'required for action regex', template: 'env-only' },
         { key: 'value', label: 'Value', type: 'text', placeholder: '***', hint: 'required for replace/regex; $1 captures allowed' },
         { key: 'body_format', label: 'Body format', type: 'select', options: ['json'], default: 'json', hint: 'required for body rules' },
       ] },
     { key: 'max_body_size', label: 'Max body size (bytes)', type: 'number', default: 1048576, hint: 'larger bodies skip body rules' },
   ],
   'request-validation': [
-    { key: 'header_schema', label: 'Header schema (JSON)', type: 'textarea', rows: 6, placeholder: '{"type":"object","required":["x-api-version"]}', hint: 'JSON Schema; headers seen as {name: first_value}, lowercase names' },
-    { key: 'body_schema', label: 'Body schema (JSON)', type: 'textarea', rows: 8, placeholder: '{"type":"object","required":["name"]}', hint: 'JSON Schema; at least one schema is required' },
+    { key: 'header_schema', label: 'Header schema (JSON)', type: 'textarea', rows: 6, placeholder: '{"type":"object","required":["x-api-version"]}', hint: 'JSON Schema; headers seen as {name: first_value}, lowercase names', template: 'env-only' },
+    { key: 'body_schema', label: 'Body schema (JSON)', type: 'textarea', rows: 8, placeholder: '{"type":"object","required":["name"]}', hint: 'JSON Schema; at least one schema is required', template: 'env-only' },
     { key: 'rejected_code', label: 'Rejected status', type: 'number', default: 400 },
     { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'invalid payload', hint: 'fixed message instead of validator detail' },
   ],
   'body-transformer': [
     { key: 'request', label: 'Request transform', type: 'objects', addLabel: 'Transform', itemLabel: 'Request',
       fields: [
-        { key: 'template', label: 'Template', type: 'textarea', rows: 5, placeholder: '{"name":"{{body.user.name}}","trace":"{{$http_x_request_id}}"}', vars: true },
+        { key: 'template', label: 'Template', type: 'textarea', rows: 5, placeholder: '{"name":"{{body.user.name}}","trace":"{{$http_x_request_id}}"}', template: 'env-only' },
         { key: 'input_format', label: 'Input format', type: 'select', options: ['json'], default: 'json' },
       ] },
     { key: 'response', label: 'Response transform', type: 'objects', addLabel: 'Transform', itemLabel: 'Response',
       fields: [
-        { key: 'template', label: 'Template', type: 'textarea', rows: 5, placeholder: '{"status":"{{body.result}}","code":$status}', vars: true },
+        { key: 'template', label: 'Template', type: 'textarea', rows: 5, placeholder: '{"status":"{{body.result}}","code":$status}', template: 'env-only' },
         { key: 'input_format', label: 'Input format', type: 'select', options: ['json'], default: 'json' },
       ] },
   ],
