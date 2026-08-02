@@ -197,13 +197,21 @@ function firstHeaderValue(headers: Record<string, string[]>, name: string): stri
   return undefined;
 }
 
-/** Rebuilds `k=v&k=v...` sorted by key, matching `query_string()` in src/vars/mod.rs. */
+/**
+ * Rebuilds `k=v&k=v...`, matching `query_string()` in src/vars/mod.rs
+ * exactly: every `k=v` pair is collected as a string first, and the pair
+ * *strings* are sorted (not the keys) — so repeated keys get their values
+ * ordered too, with `=` participating in the comparison. Do not "optimize"
+ * this to sort keys first and emit values in array order; that produces a
+ * different (wrong) order whenever a key repeats, e.g. `{a: ["z","b"],
+ * a2: ["3"]}` must rebuild to `a2=3&a=b&a=z`, not `a=z&a=b&a2=3`.
+ */
 function rebuildQueryString(params: Record<string, string[]>): string {
   const pairs: string[] = [];
-  for (const k of Object.keys(params).sort()) {
-    for (const v of params[k]) pairs.push(`${k}=${v}`);
+  for (const [k, vs] of Object.entries(params)) {
+    for (const v of vs) pairs.push(`${k}=${v}`);
   }
-  return pairs.join('&');
+  return pairs.sort().join('&');
 }
 
 /** Mirrors `urldecode()` in src/vars/mod.rs closely enough for a preview value. */
@@ -498,9 +506,19 @@ export function useContextSuggestions(args: {
         setSuggestions(namesOnly(entries));
         return;
       }
+      // Without a policy name there is nothing to scope the trace lookup
+      // to: api.listTraces drops a falsy `policy` filter entirely and would
+      // happily return the newest trace from *any* policy in the buffer,
+      // which would then get previewed as if it belonged here. Bail out
+      // before fetching anything.
+      if (!policyName) {
+        setAvailability('no-trace');
+        setSuggestions(namesOnly(entries));
+        return;
+      }
 
       try {
-        const traces = await api.listTraces({ policy: policyName ?? undefined, limit: 1 });
+        const traces = await api.listTraces({ policy: policyName, limit: 1 });
         if (cancelled) return;
         if (traces.length === 0) {
           setAvailability('no-trace');
@@ -510,6 +528,13 @@ export function useContextSuggestions(args: {
 
         const trace = await api.getTrace(traces[0].id);
         if (cancelled) return;
+        // Defensive re-check: the server-side filter should guarantee this,
+        // but never preview a foreign policy's trace if it somehow doesn't.
+        if (trace.policy !== policyName) {
+          setAvailability('no-trace');
+          setSuggestions(namesOnly(entries));
+          return;
+        }
         const snapshot = predecessorSnapshot(trace, predecessorId);
         if (!snapshot) {
           setAvailability('no-trace');
