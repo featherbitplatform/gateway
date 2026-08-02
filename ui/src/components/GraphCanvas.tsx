@@ -28,7 +28,7 @@ import { PluginNode, type PluginNodeData } from './PluginNode';
 import { PluginDrawer } from './PluginDrawer';
 import { NodeInspector } from './NodeInspector';
 import { ThemeToggle } from './ThemeToggle';
-import type { Policy, PluginType, ScriptFile, Supernode } from '../types';
+import type { Policy, PluginConfigDef, PluginType, ScriptFile, Supernode } from '../types';
 
 /**
  * Builds the shared inline style for floating-toolbar buttons.
@@ -63,6 +63,8 @@ interface GraphCanvasProps {
   kind: 'policy' | 'supernode';
   /** Supernode definitions offered in the policy palette (empty in supernode mode). */
   supernodes: Supernode[];
+  /** Named shared plugin configs offered by the inspector's picker (from GET /api/plugin-configs). */
+  pluginConfigs: PluginConfigDef[];
 }
 
 /** ReactFlow custom node-type registry; every policy node renders as a {@link PluginNode}. */
@@ -134,6 +136,7 @@ function policyToNodes(policy: Policy, onSelect: (id: string) => void): Node[] {
           : node.id,
       pluginType: node.type,
       config: node.config || {},
+      configRef: node.config_ref,
       onSelect: onSelect,
     } satisfies PluginNodeData,
   }));
@@ -232,6 +235,7 @@ function nodesToPolicy(
         id: n.id,
         type: data.pluginType,
         config: data.config || {},
+        ...(data.configRef ? { config_ref: data.configRef } : {}),
         position: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
       };
     }),
@@ -264,7 +268,15 @@ function nodesToPolicy(
  * Success/error handles correspond to the port routing model executed by
  * CompiledGraph::execute in src/graph/engine.rs.
  */
-export function GraphCanvas({ policy, plugins, scripts, onSavePolicy, kind, supernodes }: GraphCanvasProps) {
+export function GraphCanvas({
+  policy,
+  plugins,
+  scripts,
+  onSavePolicy,
+  kind,
+  supernodes,
+  pluginConfigs,
+}: GraphCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -419,6 +431,12 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy, kind, supe
     );
   };
 
+  const handleUpdateConfigRef = (nodeId: string, ref: string | undefined) => {
+    setNodes((nds) =>
+      nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, configRef: ref } } : n))
+    );
+  };
+
   const handleDeleteNode = (nodeId: string) => {
     setNodes((nds) => nds.filter((n) => n.id !== nodeId));
     setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
@@ -566,7 +584,9 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy, kind, supe
       {selectedNodeId && !drawerOpen && (
         <NodeInspector
           node={selectedNode}
+          pluginConfigs={pluginConfigs}
           onUpdateConfig={handleUpdateConfig}
+          onUpdateConfigRef={handleUpdateConfigRef}
           onDeleteNode={handleDeleteNode}
           onClose={() => setSelectedNodeId(null)}
         />

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::config::{GatewayConfig, RouteConfig, SystemConfig};
+use crate::config::{resolve_plugin_configs, GatewayConfig, RouteConfig, SystemConfig};
 use crate::config_store::ConfigStore;
 use crate::debug::DebugState;
 use crate::graph::{
@@ -157,6 +157,13 @@ impl SharedState {
         gateway: &GatewayConfig,
         resources: &Arc<PluginResources>,
     ) -> Result<Vec<(RouteConfig, Arc<CompiledGraph>)>, String> {
+        // Materialize shared plugin configs first: supernode definitions and
+        // policies both resolve against them, and expansion below copies the
+        // resolved inner configs into instances. In-memory only — the stored
+        // gateway config keeps the `config_ref` form.
+        let gateway = resolve_plugin_configs(gateway)?;
+        let gateway = &gateway;
+
         // Supernode definitions are validated first: policies expand against
         // them, so a broken definition must fail before any policy does.
         let mut seen = std::collections::HashSet::new();
@@ -314,5 +321,70 @@ policies:
 "#;
         let err = state_from_yaml(yaml).unwrap_err();
         assert!(err.contains("Duplicate supernode"), "{err}");
+    }
+
+    // `upstream` is used deliberately: its `targets` key is REQUIRED, so an
+    // UNRESOLVED ref leaves the node without targets and create_plugin fails —
+    // giving this test a genuine red state before resolution was wired in.
+    // (A permissive plugin like `mocking` would compile even unresolved.)
+    const PLUGIN_CONFIG_GATEWAY: &str = r#"
+plugin_configs:
+  - name: shared-up
+    type: upstream
+    config: { targets: [ { host: "127.0.0.1", port: 9 } ] }
+supernodes:
+  - name: wrapped
+    nodes:
+      - { id: input,  type: input }
+      - { id: output, type: output }
+      - { id: error,  type: error }
+      - { id: up, type: upstream, config_ref: shared-up }
+    edges:
+      - { from: input.out,  to: up.in }
+      - { from: up.success, to: output.in }
+routes:
+  - name: r
+    match: { path: "/*" }
+    policy: p
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: direct, type: upstream, config_ref: shared-up, config: { strategy: "round_robin" } }
+      - { id: sn, type: supernode, config: { name: wrapped } }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out,  to: direct.in }
+      - { from: direct.success, to: sn.in }
+      - { from: sn.success,    to: client.in }
+"#;
+
+    /// Refs resolve for a direct policy node AND for a node inside a
+    /// supernode definition, and the whole thing compiles.
+    #[test]
+    fn test_plugin_config_refs_compile() {
+        assert_eq!(state_from_yaml(PLUGIN_CONFIG_GATEWAY), Ok(()));
+    }
+
+    #[test]
+    fn test_unknown_plugin_config_ref_rejected() {
+        let yaml = PLUGIN_CONFIG_GATEWAY.replace(
+            "config_ref: shared-up, config:",
+            "config_ref: nope, config:",
+        );
+        let err = state_from_yaml(&yaml).unwrap_err();
+        assert!(err.contains("unknown plugin config 'nope'"), "{err}");
+    }
+
+    /// Removing the shared config while a supernode inner node still
+    /// references it is rejected — this is the delete-protection mechanism.
+    #[test]
+    fn test_delete_referenced_plugin_config_rejected() {
+        let yaml = PLUGIN_CONFIG_GATEWAY.replace(
+            "  - name: shared-up\n    type: upstream\n    config: { targets: [ { host: \"127.0.0.1\", port: 9 } ] }\n",
+            "",
+        );
+        let err = state_from_yaml(&yaml).unwrap_err();
+        assert!(err.contains("unknown plugin config 'shared-up'"), "{err}");
     }
 }

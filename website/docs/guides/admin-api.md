@@ -39,6 +39,10 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `GET` | `/api/supernodes/:name` | Get a supernode definition | `404` unknown supernode |
 | `PUT` | `/api/supernodes/:name` | Create **or** update a supernode definition (upsert) | `400` validation/recompile failed |
 | `DELETE` | `/api/supernodes/:name` | Delete a supernode definition | `404` unknown supernode; `400` recompile failed (e.g. a policy still references it) |
+| `GET` | `/api/plugin-configs` | List all [shared plugin config](../concepts/plugin-configs.md) definitions | — |
+| `GET` | `/api/plugin-configs/:name` | Get a shared plugin config definition | `404` unknown plugin config |
+| `PUT` | `/api/plugin-configs/:name` | Create **or** update a shared plugin config definition (upsert) | `400` validation/recompile failed |
+| `DELETE` | `/api/plugin-configs/:name` | Delete a shared plugin config definition | `404` unknown plugin config; `400` recompile failed (e.g. a node still references it via `config_ref`) |
 | `GET` | `/api/consumers` | List all consumers (with credentials) | — |
 | `GET` | `/api/consumers/:name` | Get a consumer | `404` unknown consumer |
 | `POST` | `/api/consumers` | Create a consumer | `409` name taken; `400` store rebuild rejected |
@@ -47,7 +51,7 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `GET` | `/api/plugins` | Static catalog of node/plugin types (id + description) | — |
 | `GET` | `/api/scripts` | List scripted-plugin files (`.lua`) in the `plugins/` directory next to the config directory; missing directory yields an empty list | — |
 | `GET` | `/api/status` | Gateway version plus route and policy counts | — |
-| `GET` | `/api/config/export` | Live in-memory config (routes + policies + supernodes) rendered as YAML (`text/yaml`) | `500` serialization failed |
+| `GET` | `/api/config/export` | Live in-memory config (routes + policies + supernodes + plugin configs) rendered as YAML (`text/yaml`) | `500` serialization failed |
 | `GET` | `/api/debug/config` | Effective [debug-mode](./debugging.md) settings; answers even when debug is off | — |
 | `GET` | `/api/debug/traces` | Recorded traces, newest first; filter with `?route=&policy=&status=&source=&limit=` | `404` debug mode off |
 | `GET` | `/api/debug/traces/:id` | One trace with per-step context changes | `404` unknown/evicted, or debug off |
@@ -60,8 +64,9 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 
 Notes on mutation semantics:
 
-- **Upsert asymmetry**: `PUT /api/policies/:name`, `PUT /api/supernodes/:name`, and `PUT /api/consumers/:name` create the resource if it does not exist, while `PUT /api/routes/:name` returns `404` for an unknown route — routes are created only via `POST /api/routes`.
+- **Upsert asymmetry**: `PUT /api/policies/:name`, `PUT /api/supernodes/:name`, `PUT /api/plugin-configs/:name`, and `PUT /api/consumers/:name` create the resource if it does not exist, while `PUT /api/routes/:name` returns `404` for an unknown route — routes are created only via `POST /api/routes`.
 - **Supernodes** are inlined into every referencing policy at compile time (see [Supernodes](../concepts/supernodes.md)), so a `PUT`/`DELETE` on `/api/supernodes/:name` re-expands and recompiles all routes just like a policy edit — deleting a definition still referenced by a policy fails with `400`, leaving the previous definition and compiled routes active.
+- **Shared plugin configs** are resolved (`config_ref` materialized into the effective node config) at the same compile choke point as supernode expansion, before it (see [Shared plugin configs](../concepts/plugin-configs.md)). A `PUT`/`DELETE` on `/api/plugin-configs/:name` revalidates and recompiles all routes just like a policy edit — an unknown reference or a `type` mismatch introduced by the edit, or a delete while still referenced by any policy or supernode node, fails with `400` and leaves the previous definition and compiled routes active.
 - **Consumer mutations** rebuild the consumer store and hot-swap it (no graph recompile); a rejected rebuild (duplicate credential, malformed credential object) leaves the previous store active.
 - For both `PUT` endpoints, the name in the URL path overrides any name in the JSON body.
 - Every mutation triggers validation and recompilation of all route graphs. On failure the endpoint returns `400` and the previously compiled routes stay active.

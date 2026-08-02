@@ -73,6 +73,98 @@ pub trait Plugin: Send + Sync {
     ) -> PluginResult;
 }
 
+/// Every plugin type [`create_plugin`] can build, for save-time validation of
+/// references to plugin types (e.g. a shared config's `type`). Guarded against
+/// drift from the factory's match arms by `test_known_plugin_types_matches_factory`.
+pub const KNOWN_PLUGIN_TYPES: &[&str] = &[
+    "proxy-rewrite",
+    "upstream",
+    "aws-lambda",
+    "azure-functions",
+    "openwhisk",
+    "openfunction",
+    "error-handler",
+    "listener",
+    "client",
+    "cors",
+    "rate-limit",
+    "limit-conn",
+    "api-breaker",
+    "proxy-cache",
+    "limit-count",
+    "proxy-mirror",
+    "ip-restriction",
+    "consumer-restriction",
+    "acl",
+    "attach-consumer-label",
+    "ua-restriction",
+    "referer-restriction",
+    "uri-blocker",
+    "csrf",
+    "request-size-limit",
+    "key-auth",
+    "basic-auth",
+    "jwt-auth",
+    "hmac-auth",
+    "jwe-decrypt",
+    "multi-auth",
+    "forward-auth",
+    "opa",
+    "opentelemetry",
+    "zipkin",
+    "skywalking",
+    "prometheus",
+    "ldap-auth",
+    "wolf-rbac",
+    "cas-auth",
+    "authz-casbin",
+    "authz-keycloak",
+    "authz-casdoor",
+    "openid-connect",
+    "dingtalk-auth",
+    "feishu-auth",
+    "logging",
+    "http-logger",
+    "loki-logger",
+    "splunk-hec-logging",
+    "datadog",
+    "loggly",
+    "tcp-logger",
+    "udp-logger",
+    "syslog",
+    "file-logger",
+    "error-log-logger",
+    "google-cloud-logging",
+    "skywalking-logger",
+    "elasticsearch-logger",
+    "clickhouse-logger",
+    "sls-logger",
+    "tencent-cloud-cls",
+    "lago",
+    "request-id",
+    "real-ip",
+    "redirect",
+    "echo",
+    "fault-injection",
+    "workflow",
+    "traffic-label",
+    "traffic-split",
+    "mocking",
+    "response-rewrite",
+    "gzip",
+    "brotli",
+    "error-page",
+    "exit-transformer",
+    "data-mask",
+    "request-validation",
+    "body-transformer",
+    "degraphql",
+    "oas-validator",
+    "serverless-pre-function",
+    "serverless-post-function",
+    "script",
+];
+
 /// Creates a plugin instance from a node type string and its YAML-derived config.
 ///
 /// This is the single factory for all node types: the graph compiler calls it
@@ -329,5 +421,33 @@ pub fn create_plugin(
         )),
         "script" => Ok(Box::new(script::ScriptPlugin::from_config(config)?)),
         _ => Err(format!("Unknown plugin type: {}", node_type)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// KNOWN_PLUGIN_TYPES must track create_plugin's match arms exactly, in
+    /// both directions. Same source-parsing guard the admin catalog uses.
+    #[test]
+    fn test_known_plugin_types_matches_factory() {
+        let factory: std::collections::BTreeSet<String> = include_str!("mod.rs")
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let rest = line.strip_prefix('"')?;
+                let (name, tail) = rest.split_once('"')?;
+                tail.trim_start()
+                    .starts_with("=>")
+                    .then(|| name.to_string())
+            })
+            .collect();
+        let listed: std::collections::BTreeSet<String> =
+            KNOWN_PLUGIN_TYPES.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            listed, factory,
+            "KNOWN_PLUGIN_TYPES drifted from create_plugin"
+        );
     }
 }
