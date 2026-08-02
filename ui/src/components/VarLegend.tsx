@@ -9,6 +9,7 @@
  *
  * @module components/VarLegend
  */
+import { Fragment } from 'react';
 import { Dialog, DialogButton } from './Dialog';
 import type { Availability, Suggestion } from '../varSuggestions';
 import type { VarEntry } from '../types';
@@ -78,6 +79,13 @@ const nameCellStyle: React.CSSProperties = {
   fontFamily: 'var(--font-mono)',
   color: 'var(--text-primary)',
   whiteSpace: 'nowrap',
+};
+
+/** Compact, indented mono row for a family's discovered member (e.g. `http_user_agent` under `http_*`). */
+const memberNameCellStyle: React.CSSProperties = {
+  ...nameCellStyle,
+  paddingLeft: 20,
+  color: 'var(--text-muted)',
 };
 
 const exampleCellStyle: React.CSSProperties = {
@@ -154,6 +162,98 @@ function VarTable({
   );
 }
 
+/** Strips the trailing `*` off a family catalog name (`http_*` → `http_`). */
+function familyPrefix(name: string): string {
+  return name.endsWith('*') ? name.slice(0, -1) : name;
+}
+
+/**
+ * Suggestions discovered for one family row, e.g. the concrete headers
+ * `buildSuggestions` expanded `http_*` into (`http_user_agent`, `http_accept`,
+ * ...) once a trace snapshot was available.
+ *
+ * Matches by name prefix against `familyEntry`, excluding: the family's own
+ * unexpanded fallback row (same `name` as the family, e.g. plain `http_*`
+ * with no headers captured), and — defensively, in case a future family is
+ * ever added whose generated member names happen to share a leading
+ * substring with a shorter family's prefix — any suggestion better claimed
+ * by a *longer* family prefix also present in the catalog (longest-prefix
+ * wins). None of today's families actually collide this way (`sent_http_*`
+ * members start with `sent_`, not `http_`, so they never match `http_*`'s
+ * `http_` prefix), but the guard costs nothing and keeps this correct if
+ * that ever changes.
+ */
+function familyMembers(
+  familyEntry: VarEntry,
+  allFamilies: VarEntry[],
+  suggestions: Suggestion[],
+): Suggestion[] {
+  const prefix = familyPrefix(familyEntry.name);
+  const longerPrefixes = allFamilies
+    .map((f) => familyPrefix(f.name))
+    .filter((p) => p.length > prefix.length);
+  return suggestions.filter((s) => {
+    if (s.name === familyEntry.name) return false;
+    if (!s.name.startsWith(prefix)) return false;
+    return !longerPrefixes.some((p) => s.name.startsWith(p));
+  });
+}
+
+/**
+ * Families table: one row per catalog family entry, plus — when a snapshot
+ * is available (`showValue`) — indented sub-rows for each concrete member
+ * `buildSuggestions` discovered for it, name + live value, mirroring what
+ * the field popover itself would show.
+ */
+function FamilyTable({
+  entries,
+  suggestionByName,
+  suggestions,
+  showValue,
+}: {
+  entries: VarEntry[];
+  suggestionByName: Map<string, Suggestion>;
+  suggestions: Suggestion[];
+  showValue: boolean;
+}) {
+  if (entries.length === 0) return null;
+  return (
+    <table style={tableStyle}>
+      <thead>
+        <tr>
+          <th style={thStyle}>Name</th>
+          <th style={thStyle}>Description</th>
+          <th style={thStyle}>Example</th>
+          {showValue && <th style={thStyle}>Live value</th>}
+        </tr>
+      </thead>
+      <tbody>
+        {entries.map((entry) => {
+          const members = showValue ? familyMembers(entry, entries, suggestions) : [];
+          return (
+            <Fragment key={entry.name}>
+              <tr>
+                <td style={nameCellStyle}>{entry.name}</td>
+                <td style={tdStyle}>{entry.description}</td>
+                <td style={exampleCellStyle}>{entry.example}</td>
+                {showValue && <ValueCell suggestion={suggestionByName.get(entry.name)} />}
+              </tr>
+              {members.map((m) => (
+                <tr key={`${entry.name}:${m.name}`}>
+                  <td style={memberNameCellStyle}>{m.name}</td>
+                  <td style={tdStyle} />
+                  <td style={exampleCellStyle} />
+                  <ValueCell suggestion={m} />
+                </tr>
+              ))}
+            </Fragment>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
 /**
  * Var-legend reference dialog.
  *
@@ -161,13 +261,12 @@ function VarTable({
  * into Request / Response / Message & consumer (statics) and Families
  * (every `kind: 'family'` entry, e.g. `http_*`, `arg_*`, `msg_*`). When
  * `availability` is `ok`, an extra "Live value" column is added, populated
- * by looking up each row's name in `suggestions` — family rows that
- * expanded into concrete members (e.g. `http_user_agent`) during
- * suggestion-building won't match their catalog `prefix_*` name and so show
- * no value here; their live values surface in the field popover itself
- * instead. When `catalog` is empty (the `GET /api/vars` fetch failed, or
- * hasn't resolved), the dialog shows a one-line "unavailable" notice
- * instead of empty tables.
+ * by looking up each row's name in `suggestions`. Family rows additionally
+ * expand into indented sub-rows for every concrete member `suggestions`
+ * discovered for that family (e.g. `http_user_agent` under `http_*`) — see
+ * {@link FamilyTable} / {@link familyMembers}. When `catalog` is empty (the
+ * `GET /api/vars` fetch failed, or hasn't resolved), the dialog shows a
+ * one-line "unavailable" notice instead of empty tables.
  */
 export function VarLegend({ open, onClose, catalog, suggestions, availability }: VarLegendProps) {
   if (!open) return null;
@@ -224,7 +323,12 @@ export function VarLegend({ open, onClose, catalog, suggestions, availability }:
             <VarTable entries={messageEntries} suggestionByName={suggestionByName} showValue={showValue} />
 
             <h4 style={sectionTitleStyle}>Families</h4>
-            <VarTable entries={familyEntries} suggestionByName={suggestionByName} showValue={showValue} />
+            <FamilyTable
+              entries={familyEntries}
+              suggestionByName={suggestionByName}
+              suggestions={suggestions}
+              showValue={showValue}
+            />
           </>
         )}
 

@@ -465,6 +465,21 @@ function loadCatalog(): Promise<VarEntry[]> {
  * See the module doc comment for the full data flow and the
  * `predecessorId` undefined-vs-null encoding. Re-fetches whenever any input
  * changes (in particular `nodeId`, when the selection moves).
+ *
+ * `nodeId: null` is the caller's signal that this selection needs no live
+ * preview at all — the node editor passes it for fixed/supernode/boundary
+ * nodes (listener, client, supernode instances, and the input/output/error
+ * boundary pseudo-nodes), which never render a `VarInput` popover to show a
+ * value in, anyway. `run()` below checks this *last*, immediately before the
+ * `/api/debug/traces` round trip, so the cheaper synchronous branches above
+ * it (supernode-definition canvas, debug-off, no-incoming-edge, no policy
+ * name) still take priority and keep their existing `availability` — this
+ * check only ever prevents a network call that would otherwise have fired.
+ * It reuses `'no-trace'` for `availability`: no other value describes "this
+ * node was never eligible for a trace lookup" any better, and since no
+ * popover renders for these nodes the value is never actually shown to a
+ * user — it only flows through as the (unused) `availability` return for
+ * this hook's caller in that case.
  */
 export function useContextSuggestions(args: {
   policyName: string | null;
@@ -512,6 +527,16 @@ export function useContextSuggestions(args: {
       // which would then get previewed as if it belonged here. Bail out
       // before fetching anything.
       if (!policyName) {
+        setAvailability('no-trace');
+        setSuggestions(namesOnly(entries));
+        return;
+      }
+      // See this function's doc comment: `nodeId: null` means the caller
+      // already decided this selection gets no live preview, so skip the
+      // trace fetch entirely — this is the only thing standing between a
+      // fixed/supernode/boundary-node selection and two unnecessary
+      // /api/debug/traces requests.
+      if (nodeId === null) {
         setAvailability('no-trace');
         setSuggestions(namesOnly(entries));
         return;

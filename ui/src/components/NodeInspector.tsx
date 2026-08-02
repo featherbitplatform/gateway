@@ -188,7 +188,7 @@ export function NodeInspector({
   const [legendOpen, setLegendOpen] = useState(false);
   const { suggestions, availability, catalog } = useContextSuggestions({
     policyName,
-    nodeId: skipFetch ? null : node!.id,
+    nodeId: !skipFetch && node ? node.id : null,
     predecessorId,
     kind,
     debugEnabled: debugConfig?.enabled ?? false,

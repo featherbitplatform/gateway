@@ -376,13 +376,15 @@ export function GraphCanvas({
   // the full encoding.
   const incoming = edges.filter((e) => e.target === selectedNodeId);
   const successEdge = incoming.find((e) => e.sourceHandle !== 'error') ?? incoming[0];
-  const predecessorId =
+  const predecessorType =
     successEdge === undefined
       ? undefined
       : (nodes.find((n) => n.id === successEdge.source)?.data as PluginNodeData | undefined)
-            ?.pluginType === 'listener' ||
-          (nodes.find((n) => n.id === successEdge.source)?.data as PluginNodeData | undefined)
-            ?.pluginType === 'input'
+          ?.pluginType;
+  const predecessorId =
+    successEdge === undefined
+      ? undefined
+      : predecessorType === 'listener' || predecessorType === 'input'
         ? null
         : successEdge.source;
 
