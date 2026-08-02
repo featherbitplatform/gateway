@@ -68,6 +68,7 @@ Core features:
 - **Prometheus metrics** — per-route and per-node counters/histograms at `/metrics`
 - **Supernodes** — reusable named subgraphs inlined into policies at compile time
 - **Shared plugin configs** — named, typed config profiles referenced by nodes via config_ref, resolved at compile time
+- **Context var autocomplete** — $var suggestions with live value preview from debug traces, plus GET /api/vars catalog
 
 ## Architecture
 
