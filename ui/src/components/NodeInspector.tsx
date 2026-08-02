@@ -9,13 +9,15 @@
  * @module components/NodeInspector
  */
 import { useState } from 'react';
-import { X } from 'lucide-react';
+import { Braces, X } from 'lucide-react';
 import type { Node } from '@xyflow/react';
 import type { PluginNodeData } from './PluginNode';
-import type { PluginConfigDef } from '../types';
+import type { DebugConfig, PluginConfigDef } from '../types';
 import { getPluginMeta } from '../pluginMeta';
 import { getPluginConfigSchema } from '../pluginConfig';
 import { SchemaForm } from './SchemaForm';
+import { VarLegend } from './VarLegend';
+import { useContextSuggestions } from '../varSuggestions';
 
 /** Props for {@link NodeInspector}. */
 interface NodeInspectorProps {
@@ -31,7 +33,24 @@ interface NodeInspectorProps {
   onDeleteNode: (nodeId: string) => void;
   /** Fires when the close (X) button is clicked. */
   onClose: () => void;
+  /** Name of the policy being edited (null in supernode-definition mode); scopes the trace lookup. */
+  policyName: string | null;
+  /**
+   * Node id feeding the selected node's `in` handle, for the var-suggestion
+   * hook: `undefined` = no incoming edge, `null` = the incoming edge comes
+   * from the pipeline entry (listener/input) so preview from the trace's
+   * initial snapshot, a string = a real predecessor node id. See
+   * varSuggestions.ts's module doc comment for the full encoding.
+   */
+  predecessorId: string | null | undefined;
+  /** Debug settings; drives whether live previews are attempted at all. */
+  debugConfig: DebugConfig | null;
+  /** Whether the canvas is editing a policy or a supernode definition. */
+  kind: 'policy' | 'supernode';
 }
+
+/** Plugin types with no configuration of their own — fixed pipeline endpoints and supernode boundary pseudo-nodes. */
+const FIXED_TYPES = ['listener', 'client', 'input', 'output', 'error'];
 
 const labelStyle: React.CSSProperties = {
   display: 'block',
@@ -150,14 +169,39 @@ export function NodeInspector({
   onUpdateConfigRef,
   onDeleteNode,
   onClose,
+  policyName,
+  predecessorId,
+  debugConfig,
+  kind,
 }: NodeInspectorProps) {
+  // Computed ahead of the `!node` early return below so the hooks that
+  // follow (useState, useContextSuggestions) run unconditionally on every
+  // render — conditioning them on `node` would violate the rules of hooks
+  // whenever the selection changes to/from null.
+  const pendingData = node?.data as unknown as PluginNodeData | undefined;
+  const isFixedNode = pendingData ? FIXED_TYPES.includes(pendingData.pluginType) : false;
+  const isSupernodeNode = pendingData?.pluginType === 'supernode';
+  // The hook must not run network calls for fixed/supernode/boundary nodes
+  // (nor when nothing is selected): pass nodeId: null to skip fetching.
+  const skipFetch = !node || isFixedNode || isSupernodeNode;
+
+  const [legendOpen, setLegendOpen] = useState(false);
+  const { suggestions, availability, catalog } = useContextSuggestions({
+    policyName,
+    nodeId: skipFetch ? null : node!.id,
+    predecessorId,
+    kind,
+    debugEnabled: debugConfig?.enabled ?? false,
+    captureBodies: debugConfig?.capture_bodies ?? false,
+  });
+
   if (!node) return null;
 
   const data = node.data as unknown as PluginNodeData;
   const meta = getPluginMeta(data.pluginType);
   const schema = getPluginConfigSchema(data.pluginType);
-  const isFixed = ['listener', 'client', 'input', 'output', 'error'].includes(data.pluginType);
-  const isSupernode = data.pluginType === 'supernode';
+  const isFixed = isFixedNode;
+  const isSupernode = isSupernodeNode;
 
   return (
     <div
@@ -199,16 +243,29 @@ export function NodeInspector({
             {node.id}
           </p>
         </div>
-        <button
-          onClick={onClose}
-          className="flex items-center justify-center rounded transition-colors"
-          style={{ width: 26, height: 26, color: 'var(--text-secondary)' }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-          aria-label="Close"
-        >
-          <X size={15} />
-        </button>
+        <div className="flex items-center" style={{ gap: 4 }}>
+          <button
+            onClick={() => setLegendOpen(true)}
+            className="flex items-center justify-center rounded transition-colors"
+            style={{ width: 26, height: 26, color: 'var(--text-secondary)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            aria-label="Context vars reference"
+            title="Context vars reference"
+          >
+            <Braces size={15} />
+          </button>
+          <button
+            onClick={onClose}
+            className="flex items-center justify-center rounded transition-colors"
+            style={{ width: 26, height: 26, color: 'var(--text-secondary)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            aria-label="Close"
+          >
+            <X size={15} />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -319,6 +376,7 @@ export function NodeInspector({
             schema={schema}
             value={data.config || {}}
             onChange={(config) => onUpdateConfig(node.id, config)}
+            varContext={{ suggestions, availability, onOpenLegend: () => setLegendOpen(true) }}
           />
         ) : (
           <JsonConfigEditor
@@ -348,6 +406,14 @@ export function NodeInspector({
           </button>
         </div>
       )}
+
+      <VarLegend
+        open={legendOpen}
+        onClose={() => setLegendOpen(false)}
+        catalog={catalog}
+        suggestions={suggestions}
+        availability={availability}
+      />
     </div>
   );
 }
