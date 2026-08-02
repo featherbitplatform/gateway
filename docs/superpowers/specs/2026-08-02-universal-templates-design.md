@@ -40,7 +40,7 @@ impl Template {
 - `env.<NAME>` is **not** a `TemplateRef`: it is substituted at parse time from the process environment (same moment the legacy `${NAME}` pass runs — config load / compile), so rendered templates never see it. Unset `env.<NAME>` passes through literally + warning.
 - Anything inside `{{...}}` that doesn't match the grammar (unknown namespace, `{{ $1 }}`, mustache leftovers) is kept as a literal segment; well-formed-but-unknown paths (e.g. `request.headres.x`) additionally produce a warning string returned by `parse`.
 - Value semantics reuse the existing resolver behavior (first header/query value; lossy-UTF-8 bodies; message values stringified like `msg_*`): implemented by delegating to `vars::resolve` equivalents so the two systems cannot drift (shared internal fns extracted where needed).
-- **Legacy interop**: a `Template::render_with_legacy(ctx)` variant used ONLY by the historically-`$`-enabled fields — renders `{{...}}` then applies the legacy `interpolate` pass over the result. New adopters call plain `render`.
+- **Legacy interop**: a `Template::render_with_legacy(ctx)` variant used ONLY by the historically-`$`-enabled fields — applies the legacy `interpolate` pass to the template's LITERAL segments only; rendered `{{...}}` output is never `$`-processed (prevents runtime data from becoming a `$var` read primitive). New adopters call plain `render`.
 - **Carve-out**: `body-transformer` keeps its own `{{...}}` engine untouched (documented); its field is excluded from the universal layer.
 
 ### 2. Plugin sweep (universal application)
