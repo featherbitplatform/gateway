@@ -190,6 +190,7 @@ const sidebars: SidebarsConfig = {
             'reference/plugins/script',
           ],
         },
+        'reference/context-vars',
         'reference/roadmap',
       ],
     },

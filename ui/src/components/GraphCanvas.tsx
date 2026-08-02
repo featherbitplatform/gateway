@@ -28,7 +28,7 @@ import { PluginNode, type PluginNodeData } from './PluginNode';
 import { PluginDrawer } from './PluginDrawer';
 import { NodeInspector } from './NodeInspector';
 import { ThemeToggle } from './ThemeToggle';
-import type { Policy, PluginConfigDef, PluginType, ScriptFile, Supernode } from '../types';
+import type { DebugConfig, Policy, PluginConfigDef, PluginType, ScriptFile, Supernode } from '../types';
 
 /**
  * Builds the shared inline style for floating-toolbar buttons.
@@ -65,6 +65,8 @@ interface GraphCanvasProps {
   supernodes: Supernode[];
   /** Named shared plugin configs offered by the inspector's picker (from GET /api/plugin-configs). */
   pluginConfigs: PluginConfigDef[];
+  /** Debug settings (enabled/capture_bodies/...), threaded to the inspector's var-suggestion hook. */
+  debugConfig: DebugConfig | null;
 }
 
 /** ReactFlow custom node-type registry; every policy node renders as a {@link PluginNode}. */
@@ -276,6 +278,7 @@ export function GraphCanvas({
   kind,
   supernodes,
   pluginConfigs,
+  debugConfig,
 }: GraphCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -363,6 +366,27 @@ export function GraphCanvas({
   }, [selectedEdgeId, setEdges]);
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
+
+  // Predecessor lookup for the var-suggestion hook (NodeInspector): the
+  // incoming edge feeding the selected node's `in` handle, preferring the
+  // success-port edge over an error-port one when both exist. `undefined` =
+  // no incoming edge yet (nothing to preview from); `null` = the predecessor
+  // is the pipeline entry (listener/input), so preview from trace.initial
+  // rather than a node step. See varSuggestions.ts's module doc comment for
+  // the full encoding.
+  const incoming = edges.filter((e) => e.target === selectedNodeId);
+  const successEdge = incoming.find((e) => e.sourceHandle !== 'error') ?? incoming[0];
+  const predecessorType =
+    successEdge === undefined
+      ? undefined
+      : (nodes.find((n) => n.id === successEdge.source)?.data as PluginNodeData | undefined)
+          ?.pluginType;
+  const predecessorId =
+    successEdge === undefined
+      ? undefined
+      : predecessorType === 'listener' || predecessorType === 'input'
+        ? null
+        : successEdge.source;
 
   const handleAddPlugin = (type: string) => {
     const id = `${type}-${Date.now().toString(36)}`;
@@ -589,6 +613,10 @@ export function GraphCanvas({
           onUpdateConfigRef={handleUpdateConfigRef}
           onDeleteNode={handleDeleteNode}
           onClose={() => setSelectedNodeId(null)}
+          policyName={policy?.name ?? null}
+          predecessorId={predecessorId}
+          debugConfig={debugConfig}
+          kind={kind}
         />
       )}
     </div>
