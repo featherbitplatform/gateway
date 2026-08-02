@@ -331,8 +331,27 @@ the actual popover in the node inspector.
 | ID | Scenario | Expected |
 |---|---|---|
 | E2E-VS-01 | `GET /api/vars` | `200`; catalog contains `{name:'uri', kind:'static'}`, `{name:'http_*', kind:'family', family_source:'request_headers'}`, `sent_http_*`, `request_body`; no duplicate names |
-| E2E-VS-02 | Wire `vs-policy` (listener → `mocking` → client), request `/vs/ping` with a distinctive header and the debug trigger header, then in the inspector type `$http_x_vs` into the mock node's `response_example` field | The popover offers `http_x_vs_probe` with its live value (`live-value-42`, from the trace's predecessor snapshot); Enter inserts `$http_x_vs_probe` into the field; opening the legend (inspector header button) shows the **Families** group and the `${...}` dotted-keys rule text |
+| E2E-VS-02 | Wire `vs-policy` (listener → `mocking` → client), request `/vs/ping` with a distinctive header and the debug trigger header, then in the inspector type `$http_x_vs` into the mock node's `response_example` field | The popover offers `http_x_vs_probe` with its live value (`live-value-42`, from the trace's predecessor snapshot); Enter inserts `$http_x_vs_probe` into the field; opening the legend (inspector header button) shows the **Legacy $var mapping** table and the dotted-keys caveat ("containing a dot") in the intro paragraph |
 | E2E-VS-03 | Clear the trace buffer, then type `$` into the same field | Popover renders catalog names only (e.g. `uri`, with no live value) and the footer shows "No trace yet — send a request through this route" |
+
+## Universal templates — `tests/templates.spec.ts`
+
+`{{namespace.path}}` interpolation (Task 1-7: `src/vars/template.rs`, applied
+across the plugin catalog) alongside legacy `$var`, plus the popover/legend
+support for it (Task 8-9: `VarInput`'s `templateMode` prop, `VarLegend`'s
+namespace sections). The field a popover offers depends on what the Rust side
+actually templates: `'full'` fields (e.g. proxy-rewrite's `add_headers`
+value) get every context group; every other text/textarea field defaults to
+`'env-only'` (e.g. uri-blocker's `block_rules`), since that's the only
+substitution those fields genuinely get (at parse time, never at request
+time).
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-TPL-01 | `proxy-rewrite.add_headers` value `"m={{request.method}} $keep"` in front of the echo upstream, then a GET through it | The upstream receives `x-tpl: m=GET $keep` — `{{request.method}}` rendered, the literal `$keep` untouched (add_headers only ever runs the `{{...}}` engine, never legacy `$`-interpolation) |
+| E2E-TPL-02 | In the inspector, focus a (previously suggestion-less) `add_headers` **Value** field, type `{{re` | Popover lists `request.method` with its live value (from a traced request's predecessor snapshot); Enter inserts `{{request.method}}`; Save Policy persists it |
+| E2E-TPL-03 | Focus `uri-blocker`'s `block_rules` item (an env-only field), type `{{` | Popover lists **only** `env.*` names (e.g. `env.LOG_LEVEL`), no `request.*` rows; typing `{{env.LOG` filters to matching names only |
+| E2E-TPL-04 | `GET /api/env-vars` | `200`; names sorted; a canary env **name** set on the gateway's own launch env is present, but its **value** never appears in the body, and neither does a bare `=` |
 
 ## Deliberately out of scope
 
