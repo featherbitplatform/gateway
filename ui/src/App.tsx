@@ -576,7 +576,12 @@ export default function App() {
             <DialogButton variant="ghost" onClick={() => setCreatePluginConfigOpen(false)}>
               Cancel
             </DialogButton>
-            <DialogButton onClick={submitCreatePluginConfig}>Create plugin config</DialogButton>
+            <DialogButton
+              onClick={submitCreatePluginConfig}
+              disabled={!newPcName.trim() || !newPcType}
+            >
+              Create plugin config
+            </DialogButton>
           </>
         }
       >
