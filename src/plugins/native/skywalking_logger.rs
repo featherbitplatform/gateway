@@ -27,13 +27,13 @@ use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Ships log entries to a SkyWalking OAP endpoint in batches.
 pub struct SkywalkingLoggerPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
     service_name: String,
@@ -60,7 +60,7 @@ impl SkywalkingLoggerPlugin {
     /// | `service_instance_name` | string | `"featherbit Instance Name"` | SkyWalking service instance name. |
     /// | `ssl_verify` | bool | `true` | Verify the OAP TLS certificate. |
     /// | `timeout` | int (seconds) | `3` | Per-flush HTTP timeout. |
-    /// | `log_format` | object | — | Custom `name -> "$var template"` entry; when set the default entry is replaced. |
+    /// | `log_format` | object | — | Custom `name -> "template"` entry (`{{namespace.path}}` references plus legacy `$var` interpolation); when set the default entry is replaced. |
     /// | `include_req_body` | bool | `false` | Include the (lossy UTF-8) request body in the default entry. |
     /// | `include_resp_body` | bool | `false` | Include the (lossy UTF-8) response body in the default entry. |
     ///

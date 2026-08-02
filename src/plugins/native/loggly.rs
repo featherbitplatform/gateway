@@ -29,7 +29,7 @@ use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 const DEFAULT_HOST: &str = "logs-01.loggly.com";
@@ -102,7 +102,7 @@ impl BatchFlusher for LogglyFlusher {
 /// Batches access-log entries and POSTs them to the Loggly bulk endpoint.
 pub struct LogglyPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
 }

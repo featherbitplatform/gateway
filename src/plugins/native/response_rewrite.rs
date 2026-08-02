@@ -26,6 +26,7 @@ use crate::context::Context;
 use crate::plugins::util::content_codec::{self, ContentEncoding};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 use crate::vars;
+use crate::vars::template::Template;
 
 /// Rewrites `Context.response`: optionally forces a status code, replaces the
 /// body (with optional base64-decoded config content), applies regex filters
@@ -38,8 +39,12 @@ pub struct ResponseRewritePlugin {
     /// Replacement body, already base64-decoded when `body_base64` was set.
     body: Option<Bytes>,
     filters: Vec<BodyFilter>,
-    add_headers: Vec<(String, String)>,
-    set_headers: Vec<(String, String)>,
+    /// Header name → value template; supports `{{namespace.path}}`
+    /// references and legacy `$var` interpolation (see
+    /// [`Template::render_with_legacy`]).
+    add_headers: Vec<(String, Template)>,
+    /// Same rendering as `add_headers`.
+    set_headers: Vec<(String, Template)>,
     remove_headers: Vec<String>,
     vars: Option<vars::Expr>,
 }
@@ -232,8 +237,9 @@ impl ResponseRewritePlugin {
     ///   - `remove` (array of names): deleted.
     ///   - flat map `{name: value}` (deprecated): treated as `set`.
     ///
-    ///   `add`/`set` values support `$var` / `${var}` interpolation at
-    ///   execution time (e.g. `$remote_addr`, `$status`, `$http_x_id`).
+    ///   `add`/`set` values support `{{namespace.path}}` references plus
+    ///   legacy `$var` / `${var}` interpolation at execution time (e.g.
+    ///   `$remote_addr`, `$status`, `$http_x_id`).
     /// - `filters` (array): regex substitutions applied to the response body.
     ///   Each entry: `regex` (required, non-empty), `replace` (required),
     ///   `scope` (`once` | `global`, default `once`), `options` (only `"i"`
@@ -337,6 +343,16 @@ impl ResponseRewritePlugin {
             None => (Vec::new(), Vec::new(), Vec::new()),
             Some(raw) => parse_headers(raw)?,
         };
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let add_headers: Vec<(String, Template)> = add_headers
+            .into_iter()
+            .map(|(name, value)| (name, Template::parse(&value).0))
+            .collect();
+        let set_headers: Vec<(String, Template)> = set_headers
+            .into_iter()
+            .map(|(name, value)| (name, Template::parse(&value).0))
+            .collect();
 
         let vars = match config.get("vars") {
             None => None,
@@ -449,7 +465,7 @@ impl Plugin for ResponseRewritePlugin {
         // Header ops in APISIX order: add, set, remove. Values are
         // interpolated against the context ($status, $http_<name>, ...).
         for (name, value) in &self.add_headers {
-            let value = vars::interpolate(&ctx, value);
+            let value = value.render_with_legacy(&ctx);
             ctx.response
                 .headers
                 .entry(name.clone())
@@ -457,7 +473,7 @@ impl Plugin for ResponseRewritePlugin {
                 .push(value);
         }
         for (name, value) in &self.set_headers {
-            let value = vars::interpolate(&ctx, value);
+            let value = value.render_with_legacy(&ctx);
             ctx.response.headers.insert(name.clone(), vec![value]);
         }
         for name in &self.remove_headers {

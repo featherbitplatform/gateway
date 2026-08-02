@@ -22,6 +22,7 @@ use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundClient, OutboundRequest, OutboundResponse};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Sends each request to an external authorization endpoint and routes on its
 /// verdict: 2xx continues (success port), non-2xx or (non-degrading) callout
@@ -41,8 +42,10 @@ pub struct ForwardAuthPlugin {
     /// Auth-response header names copied onto the client-facing response on
     /// failure (lowercased).
     client_headers: Vec<String>,
-    /// Extra callout headers whose values may reference `$var` templates.
-    extra_headers: Vec<(String, String)>,
+    /// Extra callout headers; values support `{{namespace.path}}` references
+    /// and legacy `$var` interpolation (see
+    /// [`Template::render_with_legacy`]).
+    extra_headers: Vec<(String, Template)>,
     /// TLS certificate verification for `https` callouts.
     ssl_verify: bool,
     /// Whole-call callout deadline.
@@ -75,8 +78,9 @@ impl ForwardAuthPlugin {
     /// - `client_headers` (array of strings, default `[]`): auth-response
     ///   header names copied onto the client-facing response on failure.
     /// - `extra_headers` (object of string→string, optional): additional
-    ///   callout headers; values support `$var` / `${var}` interpolation
-    ///   (e.g. `$remote_addr`, `$request_uri`).
+    ///   callout headers; values support `{{namespace.path}}` references plus
+    ///   legacy `$var` / `${var}` interpolation (e.g. `$remote_addr`,
+    ///   `$request_uri`).
     /// - `ssl_verify` (bool, default `true`): verify TLS certificates for
     ///   `https` callouts.
     /// - `timeout` (integer ms, default `3000`): whole-call callout deadline.
@@ -137,7 +141,9 @@ impl ForwardAuthPlugin {
                 .unwrap_or_default()
         };
 
-        let extra_headers = config
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let extra_headers: Vec<(String, Template)> = config
             .get("extra_headers")
             .and_then(|v| v.as_object())
             .map(|obj| {
@@ -149,7 +155,7 @@ impl ForwardAuthPlugin {
                             serde_json::Value::Bool(b) => b.to_string(),
                             _ => return None,
                         };
-                        Some((k.clone(), value))
+                        Some((k.clone(), Template::parse(&value).0))
                     })
                     .collect()
             })
@@ -225,7 +231,7 @@ impl ForwardAuthPlugin {
         }
 
         for (name, template) in &self.extra_headers {
-            headers.push((name.clone(), crate::vars::interpolate(ctx, template)));
+            headers.push((name.clone(), template.render_with_legacy(ctx)));
         }
 
         // Copy configured client headers unless already set above.

@@ -161,7 +161,6 @@ impl Template {
     /// flowing through a ref — exactly the classes this engine exists to
     /// prevent. For a template with no refs (a single literal segment, or
     /// none), this is byte-identical to the old whole-string pass.
-    #[allow(dead_code)] // consumed by the plugin sweep (next tasks)
     pub fn render_with_legacy(&self, ctx: &Context) -> String {
         let mut out = String::new();
         for seg in &self.segments {
@@ -318,7 +317,6 @@ fn named_ref(name: &str, full_match: &str, make: impl FnOnce(&str) -> TemplateRe
     }
 }
 
-#[allow(dead_code)] // consumed by the plugin sweep (next tasks), via Template::render
 fn render_ref(r: &TemplateRef, ctx: &Context, out: &mut String) {
     match r {
         TemplateRef::RequestMethod => out.push_str(&ctx.request.method),

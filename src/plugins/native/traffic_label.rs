@@ -17,7 +17,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
-use crate::vars::{interpolate, Expr};
+use crate::vars::template::Template;
+use crate::vars::Expr;
 
 /// Applies the first matching rule's action: header values and label values
 /// are `$var` templates interpolated per request.
@@ -37,9 +38,9 @@ struct Rule {
 struct ActionEntry {
     weight: u64,
     /// Lowercased header name → value template, set on the request.
-    set_headers: Vec<(String, String)>,
+    set_headers: Vec<(String, Template)>,
     /// Label key → value template, written to `message["label.<key>"]`.
-    set_labels: Vec<(String, String)>,
+    set_labels: Vec<(String, Template)>,
 }
 
 /// Parses a `{name: scalar-template}` object into ordered pairs; numbers and
@@ -73,10 +74,12 @@ impl TrafficLabelPlugin {
     ///   - `actions` (array of objects, **required**, non-empty): one entry
     ///     is chosen by weighted round-robin. Each entry:
     ///     - `set_headers` (object `{name: value}`): request headers to set
-    ///       (replacing existing values); values support `$var` interpolation.
+    ///       (replacing existing values); values support `{{namespace.path}}`
+    ///       references plus legacy `$var` interpolation.
     ///     - `set_labels` (object `{key: value}`, featherbit extension):
     ///       written to `context.message` as `label.<key>`; values support
-    ///       `$var` interpolation.
+    ///       `{{namespace.path}}` references plus legacy `$var`
+    ///       interpolation.
     ///     - `weight` (integer >= 1, default `1`): selection weight.
     ///
     /// ```yaml
@@ -139,20 +142,26 @@ impl TrafficLabelPlugin {
                                 )
                             })?;
                         }
+                        // Discard warnings here — the compile-time walk (a
+                        // later task) reports well-formed-but-unknown
+                        // references; execution must not.
                         "set_headers" => {
                             entry.set_headers = parse_kv_object(
                                 value,
                                 &format!("rules[{idx}].actions[{aidx}].set_headers"),
                             )?
                             .into_iter()
-                            .map(|(k, v)| (k.to_lowercase(), v))
+                            .map(|(k, v)| (k.to_lowercase(), Template::parse(&v).0))
                             .collect();
                         }
                         "set_labels" => {
                             entry.set_labels = parse_kv_object(
                                 value,
                                 &format!("rules[{idx}].actions[{aidx}].set_labels"),
-                            )?;
+                            )?
+                            .into_iter()
+                            .map(|(k, v)| (k, Template::parse(&v).0))
+                            .collect();
                         }
                         other => {
                             return Err(format!(
@@ -222,12 +231,12 @@ impl Plugin for TrafficLabelPlugin {
             let headers: Vec<(String, String)> = action
                 .set_headers
                 .iter()
-                .map(|(name, tmpl)| (name.clone(), interpolate(&ctx, tmpl)))
+                .map(|(name, tmpl)| (name.clone(), tmpl.render_with_legacy(&ctx)))
                 .collect();
             let labels: Vec<(String, String)> = action
                 .set_labels
                 .iter()
-                .map(|(key, tmpl)| (key.clone(), interpolate(&ctx, tmpl)))
+                .map(|(key, tmpl)| (key.clone(), tmpl.render_with_legacy(&ctx)))
                 .collect();
 
             for (name, value) in headers {

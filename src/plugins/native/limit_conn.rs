@@ -43,6 +43,7 @@ use std::sync::Arc;
 use crate::context::{Context, GatewayError};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Which half of the pair this node is.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,6 +68,10 @@ pub struct LimitConnPlugin {
     burst: i64,
     /// Key template (interpolated per request unless `key_type` is `constant`).
     key: String,
+    /// Pre-parsed `key`: supports `{{namespace.path}}` references and legacy
+    /// `$var` interpolation (see [`Template::render_with_legacy`]). Only used
+    /// when `key_constant` is false.
+    key_tpl: Template,
     /// When `true`, `key` is used verbatim rather than interpolated.
     key_constant: bool,
     /// Status returned when the limit is exceeded.
@@ -87,9 +92,11 @@ impl LimitConnPlugin {
     /// - `burst` (integer, default `0`): extra concurrent requests tolerated
     ///   above `conn`. Must be `>= 0`. The hard ceiling is `conn + burst`.
     /// - `key` (string template, default `"$remote_addr"`): the concurrency
-    ///   key, interpolated per request (see [`crate::vars::interpolate`]). Both
-    ///   nodes of a pair **must** use the same `key` and `conn`/`burst` so they
-    ///   share one counter.
+    ///   key, rendered per request — supports `{{namespace.path}}` references
+    ///   plus legacy `$var` interpolation (see
+    ///   [`crate::vars::template::Template::render_with_legacy`]) unless
+    ///   `key_type: constant`. Both nodes of a pair **must** use the same
+    ///   `key` and `conn`/`burst` so they share one counter.
     /// - `key_type` (string, default `var`): `constant` uses `key` verbatim;
     ///   any other value (`var`, `var_combination`) interpolates it.
     /// - `rejected_code` (integer, default `503`): status for over-limit
@@ -163,6 +170,9 @@ impl LimitConnPlugin {
             .and_then(|v| v.as_str())
             .unwrap_or("$remote_addr")
             .to_string();
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let key_tpl = Template::parse(&key).0;
 
         let key_constant = matches!(
             config.get("key_type").and_then(|v| v.as_str()),
@@ -185,6 +195,7 @@ impl LimitConnPlugin {
             conn,
             burst,
             key,
+            key_tpl,
             key_constant,
             rejected_code,
             rejected_msg,
@@ -197,7 +208,7 @@ impl LimitConnPlugin {
         if self.key_constant {
             self.key.clone()
         } else {
-            crate::vars::interpolate(ctx, &self.key)
+            self.key_tpl.render_with_legacy(ctx)
         }
     }
 }
