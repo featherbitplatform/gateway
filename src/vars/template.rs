@@ -132,7 +132,6 @@ impl Template {
     /// Renders the template against `ctx`. Never touches `$var` syntax.
     ///
     /// Literal-only templates return `Cow::Borrowed` without allocating.
-    #[allow(dead_code)] // consumed by the plugin sweep (next tasks)
     pub fn render(&self, ctx: &Context) -> Cow<'_, str> {
         if !self.has_refs {
             return Cow::Borrowed(self.literal_str());
@@ -174,7 +173,6 @@ impl Template {
 
     /// Borrows the single literal chunk of a literal-only template (or ""
     /// when the source was empty). Only meaningful when `!self.has_refs`.
-    #[allow(dead_code)] // consumed by the plugin sweep (next tasks)
     fn literal_str(&self) -> &str {
         match self.segments.first() {
             Some(Segment::Literal(s)) => s.as_str(),

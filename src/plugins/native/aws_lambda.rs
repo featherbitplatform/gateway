@@ -37,6 +37,7 @@ use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundClient, OutboundError, OutboundRequest, OutboundResponse};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// IAM credentials driving AWS SigV4 request signing.
 #[derive(Clone)]
@@ -61,8 +62,9 @@ enum Authorization {
 
 /// Invokes an AWS Lambda function and maps its reply into `Context.response`.
 pub struct AwsLambdaPlugin {
-    /// Full Lambda function URL / API endpoint.
-    function_uri: String,
+    /// Full Lambda function URL / API endpoint. Supports
+    /// `{{namespace.path}}` template references, rendered per request.
+    function_uri: Template,
     authorization: Authorization,
     ssl_verify: bool,
     timeout: Duration,
@@ -109,8 +111,10 @@ impl AwsLambdaPlugin {
             .get("function_uri")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "aws-lambda plugin requires 'function_uri'".to_string())?
-            .to_string();
+            .ok_or_else(|| "aws-lambda plugin requires 'function_uri'".to_string())?;
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let function_uri = Template::parse(function_uri).0;
 
         let authorization = match config.get("authorization").and_then(|v| v.as_object()) {
             None => Authorization::None,
@@ -190,8 +194,8 @@ impl AwsLambdaPlugin {
     /// or SigV4 signing). `amz_time` is the signing timestamp (seconds since
     /// epoch), threaded in so tests are deterministic.
     fn build_request(&self, ctx: &Context, amz_time: u64) -> Result<OutboundRequest, String> {
-        let parsed: http::Uri = self
-            .function_uri
+        let function_uri = self.function_uri.render(ctx);
+        let parsed: http::Uri = function_uri
             .parse()
             .map_err(|e| format!("aws-lambda: invalid function_uri: {}", e))?;
         let host = parsed
@@ -727,6 +731,19 @@ mod tests {
             .find(|(k, _)| k == "x-api-key")
             .map(|(_, v)| v.as_str());
         assert_eq!(hdr, Some("secret-key"));
+        assert!(req.url.starts_with("https://x.on.aws/fn"));
+    }
+
+    #[test]
+    fn test_function_uri_renders_template() {
+        let p = plugin(serde_json::json!({
+            "function_uri": "https://x.on.aws/{{request.headers.x-fn}}"
+        }));
+        let mut c = ctx_with("POST", "/ignored");
+        c.request
+            .headers
+            .insert("x-fn".to_string(), vec!["fn".to_string()]);
+        let req = p.build_request(&c, 1440938160).unwrap();
         assert!(req.url.starts_with("https://x.on.aws/fn"));
     }
 

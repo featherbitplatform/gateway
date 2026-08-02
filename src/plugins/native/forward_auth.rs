@@ -34,11 +34,13 @@ pub struct ForwardAuthPlugin {
     method: http::Method,
     /// Whether the callout is a `POST` (forwards the client body).
     is_post: bool,
-    /// Client request header names copied onto the callout (lowercased).
-    request_headers: Vec<String>,
+    /// Client request header names copied onto the callout (rendered per
+    /// request, then lowercased). Supports `{{namespace.path}}` references.
+    request_headers: Vec<Template>,
     /// Auth-response header names copied onto the request forwarded upstream
-    /// on success (lowercased).
-    upstream_headers: Vec<String>,
+    /// on success (rendered per request, then lowercased). Supports
+    /// `{{namespace.path}}` references.
+    upstream_headers: Vec<Template>,
     /// Auth-response header names copied onto the client-facing response on
     /// failure (lowercased).
     client_headers: Vec<String>,
@@ -141,6 +143,22 @@ impl ForwardAuthPlugin {
                 .unwrap_or_default()
         };
 
+        // Header-name lists that support `{{namespace.path}}` references,
+        // rendered (then lowercased) per request. Discard warnings here — the
+        // compile-time walk (a later task) reports well-formed-but-unknown
+        // references; execution must not.
+        let template_list = |key: &str| -> Vec<Template> {
+            config
+                .get(key)
+                .and_then(|v| v.as_array())
+                .map(|seq| {
+                    seq.iter()
+                        .filter_map(|v| v.as_str().map(|s| Template::parse(s).0))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
         // Discard warnings here — the compile-time walk (a later task)
         // reports well-formed-but-unknown references; execution must not.
         let extra_headers: Vec<(String, Template)> = config
@@ -187,8 +205,8 @@ impl ForwardAuthPlugin {
             uri,
             method,
             is_post,
-            request_headers: string_list("request_headers"),
-            upstream_headers: string_list("upstream_headers"),
+            request_headers: template_list("request_headers"),
+            upstream_headers: template_list("upstream_headers"),
             client_headers: string_list("client_headers"),
             extra_headers,
             ssl_verify,
@@ -235,15 +253,16 @@ impl ForwardAuthPlugin {
         }
 
         // Copy configured client headers unless already set above.
-        for name in &self.request_headers {
+        for name_tpl in &self.request_headers {
+            let name = name_tpl.render(ctx).to_lowercase();
             let already = headers
                 .iter()
-                .any(|(existing, _)| existing.eq_ignore_ascii_case(name));
+                .any(|(existing, _)| existing.eq_ignore_ascii_case(&name));
             if already {
                 continue;
             }
-            if let Some(value) = ctx.request.headers.get(name).and_then(|v| v.first()) {
-                headers.push((name.clone(), value.clone()));
+            if let Some(value) = ctx.request.headers.get(&name).and_then(|v| v.first()) {
+                headers.push((name, value.clone()));
             }
         }
 
@@ -254,13 +273,14 @@ impl ForwardAuthPlugin {
     /// auth response onto the request forwarded upstream. A configured header
     /// absent from the auth response removes any client-supplied value.
     fn apply_allow(&self, ctx: &mut Context, resp_headers: &HashMap<String, Vec<String>>) {
-        for name in &self.upstream_headers {
-            match resp_headers.get(name) {
+        for name_tpl in &self.upstream_headers {
+            let name = name_tpl.render(ctx).to_lowercase();
+            match resp_headers.get(&name) {
                 Some(values) => {
-                    ctx.request.headers.insert(name.clone(), values.clone());
+                    ctx.request.headers.insert(name, values.clone());
                 }
                 None => {
-                    ctx.request.headers.remove(name);
+                    ctx.request.headers.remove(&name);
                 }
             }
         }
@@ -458,6 +478,42 @@ mod tests {
         assert_eq!(get("authorization"), Some("Bearer tok"));
         // extra header interpolated
         assert_eq!(get("X-Src"), Some("10.0.0.7"));
+    }
+
+    #[test]
+    fn test_request_headers_name_renders_template() {
+        let p = plugin(serde_json::json!({
+            "uri": "http://auth",
+            "request_headers": ["{{request.headers.x-forward-header}}"]
+        }));
+        let mut ctx = test_ctx();
+        ctx.request.headers.insert(
+            "x-forward-header".to_string(),
+            vec!["authorization".to_string()],
+        );
+        let headers = p.build_callout_headers(&ctx);
+        assert!(headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v == "Bearer tok"));
+    }
+
+    #[test]
+    fn test_upstream_headers_name_renders_template() {
+        let p = plugin(serde_json::json!({
+            "uri": "http://auth",
+            "upstream_headers": ["X-{{request.headers.x-suffix}}"]
+        }));
+        let mut ctx = test_ctx();
+        ctx.request
+            .headers
+            .insert("x-suffix".to_string(), vec!["User-Id".to_string()]);
+        let mut resp_headers = HashMap::new();
+        resp_headers.insert("x-user-id".to_string(), vec!["u42".to_string()]);
+        p.apply_allow(&mut ctx, &resp_headers);
+        assert_eq!(
+            ctx.request.headers.get("x-user-id"),
+            Some(&vec!["u42".to_string()])
+        );
     }
 
     #[test]
