@@ -9,6 +9,7 @@
 mod auth;
 mod consumers;
 mod debug;
+mod plugin_configs;
 mod policies;
 mod routes;
 mod status;
@@ -138,6 +139,7 @@ fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
         // API routes (with auth)
         .merge(routes::router())
         .merge(policies::router())
+        .merge(plugin_configs::router())
         .merge(supernodes::router())
         .merge(consumers::router())
         .merge(status::router())
