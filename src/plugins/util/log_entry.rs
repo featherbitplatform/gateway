@@ -7,7 +7,10 @@
 //! - **default entry** — a structured object (`request`, `response`,
 //!   `client_ip`, `latency`, `consumer`, ...) when no `log_format` is set.
 //! - **custom entry** — a flat object built from a configured `log_format` map
-//!   of `name -> "$var template"`, resolved with [`crate::vars::interpolate`].
+//!   of `name -> "template"`, each pre-parsed into a [`Template`] at config
+//!   load and rendered per request via
+//!   [`Template::render_with_legacy`] (supports `{{namespace.path}}`
+//!   references plus legacy `$var` interpolation).
 //!
 //! Latency is derived from the reserved `__request_start_ms` message key the
 //! data-plane listener stamps at request start; it is omitted when absent
@@ -18,17 +21,32 @@ use std::collections::HashMap;
 use serde_json::{json, Map, Value};
 
 use crate::context::Context;
-use crate::vars;
+use crate::vars::template::Template;
+
+/// One entry in a parsed [`LogFormat`]: a string value is pre-parsed into a
+/// [`Template`] at config-load time (one parse, per-request render); a
+/// number/boolean scalar is kept as-is and rendered verbatim.
+#[derive(Debug, Clone)]
+pub enum LogFormatValue {
+    /// Supports `{{namespace.path}}` references and legacy `$var`
+    /// interpolation (see [`Template::render_with_legacy`]).
+    Template(Template),
+    /// A non-string scalar (number/bool), used verbatim.
+    Literal(Value),
+}
+
+/// A parsed `log_format`: entry name -> pre-parsed value.
+pub type LogFormat = HashMap<String, LogFormatValue>;
 
 /// Builds a log entry for `ctx`.
 ///
-/// When `log_format` is `Some`, produces a flat object whose values are the
-/// `$var`-interpolated templates. When `None`, produces the default structured
-/// entry. `include_req_body` / `include_resp_body` add the (UTF-8 lossy)
-/// bodies.
+/// When `log_format` is `Some`, produces a flat object whose string entries
+/// are rendered from their pre-parsed templates. When `None`, produces the
+/// default structured entry. `include_req_body` / `include_resp_body` add the
+/// (UTF-8 lossy) bodies.
 pub fn build_entry(
     ctx: &Context,
-    log_format: Option<&HashMap<String, Value>>,
+    log_format: Option<&LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
 ) -> Value {
@@ -39,31 +57,35 @@ pub fn build_entry(
 }
 
 /// Parses a `log_format` config value (an object of `name -> string`) into a
-/// map, or `None` when absent. Returns an error if it is present but not an
-/// object of scalar values.
-pub fn parse_log_format(
-    config: &HashMap<String, Value>,
-) -> Result<Option<HashMap<String, Value>>, String> {
+/// [`LogFormat`], or `None` when absent. Returns an error if it is present but
+/// not an object of scalar values. String values are pre-parsed into
+/// [`Template`]s here (warnings discarded — the compile-time walk, a later
+/// task, reports them); number/boolean values pass through unchanged.
+pub fn parse_log_format(config: &HashMap<String, Value>) -> Result<Option<LogFormat>, String> {
     match config.get("log_format") {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Object(m)) => {
+            let mut out = HashMap::with_capacity(m.len());
             for (k, v) in m {
-                if !v.is_string() && !v.is_number() && !v.is_boolean() {
-                    return Err(format!("log_format['{}'] must be a scalar", k));
-                }
+                let entry = match v {
+                    Value::String(s) => LogFormatValue::Template(Template::parse(s).0),
+                    Value::Number(_) | Value::Bool(_) => LogFormatValue::Literal(v.clone()),
+                    _ => return Err(format!("log_format['{}'] must be a scalar", k)),
+                };
+                out.insert(k.clone(), entry);
             }
-            Ok(Some(m.clone().into_iter().collect()))
+            Ok(Some(out))
         }
         Some(_) => Err("log_format must be an object of name -> template".to_string()),
     }
 }
 
-fn build_custom(ctx: &Context, fmt: &HashMap<String, Value>) -> Value {
+fn build_custom(ctx: &Context, fmt: &LogFormat) -> Value {
     let mut out = Map::new();
-    for (name, template) in fmt {
-        let rendered = match template {
-            Value::String(s) => Value::String(vars::interpolate(ctx, s)),
-            other => other.clone(),
+    for (name, entry) in fmt {
+        let rendered = match entry {
+            LogFormatValue::Template(tpl) => Value::String(tpl.render_with_legacy(ctx)),
+            LogFormatValue::Literal(v) => v.clone(),
         };
         out.insert(name.clone(), rendered);
     }
@@ -225,16 +247,36 @@ mod tests {
 
     #[test]
     fn test_custom_log_format() {
-        let mut fmt = HashMap::new();
-        fmt.insert("who".to_string(), json!("$consumer_name@$remote_addr"));
-        fmt.insert("path".to_string(), json!("$uri"));
-        fmt.insert("code".to_string(), json!("$status"));
-        fmt.insert("const".to_string(), json!(7));
+        let mut config = HashMap::new();
+        config.insert(
+            "log_format".to_string(),
+            json!({
+                "who": "$consumer_name@$remote_addr",
+                "path": "$uri",
+                "code": "$status",
+                "const": 7,
+            }),
+        );
+        let fmt = parse_log_format(&config).unwrap().unwrap();
         let e = build_entry(&ctx(), Some(&fmt), false, false);
         assert_eq!(e["who"], "alice@10.0.0.5");
         assert_eq!(e["path"], "/api/items");
         assert_eq!(e["code"], "200");
         assert_eq!(e["const"], 7);
+    }
+
+    #[test]
+    fn test_custom_log_format_superset_template_and_legacy_dollar() {
+        // `log_format` values must render both the new `{{...}}` template
+        // syntax and the legacy `$var` syntax in the same value.
+        let mut config = HashMap::new();
+        config.insert(
+            "log_format".to_string(),
+            json!({ "combo": "{{request.method}} $uri" }),
+        );
+        let fmt = parse_log_format(&config).unwrap().unwrap();
+        let e = build_entry(&ctx(), Some(&fmt), false, false);
+        assert_eq!(e["combo"], "GET /api/items");
     }
 
     #[test]

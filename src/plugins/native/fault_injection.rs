@@ -22,7 +22,8 @@ use std::time::Duration;
 
 use crate::context::{Context, GatewayError};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
-use crate::vars::{interpolate, Expr};
+use crate::vars::template::Template;
+use crate::vars::Expr;
 
 /// Injects delays and/or abort responses into matching requests.
 ///
@@ -36,10 +37,12 @@ pub struct FaultInjectionPlugin {
 
 struct AbortRule {
     http_status: u16,
-    /// Body template (`$var` interpolated); empty body when unset.
-    body: Option<String>,
+    /// Body template: supports `{{namespace.path}}` references and legacy
+    /// `$var` interpolation (see [`Template::render_with_legacy`]); empty
+    /// body when unset.
+    body: Option<Template>,
     /// Lowercased header name → value template.
-    headers: Vec<(String, String)>,
+    headers: Vec<(String, Template)>,
     percentage: Option<u8>,
     /// OR-ed list of expressions (APISIX shape); `None` means always match.
     vars: Option<Vec<Expr>>,
@@ -196,10 +199,12 @@ impl FaultInjectionPlugin {
     /// Accepted keys:
     /// - `abort` (object): injected response.
     ///   - `http_status` (integer >= 200, **required**): response status.
-    ///   - `body` (string): response body; supports `$var` interpolation.
-    ///     Empty body when unset.
+    ///   - `body` (string): response body; supports `{{namespace.path}}`
+    ///     references plus legacy `$var` interpolation. Empty body when
+    ///     unset.
     ///   - `headers` (map `{name: value}` or array `[{name, value}]`):
-    ///     response headers; string values support `$var` interpolation.
+    ///     response headers; string values support `{{namespace.path}}`
+    ///     references plus legacy `$var` interpolation.
     ///   - `percentage` (integer 0-100): chance the abort triggers; unset
     ///     means always.
     ///   - `vars` (array): APISIX condition expressions, OR-ed across items.
@@ -231,13 +236,22 @@ impl FaultInjectionPlugin {
                     .filter(|n| (200..=599).contains(n))
                     .ok_or("abort.http_status is required and must be an integer >= 200")?
                     as u16;
+                // Discard warnings here — the compile-time walk (a later
+                // task) reports well-formed-but-unknown references;
+                // execution must not.
                 let body = match obj.get("body") {
                     None => None,
-                    Some(v) => Some(v.as_str().ok_or("abort.body must be a string")?.to_string()),
+                    Some(v) => {
+                        let s = v.as_str().ok_or("abort.body must be a string")?;
+                        Some(Template::parse(s).0)
+                    }
                 };
                 let headers = match obj.get("headers") {
                     None => Vec::new(),
-                    Some(v) => parse_headers(v, "abort.headers")?,
+                    Some(v) => parse_headers(v, "abort.headers")?
+                        .into_iter()
+                        .map(|(name, value)| (name, Template::parse(&value).0))
+                        .collect(),
                 };
                 let percentage = parse_percentage(obj, "abort")?;
                 let vars = match obj.get("vars") {
@@ -309,12 +323,12 @@ impl Plugin for FaultInjectionPlugin {
                 let body = abort
                     .body
                     .as_ref()
-                    .map(|b| interpolate(&ctx, b))
+                    .map(|b| b.render_with_legacy(&ctx))
                     .unwrap_or_default();
                 let headers: Vec<(String, String)> = abort
                     .headers
                     .iter()
-                    .map(|(name, tmpl)| (name.clone(), interpolate(&ctx, tmpl)))
+                    .map(|(name, tmpl)| (name.clone(), tmpl.render_with_legacy(&ctx)))
                     .collect();
 
                 ctx.response.status_code = abort.http_status;

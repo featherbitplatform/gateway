@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
-use crate::vars;
+use crate::vars::template::Template;
 
 /// Remaps `Context.response.status_code` via `status_map` and/or replaces
 /// the body with an interpolated `$var` template — but only when the
@@ -29,7 +29,9 @@ use crate::vars;
 /// unless `always` is set. This plugin never fails at execution time.
 pub struct ExitTransformerPlugin {
     status_map: HashMap<u16, u16>,
-    body: Option<String>,
+    /// Body template: supports `{{namespace.path}}` references and legacy
+    /// `$var` interpolation (see [`Template::render_with_legacy`]).
+    body: Option<Template>,
     always: bool,
 }
 
@@ -55,7 +57,8 @@ impl ExitTransformerPlugin {
     ///   response status matches a key, it is replaced by the value. Keys
     ///   are strings (YAML/JSON object keys), values integers; both must be
     ///   within 100-599.
-    /// - `body` (string): replacement body template with `$var` / `${var}`
+    /// - `body` (string): replacement body template. Supports
+    ///   `{{namespace.path}}` references plus legacy `$var` / `${var}`
     ///   interpolation — `$status` (the status *after* remapping), `$uri`,
     ///   `$host`, `$http_<name>`, `$msg_<key>`, and every other variable
     ///   from [`crate::vars`].
@@ -87,11 +90,13 @@ impl ExitTransformerPlugin {
 
         let body = match config.get("body") {
             None => None,
-            Some(v) => Some(
-                v.as_str()
-                    .ok_or("body must be a string".to_string())?
-                    .to_string(),
-            ),
+            Some(v) => {
+                let s = v.as_str().ok_or("body must be a string".to_string())?;
+                // Discard warnings here — the compile-time walk (a later
+                // task) reports well-formed-but-unknown references;
+                // execution must not.
+                Some(Template::parse(s).0)
+            }
         };
 
         let always = config
@@ -129,7 +134,7 @@ impl Plugin for ExitTransformerPlugin {
             }
 
             if let Some(template) = &self.body {
-                let body = vars::interpolate(&ctx, template);
+                let body = template.render_with_legacy(&ctx);
                 ctx.response.body = Bytes::from(body);
                 // Body-mutation convention: recompute length; the rendered
                 // template is not encoded.
