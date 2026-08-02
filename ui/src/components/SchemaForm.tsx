@@ -8,6 +8,15 @@
  */
 import { Plus, X } from 'lucide-react';
 import type { FieldOption, FieldSchema } from '../pluginConfig';
+import type { Availability, Suggestion } from '../varSuggestions';
+import { VarInput } from './VarInput';
+
+/** Trace-derived `$var` suggestions threaded down to every `vars: true` field. */
+interface VarContext {
+  suggestions: Suggestion[];
+  availability: Availability;
+  onOpenLegend: () => void;
+}
 
 /** Props for SchemaForm. */
 interface SchemaFormProps {
@@ -17,6 +26,13 @@ interface SchemaFormProps {
   value: Record<string, unknown>;
   /** Called with the full replacement config object on every edit (controlled-component style). */
   onChange: (config: Record<string, unknown>) => void;
+  /**
+   * Live `$var` suggestions for fields flagged `vars: true` (and their
+   * `item`/`fields` sub-entries). When omitted, those fields fall back to
+   * plain inputs with no autocomplete popover — e.g. PluginConfigPanel,
+   * which has no node selected to derive suggestions from.
+   */
+  varContext?: VarContext;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -231,7 +247,7 @@ function Switch({
  * The emitted config object is what the admin API persists as the node's
  * `config` block in gateway.yaml.
  */
-export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
+export function SchemaForm({ schema, value, onChange, varContext }: SchemaFormProps) {
   const set = (key: string, v: unknown) => onChange({ ...value, [key]: v });
 
   /** Renders the input control for one field, switching on `field.type` as documented above. */
@@ -240,6 +256,17 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
 
     switch (field.type) {
       case 'text':
+        if (field.vars && varContext) {
+          return (
+            <VarInput
+              value={(current as string) ?? (field.default as string) ?? ''}
+              onChange={(v) => set(field.key, v)}
+              placeholder={field.placeholder}
+              style={inputStyle}
+              {...varContext}
+            />
+          );
+        }
         return (
           <input
             type="text"
@@ -264,6 +291,19 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
         );
 
       case 'textarea':
+        if (field.vars && varContext) {
+          return (
+            <VarInput
+              value={(current as string) ?? (field.default as string) ?? ''}
+              onChange={(v) => set(field.key, v)}
+              placeholder={field.placeholder}
+              multiline
+              rows={field.rows ?? 4}
+              style={inputStyle}
+              {...varContext}
+            />
+          );
+        }
         return (
           <textarea
             value={(current as string) ?? (field.default as string) ?? ''}
@@ -314,18 +354,32 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
           <div className="space-y-1.5">
             {items.map((item, i) => (
               <div key={i} className="flex items-center gap-1.5">
-                <input
-                  type={field.item?.type === 'number' ? 'number' : 'text'}
-                  value={(item as string | number) ?? ''}
-                  placeholder={field.item?.placeholder}
-                  onChange={(e) => {
-                    const next = [...items];
-                    next[i] =
-                      field.item?.type === 'number' ? Number(e.target.value) : e.target.value;
-                    set(field.key, next);
-                  }}
-                  style={inputStyle}
-                />
+                {field.item?.vars && varContext ? (
+                  <VarInput
+                    value={(item as string) ?? ''}
+                    onChange={(v) => {
+                      const next = [...items];
+                      next[i] = v;
+                      set(field.key, next);
+                    }}
+                    placeholder={field.item?.placeholder}
+                    style={inputStyle}
+                    {...varContext}
+                  />
+                ) : (
+                  <input
+                    type={field.item?.type === 'number' ? 'number' : 'text'}
+                    value={(item as string | number) ?? ''}
+                    placeholder={field.item?.placeholder}
+                    onChange={(e) => {
+                      const next = [...items];
+                      next[i] =
+                        field.item?.type === 'number' ? Number(e.target.value) : e.target.value;
+                      set(field.key, next);
+                    }}
+                    style={inputStyle}
+                  />
+                )}
                 <RemoveButton
                   label={`Remove ${field.addLabel ?? 'item'} ${i + 1}`}
                   onClick={() => set(field.key, items.filter((_, j) => j !== i))}
@@ -373,28 +427,43 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
                   {(field.fields ?? []).map((sub) => (
                     <div key={sub.key}>
                       <label style={labelStyle}>{sub.label}</label>
-                      <input
-                        type={sub.type === 'number' ? 'number' : 'text'}
-                        value={(item[sub.key] as string | number) ?? ''}
-                        placeholder={sub.placeholder}
-                        onChange={(e) => {
-                          const next = items.map((it, j) =>
-                            j === i
-                              ? {
-                                  ...it,
-                                  [sub.key]:
-                                    sub.type === 'number'
-                                      ? e.target.value === ''
-                                        ? undefined
-                                        : Number(e.target.value)
-                                      : e.target.value,
-                                }
-                              : it
-                          );
-                          set(field.key, next);
-                        }}
-                        style={inputStyle}
-                      />
+                      {sub.vars && sub.type !== 'number' && varContext ? (
+                        <VarInput
+                          value={(item[sub.key] as string) ?? ''}
+                          onChange={(v) => {
+                            const next = items.map((it, j) =>
+                              j === i ? { ...it, [sub.key]: v } : it
+                            );
+                            set(field.key, next);
+                          }}
+                          placeholder={sub.placeholder}
+                          style={inputStyle}
+                          {...varContext}
+                        />
+                      ) : (
+                        <input
+                          type={sub.type === 'number' ? 'number' : 'text'}
+                          value={(item[sub.key] as string | number) ?? ''}
+                          placeholder={sub.placeholder}
+                          onChange={(e) => {
+                            const next = items.map((it, j) =>
+                              j === i
+                                ? {
+                                    ...it,
+                                    [sub.key]:
+                                      sub.type === 'number'
+                                        ? e.target.value === ''
+                                          ? undefined
+                                          : Number(e.target.value)
+                                        : e.target.value,
+                                  }
+                                : it
+                            );
+                            set(field.key, next);
+                          }}
+                          style={inputStyle}
+                        />
+                      )}
                     </div>
                   ))}
                 </div>
