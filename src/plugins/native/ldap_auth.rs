@@ -29,6 +29,7 @@ use ldap3::{LdapConnAsync, LdapConnSettings};
 use crate::context::{Context, GatewayError};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Authenticates HTTP Basic credentials against an LDAP server via simple bind.
 pub struct LdapAuthPlugin {
@@ -42,8 +43,10 @@ pub struct LdapAuthPlugin {
     use_tls: bool,
     /// When false, TLS certificate verification is disabled.
     tls_verify: bool,
-    /// Realm advertised in the `WWW-Authenticate` challenge.
-    realm: String,
+    /// Realm advertised in the `WWW-Authenticate` challenge. Supports
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// `realm` never supported it, so this sweep must not start).
+    realm: Template,
     /// Whole-operation deadline for the connect + bind.
     timeout: Duration,
 }
@@ -59,7 +62,8 @@ impl LdapAuthPlugin {
     ///   in the bind DN.
     /// - `use_tls` (bool, default `false`): negotiate StartTLS after connecting.
     /// - `tls_verify` (bool, default `false`): verify the server certificate.
-    /// - `realm` (string, default `"ldap"`): realm in the challenge header.
+    /// - `realm` (string, default `"ldap"`): realm in the challenge header;
+    ///   supports `{{namespace.path}}` references.
     /// - `timeout_ms` (u64, default `10000`): connect + bind deadline.
     ///
     /// ```yaml
@@ -109,6 +113,9 @@ impl LdapAuthPlugin {
             .and_then(|v| v.as_str())
             .unwrap_or("ldap")
             .to_string();
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let realm = Template::parse(&realm).0;
 
         let timeout = Duration::from_millis(
             config
@@ -132,6 +139,7 @@ impl LdapAuthPlugin {
     /// and routes the context through the node's error port.
     fn reject(&self, ctx: Context, message: &str) -> PluginResult {
         let mut ctx = ctx;
+        let realm = self.realm.render(&ctx).into_owned();
         ctx.response.status_code = 401;
         ctx.response.body = Bytes::from(format!(
             r#"{{"error": "unauthorized", "message": "{}"}}"#,
@@ -143,7 +151,7 @@ impl LdapAuthPlugin {
         );
         ctx.response.headers.insert(
             "www-authenticate".to_string(),
-            vec![format!("Basic realm=\"{}\"", self.realm)],
+            vec![format!("Basic realm=\"{}\"", realm)],
         );
         Err(PluginExecutionError {
             context: ctx,
@@ -254,10 +262,11 @@ impl Plugin for LdapAuthPlugin {
             Ok(Ok(false)) => self.reject(ctx, "Invalid user authorization"),
             Ok(Err(e)) => {
                 let mut ctx = ctx;
+                let realm = self.realm.render(&ctx).into_owned();
                 ctx.response.status_code = 401;
                 ctx.response.headers.insert(
                     "www-authenticate".to_string(),
-                    vec![format!("Basic realm=\"{}\"", self.realm)],
+                    vec![format!("Basic realm=\"{}\"", realm)],
                 );
                 Err(PluginExecutionError {
                     context: ctx,
@@ -369,6 +378,44 @@ mod tests {
         assert_eq!(
             err.context.response.headers.get("www-authenticate"),
             Some(&vec!["Basic realm=\"ldap\"".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reject_realm_renders_template() {
+        // `realm` must render `{{request.host}}` per request.
+        let mut cfg = HashMap::new();
+        cfg.insert(
+            "base_dn".to_string(),
+            serde_json::json!("dc=example,dc=org"),
+        );
+        cfg.insert(
+            "ldap_uri".to_string(),
+            serde_json::json!("ldap://localhost:389"),
+        );
+        cfg.insert(
+            "realm".to_string(),
+            serde_json::json!("realm-{{request.host}}"),
+        );
+        let plugin = LdapAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
+
+        let ctx = crate::context::Context::new(crate::context::GatewayRequest {
+            method: "GET".into(),
+            path: "/".into(),
+            host: "tenant-c.example.com".into(),
+            scheme: "http".into(),
+            headers: HashMap::new(),
+            query_params: HashMap::new(),
+            body: Bytes::new(),
+            remote_addr: "1.2.3.4:5".into(),
+            protocol: crate::context::Protocol::Http1,
+        });
+        let err = plugin.execute(ctx, &HashMap::new()).await.unwrap_err();
+        assert_eq!(
+            err.context.response.headers.get("www-authenticate"),
+            Some(&vec![
+                "Basic realm=\"realm-tenant-c.example.com\"".to_string()
+            ])
         );
     }
 

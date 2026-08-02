@@ -9,6 +9,14 @@
 //! `<api_host>/api/v1/namespaces/<namespace>/actions/<package/><action>?blocking=true&result=<result>&timeout=<ms>`
 //! with an `Authorization: Basic <base64(service_token)>` header.
 //!
+//! `api_host`, `namespace`, `package`, and `action` support
+//! `{{namespace.path}}` references (plain render, no legacy `$var`
+//! interpolation) — the endpoint is rebuilt per request so a value like
+//! `{{request.headers.x-tenant}}` in `namespace` routes each request to a
+//! different OpenWhisk namespace. `authorization` (built from
+//! `service_token`) is never templated — it is a credential, not an
+//! endpoint field.
+//!
 //! # Response mapping
 //!
 //! OpenWhisk returns a JSON envelope. An action may return just a body, or set
@@ -29,17 +37,25 @@ use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundClient, OutboundRequest, OutboundResponse};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 use super::faas;
 
 /// Invokes an OpenWhisk action and maps its reply into `Context.response`.
 pub struct OpenWhiskPlugin {
-    api_host: String,
-    /// Pre-computed `Basic <base64(service_token)>` header value.
+    /// Supports `{{namespace.path}}` references — resolved per request when
+    /// building the endpoint URL. No legacy `$var` interpolation (endpoint
+    /// fields never supported it, so this sweep must not start).
+    api_host: Template,
+    /// Pre-computed `Basic <base64(service_token)>` header value. Never
+    /// templated — a credential, not an endpoint field.
     authorization: String,
-    namespace: String,
-    package: Option<String>,
-    action: String,
+    /// Supports `{{namespace.path}}` references, same as `api_host`.
+    namespace: Template,
+    /// Supports `{{namespace.path}}` references, same as `api_host`.
+    package: Option<Template>,
+    /// Supports `{{namespace.path}}` references, same as `api_host`.
+    action: Template,
     result: bool,
     ssl_verify: bool,
     timeout: Duration,
@@ -54,11 +70,17 @@ impl OpenWhiskPlugin {
     /// Accepted keys:
     /// - `api_host` (string, **required**): the OpenWhisk API host
     ///   (e.g. `https://ow.example.com`). Missing/empty is a config error.
+    ///   Supports `{{namespace.path}}` references, rendered per request when
+    ///   building the endpoint URL (a trailing `/` is trimmed after render).
     /// - `service_token` (string, **required**): `user:pass` action token, sent
     ///   base64-encoded as HTTP Basic auth. Missing/empty is a config error.
-    /// - `action` (string, **required**): the action name to invoke.
-    /// - `namespace` (string, default `_`): the OpenWhisk namespace.
-    /// - `package` (string, optional): the package the action belongs to.
+    ///   Never templated — a credential, not an endpoint field.
+    /// - `action` (string, **required**): the action name to invoke; supports
+    ///   `{{namespace.path}}` references.
+    /// - `namespace` (string, default `_`): the OpenWhisk namespace; supports
+    ///   `{{namespace.path}}` references.
+    /// - `package` (string, optional): the package the action belongs to;
+    ///   supports `{{namespace.path}}` references.
     /// - `result` (bool, default `true`): request `result=true` (inline the
     ///   action result rather than the full activation record).
     /// - `ssl_verify` (bool, default `true`): verify TLS certificates.
@@ -85,8 +107,12 @@ impl OpenWhiskPlugin {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "openwhisk plugin requires 'api_host'".to_string())?
-            .trim_end_matches('/')
             .to_string();
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        // The trailing-slash trim moves to `endpoint()` (post-render) since a
+        // templated value's trailing slash can't be known at load time.
+        let api_host = Template::parse(&api_host).0;
 
         let service_token = config
             .get("service_token")
@@ -101,6 +127,7 @@ impl OpenWhiskPlugin {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "openwhisk plugin requires 'action'".to_string())?
             .to_string();
+        let action = Template::parse(&action).0;
 
         let namespace = config
             .get("namespace")
@@ -108,12 +135,13 @@ impl OpenWhiskPlugin {
             .filter(|s| !s.is_empty())
             .unwrap_or("_")
             .to_string();
+        let namespace = Template::parse(&namespace).0;
 
         let package = config
             .get("package")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(String::from);
+            .map(|s| Template::parse(s).0);
 
         let result = config
             .get("result")
@@ -144,16 +172,22 @@ impl OpenWhiskPlugin {
         })
     }
 
-    /// Builds the OpenWhisk action-invocation URL.
-    fn endpoint(&self) -> String {
+    /// Builds the OpenWhisk action-invocation URL, rendering `api_host` /
+    /// `namespace` / `package` / `action` against `ctx` so each field's
+    /// `{{namespace.path}}` references resolve per request.
+    fn endpoint(&self, ctx: &Context) -> String {
+        let api_host = self.api_host.render(ctx);
+        let api_host = api_host.trim_end_matches('/');
+        let namespace = self.namespace.render(ctx);
+        let action = self.action.render(ctx);
         let package = self
             .package
             .as_ref()
-            .map(|p| format!("{}/", p))
+            .map(|p| format!("{}/", p.render(ctx)))
             .unwrap_or_default();
         format!(
             "{}/api/v1/namespaces/{}/actions/{}{}?blocking=true&result={}&timeout={}",
-            self.api_host, self.namespace, package, self.action, self.result, self.timeout_ms
+            api_host, namespace, package, action, self.result, self.timeout_ms
         )
     }
 
@@ -166,7 +200,7 @@ impl OpenWhiskPlugin {
         ];
         OutboundRequest {
             method: http::Method::POST,
-            url: self.endpoint(),
+            url: self.endpoint(ctx),
             headers,
             body: ctx.request.body.clone(),
             timeout: self.timeout,
@@ -365,9 +399,56 @@ mod tests {
         cfg["result"] = serde_json::json!(false);
         let p = plugin(cfg);
         assert_eq!(
-            p.endpoint(),
+            p.endpoint(&ctx()),
             "https://ow.example.com/api/v1/namespaces/guest/actions/mypkg/hello?blocking=true&result=false&timeout=3000"
         );
+    }
+
+    #[test]
+    fn test_endpoint_renders_namespace_template_per_request() {
+        // CONTROLLER-APPROVED SCOPE ADDITION: `namespace` (and `api_host`,
+        // `package`, `action`) render `{{namespace.path}}` references per
+        // request, closing the FaaS-family templating gap found in the
+        // Task 3 review.
+        let mut cfg = base_config();
+        cfg["namespace"] = serde_json::json!("tenant-{{request.headers.x-tenant}}");
+        let p = plugin(cfg);
+
+        let mut request_ctx = ctx();
+        request_ctx
+            .request
+            .headers
+            .insert("x-tenant".to_string(), vec!["acme".to_string()]);
+        assert_eq!(
+            p.endpoint(&request_ctx),
+            "https://ow.example.com/api/v1/namespaces/tenant-acme/actions/hello?blocking=true&result=true&timeout=3000"
+        );
+
+        // A different request routes to a different namespace.
+        let mut other_ctx = ctx();
+        other_ctx
+            .request
+            .headers
+            .insert("x-tenant".to_string(), vec!["globex".to_string()]);
+        assert_eq!(
+            p.endpoint(&other_ctx),
+            "https://ow.example.com/api/v1/namespaces/tenant-globex/actions/hello?blocking=true&result=true&timeout=3000"
+        );
+    }
+
+    #[test]
+    fn test_endpoint_literal_namespace_is_byte_identical() {
+        // A literal (non-templated) config must render byte-identically
+        // across requests — no accidental per-request drift from the
+        // templating change.
+        let p = plugin(base_config());
+        let expected =
+            "https://ow.example.com/api/v1/namespaces/guest/actions/hello?blocking=true&result=true&timeout=3000";
+        assert_eq!(p.endpoint(&ctx()), expected);
+
+        let mut other_ctx = ctx();
+        other_ctx.request.host = "totally-different-host".to_string();
+        assert_eq!(p.endpoint(&other_ctx), expected);
     }
 
     #[test]

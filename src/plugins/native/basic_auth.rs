@@ -15,6 +15,7 @@ use crate::consumers::attach_consumer;
 use crate::context::{Context, GatewayError};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Authenticates requests using HTTP Basic credentials checked against a
 /// configured username/password map and/or the consumer store.
@@ -33,8 +34,10 @@ use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 pub struct BasicAuthPlugin {
     /// Username -> plaintext password map the credentials are checked against.
     users: HashMap<String, String>,
-    /// Realm advertised in the `WWW-Authenticate` challenge header.
-    realm: String,
+    /// Realm advertised in the `WWW-Authenticate` challenge header. Supports
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// `realm` never supported it, so this sweep must not start).
+    realm: Template,
     /// When true, credentials are also resolved against the consumer store.
     use_consumers: bool,
     /// Consumer attached when no credential matches (instead of rejecting).
@@ -54,7 +57,8 @@ impl BasicAuthPlugin {
     ///   consumer.
     /// - At least one of `users` / `use_consumers` must be provided.
     /// - `realm` (string, default `"gateway"`): realm used in the
-    ///   `WWW-Authenticate` challenge.
+    ///   `WWW-Authenticate` challenge; supports `{{namespace.path}}`
+    ///   references.
     /// - `anonymous_consumer` (string, optional): consumer name attached when
     ///   no credential matches, instead of rejecting (APISIX semantics).
     /// - `hide_credentials` (bool, default `false`): strip the `Authorization`
@@ -87,6 +91,9 @@ impl BasicAuthPlugin {
             .and_then(|v| v.as_str())
             .unwrap_or("gateway")
             .to_string();
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let realm = Template::parse(&realm).0;
 
         let anonymous_consumer = config
             .get("anonymous_consumer")
@@ -114,6 +121,7 @@ impl BasicAuthPlugin {
     /// the graph engine routes through the error port.
     fn reject(&self, ctx: Context) -> PluginResult {
         let mut ctx = ctx;
+        let realm = self.realm.render(&ctx).into_owned();
         ctx.response.status_code = 401;
         ctx.response.body =
             Bytes::from(r#"{"error": "unauthorized", "message": "Invalid credentials"}"#);
@@ -123,7 +131,7 @@ impl BasicAuthPlugin {
         );
         ctx.response.headers.insert(
             "www-authenticate".to_string(),
-            vec![format!("Basic realm=\"{}\"", self.realm)],
+            vec![format!("Basic realm=\"{}\"", realm)],
         );
         Err(PluginExecutionError {
             context: ctx,
@@ -471,6 +479,29 @@ mod tests {
         assert_eq!(
             err.context.response.headers.get("www-authenticate"),
             Some(&vec!["Basic realm=\"internal-api\"".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reject_realm_renders_template() {
+        // `realm` must render `{{request.host}}` per request — different
+        // hosts get a challenge naming their own host.
+        let mut config = inline_config();
+        config.insert(
+            "realm".to_string(),
+            serde_json::json!("realm-for-{{request.host}}"),
+        );
+        let plugin = BasicAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+
+        let mut ctx = ctx_with_auth(None);
+        ctx.request.host = "tenant-a.example.com".to_string();
+
+        let err = plugin.execute(ctx, &HashMap::new()).await.unwrap_err();
+        assert_eq!(
+            err.context.response.headers.get("www-authenticate"),
+            Some(&vec![
+                "Basic realm=\"realm-for-tenant-a.example.com\"".to_string()
+            ])
         );
     }
 
