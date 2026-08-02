@@ -66,6 +66,8 @@ export interface PolicyNode {
   type: string;
   /** Plugin-specific configuration; its shape is described per type by the pluginConfig schema registry. */
   config: Record<string, unknown>;
+  /** Optional name of a shared plugin config to inherit from (local keys win). */
+  config_ref?: string;
   /** Canvas coordinates for the editor; ignored by the gateway engine. */
   position?: { x: number; y: number };
 }
@@ -103,6 +105,24 @@ export interface Supernode {
   nodes: PolicyNode[];
   /** Directed connections; boundary edges use `input.out` / `output.in` / `error.in`. */
   edges: PolicyEdge[];
+}
+
+/**
+ * A named, typed shared plugin configuration, referenced by plugin nodes
+ * via {@link PolicyNode.config_ref}; resolved at compile time by the gateway.
+ *
+ * @remarks
+ * Served and persisted by the CRUD handlers in src/admin/plugin_configs.rs.
+ */
+export interface PluginConfigDef {
+  /** Unique name, referenced by `config_ref`. */
+  name: string;
+  /** Plugin type this config is for; only nodes of the same type may reference it. */
+  type: string;
+  /** Optional human-readable description shown in the library. */
+  description?: string;
+  /** The shared plugin configuration (same shape as a node's `config`). */
+  config: Record<string, unknown>;
 }
 
 /**
