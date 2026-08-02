@@ -251,6 +251,10 @@ Worst case is roughly `max_traces × max_steps × (snapshot + 2 × max_body_byte
 
 The **Debug** button in the editor sidebar opens a panel with two tabs: *Traces* (pick a trace, step through its nodes, see what each changed) and *Sandbox* (pick a policy or paste nodes, supply a context, run). The nodes field is pre-filled from the policy open on the canvas. When debug mode is off the button stays visible but disabled, with a tooltip naming the config key. See [Web UI](./web-ui.md).
 
+## Live value preview while editing
+
+The web UI's plugin config editor doesn't just document `$var` names — for fields flagged as accepting templates, typing `$` opens an autocomplete popover that, when debug mode is on and a trace exists for the node you're editing, previews each var's **live value from the latest handled request** right next to its name. Redacted fields still show `<redacted>`, cookies stay unpreviewable, and `$resp_body`/`$request_body` previews need `capture_bodies: true` — the same rules as everywhere else in this page, because the preview is reading the same trace data. See [Context vars](../reference/context-vars.md#autocomplete-and-live-value-preview) for the full var catalog, the `${...}` syntax rule, and which config fields the popover attaches to.
+
 ## Limitations
 
 - **Each process has its own buffer.** In an HA deployment a traced request lands in exactly one replica while the UI talks to one admin port, so a trace you expect may be on another instance. Trace ids are returned to the caller precisely so you can correlate.
