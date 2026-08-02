@@ -23,6 +23,9 @@ pub struct VarEntry {
     pub family_source: Option<&'static str>,
     pub description: &'static str,
     pub example: &'static str,
+    /// Template path equivalent for the universal-templates feature.
+    /// Empty string means no direct template mapping (e.g., protocol, query_string, post_arg_*).
+    pub path: &'static str,
 }
 
 const S: VarKind = VarKind::Static;
@@ -34,6 +37,7 @@ fn e(
     family_source: Option<&'static str>,
     description: &'static str,
     example: &'static str,
+    path: &'static str,
 ) -> VarEntry {
     VarEntry {
         name,
@@ -41,19 +45,28 @@ fn e(
         family_source,
         description,
         example,
+        path,
     }
 }
 
 /// Every variable `resolve()` accepts, statics first, then families.
 pub fn var_catalog() -> Vec<VarEntry> {
     vec![
-        e("uri", S, None, "Request path (no query string)", "$uri"),
+        e(
+            "uri",
+            S,
+            None,
+            "Request path (no query string)",
+            "$uri",
+            "request.path",
+        ),
         e(
             "request_uri",
             S,
             None,
             "Path plus ?query when query params exist",
             "$request_uri",
+            "request.path",
         ),
         e(
             "method",
@@ -61,6 +74,7 @@ pub fn var_catalog() -> Vec<VarEntry> {
             None,
             "HTTP method (alias: request_method)",
             "$method",
+            "request.method",
         ),
         e(
             "request_method",
@@ -68,15 +82,24 @@ pub fn var_catalog() -> Vec<VarEntry> {
             None,
             "HTTP method (alias of method)",
             "$request_method",
+            "request.method",
         ),
-        e("host", S, None, "Request Host", "$host"),
-        e("scheme", S, None, "http or https", "$scheme"),
+        e("host", S, None, "Request Host", "$host", "request.host"),
+        e(
+            "scheme",
+            S,
+            None,
+            "http or https",
+            "$scheme",
+            "request.scheme",
+        ),
         e(
             "protocol",
             S,
             None,
             "HTTP protocol version (http1, http2, ...)",
             "$protocol",
+            "",
         ),
         e(
             "remote_addr",
@@ -84,22 +107,39 @@ pub fn var_catalog() -> Vec<VarEntry> {
             None,
             "Client IP without port",
             "$remote_addr",
+            "client.ip",
         ),
-        e("remote_port", S, None, "Client port", "$remote_port"),
+        e(
+            "remote_port",
+            S,
+            None,
+            "Client port",
+            "$remote_port",
+            "client.port",
+        ),
         e(
             "query_string",
             S,
             None,
             "Full query string, rebuilt and sorted",
             "$query_string",
+            "",
         ),
-        e("status", S, None, "Response status code", "$status"),
+        e(
+            "status",
+            S,
+            None,
+            "Response status code",
+            "$status",
+            "response.status",
+        ),
         e(
             "resp_body",
             S,
             None,
             "Response body (lossy UTF-8)",
             "$resp_body",
+            "response.body",
         ),
         e(
             "request_body",
@@ -107,6 +147,7 @@ pub fn var_catalog() -> Vec<VarEntry> {
             None,
             "Request body (lossy UTF-8)",
             "$request_body",
+            "request.body",
         ),
         e(
             "consumer_name",
@@ -114,6 +155,7 @@ pub fn var_catalog() -> Vec<VarEntry> {
             None,
             "Authenticated consumer name (set by auth plugins)",
             "$consumer_name",
+            "message.consumer.name",
         ),
         e(
             "consumer_group_id",
@@ -121,6 +163,7 @@ pub fn var_catalog() -> Vec<VarEntry> {
             None,
             "Authenticated consumer group",
             "$consumer_group_id",
+            "message.consumer.group",
         ),
         e(
             "arg_*",
@@ -128,6 +171,7 @@ pub fn var_catalog() -> Vec<VarEntry> {
             Some("query_params"),
             "First value of a query parameter",
             "$arg_page",
+            "request.query.*",
         ),
         e(
             "http_*",
@@ -135,6 +179,7 @@ pub fn var_catalog() -> Vec<VarEntry> {
             Some("request_headers"),
             "First value of a request header (underscores map to dashes)",
             "$http_user_agent",
+            "request.headers.*",
         ),
         e(
             "cookie_*",
@@ -142,6 +187,7 @@ pub fn var_catalog() -> Vec<VarEntry> {
             Some("cookies"),
             "Value from the Cookie request header",
             "$cookie_session",
+            "request.cookies.*",
         ),
         e(
             "post_arg_*",
@@ -149,6 +195,7 @@ pub fn var_catalog() -> Vec<VarEntry> {
             Some("form_body"),
             "Form field from an application/x-www-form-urlencoded body",
             "$post_arg_username",
+            "",
         ),
         e(
             "msg_*",
@@ -156,6 +203,7 @@ pub fn var_catalog() -> Vec<VarEntry> {
             Some("message"),
             "Any context.message key, stringified; dotted keys need ${msg_key.with.dots}",
             "${msg_consumer.name}",
+            "message.*",
         ),
         e(
             "sent_http_*",
@@ -163,6 +211,7 @@ pub fn var_catalog() -> Vec<VarEntry> {
             Some("response_headers"),
             "First value of a response header (underscores map to dashes)",
             "$sent_http_content_type",
+            "response.headers.*",
         ),
     ]
 }
