@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use crate::context::Context;
 use crate::plugins::util::content_codec::{decode, ContentEncoding};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Rewrites the response: `body` replaces the upstream body, then
 /// `before_body` / `after_body` are concatenated around it, and `headers`
@@ -24,12 +25,14 @@ use crate::plugins::{Plugin, PluginOutput, PluginResult};
 /// compressed upstream body is decoded first, with `content-encoding`
 /// removed. This plugin never fails at execution time.
 pub struct EchoPlugin {
-    /// Replacement for the upstream response body.
-    body: Option<String>,
-    /// Prepended to the (possibly replaced) body.
-    before_body: Option<String>,
-    /// Appended to the (possibly replaced) body.
-    after_body: Option<String>,
+    /// Replacement for the upstream response body. Supports
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// response bodies never supported it, so this sweep must not start).
+    body: Option<Template>,
+    /// Prepended to the (possibly replaced) body. Same rendering as `body`.
+    before_body: Option<Template>,
+    /// Appended to the (possibly replaced) body. Same rendering as `body`.
+    after_body: Option<Template>,
     /// Response headers to set (names lowercased, values replace existing).
     headers: HashMap<String, String>,
 }
@@ -51,10 +54,12 @@ impl EchoPlugin {
     ///
     /// Accepted keys — at least one of `body` / `before_body` / `after_body`
     /// is required (APISIX parity):
-    /// - `body` (string): replaces the upstream response body.
+    /// - `body` (string): replaces the upstream response body; supports
+    ///   `{{namespace.path}}` references.
     /// - `before_body` (string): prepended to the body (after any `body`
-    ///   replacement).
-    /// - `after_body` (string): appended to the body.
+    ///   replacement); supports `{{namespace.path}}` references.
+    /// - `after_body` (string): appended to the body; supports
+    ///   `{{namespace.path}}` references.
     /// - `headers` (map `{name: value}` **or** array `[{name, value}]`, the
     ///   UI editor's form): response headers to set. Values must be scalars
     ///   (strings, numbers, bools — stringified); names are lowercased;
@@ -80,6 +85,12 @@ impl EchoPlugin {
                     .to_string(),
             );
         }
+
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let body = body.map(|s| Template::parse(&s).0);
+        let before_body = before_body.map(|s| Template::parse(&s).0);
+        let after_body = after_body.map(|s| Template::parse(&s).0);
 
         let scalar = |v: &serde_json::Value, name: &str| -> Result<String, String> {
             match v {
@@ -148,7 +159,7 @@ impl Plugin for EchoPlugin {
         // Body mutation (always: from_config requires at least one body key).
         let current: Bytes = match &self.body {
             // Full replacement ignores the upstream body entirely.
-            Some(body) => Bytes::from(body.clone()),
+            Some(body) => Bytes::from(body.render(&ctx).into_owned()),
             // before/after wrap the upstream body; a compressed body is
             // decoded first so text concatenates onto text. If the encoding
             // is unsupported or the stream corrupt, the raw bytes are used.
@@ -170,11 +181,11 @@ impl Plugin for EchoPlugin {
 
         let mut buf = BytesMut::new();
         if let Some(before) = &self.before_body {
-            buf.extend_from_slice(before.as_bytes());
+            buf.extend_from_slice(before.render(&ctx).as_bytes());
         }
         buf.extend_from_slice(&current);
         if let Some(after) = &self.after_body {
-            buf.extend_from_slice(after.as_bytes());
+            buf.extend_from_slice(after.render(&ctx).as_bytes());
         }
         ctx.response.body = buf.freeze();
 
@@ -340,6 +351,27 @@ mod tests {
         assert_eq!(ctx.response.body, Bytes::from("pre|upstream"));
         assert!(!ctx.response.headers.contains_key("content-encoding"));
         assert!(!ctx.response.headers.contains_key("content-length"));
+    }
+
+    #[tokio::test]
+    async fn test_echo_body_renders_template_and_leaves_dollar_untouched() {
+        // `body` must render `{{...}}` references per request while a `$`
+        // money string in the same value survives byte-identically (the
+        // safety property: response bodies never went through legacy `$var`
+        // interpolation, and this sweep must not start doing so).
+        let plugin = EchoPlugin::from_config(&config(serde_json::json!({
+            "body": "path={{request.path}} price=$19.99"
+        })))
+        .unwrap();
+
+        let mut ctx = test_context("upstream body");
+        ctx.request.path = "/api/orders".to_string();
+
+        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        assert_eq!(
+            result.context.response.body,
+            Bytes::from("path=/api/orders price=$19.99")
+        );
     }
 
     #[tokio::test]
