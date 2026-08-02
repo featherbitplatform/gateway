@@ -67,6 +67,7 @@ Core features:
 - **Hot-reload** — file watcher (notify) triggers config reload on gateway.yaml changes
 - **Prometheus metrics** — per-route and per-node counters/histograms at `/metrics`
 - **Supernodes** — reusable named subgraphs inlined into policies at compile time
+- **Shared plugin configs** — named, typed config profiles referenced by nodes via config_ref, resolved at compile time
 
 ## Architecture
 
