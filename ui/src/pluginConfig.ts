@@ -729,7 +729,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'delay', label: 'Delay', type: 'textarea', rows: 4, placeholder: '{"duration": 0.5, "percentage": 30}', hint: 'JSON object: duration seconds (required), percentage, vars' },
   ],
   workflow: [
-    { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"case": [["uri", "~~", "^/admin"]], "actions": [["return", {"code": 403}]]}]', hint: 'JSON array; actions: ["return", {code}] or ["limit-count", {count, time_window, key, rejected_code}]' },
+    { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"case": [["uri", "~~", "^/admin"]], "actions": [["return", {"code": 403}]]}]', hint: 'JSON array; actions: ["return", {code}] or ["limit-count", {count, time_window, key, rejected_code}]', template: 'full', legacyDollar: true },
   ],
   'traffic-label': [
     { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"match": [["arg_channel", "==", "beta"]], "actions": [{"set_headers": {"x-server-id": "beta"}, "set_labels": {"tier": "beta"}}]}]', hint: 'JSON array; set_headers → request headers, set_labels → message label.<key>', template: 'full', legacyDollar: true },
