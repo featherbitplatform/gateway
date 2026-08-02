@@ -8,11 +8,20 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { GraphCanvas } from './components/GraphCanvas';
+import { PluginConfigPanel } from './components/PluginConfigPanel';
 import { Dialog, DialogButton, DialogField } from './components/Dialog';
 import { DebugPanel } from './components/DebugPanel';
 import { Toast, type ToastData } from './components/Toast';
 import { api } from './api/client';
-import type { Route, Policy, Supernode, PluginType, ScriptFile, DebugConfig } from './types';
+import type {
+  Route,
+  Policy,
+  Supernode,
+  PluginConfigDef,
+  PluginType,
+  ScriptFile,
+  DebugConfig,
+} from './types';
 
 /**
  * Top-level application component and single owner of server state.
@@ -42,10 +51,12 @@ export default function App() {
   const [routes, setRoutes] = useState<Route[]>([]);
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [supernodes, setSupernodes] = useState<Supernode[]>([]);
+  const [pluginConfigs, setPluginConfigs] = useState<PluginConfigDef[]>([]);
   const [plugins, setPlugins] = useState<PluginType[]>([]);
   const [scripts, setScripts] = useState<ScriptFile[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
   const [selectedSupernode, setSelectedSupernode] = useState<string | null>(null);
+  const [selectedPluginConfig, setSelectedPluginConfig] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastData | null>(null);
 
@@ -64,6 +75,14 @@ export default function App() {
   // Delete-supernode confirmation state
   const [deleteSupernodeTarget, setDeleteSupernodeTarget] = useState<string | null>(null);
 
+  // Create-plugin-config dialog state
+  const [createPluginConfigOpen, setCreatePluginConfigOpen] = useState(false);
+  const [newPcName, setNewPcName] = useState('');
+  const [newPcType, setNewPcType] = useState('');
+
+  // Delete-plugin-config confirmation state
+  const [deletePluginConfigTarget, setDeletePluginConfigTarget] = useState<string | null>(null);
+
   // View-YAML dialog state: null when closed, the exported YAML string when open.
   const [yamlView, setYamlView] = useState<string | null>(null);
 
@@ -74,16 +93,18 @@ export default function App() {
 
   const loadData = useCallback(async () => {
     try {
-      const [r, p, sn, pl, sc] = await Promise.all([
+      const [r, p, sn, pc, pl, sc] = await Promise.all([
         api.listRoutes(),
         api.listPolicies(),
         api.listSupernodes(),
+        api.listPluginConfigs(),
         api.listPlugins(),
         api.listScripts(),
       ]);
       setRoutes(r);
       setPolicies(p);
       setSupernodes(sn);
+      setPluginConfigs(pc);
       setPlugins(pl);
       setScripts(sc);
       setError(null);
@@ -118,17 +139,40 @@ export default function App() {
     ? { name: selectedSupernodeDef.name, nodes: selectedSupernodeDef.nodes, edges: selectedSupernodeDef.edges }
     : selectedPolicy;
 
-  // Selection is mutually exclusive between the routes list and the
-  // supernodes list: picking one clears the other so the canvas always
-  // reflects a single, unambiguous selection.
+  const selectedPluginConfigDef = pluginConfigs.find((pc) => pc.name === selectedPluginConfig) || null;
+
+  // Shared configs only make sense for plugin nodes with real config, so the
+  // create dialog's type picker excludes the boundary/no-config types —
+  // mirrors the node palette's exclusions (supernode and other boundary
+  // types are not in the catalog at all).
+  // - listener/client: pipeline endpoints, not real plugin nodes — mirrors
+  //   RESERVED_TYPES in src/config/resolve.rs (supernode/boundary types
+  //   never appear in the catalog either).
+  // - script: excluded because a script node's config is file-bound
+  //   (runtime + source path), a poor fit for a shared, reusable profile.
+  const pluginConfigTypeOptions = plugins.filter(
+    (p) => p.type !== 'listener' && p.type !== 'client' && p.type !== 'script'
+  );
+
+  // Selection is mutually exclusive across the routes list, the supernodes
+  // list, and the plugin configs list: picking one clears the other two so
+  // the main panel always reflects a single, unambiguous selection.
   const handleSelectRoute = (name: string) => {
     setSelectedSupernode(null);
+    setSelectedPluginConfig(null);
     setSelectedRoute(name);
   };
 
   const handleSelectSupernode = (name: string) => {
     setSelectedRoute(null);
+    setSelectedPluginConfig(null);
     setSelectedSupernode(name);
+  };
+
+  const handleSelectPluginConfig = (name: string) => {
+    setSelectedRoute(null);
+    setSelectedSupernode(null);
+    setSelectedPluginConfig(name);
   };
 
   const handleCreateRoute = () => {
@@ -227,6 +271,52 @@ export default function App() {
       setToast({ tone: 'success', title: 'Supernode deleted', message: name });
     } catch (e) {
       setToast({ tone: 'error', title: 'Failed to delete supernode', message: `${e}` });
+    }
+  };
+
+  const handleCreatePluginConfig = () => {
+    setNewPcName('');
+    setNewPcType('');
+    setCreatePluginConfigOpen(true);
+  };
+
+  const submitCreatePluginConfig = async () => {
+    const name = newPcName.trim();
+    const type = newPcType;
+    if (!name || !type) return;
+    setCreatePluginConfigOpen(false);
+
+    try {
+      await api.updatePluginConfig(name, { name, type, config: {} });
+      await loadData();
+      handleSelectPluginConfig(name);
+      setToast({ tone: 'success', title: 'Plugin config created', message: `${name} · ${type}` });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to create plugin config', message: `${e}` });
+    }
+  };
+
+  const submitDeletePluginConfig = async () => {
+    const name = deletePluginConfigTarget;
+    setDeletePluginConfigTarget(null);
+    if (!name) return;
+    try {
+      await api.deletePluginConfig(name);
+      await loadData();
+      if (selectedPluginConfig === name) setSelectedPluginConfig(null);
+      setToast({ tone: 'success', title: 'Plugin config deleted', message: name });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to delete plugin config', message: `${e}` });
+    }
+  };
+
+  const handleSavePluginConfig = async (def: PluginConfigDef) => {
+    try {
+      await api.updatePluginConfig(def.name, def);
+      await loadData();
+      setToast({ tone: 'success', title: 'Plugin config saved', message: def.name });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to save plugin config', message: `${e}` });
     }
   };
 
@@ -369,23 +459,37 @@ export default function App() {
         onSelectSupernode={handleSelectSupernode}
         onCreateSupernode={handleCreateSupernode}
         onDeleteSupernode={(name) => setDeleteSupernodeTarget(name)}
+        pluginConfigs={pluginConfigs}
+        selectedPluginConfig={selectedPluginConfig}
+        onSelectPluginConfig={handleSelectPluginConfig}
+        onCreatePluginConfig={handleCreatePluginConfig}
+        onDeletePluginConfig={(name) => setDeletePluginConfigTarget(name)}
         onReload={handleReload}
         onViewYaml={handleViewYaml}
         onOpenDebug={() => setDebugOpen(true)}
         debugEnabled={debugConfig?.enabled ?? false}
       />
-      {/* Keyed by policy/supernode name: switching the selection remounts
-          the canvas so nodes/edges/selection re-sync from the prop (see
-          GraphCanvas docs). */}
-      <GraphCanvas
-        key={canvasPolicy?.name ?? ''}
-        policy={canvasPolicy}
-        plugins={plugins}
-        scripts={scripts}
-        onSavePolicy={handleSaveGraph}
-        kind={selectedSupernodeDef ? 'supernode' : 'policy'}
-        supernodes={supernodes}
-      />
+      {selectedPluginConfigDef ? (
+        <PluginConfigPanel
+          key={selectedPluginConfigDef.name}
+          def={selectedPluginConfigDef}
+          onSave={handleSavePluginConfig}
+        />
+      ) : (
+        // Keyed by policy/supernode name: switching the selection remounts
+        // the canvas so nodes/edges/selection re-sync from the prop (see
+        // GraphCanvas docs).
+        <GraphCanvas
+          key={canvasPolicy?.name ?? ''}
+          policy={canvasPolicy}
+          plugins={plugins}
+          scripts={scripts}
+          onSavePolicy={handleSaveGraph}
+          kind={selectedSupernodeDef ? 'supernode' : 'policy'}
+          supernodes={supernodes}
+          pluginConfigs={pluginConfigs}
+        />
+      )}
 
       <Dialog
         open={createOpen}
@@ -465,6 +569,90 @@ export default function App() {
         <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: 0 }}>
           Delete supernode <code style={{ color: 'var(--text-primary)' }}>{deleteSupernodeTarget}</code>?
           Deletion fails while any policy still references it.
+        </p>
+      </Dialog>
+
+      <Dialog
+        open={createPluginConfigOpen}
+        title="New plugin config"
+        onClose={() => setCreatePluginConfigOpen(false)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setCreatePluginConfigOpen(false)}>
+              Cancel
+            </DialogButton>
+            <DialogButton
+              onClick={submitCreatePluginConfig}
+              disabled={!newPcName.trim() || !newPcType}
+            >
+              Create plugin config
+            </DialogButton>
+          </>
+        }
+      >
+        <DialogField
+          label="Config name"
+          value={newPcName}
+          onChange={setNewPcName}
+          placeholder="shared-rate-limit"
+          autoFocus
+        />
+        <div style={{ marginBottom: 12 }}>
+          <label
+            style={{
+              display: 'block',
+              fontSize: 'var(--text-xs)',
+              fontWeight: 500,
+              color: 'var(--text-secondary)',
+              marginBottom: 4,
+            }}
+          >
+            Plugin type
+          </label>
+          <select
+            value={newPcType}
+            onChange={(e) => setNewPcType(e.target.value)}
+            className="w-full"
+            style={{
+              padding: '7px 10px',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: 'var(--text-sm)',
+              background: 'var(--surface-input)',
+              color: 'var(--text-primary)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            <option value="" disabled>
+              Select a plugin type&hellip;
+            </option>
+            {pluginConfigTypeOptions.map((p) => (
+              <option key={p.type} value={p.type}>
+                {p.type}
+              </option>
+            ))}
+          </select>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={deletePluginConfigTarget !== null}
+        title="Delete plugin config"
+        onClose={() => setDeletePluginConfigTarget(null)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setDeletePluginConfigTarget(null)}>
+              Cancel
+            </DialogButton>
+            <DialogButton variant="danger" onClick={submitDeletePluginConfig}>
+              Delete
+            </DialogButton>
+          </>
+        }
+      >
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: 0 }}>
+          Delete plugin config{' '}
+          <code style={{ color: 'var(--text-primary)' }}>{deletePluginConfigTarget}</code>? Deletion
+          fails while any node still references it.
         </p>
       </Dialog>
 

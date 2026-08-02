@@ -1,6 +1,8 @@
 /**
  * Right-hand inspector panel for the node selected on the policy canvas.
- * Edits the node's plugin config either schema-driven (SchemaForm, when the
+ * For regular plugin nodes, offers a shared-config picker (`configRef`) that
+ * shows the inherited config read-only above the editor, then edits the
+ * node's local `config` override either schema-driven (SchemaForm, when the
  * plugin type declares a config schema) or as raw JSON (JsonConfigEditor
  * fallback), and offers node deletion for non-fixed nodes.
  *
@@ -10,6 +12,7 @@ import { useState } from 'react';
 import { X } from 'lucide-react';
 import type { Node } from '@xyflow/react';
 import type { PluginNodeData } from './PluginNode';
+import type { PluginConfigDef } from '../types';
 import { getPluginMeta } from '../pluginMeta';
 import { getPluginConfigSchema } from '../pluginConfig';
 import { SchemaForm } from './SchemaForm';
@@ -18,8 +21,12 @@ import { SchemaForm } from './SchemaForm';
 interface NodeInspectorProps {
   /** Selected ReactFlow node (data is {@link PluginNodeData}); `null` renders nothing. */
   node: Node | null;
+  /** Named shared plugin configs available for the picker (from GET /api/plugin-configs). */
+  pluginConfigs: PluginConfigDef[];
   /** Fires with the node id and full replacement config on every config change/apply. */
   onUpdateConfig: (nodeId: string, config: Record<string, unknown>) => void;
+  /** Fires with the node id and the selected shared config name (or `undefined` to clear it). */
+  onUpdateConfigRef: (nodeId: string, ref: string | undefined) => void;
   /** Fires with the node id when the Delete Node button is clicked. */
   onDeleteNode: (nodeId: string) => void;
   /** Fires when the close (X) button is clicked. */
@@ -116,19 +123,34 @@ function JsonConfigEditor({
 /**
  * Inspector panel for the selected policy node.
  *
- * Shows the plugin type and read-only node id, then picks the config editor:
- * `listener` and `client` are fixed pipeline endpoints — no configuration and
- * no Delete Node button; types with a schema from getPluginConfigSchema get a
- * {@link SchemaForm} that calls `onUpdateConfig` on every field change; all
- * other types fall back to `JsonConfigEditor`, which updates only on
- * explicit apply. Updates replace the node's entire `config` object, which is
- * what gets serialized into the policy YAML on save.
+ * Shows the plugin type and read-only node id. For regular (non-fixed,
+ * non-supernode) nodes, first renders a "Shared config" picker sourced from
+ * `pluginConfigs` (filtered to the node's plugin type) that calls
+ * `onUpdateConfigRef`; when a config is selected, its full definition is
+ * shown read-only beneath the picker as the inherited base. Then picks the
+ * config editor: `listener` and `client` are fixed pipeline endpoints — no
+ * configuration and no Delete Node button; types with a schema from
+ * getPluginConfigSchema get a {@link SchemaForm} that calls `onUpdateConfig`
+ * on every field change; all other types fall back to `JsonConfigEditor`,
+ * which updates only on explicit apply. Updates replace the node's entire
+ * local `config` object (the overrides layered on top of the inherited
+ * config, if any), which is what gets serialized into the policy YAML on
+ * save.
  *
  * @remarks
  * The edited config is the same `config` block the Rust plugins deserialize
- * when instantiated via create_plugin in src/plugins/mod.rs.
+ * when instantiated via create_plugin in src/plugins/mod.rs. A local key
+ * (including an explicit `null`) always wins over the same key inherited
+ * from `config_ref` — merging happens at compile time on the gateway side.
  */
-export function NodeInspector({ node, onUpdateConfig, onDeleteNode, onClose }: NodeInspectorProps) {
+export function NodeInspector({
+  node,
+  pluginConfigs,
+  onUpdateConfig,
+  onUpdateConfigRef,
+  onDeleteNode,
+  onClose,
+}: NodeInspectorProps) {
   if (!node) return null;
 
   const data = node.data as unknown as PluginNodeData;
@@ -209,6 +231,63 @@ export function NodeInspector({ node, onUpdateConfig, onDeleteNode, onClose }: N
             }}
           />
         </div>
+
+        {/* Shared config picker */}
+        {!isFixed && !isSupernode && (
+          <div>
+            <label style={labelStyle}>Shared config</label>
+            <select
+              value={data.configRef ?? ''}
+              onChange={(e) => onUpdateConfigRef(node.id, e.target.value || undefined)}
+              className="w-full"
+              style={{
+                padding: '6px 10px',
+                borderRadius: 'var(--radius-sm)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--text-sm)',
+                background: 'var(--surface-input)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              <option value="">None</option>
+              {pluginConfigs
+                .filter((p) => p.type === data.pluginType)
+                .map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+            </select>
+            {data.configRef && (
+              <div style={{ marginTop: 8 }}>
+                <label style={labelStyle}>
+                  Inherited from {data.configRef} (local keys below override)
+                </label>
+                <div
+                  style={{
+                    padding: '8px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-xs)',
+                    background: 'var(--surface-sunken)',
+                    color: 'var(--text-muted)',
+                    border: '1px solid var(--border)',
+                    maxHeight: 160,
+                    overflowY: 'auto',
+                    whiteSpace: 'pre',
+                  }}
+                >
+                  {JSON.stringify(
+                    pluginConfigs.find((p) => p.name === data.configRef)?.config ?? {},
+                    null,
+                    2
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Configuration */}
         {isFixed ? (

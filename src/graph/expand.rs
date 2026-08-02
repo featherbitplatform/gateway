@@ -361,6 +361,7 @@ mod tests {
             id: id.into(),
             node_type: ty.into(),
             config: Map::new(),
+            config_ref: None,
             position: None,
         }
     }

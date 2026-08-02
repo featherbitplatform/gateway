@@ -6,6 +6,7 @@
  * @module components/PluginNode
  */
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Link2 } from 'lucide-react';
 import { getPluginMeta } from '../pluginMeta';
 
 /**
@@ -20,6 +21,8 @@ export interface PluginNodeData {
   pluginType: string;
   /** Plugin configuration, serialized verbatim into the policy node's `config` on save. */
   config: Record<string, unknown>;
+  /** Optional name of a shared plugin config this node inherits from. */
+  configRef?: string;
   /** Called with the node id when the node is clicked; used by GraphCanvas to open the inspector. */
   onSelect?: (nodeId: string) => void;
   /** Index signature required by ReactFlow's node data constraint. */
@@ -123,6 +126,23 @@ export function PluginNode({ id, data, selected }: NodeProps) {
       >
         {nodeData.label}
       </div>
+
+      {nodeData.configRef && (
+        <div
+          className="flex items-center"
+          style={{
+            gap: 4,
+            padding: '0 10px 8px',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--text-2xs)',
+            color: 'var(--text-muted)',
+          }}
+          title={`Inherits shared config '${nodeData.configRef}'`}
+        >
+          <Link2 size={10} style={{ flexShrink: 0 }} />
+          {nodeData.configRef}
+        </div>
+      )}
 
       {/* Input handle — not on entry-like nodes (listener, input) */}
       {!isEntry && (
