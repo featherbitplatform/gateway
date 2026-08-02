@@ -325,7 +325,7 @@ policies:
 
     // `upstream` is used deliberately: its `targets` key is REQUIRED, so an
     // UNRESOLVED ref leaves the node without targets and create_plugin fails —
-    // giving this test a genuine red state before Task 4 is implemented.
+    // giving this test a genuine red state before resolution was wired in.
     // (A permissive plugin like `mocking` would compile even unresolved.)
     const PLUGIN_CONFIG_GATEWAY: &str = r#"
 plugin_configs:

@@ -43,7 +43,7 @@ The effective config a node runs with is the shared config merged with the node'
 | `scope` | `openid` | `openid profile` | `openid profile` (local wins) |
 | `discovery` | `https://idp.example.com/...` | — | `https://idp.example.com/...` (inherited) |
 
-Setting a local key to `null` still counts as the node setting it, so it's the way to blank an inherited key rather than take the shared value — the merge is a plain overwrite, not a "skip if absent" merge, and `null` is a value like any other.
+Setting a local key to `null` still counts as the node setting it — the merge is a plain overwrite, not a "skip if absent" merge, so `null` is a value like any other. **V1 has no way to remove an inherited key.** A local `null` overrides the shared value with a literal `null`; that only behaves like "unsetting" the field when the plugin declares the field Optional. For a required field, saving a node with a local `null` fails with a `400` (the plugin's config deserialization rejects the missing/null value) rather than falling back to anything. If you need a node to not carry an inherited value, define the value you want locally instead of inheriting it, or split it onto a second shared config.
 
 ## Typing
 
@@ -65,6 +65,7 @@ Deleting a shared config that's still referenced anywhere — a policy node or a
 
 - **No nesting.** A shared config cannot reference another shared config.
 - **No deep merge.** The merge is shallow and top-level only — if a key's value is itself an object, the node's value replaces the shared value wholesale; there's no field-by-field merge inside nested structures.
+- **No way to remove an inherited key.** A local `null` overrides the shared value with `null` rather than removing it, and that only reads as "unset" when the plugin's field is Optional — for a required field it's a `400` at save time. Define the value locally, or use a second shared config, instead.
 
 ## Export and seeding
 

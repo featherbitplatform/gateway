@@ -34,7 +34,7 @@ const RESERVED_TYPES: [&str; 6] = [
 /// type must equal the node's type; `supernode` instance nodes cannot carry a
 /// ref. All errors name the offending policy/supernode and node.
 pub fn resolve_plugin_configs(gw: &GatewayConfig) -> Result<GatewayConfig, String> {
-    // consumed by SharedState::compile_routes in Task 4
+    // Consumed by SharedState::compile_routes (src/state.rs) and the debug sandbox.
     let mut seen = std::collections::HashSet::new();
     for def in &gw.plugin_configs {
         if !seen.insert(def.name.as_str()) {
@@ -102,7 +102,7 @@ fn resolve_nodes(
             ));
         }
         let mut merged: HashMap<String, Value> = def.config.clone();
-        merged.extend(node.config.drain());
+        merged.extend(std::mem::take(&mut node.config));
         node.config = merged;
     }
     Ok(())
