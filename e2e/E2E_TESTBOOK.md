@@ -319,6 +319,21 @@ sits directly in a policy or inside a supernode's inner nodes.
 |---|---|---|
 | E2E-PC-01 | Create a shared `mocking` config, reference it directly from one policy (with a local `response_status` override) and via a supernode's inner node from a second policy, then request both routes | Both serve the shared body; the direct reference's local override wins on status only. Editing the shared config **once** changes both routes' response body. `GET /api/config/export` keeps the reference form — `plugin_configs:` and `config_ref: e2e-shared-mock` present, the body text appearing only once (not duplicated by materialization). Deleting the shared config while referenced by a policy is `400`; still `400` once the policies are gone but the supernode definition still references it; succeeds once the supernode is deleted too |
 
+## Var suggestions — `tests/var-suggestions.spec.ts`
+
+The `$var` autocomplete popover and reference legend: `GET /api/vars` (the static
+catalog every plugin's `$var` interpolation can resolve, `src/vars/catalog.rs`)
+combined with live values read from the newest debug trace of the selected node's
+policy (the predecessor's captured snapshot). The first **browser**-driven
+scenarios for this feature — E2E-VS-01 hits the API directly; E2E-VS-02/03 drive
+the actual popover in the node inspector.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-VS-01 | `GET /api/vars` | `200`; catalog contains `{name:'uri', kind:'static'}`, `{name:'http_*', kind:'family', family_source:'request_headers'}`, `sent_http_*`, `request_body`; no duplicate names |
+| E2E-VS-02 | Wire `vs-policy` (listener → `mocking` → client), request `/vs/ping` with a distinctive header and the debug trigger header, then in the inspector type `$http_x_vs` into the mock node's `response_example` field | The popover offers `http_x_vs_probe` with its live value (`live-value-42`, from the trace's predecessor snapshot); Enter inserts `$http_x_vs_probe` into the field; opening the legend (inspector header button) shows the **Families** group and the `${...}` dotted-keys rule text |
+| E2E-VS-03 | Clear the trace buffer, then type `$` into the same field | Popover renders catalog names only (e.g. `uri`, with no live value) and the footer shows "No trace yet — send a request through this route" |
+
 ## Deliberately out of scope
 
 Covered by the Rust suite with real sockets, or unreachable from Playwright:

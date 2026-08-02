@@ -63,9 +63,11 @@ export interface FieldSchema {
   /** Singular noun used to title each `objects` row. */
   itemLabel?: string;
   /** Scalar item control for `list` fields. */
-  item?: { type: 'text' | 'number'; placeholder?: string };
+  item?: { type: 'text' | 'number'; placeholder?: string; vars?: boolean };
   /** Sub-fields of each record for `objects` fields. */
   fields?: FieldSchema[];
+  /** Field accepts $var interpolation — enables context autocomplete. */
+  vars?: boolean;
 }
 
 /**
@@ -411,8 +413,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   lago: [
     { key: 'endpoint', label: 'Lago endpoint', type: 'text', placeholder: 'http://127.0.0.1:3000', hint: 'required' },
     { key: 'token', label: 'API token', type: 'text', hint: 'required - Lago API key' },
-    { key: 'event_transaction_id', label: 'Transaction ID', type: 'text', placeholder: 'req_$request_uri', hint: 'required - $var template' },
-    { key: 'subscription_id', label: 'Subscription ID', type: 'text', placeholder: 'cus_$consumer_name', hint: 'required - $var template' },
+    { key: 'event_transaction_id', label: 'Transaction ID', type: 'text', placeholder: 'req_$request_uri', hint: 'required - $var template', vars: true },
+    { key: 'subscription_id', label: 'Subscription ID', type: 'text', placeholder: 'cus_$consumer_name', hint: 'required - $var template', vars: true },
     { key: 'event_code', label: 'Event code', type: 'text', hint: 'required - billable metric code' },
     { key: 'ssl_verify', label: 'SSL verify', type: 'switch', default: true },
     { key: 'timeout', label: 'Timeout (ms)', type: 'number', default: 3000 },
@@ -421,7 +423,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   'limit-count': [
     { key: 'count', label: 'Count', type: 'number', hint: 'requests allowed per window' },
     { key: 'time_window', label: 'Time window (s)', type: 'number', hint: 'window length in seconds' },
-    { key: 'key', label: 'Key', type: 'text', default: '$remote_addr', placeholder: '$remote_addr', hint: '$var template; empty falls back to client address' },
+    { key: 'key', label: 'Key', type: 'text', default: '$remote_addr', placeholder: '$remote_addr', hint: '$var template; empty falls back to client address', vars: true },
     { key: 'policy', label: 'Policy', type: 'select', options: ['local'], default: 'local' },
     { key: 'group', label: 'Group', type: 'text', placeholder: 'shared-counter', hint: 'prefixes the key so nodes share a counter' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 503 },
@@ -450,7 +452,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'phase', label: 'Phase', type: 'radio', options: ['acquire', 'release'], default: 'acquire', hint: 'acquire before upstream, release after (on success and error)' },
     { key: 'conn', label: 'Max concurrent', type: 'number', default: 20 },
     { key: 'burst', label: 'Burst', type: 'number', default: 0, hint: 'extra concurrency above conn; ceiling is conn + burst' },
-    { key: 'key', label: 'Key', type: 'text', default: '$remote_addr', hint: 'both nodes of the pair must share this key' },
+    { key: 'key', label: 'Key', type: 'text', default: '$remote_addr', hint: 'both nodes of the pair must share this key', vars: true },
     { key: 'key_type', label: 'Key type', type: 'select', options: ['var', 'constant'], default: 'var' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 503 },
     { key: 'rejected_msg', label: 'Rejected message', type: 'text' },
@@ -466,7 +468,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   'proxy-cache': [
     { key: 'phase', label: 'Phase', type: 'radio', options: ['lookup', 'store'], default: 'lookup', hint: 'lookup before upstream, store after' },
     { key: 'id', label: 'Cache id', type: 'text', placeholder: 'catalog', hint: 'lookup and store nodes must share this id' },
-    { key: 'cache_key', label: 'Cache key', type: 'list', addLabel: 'Component', item: { type: 'text', placeholder: '$uri' }, hint: 'defaults to $request_method + $host + $uri' },
+    { key: 'cache_key', label: 'Cache key', type: 'list', addLabel: 'Component', item: { type: 'text', placeholder: '$uri', vars: true }, hint: 'defaults to $request_method + $host + $uri' },
     { key: 'cache_ttl', label: 'Cache TTL (s)', type: 'number', default: 300 },
     { key: 'cache_http_statuses', label: 'Cacheable statuses', type: 'list', addLabel: 'Status', item: { type: 'number' }, hint: 'defaults to 200, 301, 404' },
     { key: 'cache_method', label: 'Cacheable methods', type: 'list', addLabel: 'Method', item: { type: 'text', placeholder: 'GET' }, hint: 'defaults to GET, HEAD' },
@@ -616,7 +618,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'recursive', label: 'Recursive', type: 'switch', switchLabel: 'Walk X-Forwarded-For skipping trusted hops', default: false },
   ],
   redirect: [
-    { key: 'uri', label: 'Target URI', type: 'text', placeholder: 'https://$host/new$uri', hint: 'template with $vars; set this or HTTP to HTTPS, not both' },
+    { key: 'uri', label: 'Target URI', type: 'text', placeholder: 'https://$host/new$uri', hint: 'template with $vars; set this or HTTP to HTTPS, not both', vars: true },
     { key: 'http_to_https', label: 'HTTP to HTTPS', type: 'switch', switchLabel: 'Redirect plain HTTP to https', default: false },
     { key: 'ret_code', label: 'Status code', type: 'number', default: 302, hint: 'ignored by http_to_https (301 GET/HEAD, 308 otherwise)' },
     { key: 'append_query_string', label: 'Query string', type: 'switch', switchLabel: 'Append original query string', default: false },
@@ -681,27 +683,27 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'vary', label: 'Vary', type: 'switch', switchLabel: 'Add Vary: Accept-Encoding', default: false },
   ],
   'exit-transformer': [
-    { key: 'body', label: 'Body template', type: 'textarea', rows: 4, placeholder: '{"status": $status, "path": "$uri"}', hint: '$var interpolation; $status is the remapped status. status_map is YAML-only.' },
+    { key: 'body', label: 'Body template', type: 'textarea', rows: 4, placeholder: '{"status": $status, "path": "$uri"}', hint: '$var interpolation; $status is the remapped status. status_map is YAML-only.', vars: true },
     { key: 'always', label: 'Scope', type: 'switch', switchLabel: 'Apply to all responses, not just gateway exits', default: false },
   ],
   'fault-injection': [
-    { key: 'abort', label: 'Abort', type: 'textarea', rows: 6, placeholder: '{"http_status": 503, "body": "injected", "percentage": 10}', hint: 'JSON object: http_status (required), body, headers, percentage 0-100, vars' },
+    { key: 'abort', label: 'Abort', type: 'textarea', rows: 6, placeholder: '{"http_status": 503, "body": "injected", "percentage": 10}', hint: 'JSON object: http_status (required), body, headers, percentage 0-100, vars', vars: true },
     { key: 'delay', label: 'Delay', type: 'textarea', rows: 4, placeholder: '{"duration": 0.5, "percentage": 30}', hint: 'JSON object: duration seconds (required), percentage, vars' },
   ],
   workflow: [
     { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"case": [["uri", "~~", "^/admin"]], "actions": [["return", {"code": 403}]]}]', hint: 'JSON array; actions: ["return", {code}] or ["limit-count", {count, time_window, key, rejected_code}]' },
   ],
   'traffic-label': [
-    { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"match": [["arg_channel", "==", "beta"]], "actions": [{"set_headers": {"x-server-id": "beta"}, "set_labels": {"tier": "beta"}}]}]', hint: 'JSON array; set_headers → request headers, set_labels → message label.<key>' },
+    { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"match": [["arg_channel", "==", "beta"]], "actions": [{"set_headers": {"x-server-id": "beta"}, "set_labels": {"tier": "beta"}}]}]', hint: 'JSON array; set_headers → request headers, set_labels → message label.<key>', vars: true },
   ],
   mocking: [
     { key: 'response_status', label: 'Status', type: 'number', default: 200 },
     { key: 'content_type', label: 'Content type', type: 'select', options: ['application/json;charset=utf8', 'application/json', 'text/plain', 'text/html', 'application/xml', 'text/xml'], default: 'application/json;charset=utf8' },
-    { key: 'response_example', label: 'Response body', type: 'textarea', rows: 6, placeholder: '{"user": "$arg_name"}', hint: 'required; supports $var interpolation' },
+    { key: 'response_example', label: 'Response body', type: 'textarea', rows: 6, placeholder: '{"user": "$arg_name"}', hint: 'required; supports $var interpolation', vars: true },
     { key: 'response_headers', label: 'Response headers', type: 'objects', addLabel: 'Header', itemLabel: 'Header',
       fields: [
         { key: 'name', label: 'Name', type: 'text' },
-        { key: 'value', label: 'Value', type: 'text' },
+        { key: 'value', label: 'Value', type: 'text', vars: true },
       ] },
     { key: 'with_mock_header', label: 'Mock header', type: 'switch', switchLabel: 'Add x-mock-by header', default: true },
     { key: 'delay', label: 'Delay (s)', type: 'number', default: 0 },
@@ -727,12 +729,12 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   'body-transformer': [
     { key: 'request', label: 'Request transform', type: 'objects', addLabel: 'Transform', itemLabel: 'Request',
       fields: [
-        { key: 'template', label: 'Template', type: 'textarea', rows: 5, placeholder: '{"name":"{{body.user.name}}","trace":"{{$http_x_request_id}}"}' },
+        { key: 'template', label: 'Template', type: 'textarea', rows: 5, placeholder: '{"name":"{{body.user.name}}","trace":"{{$http_x_request_id}}"}', vars: true },
         { key: 'input_format', label: 'Input format', type: 'select', options: ['json'], default: 'json' },
       ] },
     { key: 'response', label: 'Response transform', type: 'objects', addLabel: 'Transform', itemLabel: 'Response',
       fields: [
-        { key: 'template', label: 'Template', type: 'textarea', rows: 5, placeholder: '{"status":"{{body.result}}","code":$status}' },
+        { key: 'template', label: 'Template', type: 'textarea', rows: 5, placeholder: '{"status":"{{body.result}}","code":$status}', vars: true },
         { key: 'input_format', label: 'Input format', type: 'select', options: ['json'], default: 'json' },
       ] },
   ],
