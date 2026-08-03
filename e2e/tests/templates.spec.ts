@@ -379,4 +379,164 @@ test.describe('Universal templates', () => {
     await api.delete('/api/policies/tpl-modal-policy');
     await api.dispose();
   });
+
+  test('E2E-SV-01: set-vars composes a value once, a downstream node reuses it, and the popover previews it live', async ({
+    page,
+  }) => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'sv-compose-api');
+    await api.delete('/api/policies/sv-compose-policy');
+    await api.delete('/api/debug/traces');
+
+    // listener -> set-vars (computes `tenant` from the request header) ->
+    // proxy-rewrite (reads it back via {{message.tenant}}) -> echo -> client.
+    const policyRes = await api.put('/api/policies/sv-compose-policy', {
+      data: {
+        name: 'sv-compose-policy',
+        nodes: [
+          {id: 'listener', type: 'listener', config: {}},
+          {
+            id: 'vars',
+            type: 'set-vars',
+            config: {vars: [{name: 'tenant', value: '{{request.headers.x-tenant-id}}'}]},
+          },
+          {
+            id: 'rewrite',
+            type: 'proxy-rewrite',
+            config: {phase: 'request', add_headers: [{name: 'x-tenant', value: '{{message.tenant}}'}]},
+          },
+          {
+            id: 'echo-backend',
+            type: 'upstream',
+            config: {targets: [{host: '127.0.0.1', port: 3010}]},
+          },
+          {id: 'client', type: 'client'},
+        ],
+        edges: [
+          {from: 'listener.out', to: 'vars.in'},
+          {from: 'vars.success', to: 'rewrite.in'},
+          {from: 'rewrite.success', to: 'echo-backend.in'},
+          {from: 'echo-backend.success', to: 'client.in'},
+        ],
+      },
+    });
+    expect(policyRes.ok(), `policy save failed: ${policyRes.status()} ${await policyRes.text()}`).toBeTruthy();
+
+    const routeRes = await api.post('/api/routes', {
+      data: {name: 'sv-compose-api', match: {path: '/sv-compose/*', methods: ['GET']}, policy: 'sv-compose-policy'},
+    });
+    expect(routeRes.ok(), `route save failed: ${routeRes.status()} ${await routeRes.text()}`).toBeTruthy();
+
+    // First an untraced probe, polled until the hot-swap lands (route
+    // creation and the swap it triggers aren't synchronous -- see
+    // waitForDataPlane's doc comment). Once it's live, a second, traced
+    // request carries the real tenant header: this both proves the
+    // compose-once/reuse-downstream data flow on live traffic AND seeds the
+    // trace the popover's live preview reads below.
+    const traffic = await dataPlane();
+    await waitForDataPlane(traffic, '/sv-compose/ping', (status, text) => {
+      if (status !== 200) return false;
+      try {
+        return (JSON.parse(text) as {headers: Record<string, string>}).headers?.['x-tenant'] !== undefined;
+      } catch {
+        return false;
+      }
+    });
+    const traced = await traffic.get('/sv-compose/ping', {
+      headers: {...DEBUG_HEADER, 'x-tenant-id': 'acme'},
+    });
+    expect(traced.status()).toBe(200);
+    const echo = JSON.parse(await traced.text()) as {headers: Record<string, string>};
+    // set-vars computed `tenant` from the header; proxy-rewrite read it back
+    // via {{message.tenant}} -- the whole point of "compose once, reuse downstream".
+    expect(echo.headers['x-tenant']).toBe('acme');
+    await traffic.dispose();
+
+    await openRoute(page, 'sv-compose-api');
+    await page.locator('.react-flow__node', {hasText: 'rewrite'}).first().click();
+
+    const valueField = page.getByPlaceholder('$uuid');
+    await expect(valueField).toBeVisible();
+    await valueField.click();
+    await valueField.fill('{{me');
+    await valueField.press('End');
+
+    const popover = page.getByTestId('var-popover');
+    await expect(popover).toBeVisible();
+    // `message.tenant` -- set by the upstream set-vars node -- is offered
+    // with its live value from the traced request's predecessor snapshot.
+    await expect(popover.getByText('message.tenant', {exact: true})).toBeVisible();
+    await expect(popover.getByText('acme', {exact: true})).toBeVisible();
+
+    await api.delete('/api/routes/sv-compose-api');
+    await api.delete('/api/policies/sv-compose-policy');
+    await api.dispose();
+  });
+
+  test('E2E-SV-02: an env-only field shows the fixed-at-load footer in both the popover and the template editor modal', async ({
+    page,
+  }) => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'sv-env-api');
+    await api.delete('/api/policies/sv-env-policy');
+
+    // proxy-rewrite's `remove_headers` items are `template: 'env-only'`
+    // (unlike `add_headers`' Value field, which is `'full'` -- see E2E-TPL-02).
+    const policyRes = await api.put('/api/policies/sv-env-policy', {
+      data: {
+        name: 'sv-env-policy',
+        nodes: [
+          {id: 'listener', type: 'listener', config: {}},
+          {
+            id: 'rewrite',
+            type: 'proxy-rewrite',
+            config: {phase: 'request', remove_headers: ['x-powered-by']},
+          },
+          {
+            id: 'echo-backend',
+            type: 'upstream',
+            config: {targets: [{host: '127.0.0.1', port: 3010}]},
+          },
+          {id: 'client', type: 'client'},
+        ],
+        edges: [
+          {from: 'listener.out', to: 'rewrite.in'},
+          {from: 'rewrite.success', to: 'echo-backend.in'},
+          {from: 'echo-backend.success', to: 'client.in'},
+        ],
+      },
+    });
+    expect(policyRes.ok(), `policy save failed: ${policyRes.status()} ${await policyRes.text()}`).toBeTruthy();
+
+    const routeRes = await api.post('/api/routes', {
+      data: {name: 'sv-env-api', match: {path: '/sv-env/*', methods: ['GET']}, policy: 'sv-env-policy'},
+    });
+    expect(routeRes.ok(), `route save failed: ${routeRes.status()} ${await routeRes.text()}`).toBeTruthy();
+
+    await openRoute(page, 'sv-env-api');
+    await page.locator('.react-flow__node', {hasText: 'rewrite'}).first().click();
+
+    const removeHeaderField = page.getByPlaceholder('x-powered-by');
+    await expect(removeHeaderField).toBeVisible();
+    await removeHeaderField.click();
+    await removeHeaderField.fill('{{');
+    await removeHeaderField.press('End');
+
+    // ENV_ONLY_MESSAGE (ui/src/varSuggestions.ts) can't be imported here --
+    // the e2e project has no dependency on `ui`'s React/api modules -- so
+    // this asserts a distinctive substring of the exact copy instead.
+    const footerText = /fixed when configuration loads/;
+    const popover = page.getByTestId('var-popover');
+    await expect(popover).toBeVisible();
+    await expect(popover.getByText(footerText)).toBeVisible();
+
+    await page.locator('button[aria-label="Expand template editor"]').click();
+    const modal = page.getByTestId('template-editor-modal');
+    await expect(modal).toBeVisible();
+    await expect(modal.getByText(footerText)).toBeVisible();
+
+    await api.delete('/api/routes/sv-env-api');
+    await api.delete('/api/policies/sv-env-policy');
+    await api.dispose();
+  });
 });
