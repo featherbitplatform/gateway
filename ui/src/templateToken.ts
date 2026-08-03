@@ -55,7 +55,7 @@ export interface TemplateTokenState {
   onKeyDown: (e: React.KeyboardEvent) => boolean;
   /** Call from the field's `onChange`/`onSelect`/keyup paths to re-detect the token at the caret. */
   onValueEvent: () => void;
-  insert: (s: Suggestion) => void;
+  insert: (s: Suggestion | undefined) => void;
   close: () => void;
 }
 
@@ -152,7 +152,8 @@ export function useTemplateToken(args: TemplateTokenArgs): TemplateTokenState {
     setOpen(true);
   }
 
-  function insert(suggestion: Suggestion) {
+  function insert(suggestion: Suggestion | undefined) {
+    if (!suggestion) return;
     // `env` rows carry two insertion forms (see `insertEnvOnly` on
     // `Suggestion`): `{{env.NAME}}` only ever resolves in a field the plugin
     // parses into a `Template` ('full'); an 'env-only' field never reaches
