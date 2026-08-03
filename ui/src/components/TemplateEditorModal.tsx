@@ -24,6 +24,21 @@
  * this (see its doc comment in `templateToken.ts`) rather than duplicating
  * the splice/caret-restore logic here.
  *
+ * ## Mounting contract
+ *
+ * `VarInput` mounts this component conditionally (`{modalOpen &&
+ * <TemplateEditorModal .../>}`) rather than always rendering it with `open`
+ * toggling — so there's never an idle `useTemplateToken` instance (and a
+ * full suggestion-list filter pass) running per closed field. A consequence
+ * this component relies on: every mount already has `open` true from the
+ * very first render, so the `[open]`-keyed effect below (draft
+ * (re)initialization + focus) always finds its own `<textarea>` already in
+ * the DOM the first time it runs — refs are attached during the commit
+ * phase, which completes before any effect fires, regardless of whether
+ * that commit is this component's *first* one (conditional mount) or a
+ * later one (a hypothetical caller that keeps it mounted and toggles `open`
+ * instead — the same effect covers that case too, unchanged).
+ *
  * @module components/TemplateEditorModal
  */
 import { useEffect, useRef, useState } from 'react';
@@ -102,11 +117,34 @@ export function TemplateEditorModal({
   const [draft, setDraft] = useState(value);
 
   useEffect(() => {
-    if (open) setDraft(value);
-    // Deliberately keyed on `open` alone: this re-initializes the draft the
-    // moment the modal opens (including a re-open after a prior Cancel/Esc
-    // discard), not on every subsequent `value` prop change while it stays
-    // open.
+    if (!open) return;
+    setDraft(value);
+    // Move focus (and the caret) into the modal's own textarea the moment it
+    // opens — without this, focus stays wherever it was on the field behind
+    // the backdrop (the VarInput this modal was opened from). Two concrete
+    // bugs that caused: (1) opening via Ctrl+Space left focus on the hidden
+    // field, so the user's very next keystrokes edited that field instead of
+    // the draft — invisible until Apply overwrote the field with the (still
+    // stale) draft, silently discarding what was actually typed; (2) the
+    // first click on a browse-mode row read `elRef.current.selectionStart`
+    // off an unfocused textarea, which reports `0`, so `insert`'s
+    // `insertAtCaretWhenNoToken` path spliced at position 0 instead of at the
+    // end of the draft. Caret placed at `value.length` (the end of the
+    // freshly-(re)initialized draft) rather than `0` so a browse-mode
+    // insertion append to existing content instead of prepending to it.
+    // `elRef.current` is guaranteed non-null here: this effect only runs
+    // while `open` (the textarea is in the DOM — see this component's module
+    // doc comment on conditional mounting), and refs are attached during the
+    // commit phase, which always completes before effects run.
+    const el = elRef.current;
+    if (el) {
+      el.focus();
+      el.setSelectionRange(value.length, value.length);
+    }
+    // Deliberately keyed on `open` alone: this re-initializes the draft (and
+    // refocuses) the moment the modal opens (including a re-open after a
+    // prior Cancel/Esc discard), not on every subsequent `value` prop change
+    // while it stays open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -140,9 +178,24 @@ export function TemplateEditorModal({
       // `window` listener sees the same event). This listener closes the
       // modal only on an Escape nothing upstream has already consumed.
       if (e.defaultPrevented) return;
-      if (e.key === 'Escape') {
-        onClose();
-      }
+      if (e.key !== 'Escape') return;
+      // The var-legend dialog (`VarLegend.tsx`, opened via this modal's own
+      // `onOpenLegend` prop) is owned and rendered by an ancestor outside
+      // this component's reach — `onOpenLegend` is a bare callback, not a
+      // piece of state this modal can see, so there is no prop to plumb
+      // "is the legend currently open" across that ownership boundary
+      // without inventing a new one purely for this. Pragmatic, local fix:
+      // check for the legend's own content marker
+      // (`data-testid="var-legend"`, present in the DOM only while
+      // `VarLegend`'s `open` is true) and, when present, treat this Escape as
+      // belonging to the legend — don't also discard this modal's draft
+      // underneath it. `Dialog` itself has no Escape handling (see this
+      // file's other Escape comment), so this Escape does nothing at all in
+      // that case; closing the legend remains a separate, unaddressed
+      // concern (its own Cancel/backdrop-click still works), deliberately
+      // out of scope here.
+      if (document.querySelector('[data-testid="var-legend"]')) return;
+      onClose();
     }
     window.addEventListener('keydown', handleWindowKeyDown);
     return () => window.removeEventListener('keydown', handleWindowKeyDown);
