@@ -45,7 +45,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogButton } from './Dialog';
 import { ValueCell } from './ValueCell';
 import { useTemplateToken } from '../templateToken';
-import { AVAILABILITY_MESSAGE } from '../varSuggestions';
+import { AVAILABILITY_MESSAGE, ENV_ONLY_MESSAGE } from '../varSuggestions';
 import type { Availability, Suggestion } from '../varSuggestions';
 
 /** Props for TemplateEditorModal. */
@@ -341,7 +341,9 @@ export function TemplateEditorModal({
           }}
         >
           <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }}>
-            {availability !== 'ok' ? AVAILABILITY_MESSAGE[availability] : ''}
+            {templateMode === 'env-only'
+              ? ENV_ONLY_MESSAGE
+              : availability !== 'ok' ? AVAILABILITY_MESSAGE[availability] : ''}
           </span>
           <button
             type="button"

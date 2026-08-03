@@ -14,7 +14,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useTemplateToken } from '../templateToken';
-import { AVAILABILITY_MESSAGE } from '../varSuggestions';
+import { AVAILABILITY_MESSAGE, ENV_ONLY_MESSAGE } from '../varSuggestions';
 import type { Availability, Suggestion } from '../varSuggestions';
 import { TemplateEditorModal } from './TemplateEditorModal';
 import { ValueCell } from './ValueCell';
@@ -269,7 +269,9 @@ export function VarInput({
             }}
           >
             <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }}>
-              {availability !== 'ok' ? AVAILABILITY_MESSAGE[availability] : ''}
+              {normalizedTemplateMode === 'env-only'
+                ? ENV_ONLY_MESSAGE
+                : availability !== 'ok' ? AVAILABILITY_MESSAGE[availability] : ''}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <button
