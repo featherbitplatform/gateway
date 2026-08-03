@@ -262,4 +262,121 @@ test.describe('Universal templates', () => {
 
     await api.dispose();
   });
+
+  test('E2E-TPL-05: the expanded template editor modal browses, filters, applies, and discards on Escape', async ({
+    page,
+  }) => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'tpl-modal-api');
+    await api.delete('/api/policies/tpl-modal-policy');
+    await api.delete('/api/debug/traces');
+
+    const policyRes = await api.put('/api/policies/tpl-modal-policy', {
+      data: {
+        name: 'tpl-modal-policy',
+        nodes: [
+          {id: 'listener', type: 'listener', config: {}},
+          {
+            id: 'rewrite',
+            type: 'proxy-rewrite',
+            config: {phase: 'request', add_headers: [{name: 'x-hdr', value: ''}]},
+          },
+          {
+            id: 'echo-backend',
+            type: 'upstream',
+            config: {targets: [{host: '127.0.0.1', port: 3010}]},
+          },
+          {id: 'client', type: 'client'},
+        ],
+        edges: [
+          {from: 'listener.out', to: 'rewrite.in'},
+          {from: 'rewrite.success', to: 'echo-backend.in'},
+          {from: 'echo-backend.success', to: 'client.in'},
+        ],
+      },
+    });
+    expect(policyRes.ok(), `policy save failed: ${policyRes.status()} ${await policyRes.text()}`).toBeTruthy();
+
+    const routeRes = await api.post('/api/routes', {
+      data: {name: 'tpl-modal-api', match: {path: '/tpl-modal/*', methods: ['GET']}, policy: 'tpl-modal-policy'},
+    });
+    expect(routeRes.ok(), `route save failed: ${routeRes.status()} ${await routeRes.text()}`).toBeTruthy();
+
+    // A traced GET carrying a deliberately long custom header, so the
+    // listener's predecessor snapshot has a `request.headers.<h>` entry whose
+    // full path is long enough to need the modal's no-truncation wrapping
+    // (unlike the inline popover's single-line ellipsis) to read in full.
+    const traffic = await dataPlane();
+    const traced = await traffic.get('/tpl-modal/ping', {
+      headers: {...DEBUG_HEADER, 'x-a-very-long-custom-header-name-for-modal': 'value-123'},
+    });
+    expect(traced.status()).toBe(200);
+    await traffic.dispose();
+
+    await openRoute(page, 'tpl-modal-api');
+    await page.locator('.react-flow__node', {hasText: 'rewrite'}).first().click();
+
+    const headerPath = 'request.headers.x-a-very-long-custom-header-name-for-modal';
+    const valueField = page.getByPlaceholder('$uuid');
+    await expect(valueField).toBeVisible();
+    await valueField.click();
+    await valueField.fill('{{');
+    await valueField.press('End');
+
+    const popover = page.getByTestId('var-popover');
+    await expect(popover).toBeVisible();
+    await page.locator('button[aria-label="Expand template editor"]').click();
+
+    const modal = page.getByTestId('template-editor-modal');
+    await expect(modal).toBeVisible();
+
+    // The suggestion row for the traced custom header renders its FULL path
+    // (exact-string locator, not a substring match) and its live value --
+    // the modal's whole reason to exist is that this row would otherwise be
+    // ellipsis-truncated in the inline popover.
+    const suggestions = page.getByTestId('template-editor-suggestions');
+    await expect(suggestions.getByText(headerPath, {exact: true})).toBeVisible();
+    await expect(suggestions.getByText('value-123', {exact: true})).toBeVisible();
+
+    // Scroll the panel -- the row found above must still be the same element
+    // (not a stale/detached one) after scrolling the suggestion list.
+    await suggestions.evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+    await expect(suggestions.getByText(headerPath, {exact: true})).toBeVisible();
+
+    // Filter in the modal's own input, then Enter-insert.
+    const modalInput = page.getByTestId('template-editor-input');
+    await modalInput.fill('{{request.headers.x-a-very');
+    await modalInput.press('End');
+    await expect(suggestions.getByText(headerPath, {exact: true})).toBeVisible();
+    await modalInput.press('Enter');
+    await expect(modalInput).toHaveValue(`{{${headerPath}}}`);
+
+    // Apply -> the inspector's own field now carries the inserted path.
+    // (Scoped to the dialog role, not just `page`: the Apply/Cancel buttons
+    // are Dialog's own footer, a sibling of the `template-editor-modal`
+    // testid div, not a descendant of it.)
+    const editorDialog = page.getByRole('dialog', {name: 'Template editor'});
+    await editorDialog.getByRole('button', {name: 'Apply'}).click();
+    await expect(modal).toBeHidden();
+    await expect(valueField).toHaveValue(`{{${headerPath}}}`);
+
+    // Reopen via Ctrl+Space (the modal's other entry point besides the
+    // popover button), edit the draft, then Escape -- the field must be
+    // untouched by the discarded edit.
+    await valueField.click();
+    await valueField.press('Control+Space');
+    await expect(modal).toBeVisible();
+    const modalInputReopened = page.getByTestId('template-editor-input');
+    await expect(modalInputReopened).toHaveValue(`{{${headerPath}}}`);
+    await modalInputReopened.fill(`{{${headerPath}}} and then some more text`);
+    await page.keyboard.press('Escape');
+    await expect(modal).toBeHidden();
+    await expect(valueField).toHaveValue(`{{${headerPath}}}`);
+
+    await api.delete('/api/routes/tpl-modal-api');
+    await api.delete('/api/policies/tpl-modal-policy');
+    await api.dispose();
+  });
 });

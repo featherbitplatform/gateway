@@ -352,6 +352,7 @@ time).
 | E2E-TPL-02 | In the inspector, focus a (previously suggestion-less) `add_headers` **Value** field, type `{{re` | Popover lists `request.method` with its live value (from a traced request's predecessor snapshot); Enter inserts `{{request.method}}`; Save Policy persists it |
 | E2E-TPL-03 | Focus `uri-blocker`'s `block_rules` item (an env-only field), type `{{` | Popover lists **only** `env.*` names (e.g. `env.LOG_LEVEL`), no `request.*` rows; typing `{{env.LOG` filters to matching names only |
 | E2E-TPL-04 | `GET /api/env-vars` | `200`; names sorted; a canary env **name** set on the gateway's own launch env is present, but its **value** never appears in the body, and neither does a bare `=` |
+| E2E-TPL-05 | Trace a request carrying a long custom header (`x-a-very-long-custom-header-name-for-modal`), open the expanded `TemplateEditorModal` (`button[aria-label="Expand template editor"]`) from an `add_headers` **Value** field | The suggestion panel (`template-editor-suggestions`) renders the header's full `request.headers.<name>` path (exact-string match, no ellipsis truncation) and its live value, still visible after scrolling the panel; typing the path's prefix into the modal's own input (`template-editor-input`) filters to that row; Enter inserts the full `{{path}}`; **Apply** carries it into the inspector's field; reopening the modal via **Ctrl+Space**, editing the draft, then **Escape** discards the edit — the field is unchanged |
 
 ## Deliberately out of scope
 
