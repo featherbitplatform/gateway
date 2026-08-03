@@ -163,6 +163,7 @@ pub const KNOWN_PLUGIN_TYPES: &[&str] = &[
     "serverless-pre-function",
     "serverless-post-function",
     "script",
+    "set-vars",
 ];
 
 /// Creates a plugin instance from a node type string and its YAML-derived config.
@@ -420,6 +421,9 @@ pub fn create_plugin(
             native::serverless_post_function::ServerlessPostFunctionPlugin::from_config(config)?,
         )),
         "script" => Ok(Box::new(script::ScriptPlugin::from_config(config)?)),
+        "set-vars" => Ok(Box::new(native::set_vars::SetVarsPlugin::from_config(
+            config,
+        )?)),
         _ => Err(format!("Unknown plugin type: {}", node_type)),
     }
 }
