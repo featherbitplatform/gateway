@@ -116,10 +116,20 @@ impl Plugin for SetVarsPlugin {
         mut ctx: Context,
         _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
-        for (name, tpl) in &self.vars {
-            let rendered = tpl.render(&ctx).into_owned();
-            ctx.message
-                .insert(name.clone(), serde_json::Value::String(rendered));
+        // Two passes: render every template against the context as it
+        // entered this node, then apply all results. Entries are
+        // independent — one var must never observe a sibling's freshly-set
+        // value from this same node (see the module doc comment); a single
+        // combined loop would let a later-sorting name read an
+        // earlier-sorting one that was just inserted.
+        let rendered: Vec<(String, String)> = self
+            .vars
+            .iter()
+            .map(|(name, tpl)| (name.clone(), tpl.render(&ctx).into_owned()))
+            .collect();
+
+        for (name, value) in rendered {
+            ctx.message.insert(name, serde_json::Value::String(value));
         }
 
         Ok(PluginOutput {
@@ -195,6 +205,33 @@ mod tests {
             .insert("tenant".to_string(), serde_json::json!("old"));
         let out = plugin.execute(ctx, &HashMap::new()).await.unwrap();
         assert_eq!(out.context.message["tenant"], serde_json::json!("acme"));
+    }
+
+    /// Regression: entries are independent — a var cannot observe a
+    /// sibling's freshly-set value from the same node. Rendering happens
+    /// against the context as it *entered* the node, so `b`'s
+    /// `{{message.a}}` reference sees no pre-existing `message.a` key (the
+    /// node hasn't run yet from the template's point of view) and renders
+    /// to an empty string, per `Template::render`'s absent-subject behavior
+    /// (`TemplateRef::Message` with a missing key contributes nothing to
+    /// the rendered output; see `src/vars/template.rs`), not `a`'s value.
+    #[tokio::test]
+    async fn test_set_vars_entries_are_independent_not_chained() {
+        let mut config = HashMap::new();
+        config.insert(
+            "vars".into(),
+            serde_json::json!({
+                "a": "hello",
+                "b": "{{message.a}}"
+            }),
+        );
+        let plugin = SetVarsPlugin::from_config(&config).unwrap();
+        let out = plugin
+            .execute(test_context(), &HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(out.context.message["a"], serde_json::json!("hello"));
+        assert_eq!(out.context.message["b"], serde_json::json!(""));
     }
 
     #[tokio::test]
