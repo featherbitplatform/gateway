@@ -262,7 +262,10 @@ The fields to be deliberate about:
 
 **Recommendation**: keep these fields static, or drive them from `{{env.NAME}}` /
 `${VAR}` (config-time, not request-controlled) rather than from `request.*`/`message.*`
-values that ultimately trace back to something the client sent.
+values that ultimately trace back to something the client sent (including `message.*`
+values composed by [`set-vars`](./plugins/set-vars.md) — a var it computes from
+request data traces back to the client just as directly as a `request.*` reference used
+in place).
 
 One encoding wrinkle specific to `openwhisk`: its `namespace`, `package`, and `action`
 fields are also templated, and because those become *path segments* of the invocation URL,
@@ -364,7 +367,11 @@ the text it displays, either:
   suggestion but silently never resolves would be exactly the dishonest-suggestion problem
   the `'full'`/`'env-only'` split exists to avoid in the first place (see
   `ui/src/pluginConfig.ts`'s `template` field doc comment); `Suggestion.insertEnvOnly` /
-  `VarInput`'s `insertSuggestion` in the UI source is where the swap happens.
+  `VarInput`'s `insertSuggestion` in the UI source is where the swap happens. The popover
+  (and the expanded template editor modal) footer spells this limitation out in place
+  rather than leaving it implicit, with the fixed copy `ENV_ONLY_MESSAGE` in
+  `ui/src/varSuggestions.ts`: "Context data isn't available here — this value is fixed when
+  configuration loads. `${ENV}` references still apply."
 - A few structural fields (dropdowns, switches, numbers, and `real-ip`'s `source`)
   (`template: 'none'`) offer no suggestions at all, since they're never interpolated as
   strings in the first place.
