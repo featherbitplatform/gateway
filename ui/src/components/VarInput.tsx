@@ -17,6 +17,7 @@ import { useTemplateToken } from '../templateToken';
 import { AVAILABILITY_MESSAGE } from '../varSuggestions';
 import type { Availability, Suggestion } from '../varSuggestions';
 import { TemplateEditorModal } from './TemplateEditorModal';
+import { ValueCell } from './ValueCell';
 
 /** Props for VarInput. */
 interface VarInputProps {
@@ -73,62 +74,6 @@ interface VarInputProps {
 const BLUR_CLOSE_DELAY_MS = 120;
 
 type FieldEl = HTMLInputElement | HTMLTextAreaElement;
-
-/**
- * Renders the value/note cell of one popover row.
- *
- * Three cases need distinct styling from a normal preview (dimmed, single
- * line): a literal `'<redacted>'` value must not read as if it were the
- * real resolved value (shown muted + italic, same treatment as a `note`);
- * an empty-string value renders as `(empty)` rather than a blank cell; a
- * `note` (no live value at all) is muted + italic. Everything else is a
- * plain dimmed, truncated preview — `previewValue` (varSuggestions.ts)
- * already collapsed whitespace and capped the length upstream.
- *
- * Exported (with an optional `style` override merged on top of the default
- * truncated-single-line layout) so {@link TemplateEditorModal} (Task 2) can
- * reuse the exact same redacted/empty/note styling logic while swapping in
- * its own no-truncation, wrap-to-second-line row layout instead of forking
- * this component.
- */
-export function ValueCell({
-  suggestion,
-  style,
-}: {
-  suggestion: Suggestion;
-  style?: React.CSSProperties;
-}) {
-  const cellStyle: React.CSSProperties = {
-    fontSize: 'var(--text-2xs)',
-    maxWidth: '55%',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-    flexShrink: 0,
-    ...style,
-  };
-  if (suggestion.value === '<redacted>') {
-    return (
-      <span style={{ ...cellStyle, color: 'var(--text-muted)', fontStyle: 'italic' }}>redacted</span>
-    );
-  }
-  if (suggestion.value === '') {
-    return (
-      <span style={{ ...cellStyle, color: 'var(--text-muted)', fontStyle: 'italic' }}>(empty)</span>
-    );
-  }
-  if (suggestion.value !== undefined) {
-    return <span style={{ ...cellStyle, color: 'var(--text-muted)' }}>{suggestion.value}</span>;
-  }
-  if (suggestion.note) {
-    return (
-      <span style={{ ...cellStyle, color: 'var(--text-muted)', fontStyle: 'italic' }}>
-        {suggestion.note}
-      </span>
-    );
-  }
-  return null;
-}
 
 /**
  * Controlled field + `{{path}}` (and, on opted-in fields, legacy `$var`)
