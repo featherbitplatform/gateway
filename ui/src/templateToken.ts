@@ -44,6 +44,28 @@ export interface TemplateTokenArgs {
   legacyDollar: boolean;
 }
 
+/** Options accepted by {@link TemplateTokenState.insert}. */
+export interface InsertOptions {
+  /**
+   * When true and there is no in-progress token (`open` is false at the
+   * moment `insert` runs), insert `insertText` at the field's bare caret
+   * instead of splicing over `tokenStart`. Added for the template-editor
+   * modal (Task 2): its suggestion panel is always populated — filtered rows
+   * while a token is active, every suggestion otherwise, for browsing — and
+   * clicking a row in that browsing state must behave as if the user had
+   * typed the token right there, not silently reuse whatever `tokenStart`
+   * was left over from the last time a token *was* active (which could
+   * point at a stale, unrelated position, or 0 on a modal that just opened
+   * and never had one). Extending `insert` with an explicit opt-in flag
+   * (rather than, say, having the caller reset `tokenStart` itself, which
+   * the hook doesn't expose, or duplicating `insert`'s splice/caret/
+   * `pendingCaret` logic in the modal) keeps the one splice implementation
+   * as the single source of truth for both call sites. No effect when a
+   * token *is* active (`open` true) — that path is unchanged from Task 1.
+   */
+  insertAtCaretWhenNoToken?: boolean;
+}
+
 /** State + handlers returned by {@link useTemplateToken}. */
 export interface TemplateTokenState {
   open: boolean;
@@ -55,7 +77,7 @@ export interface TemplateTokenState {
   onKeyDown: (e: React.KeyboardEvent) => boolean;
   /** Call from the field's `onChange`/`onSelect`/keyup paths to re-detect the token at the caret. */
   onValueEvent: () => void;
-  insert: (s: Suggestion | undefined) => void;
+  insert: (s: Suggestion | undefined, opts?: InsertOptions) => void;
   close: () => void;
 }
 
@@ -152,7 +174,7 @@ export function useTemplateToken(args: TemplateTokenArgs): TemplateTokenState {
     setOpen(true);
   }
 
-  function insert(suggestion: Suggestion | undefined) {
+  function insert(suggestion: Suggestion | undefined, opts?: InsertOptions) {
     if (!suggestion) return;
     // `env` rows carry two insertion forms (see `insertEnvOnly` on
     // `Suggestion`): `{{env.NAME}}` only ever resolves in a field the plugin
@@ -171,27 +193,39 @@ export function useTemplateToken(args: TemplateTokenArgs): TemplateTokenState {
         : suggestion.insert;
     const el = elRef.current;
     const caret = el?.selectionStart ?? tokenStart;
-    // If the in-progress token began with a brace form and the caret sits
-    // right before that token's own closing brace(s), consume them too —
-    // otherwise the inserted text leaves stray brace(s) behind (`${foo` +
-    // completion + already-typed `}` -> double brace; same idea for `{{foo`
-    // + completion + already-typed `}}`). Gated on the *matched* token's
-    // opening delimiter (not on whether this suggestion's own `insert`
-    // happens to use braces), so completing a plain `$token` never eats an
-    // unrelated, legitimate `}` at the caret.
-    const isDollarBraceToken = value[tokenStart] === '$' && value[tokenStart + 1] === '{';
-    const isDoubleBraceToken = value[tokenStart] === '{' && value[tokenStart + 1] === '{';
+    // See `InsertOptions.insertAtCaretWhenNoToken`'s doc comment: only takes
+    // effect when there is no in-progress token (`open` false at the moment
+    // this runs) — with a token active, behavior is byte-for-byte the
+    // Task 1 splice-over-`tokenStart` path, brace-consumption included.
+    const atBareCaret = opts?.insertAtCaretWhenNoToken === true && !open;
+    const spliceStart = atBareCaret ? caret : tokenStart;
     let spliceEnd = caret;
-    if (isDollarBraceToken && value[caret] === '}') {
-      spliceEnd = caret + 1;
-    } else if (isDoubleBraceToken) {
-      if (value.slice(caret, caret + 2) === '}}') {
-        spliceEnd = caret + 2;
-      } else if (value[caret] === '}') {
+    if (!atBareCaret) {
+      // If the in-progress token began with a brace form and the caret sits
+      // right before that token's own closing brace(s), consume them too —
+      // otherwise the inserted text leaves stray brace(s) behind (`${foo` +
+      // completion + already-typed `}` -> double brace; same idea for `{{foo`
+      // + completion + already-typed `}}`). Gated on the *matched* token's
+      // opening delimiter (not on whether this suggestion's own `insert`
+      // happens to use braces), so completing a plain `$token` never eats an
+      // unrelated, legitimate `}` at the caret. Skipped entirely at a bare
+      // caret: there is no matched token delimiter to gate this on, and
+      // `tokenStart` may be stale (left over from a token that's no longer
+      // active), so probing `value[tokenStart]` here would risk consuming
+      // unrelated characters.
+      const isDollarBraceToken = value[tokenStart] === '$' && value[tokenStart + 1] === '{';
+      const isDoubleBraceToken = value[tokenStart] === '{' && value[tokenStart + 1] === '{';
+      if (isDollarBraceToken && value[caret] === '}') {
         spliceEnd = caret + 1;
+      } else if (isDoubleBraceToken) {
+        if (value.slice(caret, caret + 2) === '}}') {
+          spliceEnd = caret + 2;
+        } else if (value[caret] === '}') {
+          spliceEnd = caret + 1;
+        }
       }
     }
-    const nextValue = `${value.slice(0, tokenStart)}${insertText}${value.slice(spliceEnd)}`;
+    const nextValue = `${value.slice(0, spliceStart)}${insertText}${value.slice(spliceEnd)}`;
     setOpen(false);
     if (nextValue === value) {
       // No-op insertion (the token was already fully typed out verbatim):
@@ -201,7 +235,7 @@ export function useTemplateToken(args: TemplateTokenArgs): TemplateTokenState {
       pendingCaret.current = null;
       return;
     }
-    pendingCaret.current = tokenStart + insertText.length;
+    pendingCaret.current = spliceStart + insertText.length;
     justInserted.current = true;
     onChange(nextValue);
     el?.focus();
