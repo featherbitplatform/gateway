@@ -309,20 +309,30 @@ export function VarInput({
           </div>
         </div>
       )}
-      <TemplateEditorModal
-        open={modalOpen}
-        value={value}
-        onApply={(v) => {
-          onChange(v);
-          setModalOpen(false);
-        }}
-        onClose={() => setModalOpen(false)}
-        suggestions={suggestions}
-        availability={availability}
-        templateMode={normalizedTemplateMode}
-        legacyDollar={legacyDollar}
-        onOpenLegend={onOpenLegend}
-      />
+      {modalOpen && (
+        <TemplateEditorModal
+          open={modalOpen}
+          value={value}
+          onApply={(v) => {
+            onChange(v);
+            setModalOpen(false);
+            // Return focus to this field once the modal's gone — otherwise
+            // focus is left on `document.body` (the modal's own textarea,
+            // which had focus, just unmounted) and the user has to
+            // re-click/re-tab back into the field they were just editing.
+            elRef.current?.focus();
+          }}
+          onClose={() => {
+            setModalOpen(false);
+            elRef.current?.focus();
+          }}
+          suggestions={suggestions}
+          availability={availability}
+          templateMode={normalizedTemplateMode}
+          legacyDollar={legacyDollar}
+          onOpenLegend={onOpenLegend}
+        />
+      )}
     </div>
   );
 }
