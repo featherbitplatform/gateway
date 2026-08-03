@@ -465,8 +465,16 @@ test.describe('Universal templates', () => {
     await expect(popover).toBeVisible();
     // `message.tenant` -- set by the upstream set-vars node -- is offered
     // with its live value from the traced request's predecessor snapshot.
-    await expect(popover.getByText('message.tenant', {exact: true})).toBeVisible();
-    await expect(popover.getByText('acme', {exact: true})).toBeVisible();
+    // The same traced request also yields a `request.headers.x-tenant-id`
+    // row whose live value is independently "acme", so asserting "acme"
+    // anywhere in the popover wouldn't prove the *message*-namespace preview
+    // binding works -- scope the value check to the message.tenant row
+    // itself (its parent is the clickable row div that also holds the
+    // ValueCell span; see VarInput.tsx).
+    const messageTenantName = popover.getByText('message.tenant', {exact: true});
+    await expect(messageTenantName).toBeVisible();
+    const messageTenantRow = messageTenantName.locator('xpath=..');
+    await expect(messageTenantRow.getByText('acme', {exact: true})).toBeVisible();
 
     await api.delete('/api/routes/sv-compose-api');
     await api.delete('/api/policies/sv-compose-policy');
