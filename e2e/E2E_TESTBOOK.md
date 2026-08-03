@@ -346,6 +346,12 @@ value) get every context group; every other text/textarea field defaults to
 substitution those fields genuinely get (at parse time, never at request
 time).
 
+E2E-SV-01/02 close out the `set-vars` plugin's own e2e coverage: the
+compose-once/reuse-downstream flow the plugin exists for, and the same
+`'full'` vs `'env-only'` popover split applied to one of its neighbors
+(`proxy-rewrite`) once more, this time asserting the env-only footer copy
+verbatim rather than just the group filtering E2E-TPL-03 already covers.
+
 | ID | Scenario | Expected |
 |---|---|---|
 | E2E-TPL-01 | `proxy-rewrite.add_headers` value `"m={{request.method}} $keep"` in front of the echo upstream, then a GET through it | The upstream receives `x-tpl: m=GET $keep` — `{{request.method}}` rendered, the literal `$keep` untouched (add_headers only ever runs the `{{...}}` engine, never legacy `$`-interpolation) |
@@ -353,6 +359,8 @@ time).
 | E2E-TPL-03 | Focus `uri-blocker`'s `block_rules` item (an env-only field), type `{{` | Popover lists **only** `env.*` names (e.g. `env.LOG_LEVEL`), no `request.*` rows; typing `{{env.LOG` filters to matching names only |
 | E2E-TPL-04 | `GET /api/env-vars` | `200`; names sorted; a canary env **name** set on the gateway's own launch env is present, but its **value** never appears in the body, and neither does a bare `=` |
 | E2E-TPL-05 | Trace a request carrying a long custom header (`x-a-very-long-custom-header-name-for-modal`), open the expanded `TemplateEditorModal` (`button[aria-label="Expand template editor"]`) from an `add_headers` **Value** field | The suggestion panel (`template-editor-suggestions`) renders the header's full `request.headers.<name>` path (exact-string match, no ellipsis truncation) and its live value, still visible after scrolling the panel; typing the path's prefix into the modal's own input (`template-editor-input`) filters to that row; Enter inserts the full `{{path}}`; **Apply** carries it into the inspector's field; reopening the modal via **Ctrl+Space**, editing the draft, then **Escape** discards the edit — the field is unchanged |
+| E2E-SV-01 | `set-vars` (`vars: [{name: 'tenant', value: '{{request.headers.x-tenant-id}}'}]`) wired before `proxy-rewrite` (`add_headers` value `{{message.tenant}}`), then a traced GET carrying `x-tenant-id: acme` | The echo upstream receives `x-tenant: acme` — computed once by `set-vars` into `context.message`, read back downstream by `proxy-rewrite`; reopening `proxy-rewrite`'s Value field in the inspector, the popover offers `message.tenant` with live value `acme` (from the traced request's predecessor snapshot, the `set-vars` node's post-execution context) |
+| E2E-SV-02 | Focus `proxy-rewrite`'s `remove_headers` item (an env-only field), type `{{` | The popover footer shows the fixed-at-load message (`ENV_ONLY_MESSAGE` in `ui/src/varSuggestions.ts`: "Context data isn't available here — this value is fixed when configuration loads. `${ENV}` references still apply."); opening the expanded template editor modal (`button[aria-label="Expand template editor"]`) from the same field shows the identical message in its own footer |
 
 ## Deliberately out of scope
 

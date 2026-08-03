@@ -47,6 +47,51 @@ Value semantics (first-header/query value, lossy-UTF-8 bodies, stringified messa
 are identical to the legacy resolver's — the two systems share internal implementation so
 they can't drift.
 
+## Compose once with set-vars
+
+`message.<key>` is the one namespace above with no fixed set of keys — `context.message` is
+a free-form map any node can write to, and the [`set-vars`](./plugins/set-vars.md) plugin is
+the dedicated way to fill it from a template: give it one or more `name: value` pairs, each
+value a `{{...}}` template rendered at that node's position, and it stores the rendered
+result under `context.message.<name>` — readable downstream as `{{message.<name>}}`, exactly
+like every other namespace on this page.
+
+The point is avoiding repetition: if three downstream nodes all need "the tenant, derived
+from a header", compute it once —
+
+```yaml
+- id: vars
+  type: set-vars
+  config:
+    vars:
+      tenant: "{{request.headers.x-tenant-id}}"
+```
+
+— and read it back wherever it's needed, instead of copying
+`{{request.headers.x-tenant-id}}` into every field that wants it:
+
+```yaml
+- id: rewrite
+  type: proxy-rewrite
+  config:
+    add_headers:
+      x-tenant: "{{message.tenant}}"
+```
+
+Two things worth knowing before reaching for it:
+
+- **Entries are independent — one var can never reference another var set by the same
+  node.** Every value in a single `set-vars` node renders against the context as it *entered*
+  that node, so a second entry's `{{message.<first-entry-name>}}` sees no such key yet and
+  renders empty. Chain two `set-vars` nodes if one derived value needs to build on another.
+- **Last-write-wins.** A var with the same name as an existing `context.message` key
+  overwrites it, same as any other node that writes to `context.message`.
+
+`message.<key>` is also readable from Lua (`ctx.message["<name>"]` in a `script` node) and
+appears in [debug traces](../guides/debugging.md) under the node's context snapshot, with a
+live-value preview in the web UI's popover once a request has actually flowed through the
+policy.
+
 ## Load-time vs request-time resolution
 
 - **`env.<NAME>`** is substituted once, when the template is parsed — the same moment
