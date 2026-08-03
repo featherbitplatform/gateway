@@ -12,6 +12,7 @@
  */
 import { Fragment } from 'react';
 import { Dialog, DialogButton } from './Dialog';
+import { AVAILABILITY_MESSAGE } from '../varSuggestions';
 import type { Availability, Suggestion } from '../varSuggestions';
 import type { VarEntry } from '../types';
 
@@ -28,14 +29,6 @@ interface VarLegendProps {
   /** Why live values may be unavailable; only `ok` renders the value column. */
   availability: Availability;
 }
-
-/** Exact copy for each non-`ok` {@link Availability}, matching VarInput's popover footer. */
-const AVAILABILITY_MESSAGE: Record<Exclude<Availability, 'ok'>, string> = {
-  'debug-off': 'Debug is off — enable debug.enabled for live values.',
-  'no-incoming-edge': 'No incoming edge — connect this node to preview values.',
-  'no-trace': 'No trace yet — send a request through this route.',
-  'supernode-definition': 'Live values unavailable while editing a supernode definition.',
-};
 
 /**
  * Namespace bucket for a template path (`request.method` -> `'request'`),

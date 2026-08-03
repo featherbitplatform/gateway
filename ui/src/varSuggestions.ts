@@ -133,6 +133,17 @@ export const AVAILABILITY_MESSAGE: Record<Exclude<Availability, 'ok'>, string> =
   'supernode-definition': 'Live values unavailable while editing a supernode definition',
 };
 
+/**
+ * Footer copy for fields that never render context templates
+ * ({@link FieldSchema.template} `'env-only'`) — shown in place of
+ * {@link AVAILABILITY_MESSAGE} in both `VarInput`'s popover footer and
+ * `TemplateEditorModal`'s footer, since availability (debug on/off, trace
+ * present) describes context-suggestion readiness, which is irrelevant when
+ * context suggestions are never offered at all.
+ */
+export const ENV_ONLY_MESSAGE =
+  "Context data isn't available here — this value is fixed when configuration loads. ${ENV} references still apply.";
+
 /** One row offered by the autocomplete popover / var legend. */
 export interface Suggestion {
   /**
