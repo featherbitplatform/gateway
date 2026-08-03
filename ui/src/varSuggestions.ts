@@ -118,6 +118,21 @@ export type Availability =
   | 'no-trace'
   | 'supernode-definition';
 
+/**
+ * Exact copy for each non-`ok` {@link Availability}, shown in both
+ * `VarInput`'s popover footer and `TemplateEditorModal`'s footer (Task 2) —
+ * lives here rather than in either component file so the two share one copy
+ * without either importing a non-component value from the other (which
+ * would trip `react-refresh/only-export-components` on whichever component
+ * file it lived in).
+ */
+export const AVAILABILITY_MESSAGE: Record<Exclude<Availability, 'ok'>, string> = {
+  'debug-off': 'Debug is off — enable debug.enabled for live values',
+  'no-incoming-edge': 'No incoming edge — connect this node to preview values',
+  'no-trace': 'No trace yet — send a request through this route',
+  'supernode-definition': 'Live values unavailable while editing a supernode definition',
+};
+
 /** One row offered by the autocomplete popover / var legend. */
 export interface Suggestion {
   /**

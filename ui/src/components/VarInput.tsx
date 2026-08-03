@@ -12,9 +12,11 @@
  *
  * @module components/VarInput
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTemplateToken } from '../templateToken';
+import { AVAILABILITY_MESSAGE } from '../varSuggestions';
 import type { Availability, Suggestion } from '../varSuggestions';
+import { TemplateEditorModal } from './TemplateEditorModal';
 
 /** Props for VarInput. */
 interface VarInputProps {
@@ -67,14 +69,6 @@ interface VarInputProps {
   style?: React.CSSProperties;
 }
 
-/** Exact copy for each non-`ok` {@link Availability}, shown in the popover footer. */
-const AVAILABILITY_MESSAGE: Record<Exclude<Availability, 'ok'>, string> = {
-  'debug-off': 'Debug is off — enable debug.enabled for live values',
-  'no-incoming-edge': 'No incoming edge — connect this node to preview values',
-  'no-trace': 'No trace yet — send a request through this route',
-  'supernode-definition': 'Live values unavailable while editing a supernode definition',
-};
-
 /** Delay before a blur closes the popover, so a row's `click` lands first. */
 const BLUR_CLOSE_DELAY_MS = 120;
 
@@ -90,8 +84,20 @@ type FieldEl = HTMLInputElement | HTMLTextAreaElement;
  * `note` (no live value at all) is muted + italic. Everything else is a
  * plain dimmed, truncated preview — `previewValue` (varSuggestions.ts)
  * already collapsed whitespace and capped the length upstream.
+ *
+ * Exported (with an optional `style` override merged on top of the default
+ * truncated-single-line layout) so {@link TemplateEditorModal} (Task 2) can
+ * reuse the exact same redacted/empty/note styling logic while swapping in
+ * its own no-truncation, wrap-to-second-line row layout instead of forking
+ * this component.
  */
-function ValueCell({ suggestion }: { suggestion: Suggestion }) {
+export function ValueCell({
+  suggestion,
+  style,
+}: {
+  suggestion: Suggestion;
+  style?: React.CSSProperties;
+}) {
   const cellStyle: React.CSSProperties = {
     fontSize: 'var(--text-2xs)',
     maxWidth: '55%',
@@ -99,6 +105,7 @@ function ValueCell({ suggestion }: { suggestion: Suggestion }) {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
     flexShrink: 0,
+    ...style,
   };
   if (suggestion.value === '<redacted>') {
     return (
@@ -148,16 +155,25 @@ export function VarInput({
 }: VarInputProps) {
   const elRef = useRef<FieldEl | null>(null);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Whether the expanded TemplateEditorModal (Task 2) is open. Owned here
+  // (not by the modal itself) per the brief: VarInput routes the modal's
+  // `onApply` into its own `onChange` and closes the popover whenever the
+  // modal opens.
+  const [modalOpen, setModalOpen] = useState(false);
+
+  // 'none' fields are never expected to render VarInput at all (see this
+  // prop's doc comment above); treated the same as 'full' if one ever does,
+  // same as the pre-extraction `templateMode !== 'env-only'` filter. Shared
+  // by both the hook call below and the modal render, so the two never
+  // drift.
+  const normalizedTemplateMode = templateMode === 'env-only' ? 'env-only' : 'full';
 
   const tokenState = useTemplateToken({
     value,
     onChange,
     elRef,
     suggestions,
-    // 'none' fields are never expected to render VarInput at all (see this
-    // prop's doc comment above); treated the same as 'full' if one ever
-    // does, same as the pre-extraction `templateMode !== 'env-only'` filter.
-    templateMode: templateMode === 'env-only' ? 'env-only' : 'full',
+    templateMode: normalizedTemplateMode,
     legacyDollar,
   });
   const { open, filtered, activeIndex } = tokenState;
@@ -167,6 +183,12 @@ export function VarInput({
       if (blurTimer.current) clearTimeout(blurTimer.current);
     };
   }, []);
+
+  /** Opens the expanded editor modal and closes the popover, if open. */
+  function openModal() {
+    setModalOpen(true);
+    tokenState.close();
+  }
 
   function setRef(el: FieldEl | null) {
     elRef.current = el;
@@ -182,7 +204,15 @@ export function VarInput({
   }
 
   function handleKeyDown(e: React.KeyboardEvent<FieldEl>) {
-    tokenState.onKeyDown(e);
+    if (tokenState.onKeyDown(e)) return;
+    // Ctrl+Space opens the expanded editor modal regardless of whether the
+    // popover is currently open or closed — the hook's own `onKeyDown` never
+    // claims this combination (it only recognizes ArrowUp/Down, Enter/Tab,
+    // and Escape), so it always falls through to here.
+    if (e.ctrlKey && (e.key === ' ' || e.code === 'Space')) {
+      e.preventDefault();
+      openModal();
+    }
   }
 
   function handleBlur() {
@@ -296,25 +326,58 @@ export function VarInput({
             <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }}>
               {availability !== 'ok' ? AVAILABILITY_MESSAGE[availability] : ''}
             </span>
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={onOpenLegend}
-              style={{
-                fontSize: 'var(--text-2xs)',
-                color: 'var(--accent-hover)',
-                background: 'transparent',
-                border: 'none',
-                padding: 0,
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              Context vars reference
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button
+                type="button"
+                aria-label="Expand template editor"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={openModal}
+                style={{
+                  fontSize: 'var(--text-2xs)',
+                  color: 'var(--accent-hover)',
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                Expand editor
+              </button>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={onOpenLegend}
+                style={{
+                  fontSize: 'var(--text-2xs)',
+                  color: 'var(--accent-hover)',
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                Context vars reference
+              </button>
+            </div>
           </div>
         </div>
       )}
+      <TemplateEditorModal
+        open={modalOpen}
+        value={value}
+        onApply={(v) => {
+          onChange(v);
+          setModalOpen(false);
+        }}
+        onClose={() => setModalOpen(false)}
+        suggestions={suggestions}
+        availability={availability}
+        templateMode={normalizedTemplateMode}
+        legacyDollar={legacyDollar}
+        onOpenLegend={onOpenLegend}
+      />
     </div>
   );
 }
