@@ -21,7 +21,8 @@ use crate::vars::template::Template;
 use crate::vars::Expr;
 
 /// Applies the first matching rule's action: header values and label values
-/// are `$var` templates interpolated per request.
+/// are `{{namespace.path}}` (plus legacy `$var`) templates interpolated per
+/// request.
 pub struct TrafficLabelPlugin {
     rules: Vec<Rule>,
 }

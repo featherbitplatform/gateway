@@ -31,7 +31,8 @@ const SUPPORTED_CONTENT_TYPES: [&str; 5] = [
 ];
 
 /// Builds a mock response: optional delay, then status + headers + body.
-/// The body and string header values support `$var` interpolation.
+/// The body and string header values support `{{namespace.path}}`
+/// references plus legacy `$var` interpolation.
 pub struct MockingPlugin {
     delay: Duration,
     response_status: u16,
