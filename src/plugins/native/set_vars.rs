@@ -30,6 +30,17 @@ fn valid_var_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
+/// `__`-prefixed `message` keys are internal control values written by the
+/// gateway itself (e.g. `__ws_upstream_tls`/`__ws_upstream_host` read by
+/// `src/server/listener.rs` to decide the WebSocket upstream scheme/host;
+/// `__client_cert_*` carrying mTLS identity) — a declarative `set-vars` entry
+/// must not be able to clobber them, since doing so could downgrade a wss
+/// relay to plaintext or forge client-cert identity (plaintext-downgrade /
+/// SSRF-adjacent hazards).
+fn is_reserved_var_name(name: &str) -> bool {
+    name.starts_with("__")
+}
+
 impl SetVarsPlugin {
     /// Builds the plugin from node config.
     ///
@@ -38,7 +49,9 @@ impl SetVarsPlugin {
     /// (`[{ name, value }]`); at least one entry is required. Each value must
     /// be a string, number, or bool (numbers/bools are stringified); nested
     /// objects/arrays are rejected. Names are restricted to the
-    /// `{{message.<name>}}`-safe charset (alphanumeric, `_`, `.`, `-`).
+    /// `{{message.<name>}}`-safe charset (alphanumeric, `_`, `.`, `-`) and may
+    /// not start with `__`, which is reserved for internal gateway keys (see
+    /// `is_reserved_var_name`).
     ///
     /// ```yaml
     /// type: set-vars
@@ -82,6 +95,19 @@ impl SetVarsPlugin {
 
         let mut vars = BTreeMap::new();
         for (name, value) in pairs {
+            // Special-cased ahead of the generic charset error below: this is
+            // the shape the UI's untouched "Add Variable" row saves as
+            // (`{name: '', value: ''}`) before the user fills anything in, so
+            // it deserves a message that names the actual problem rather than
+            // reciting the whole allowed-charset rule.
+            if name.is_empty() {
+                return Err("set-vars: variable entries need a non-empty name".to_string());
+            }
+            if is_reserved_var_name(&name) {
+                return Err(format!(
+                    "set-vars: variable name '{name}' uses the reserved '__' prefix (internal gateway keys)"
+                ));
+            }
             if !valid_var_name(&name) {
                 return Err(format!(
                     "set-vars: invalid variable name '{name}' (allowed: A-Z a-z 0-9 _ . -)"
@@ -91,6 +117,9 @@ impl SetVarsPlugin {
                 serde_json::Value::String(s) => s.clone(),
                 serde_json::Value::Number(n) => n.to_string(),
                 serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Null => {
+                    return Err(format!("set-vars: variable '{name}' is missing a value"))
+                }
                 _ => {
                     return Err(format!(
                         "set-vars: variable '{name}' must be a string, number, or bool"
@@ -304,6 +333,48 @@ mod tests {
         config.insert("vars".into(), serde_json::json!({"bad name!": "x"}));
         let err = SetVarsPlugin::from_config(&config).unwrap_err();
         assert!(err.contains("bad name!"), "unexpected error: {err}");
+    }
+
+    /// Regression: `__`-prefixed names are reserved for internal gateway
+    /// keys (`__ws_upstream_tls`, `__client_cert_*`, etc. — see
+    /// `is_reserved_var_name`'s doc comment) and must be rejected at load,
+    /// not merely allowed to silently clobber a control value at runtime.
+    #[test]
+    fn test_set_vars_reserved_prefix_rejected() {
+        let mut config = HashMap::new();
+        config.insert(
+            "vars".into(),
+            serde_json::json!({"__ws_upstream_tls": "false"}),
+        );
+        let err = SetVarsPlugin::from_config(&config).unwrap_err();
+        assert!(err.contains("reserved"), "unexpected error: {err}");
+        assert!(err.contains("__ws_upstream_tls"), "unexpected error: {err}");
+    }
+
+    /// The UI's untouched "Add Variable" row saves as `{name: '', value: ''}`;
+    /// this should read as a plain "give it a name" prompt, not the full
+    /// charset-rule error.
+    #[test]
+    fn test_set_vars_empty_name_rejected_with_friendly_message() {
+        let mut config = HashMap::new();
+        config.insert(
+            "vars".into(),
+            serde_json::json!([{"name": "", "value": ""}]),
+        );
+        let err = SetVarsPlugin::from_config(&config).unwrap_err();
+        assert!(err.contains("non-empty name"), "unexpected error: {err}");
+    }
+
+    /// An array entry missing the `value` key deserializes as JSON `Null`;
+    /// this should read as "you forgot a value", not the generic
+    /// string/number/bool type error.
+    #[test]
+    fn test_set_vars_missing_value_key_rejected_with_friendly_message() {
+        let mut config = HashMap::new();
+        config.insert("vars".into(), serde_json::json!([{"name": "tenant"}]));
+        let err = SetVarsPlugin::from_config(&config).unwrap_err();
+        assert!(err.contains("missing a value"), "unexpected error: {err}");
+        assert!(err.contains("tenant"), "unexpected error: {err}");
     }
 
     #[test]

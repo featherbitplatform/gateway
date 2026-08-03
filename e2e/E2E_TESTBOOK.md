@@ -349,8 +349,8 @@ time).
 E2E-SV-01/02 close out the `set-vars` plugin's own e2e coverage: the
 compose-once/reuse-downstream flow the plugin exists for, and the same
 `'full'` vs `'env-only'` popover split applied to one of its neighbors
-(`proxy-rewrite`) once more, this time asserting the env-only footer copy
-verbatim rather than just the group filtering E2E-TPL-03 already covers.
+(`proxy-rewrite`) once more, this time asserting a distinctive substring of
+the footer copy rather than just the group filtering E2E-TPL-03 already covers.
 
 | ID | Scenario | Expected |
 |---|---|---|

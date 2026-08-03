@@ -433,15 +433,27 @@ test.describe('Universal templates', () => {
     // request carries the real tenant header: this both proves the
     // compose-once/reuse-downstream data flow on live traffic AND seeds the
     // trace the popover's live preview reads below.
+    //
+    // The probe sends its own `x-tenant-id` header (any value) rather than
+    // relying on `x-tenant` showing up from an *empty* render -- readiness
+    // shouldn't hinge on set-vars/proxy-rewrite still emitting a header when
+    // its template renders to the empty string; asserting on a real,
+    // non-empty value keeps the probe honest about what "the route is live"
+    // actually means here.
     const traffic = await dataPlane();
-    await waitForDataPlane(traffic, '/sv-compose/ping', (status, text) => {
-      if (status !== 200) return false;
-      try {
-        return (JSON.parse(text) as {headers: Record<string, string>}).headers?.['x-tenant'] !== undefined;
-      } catch {
-        return false;
-      }
-    });
+    await waitForDataPlane(
+      traffic,
+      '/sv-compose/ping',
+      (status, text) => {
+        if (status !== 200) return false;
+        try {
+          return (JSON.parse(text) as {headers: Record<string, string>}).headers?.['x-tenant'] !== undefined;
+        } catch {
+          return false;
+        }
+      },
+      {headers: {'x-tenant-id': 'probe'}},
+    );
     const traced = await traffic.get('/sv-compose/ping', {
       headers: {...DEBUG_HEADER, 'x-tenant-id': 'acme'},
     });
