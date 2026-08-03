@@ -28,8 +28,9 @@ use crate::vars::Expr;
 /// Injects delays and/or abort responses into matching requests.
 ///
 /// Order matches APISIX: the delay (if it triggers) is applied first, then
-/// the abort check runs. `body`, and string header values, support `$var`
-/// interpolation against the request.
+/// the abort check runs. `body`, and string header values, support
+/// `{{namespace.path}}` references plus legacy `$var` interpolation against
+/// the request.
 pub struct FaultInjectionPlugin {
     abort: Option<AbortRule>,
     delay: Option<DelayRule>,

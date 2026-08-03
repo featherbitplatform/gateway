@@ -182,7 +182,6 @@ impl Template {
 
     /// True when the template has no `{{...}}` references at all (render is
     /// a pure borrow with no per-request work).
-    #[allow(dead_code)] // consumed by the plugin sweep (next tasks)
     pub fn is_literal(&self) -> bool {
         !self.has_refs
     }

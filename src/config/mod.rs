@@ -28,5 +28,4 @@ pub use system::{
     StreamListenerConfig, StreamProtocol, StreamUpstreamConfig, SystemConfig, TimeoutConfig,
     TlsConfig,
 };
-#[allow(unused_imports)]
 pub use warnings::collect_template_warnings;

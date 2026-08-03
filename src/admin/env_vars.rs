@@ -16,8 +16,15 @@ pub fn router() -> Router<Arc<SharedState>> {
 
 /// `GET /api/env-vars` — the names of all environment variables available
 /// to the current process. Returns them sorted, with no values exposed.
+///
+/// Uses `vars_os` + `to_string_lossy` rather than `std::env::vars()`, which
+/// panics on a non-Unicode name or value — an environment the gateway
+/// process didn't choose (inherited from its container/host) must not be
+/// able to take down this handler.
 async fn list_env_vars() -> impl IntoResponse {
-    let mut names: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
+    let mut names: Vec<String> = std::env::vars_os()
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect();
     names.sort();
     Json(serde_json::json!({ "names": names }))
 }

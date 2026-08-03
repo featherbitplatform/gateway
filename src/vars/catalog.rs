@@ -66,7 +66,7 @@ pub fn var_catalog() -> Vec<VarEntry> {
             None,
             "Path plus ?query when query params exist",
             "$request_uri",
-            "request.path",
+            "",
         ),
         e(
             "method",

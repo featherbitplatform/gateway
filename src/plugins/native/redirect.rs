@@ -20,8 +20,9 @@ use crate::plugins::{Plugin, PluginOutput, PluginResult};
 use crate::vars::template::Template;
 use crate::vars::{interpolate, resolve};
 
-/// Builds a redirect response from either a `uri` template (with `$var`
-/// interpolation) or the `http_to_https` shortcut.
+/// Builds a redirect response from either a `uri` template (with
+/// `{{namespace.path}}` references plus legacy `$var` interpolation) or the
+/// `http_to_https` shortcut.
 ///
 /// This plugin never fails at execution time. The only case where it does
 /// **not** redirect is `http_to_https` on a request that is already HTTPS

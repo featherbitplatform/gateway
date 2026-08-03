@@ -192,18 +192,41 @@ never `{{env.NAME}}`.
 | `body-transformer`'s own `{{...}}` | `body-transformer` `request.template`/`response.template` | Predates this feature and keeps its **own**, different `{{...}}` dialect (e.g. `{{body.user.name}}`, not `{{request.body}}`) — deliberately not migrated, to avoid breaking existing body-transformer configs whose `{{...}}` already means something else. Documented follow-up (out of scope here): its dialect resolves `{{request.method}}`-shaped input to empty rather than either rendering it or passing it through, which is a minor inconsistency with every other field on this page |
 | `error-handler`'s own body engine | `error-handler` `body_template` | Also predates this feature and keeps its own light templating (`{{error.code}}`) rather than adopting the universal namespace grammar |
 
-## `openwhisk`: percent-encoding and an SSRF note
+## Security note: templated outbound-endpoint fields and SSRF
 
-`openwhisk`'s `namespace`, `package`, and `action` fields are templated (`{{...}}` renders,
-then the rendered value is **percent-encoded** before being spliced into the invocation URL
-path — byte-wise, RFC 3986 `pct-encode`) because these segments become part of a URL path;
-an unencoded rendered value (e.g. from a request header) could otherwise break out of its
-path segment or inject a query string. `api_host` is also templated for FaaS-family
-endpoint-routing consistency, but it is **not** percent-encoded (encoding a scheme+host
-value the same way would corrupt it) and templating it from request-controlled data is
-**discouraged** — a request-driven `api_host` is a server-side request forgery (SSRF)
-vector, letting a client redirect the outbound call to an arbitrary host. Prefer a static
-value or an `{{env.NAME}}` reference for `api_host`.
+Several plugins template the **host** (or a full endpoint URL) of an outbound call they make
+on the gateway's own behalf — not the upstream a route was already configured to proxy to,
+but a *second*, plugin-initiated request. If any such field is templated from
+request-controlled data (a header, query param, cookie, or body value), a client can steer
+that outbound call to a host of their choosing — a server-side request forgery (SSRF)
+vector reachable from the outside without authentication in some deployments.
+
+The fields to be deliberate about:
+
+- **[`proxy-mirror`](./plugins/proxy-mirror.md)'s `host` and `path`** — the mirror request
+  copies **all** of the original request's headers, including `Authorization` and `Cookie`,
+  plus the body, to whatever `host` renders to. Templating `host` from request data doesn't
+  just redirect the outbound call — it hands the client a live exfiltration destination for
+  its own (or another client's forwarded) credentials.
+- **The FaaS `function_uri` family** — [`aws-lambda`](./plugins/aws-lambda.md),
+  [`azure-functions`](./plugins/azure-functions.md), and
+  [`openfunction`](./plugins/openfunction.md)'s `function_uri`, plus
+  [`openwhisk`](./plugins/openwhisk.md)'s `api_host`. Each forwards the client's method,
+  headers, query string, and body to the rendered endpoint, the same exfiltration shape as
+  `proxy-mirror`.
+
+**Recommendation**: keep these fields static, or drive them from `{{env.NAME}}` /
+`${VAR}` (config-time, not request-controlled) rather than from `request.*`/`message.*`
+values that ultimately trace back to something the client sent.
+
+One encoding wrinkle specific to `openwhisk`: its `namespace`, `package`, and `action`
+fields are also templated, and because those become *path segments* of the invocation URL,
+the rendered value is **percent-encoded** first (byte-wise, RFC 3986 `pct-encode`) so it
+can't break out of its segment or inject a query string. `api_host` and `function_uri` are
+different in kind — they're scheme+host (+ path) values, not a single path segment — so they
+are **never** percent-encoded (doing so would corrupt them); the SSRF risk above is the
+reason to avoid templating them from request data in the first place, not something
+encoding could fix.
 
 ## Admin API
 
@@ -223,16 +246,18 @@ value or an `{{env.NAME}}` reference for `api_host`.
 ## Legacy `$var` → `{{path}}` mapping
 
 Every name `$var`/`${var}` interpolation understands, and the template path it corresponds
-to. Three families are **legacy-only** — there is no `{{...}}` equivalent, because nothing
+to. Four names are **legacy-only** — there is no `{{...}}` equivalent, because nothing
 in the `Context` cleanly represents them as a single addressable path (`protocol` is
 metadata about the connection rather than the request/response payload; `query_string` is
 a derived, re-sorted reconstruction rather than one field; `post_arg_*` reads a parsed
-form body the template engine's namespaces don't expose).
+form body the template engine's namespaces don't expose; `request_uri` is path **plus**
+query string, and `request.path` never includes the query string, so mapping it there would
+silently drop data rather than being a faithful equivalent).
 
 | Legacy name | Template path |
 |---|---|
 | `$uri` | `request.path` |
-| `$request_uri` | `request.path` (drops the query string — `request.path` never included it) |
+| `$request_uri` | *(legacy only)* |
 | `$method` / `$request_method` | `request.method` |
 | `$host` | `request.host` |
 | `$scheme` | `request.scheme` |
