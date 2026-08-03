@@ -32,6 +32,7 @@ export const PLUGIN_CATEGORIES: PluginCategory[] = [
       'client',
       'upstream',
       'proxy-rewrite',
+      'set-vars',
       'response-rewrite',
       'body-transformer',
       'degraphql',
