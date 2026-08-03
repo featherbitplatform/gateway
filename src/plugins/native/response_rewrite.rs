@@ -30,10 +30,10 @@ use crate::vars::template::Template;
 
 /// Rewrites `Context.response`: optionally forces a status code, replaces the
 /// body (with optional base64-decoded config content), applies regex filters
-/// to the body, and adds/sets/removes headers with `$var` interpolation in
-/// header values. An optional `vars` expression gates the whole node — when
-/// present and false the node is a pure passthrough. This plugin never fails
-/// at execution time.
+/// to the body, and adds/sets/removes headers with `{{namespace.path}}`
+/// references plus legacy `$var` interpolation in header values. An optional
+/// `vars` expression gates the whole node — when present and false the node
+/// is a pure passthrough. This plugin never fails at execution time.
 pub struct ResponseRewritePlugin {
     status_code: Option<u16>,
     /// Replacement body. The plain-text form is a `{{namespace.path}}`

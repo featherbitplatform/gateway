@@ -240,9 +240,11 @@ impl ProxyCachePlugin {
         self.cache_methods.contains(&method)
     }
 
-    /// Derives the cache key: `id` namespace + interpolated `cache_key`
-    /// components joined by a control-char separator (outside the character set
-    /// of any header/method/path, so components can't collide).
+    /// Derives the cache key: `id` namespace + `cache_key` components
+    /// (each rendered via `{{namespace.path}}` references plus legacy `$var`
+    /// interpolation) joined by a control-char separator (outside the
+    /// character set of any header/method/path, so components can't
+    /// collide).
     fn derive_key(&self, ctx: &Context) -> String {
         let mut key = String::with_capacity(64);
         key.push_str(&self.id);
