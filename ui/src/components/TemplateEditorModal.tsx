@@ -28,7 +28,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogButton } from './Dialog';
-import { ValueCell } from './VarInput';
+import { ValueCell } from './ValueCell';
 import { useTemplateToken } from '../templateToken';
 import { AVAILABILITY_MESSAGE } from '../varSuggestions';
 import type { Availability, Suggestion } from '../varSuggestions';
@@ -125,28 +125,44 @@ export function TemplateEditorModal({
   // Dialog for every caller. Attached at `window` level (not just the
   // textarea's `onKeyDown`) so Escape closes the modal regardless of which
   // element currently has focus (textarea, Cancel/Apply button, a
-  // suggestion row). Skipped while a token is active (`tokenOpen`, captured
-  // from the render current when this listener was last (re)installed) so
-  // Escape closes only the in-progress-token suggestion state first — the
-  // textarea's own `onKeyDown` below already delegates that Escape to the
-  // hook — and a second Escape then closes the modal.
+  // suggestion row). Added/removed keyed on `open` alone, so no listener is
+  // left attached to `window` once the modal closes.
   useEffect(() => {
     if (!open) return;
     function handleWindowKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape' && !tokenOpen) {
+      // Explicit consume/bubble contract (not implicit bubble-order/stale-
+      // closure timing): the token popover's own Escape handling
+      // (`useTemplateToken`'s `onKeyDown`, reached via the textarea's
+      // `onKeyDown` below) calls `e.preventDefault()` when it consumes an
+      // Escape to close just the in-progress-token suggestion state — that
+      // handler runs first (React's delegated listener is an ancestor of
+      // `window` in the bubble chain, so it always fires before this native
+      // `window` listener sees the same event). This listener closes the
+      // modal only on an Escape nothing upstream has already consumed.
+      if (e.defaultPrevented) return;
+      if (e.key === 'Escape') {
         onClose();
       }
     }
     window.addEventListener('keydown', handleWindowKeyDown);
     return () => window.removeEventListener('keydown', handleWindowKeyDown);
-  }, [open, tokenOpen, onClose]);
+  }, [open, onClose]);
 
-  // Browse-mode rows: every suggestion, restricted only by `templateMode`
-  // (mirrors the hook's own mode filter) — not by `trigger`, since there is
-  // no active token to decide which trigger family the user means. Shown
-  // whenever no token is active, so the panel is never empty.
+  // Browse-mode rows: every suggestion the field actually supports, mode-
+  // and trigger-filtered exactly like the hook's own `filtered` would be if
+  // a token were active — there just isn't one to pick a single
+  // `activeTrigger` from, so both offered triggers pass. `suggestions`
+  // always contains both `'dollar'` and `'brace'` rows regardless of what
+  // this field accepts (see varSuggestions.ts); a `'dollar'` row (`$uri`,
+  // `$http_*`, ...) only ever resolves on a `legacyDollar` field, so a
+  // non-legacy field must only ever browse `'brace'` (and, when
+  // `templateMode === 'full'`, `'env'`) rows — otherwise it would offer a
+  // clickable row whose `insert` text is inert literal text once written
+  // into a field that doesn't parse `$name`/`${name}` at all. Shown whenever
+  // no token is active, so the panel is never empty.
   const browseSuggestions = suggestions.filter(
-    (s) => templateMode !== 'env-only' || s.group === 'env',
+    (s) =>
+      (templateMode !== 'env-only' || s.group === 'env') && (s.trigger === 'brace' || legacyDollar),
   );
   const rows = tokenOpen ? filtered : browseSuggestions;
 
