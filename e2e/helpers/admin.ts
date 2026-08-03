@@ -36,17 +36,23 @@ export async function deleteRouteIfPresent(api: APIRequestContext, name: string)
  * live traffic immediately after a save is a race. This is the honest way to wait
  * for it -- and if the swap never lands, the test fails on timeout rather than
  * on a stale first read.
+ *
+ * `options.headers` lets the probe request carry whatever headers the policy
+ * under test needs to produce a meaningful (non-empty-render) response --
+ * relying on empty-render output to satisfy `check` would make the probe pass
+ * for reasons unrelated to "the route is actually live".
  */
 export async function waitForDataPlane(
   api: APIRequestContext,
   path: string,
   check: (status: number, body: string) => boolean,
-  timeoutMs = 10_000,
+  options: {timeoutMs?: number; headers?: Record<string, string>} = {},
 ): Promise<{status: number; body: string}> {
+  const {timeoutMs = 10_000, headers} = options;
   const deadline = Date.now() + timeoutMs;
   let last = {status: 0, body: ''};
   while (Date.now() < deadline) {
-    const res = await api.get(path);
+    const res = await api.get(path, headers ? {headers} : undefined);
     last = {status: res.status(), body: await res.text()};
     if (check(last.status, last.body)) return last;
     await new Promise((r) => setTimeout(r, 200));
