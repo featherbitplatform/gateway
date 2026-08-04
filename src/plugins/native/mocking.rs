@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
-use crate::vars::interpolate;
+use crate::vars::template::Template;
 
 /// Content types the plugin accepts (matched on the part before `;`),
 /// mirroring APISIX's `support_content_type`.
@@ -31,15 +31,23 @@ const SUPPORTED_CONTENT_TYPES: [&str; 5] = [
 ];
 
 /// Builds a mock response: optional delay, then status + headers + body.
-/// The body and string header values support `$var` interpolation.
+/// The body and string header values support `{{namespace.path}}`
+/// references plus legacy `$var` interpolation.
 pub struct MockingPlugin {
     delay: Duration,
     response_status: u16,
-    content_type: String,
-    /// Body template (`$var` interpolated per request).
-    response_example: String,
+    /// Supports `{{namespace.path}}` references (no legacy `$var`
+    /// interpolation — mocking's `content_type` never supported it, so this
+    /// sweep must not start). The `supported_content_type` allowlist below is
+    /// only enforced when the configured value is a literal (no `{{...}}`
+    /// references) — a templated value is resolved per request and cannot be
+    /// checked at load time.
+    content_type: Template,
+    /// Body template: supports `{{namespace.path}}` references and legacy
+    /// `$var` interpolation (see [`Template::render_with_legacy`]).
+    response_example: Template,
     /// Lowercased header name → value template.
-    response_headers: Vec<(String, String)>,
+    response_headers: Vec<(String, Template)>,
     with_mock_header: bool,
 }
 
@@ -48,13 +56,17 @@ impl MockingPlugin {
     ///
     /// Accepted keys:
     /// - `response_example` (string, **required**): response body; supports
-    ///   `$var` interpolation (e.g. `$uri`, `$arg_name`).
+    ///   `{{namespace.path}}` references plus legacy `$var` interpolation
+    ///   (e.g. `$uri`, `$arg_name`).
     /// - `response_status` (integer >= 100, default `200`).
     /// - `content_type` (string, default `application/json;charset=utf8`):
-    ///   base type must be one of `application/json`, `application/xml`,
-    ///   `text/plain`, `text/html`, `text/xml`.
+    ///   supports `{{namespace.path}}` references; a **literal** value's base
+    ///   type must be one of `application/json`, `application/xml`,
+    ///   `text/plain`, `text/html`, `text/xml` (a templated value is resolved
+    ///   per request and is not checked at load time).
     /// - `response_headers` (map `{name: value}` or array `[{name, value}]`):
-    ///   extra response headers; string values support `$var` interpolation.
+    ///   extra response headers; string values support `{{namespace.path}}`
+    ///   references plus legacy `$var` interpolation.
     /// - `with_mock_header` (bool, default `true`): adds
     ///   `x-mock-by: featherbit-mocking`.
     /// - `delay` (number, seconds, may be fractional, default `0`): sleep
@@ -84,8 +96,10 @@ impl MockingPlugin {
         let response_example = config
             .get("response_example")
             .and_then(|v| v.as_str())
-            .ok_or("mocking requires 'response_example' (string body)")?
-            .to_string();
+            .ok_or("mocking requires 'response_example' (string body)")?;
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let response_example = Template::parse(response_example).0;
 
         let response_status = config
             .get("response_status")
@@ -106,18 +120,32 @@ impl MockingPlugin {
             })
             .transpose()?
             .unwrap_or_else(|| "application/json;charset=utf8".to_string());
-        let base_type = content_type.split(';').next().unwrap_or("").trim();
-        if !SUPPORTED_CONTENT_TYPES.contains(&base_type) {
-            return Err(format!(
-                "unsupported content type '{}' — supported: {}",
-                content_type,
-                SUPPORTED_CONTENT_TYPES.join(", ")
-            ));
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let content_type_tpl = Template::parse(&content_type).0;
+        // The allowlist can only be checked against a literal value — a
+        // templated content type is resolved per request, and a literal
+        // template's raw config string is exactly what it renders (no refs
+        // means every `{{...}}` occurrence, if any, already passed through
+        // unchanged).
+        if content_type_tpl.is_literal() {
+            let base_type = content_type.split(';').next().unwrap_or("").trim();
+            if !SUPPORTED_CONTENT_TYPES.contains(&base_type) {
+                return Err(format!(
+                    "unsupported content type '{}' — supported: {}",
+                    content_type,
+                    SUPPORTED_CONTENT_TYPES.join(", ")
+                ));
+            }
         }
+        let content_type = content_type_tpl;
 
         let response_headers = match config.get("response_headers") {
             None => Vec::new(),
-            Some(v) => parse_headers(v)?,
+            Some(v) => parse_headers(v)?
+                .into_iter()
+                .map(|(name, value)| (name, Template::parse(&value).0))
+                .collect(),
         };
 
         let with_mock_header = config
@@ -210,18 +238,19 @@ impl Plugin for MockingPlugin {
             tokio::time::sleep(self.delay).await;
         }
 
-        let body = interpolate(&ctx, &self.response_example);
+        let body = self.response_example.render_with_legacy(&ctx);
         let headers: Vec<(String, String)> = self
             .response_headers
             .iter()
-            .map(|(name, tmpl)| (name.clone(), interpolate(&ctx, tmpl)))
+            .map(|(name, tmpl)| (name.clone(), tmpl.render_with_legacy(&ctx)))
             .collect();
 
         ctx.response.status_code = self.response_status;
         ctx.response.body = Bytes::from(body);
-        ctx.response
-            .headers
-            .insert("content-type".to_string(), vec![self.content_type.clone()]);
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec![self.content_type.render(&ctx).into_owned()],
+        );
         if self.with_mock_header {
             ctx.response.headers.insert(
                 "x-mock-by".to_string(),
@@ -302,6 +331,44 @@ mod tests {
         assert_eq!(
             resp.headers.get("x-mock-env"),
             Some(&vec!["staging".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mock_superset_template_and_legacy_dollar() {
+        // `response_example` and `response_headers` values must render both
+        // the new `{{...}}` template syntax and the legacy `$var` syntax in
+        // the same value (superset behavior).
+        let p = plugin(serde_json::json!({
+            "response_example": "{{request.method}} $uri",
+            "response_headers": { "X-Combo": "{{request.host}}-$uri" }
+        }))
+        .unwrap();
+
+        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let resp = out.context.response;
+        assert_eq!(resp.body, Bytes::from("GET /api/users"));
+        assert_eq!(
+            resp.headers.get("x-combo"),
+            Some(&vec!["example.com-/api/users".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_content_type_renders_template() {
+        let p = plugin(serde_json::json!({
+            "response_example": "{}",
+            "content_type": "text/plain;charset={{request.headers.x-charset}}"
+        }))
+        .unwrap();
+        let mut ctx = test_ctx();
+        ctx.request
+            .headers
+            .insert("x-charset".to_string(), vec!["utf-16".to_string()]);
+        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        assert_eq!(
+            out.context.response.headers.get("content-type"),
+            Some(&vec!["text/plain;charset=utf-16".to_string()])
         );
     }
 

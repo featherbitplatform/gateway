@@ -164,6 +164,8 @@ export const api = {
   // Vars
   /** `GET /api/vars` — the context-variable catalog, unwrapped from `{ vars: [...] }`. */
   listVars: () => request<{ vars: VarEntry[] }>('/api/vars').then((r) => r.vars),
+  /** `GET /api/env-vars` — process environment variable names (no values), unwrapped from `{ names: [...] }`. */
+  listEnvVars: () => request<{ names: string[] }>('/api/env-vars').then((r) => r.names),
 
   // Debug mode
   /** `GET /api/debug/config` — effective debug settings; answers even when debug is disabled. */

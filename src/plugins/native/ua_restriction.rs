@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use crate::context::{Context, GatewayError};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Restricts access based on the `User-Agent` request header.
 ///
@@ -29,8 +30,10 @@ pub struct UaRestrictionPlugin {
     bypass_missing: bool,
     /// HTTP status for rejections (default 403).
     rejected_code: u16,
-    /// Body message for rejections.
-    rejected_msg: String,
+    /// Body message for rejections. Supports `{{namespace.path}}` references
+    /// (no legacy `$var` interpolation — this field never supported it, so
+    /// this sweep must not start).
+    rejected_msg: Template,
 }
 
 /// Parses a config key as an array of non-empty regex strings, compiling
@@ -71,7 +74,8 @@ impl UaRestrictionPlugin {
     ///   User-Agent header instead of rejecting them.
     /// - `rejected_code` (integer 200–599, default `403`): rejection status.
     /// - `rejected_msg` (string, default `"Not allowed"`): rejection message,
-    ///   returned as `{"message": ...}`.
+    ///   returned as `{"message": ...}`. Supports `{{namespace.path}}`
+    ///   references.
     ///
     /// ```yaml
     /// type: ua-restriction
@@ -110,8 +114,10 @@ impl UaRestrictionPlugin {
         let rejected_msg = config
             .get("rejected_msg")
             .and_then(|v| v.as_str())
-            .unwrap_or("Not allowed")
-            .to_string();
+            .unwrap_or("Not allowed");
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let rejected_msg = Template::parse(rejected_msg).0;
 
         Ok(Self {
             allowlist,
@@ -128,9 +134,9 @@ impl UaRestrictionPlugin {
     /// Builds the 403-style rejection: JSON body on the response, error routed
     /// through the error port with code `UA_RESTRICTED`.
     fn reject(&self, mut ctx: Context) -> PluginResult {
+        let message = self.rejected_msg.render(&ctx).into_owned();
         ctx.response.status_code = self.rejected_code;
-        ctx.response.body =
-            Bytes::from(serde_json::json!({ "message": self.rejected_msg }).to_string());
+        ctx.response.body = Bytes::from(serde_json::json!({ "message": message }).to_string());
         ctx.response.headers.insert(
             "content-type".to_string(),
             vec!["application/json".to_string()],
@@ -140,7 +146,7 @@ impl UaRestrictionPlugin {
             error: GatewayError {
                 node_id: String::new(),
                 code: "UA_RESTRICTED".to_string(),
-                message: self.rejected_msg.clone(),
+                message,
                 metadata: HashMap::new(),
             },
         })
@@ -348,5 +354,20 @@ mod tests {
         assert_eq!(err.context.response.status_code, 405);
         let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
         assert_eq!(body["message"], "go away");
+    }
+
+    #[tokio::test]
+    async fn test_rejected_msg_renders_template() {
+        let plugin = UaRestrictionPlugin::from_config(&config(serde_json::json!({
+            "denylist": ["curl"], "rejected_msg": "blocked {{request.method}}"
+        })))
+        .unwrap();
+        let err = plugin
+            .execute(test_context(Some("curl/8.1.2")), &HashMap::new())
+            .await
+            .unwrap_err();
+        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        assert_eq!(body["message"], "blocked GET");
+        assert_eq!(err.error.message, "blocked GET");
     }
 }
