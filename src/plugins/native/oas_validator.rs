@@ -36,6 +36,7 @@ use std::collections::HashMap;
 
 use crate::context::{Context, GatewayError};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// One segment of a templated OpenAPI path.
 enum Segment {
@@ -68,7 +69,10 @@ struct CompiledOp {
 pub struct OasValidatorPlugin {
     operations: Vec<CompiledOp>,
     rejected_code: u16,
-    rejected_msg: Option<String>,
+    /// Fixed message returned instead of the per-violation detail. Supports
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// this field never supported it, so this sweep must not start).
+    rejected_msg: Option<Template>,
 }
 
 /// Resolves a local JSON pointer `$ref` (`#/a/b/c`) against the root document.
@@ -240,7 +244,7 @@ impl OasValidatorPlugin {
     /// - `rejected_code` (integer 400–599, default `400`): response status for
     ///   rejected requests.
     /// - `rejected_msg` (string): fixed message returned instead of the
-    ///   per-violation detail.
+    ///   per-violation detail. Supports `{{namespace.path}}` references.
     ///
     /// ```yaml
     /// type: oas-validator
@@ -332,7 +336,9 @@ impl OasValidatorPlugin {
         let rejected_msg = config
             .get("rejected_msg")
             .and_then(|v| v.as_str())
-            .map(String::from);
+            // Discard warnings here — the compile-time walk (a later task)
+            // reports well-formed-but-unknown references; execution must not.
+            .map(|s| Template::parse(s).0);
 
         Ok(Self {
             operations,
@@ -354,7 +360,11 @@ impl OasValidatorPlugin {
     /// Writes the rejection onto the response and returns the error that routes
     /// the context through the node's `error` port.
     fn reject(&self, mut ctx: Context, detail: String) -> PluginExecutionError {
-        let message = self.rejected_msg.clone().unwrap_or(detail);
+        let message = self
+            .rejected_msg
+            .as_ref()
+            .map(|t| t.render(&ctx).into_owned())
+            .unwrap_or(detail);
         ctx.response.status_code = self.rejected_code;
         ctx.response.body = Bytes::from(
             serde_json::json!({ "error": "oas_validation_failed", "message": message }).to_string(),
@@ -607,6 +617,27 @@ mod tests {
             .execute(ctx("DELETE", "/users/42"), &HashMap::new())
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_oas_rejected_msg_renders_template() {
+        let mut config = HashMap::new();
+        config.insert("spec".to_string(), spec());
+        config.insert(
+            "rejected_msg".to_string(),
+            serde_json::json!("invalid request to {{request.path}}"),
+        );
+        let p = OasValidatorPlugin::from_config(&config).unwrap();
+
+        let mut c = ctx("GET", "/users/42");
+        c.request
+            .headers
+            .insert("x-trace".to_string(), vec!["abc".to_string()]);
+        // no verbose query param -> rejected
+        let err = p.execute(c, &HashMap::new()).await.unwrap_err();
+        assert_eq!(err.error.message, "invalid request to /users/42");
+        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        assert_eq!(body["message"], "invalid request to /users/42");
     }
 
     #[test]

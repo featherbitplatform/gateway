@@ -43,6 +43,7 @@ use std::sync::Arc;
 use crate::context::{Context, GatewayError};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Which half of the pair this node is.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,12 +68,19 @@ pub struct LimitConnPlugin {
     burst: i64,
     /// Key template (interpolated per request unless `key_type` is `constant`).
     key: String,
+    /// Pre-parsed `key`: supports `{{namespace.path}}` references and legacy
+    /// `$var` interpolation (see [`Template::render_with_legacy`]). Only used
+    /// when `key_constant` is false.
+    key_tpl: Template,
     /// When `true`, `key` is used verbatim rather than interpolated.
     key_constant: bool,
     /// Status returned when the limit is exceeded.
     rejected_code: u16,
     /// Optional human-readable rejection message (JSON `{"error_msg": ...}`).
-    rejected_msg: Option<String>,
+    /// Supports `{{namespace.path}}` references (no legacy `$var`
+    /// interpolation — this field never supported it, so this sweep must not
+    /// start).
+    rejected_msg: Option<Template>,
     resources: Arc<PluginResources>,
 }
 
@@ -87,15 +95,18 @@ impl LimitConnPlugin {
     /// - `burst` (integer, default `0`): extra concurrent requests tolerated
     ///   above `conn`. Must be `>= 0`. The hard ceiling is `conn + burst`.
     /// - `key` (string template, default `"$remote_addr"`): the concurrency
-    ///   key, interpolated per request (see [`crate::vars::interpolate`]). Both
-    ///   nodes of a pair **must** use the same `key` and `conn`/`burst` so they
-    ///   share one counter.
+    ///   key, rendered per request — supports `{{namespace.path}}` references
+    ///   plus legacy `$var` interpolation (see
+    ///   [`crate::vars::template::Template::render_with_legacy`]) unless
+    ///   `key_type: constant`. Both nodes of a pair **must** use the same
+    ///   `key` and `conn`/`burst` so they share one counter.
     /// - `key_type` (string, default `var`): `constant` uses `key` verbatim;
     ///   any other value (`var`, `var_combination`) interpolates it.
     /// - `rejected_code` (integer, default `503`): status for over-limit
     ///   requests.
     /// - `rejected_msg` (string, optional): message returned as a JSON body
-    ///   `{"error_msg": "..."}` on rejection.
+    ///   `{"error_msg": "..."}` on rejection. Supports `{{namespace.path}}`
+    ///   references.
     /// - `default_conn_delay` (number, optional): accepted for APISIX config
     ///   compatibility but ignored — featherbit rejects rather than delays.
     ///
@@ -163,6 +174,9 @@ impl LimitConnPlugin {
             .and_then(|v| v.as_str())
             .unwrap_or("$remote_addr")
             .to_string();
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let key_tpl = Template::parse(&key).0;
 
         let key_constant = matches!(
             config.get("key_type").and_then(|v| v.as_str()),
@@ -178,13 +192,16 @@ impl LimitConnPlugin {
         let rejected_msg = config
             .get("rejected_msg")
             .and_then(|v| v.as_str())
-            .map(String::from);
+            // Discard warnings here — the compile-time walk (a later task)
+            // reports well-formed-but-unknown references; execution must not.
+            .map(|s| Template::parse(s).0);
 
         Ok(Self {
             role,
             conn,
             burst,
             key,
+            key_tpl,
             key_constant,
             rejected_code,
             rejected_msg,
@@ -197,7 +214,7 @@ impl LimitConnPlugin {
         if self.key_constant {
             self.key.clone()
         } else {
-            crate::vars::interpolate(ctx, &self.key)
+            self.key_tpl.render_with_legacy(ctx)
         }
     }
 }
@@ -227,7 +244,10 @@ impl Plugin for LimitConnPlugin {
 
                     ctx.response.status_code = self.rejected_code;
                     let body = match &self.rejected_msg {
-                        Some(msg) => format!(r#"{{"error_msg":{}}}"#, json_string(msg)),
+                        Some(msg) => {
+                            let rendered = msg.render(&ctx).into_owned();
+                            format!(r#"{{"error_msg":{}}}"#, json_string(&rendered))
+                        }
                         None => r#"{"error":"limit_conn_exceeded"}"#.to_string(),
                     };
                     ctx.response.body = Bytes::from(body);
@@ -357,6 +377,29 @@ mod tests {
             &r
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rejected_msg_renders_template() {
+        let r = PluginResources::empty();
+        let acquire = LimitConnPlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("acquire")),
+                ("conn", serde_json::json!(1)),
+                ("key", serde_json::json!("const-conn")),
+                ("key_type", serde_json::json!("constant")),
+                (
+                    "rejected_msg",
+                    serde_json::json!("too many from {{client.ip}}"),
+                ),
+            ]),
+            &r,
+        )
+        .unwrap();
+        acquire.execute(ctx(), &HashMap::new()).await.unwrap();
+        let err = acquire.execute(ctx(), &HashMap::new()).await.unwrap_err();
+        let body = String::from_utf8(err.context.response.body.to_vec()).unwrap();
+        assert!(body.contains("too many from 10.0.0.1"), "{body}");
     }
 
     #[tokio::test]

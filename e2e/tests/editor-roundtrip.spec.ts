@@ -176,10 +176,23 @@ test.describe('Editor round-trip', () => {
     await page.waitForSelector('.react-flow__node');
     await page.locator('.react-flow__node', {hasText: 'auth'}).first().click();
 
-    // (a) Add a user through the repeating-object "users" field.
+    // (a) Add a user through the repeating-object "users" field. Both
+    // sub-fields now route through VarInput (Task 8/9's `{{env.*}}`
+    // completion applies to every text field by default), which wraps the
+    // actual <input> in its own positioning <div> -- so the label's
+    // immediate sibling is that wrapper, not the input itself; walk into it
+    // rather than assuming direct adjacency.
     await page.getByRole('button', {name: 'Add User'}).click();
-    await page.locator('label:text-is("Username") + input').fill('alice');
-    await page.locator('label:text-is("Password") + input').fill('secret');
+    await page
+      .locator('label:text-is("Username")')
+      .locator('xpath=following-sibling::*[1]')
+      .locator('input')
+      .fill('alice');
+    await page
+      .locator('label:text-is("Password")')
+      .locator('xpath=following-sibling::*[1]')
+      .locator('input')
+      .fill('secret');
     await save(page);
 
     // (b) The credential is in the saved policy, in the UI's array shape.

@@ -21,6 +21,7 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// The status codes APISIX's error-page supports (its metadata schema
 /// hardcodes `error_404` / `error_500` / `error_502` / `error_503`).
@@ -33,8 +34,14 @@ const SUPPORTED_STATUS: [(u16, &str); 4] = [
 
 /// One configured error page.
 struct ErrorPage {
-    body: Bytes,
-    content_type: String,
+    /// Supports `{{namespace.path}}` references (no legacy `$var`
+    /// interpolation — error-page bodies never supported it, so this sweep
+    /// must not start).
+    body: Template,
+    /// Supports `{{namespace.path}}` references (no legacy `$var`
+    /// interpolation — error-page content types never supported it, so this
+    /// sweep must not start).
+    content_type: Template,
 }
 
 /// Replaces `Context.response.body` and `content-type` when the response was
@@ -62,9 +69,11 @@ impl ErrorPagePlugin {
     /// intercepted): `error_404`, `error_500`, `error_502`, `error_503` —
     /// each an object with:
     /// - `body` (string, default an APISIX-style HTML page for that status):
-    ///   the replacement response body.
+    ///   the replacement response body; supports `{{namespace.path}}`
+    ///   references.
     /// - `content_type` (string, default `text/html`): the replacement
-    ///   `content-type` header value.
+    ///   `content-type` header value; supports `{{namespace.path}}`
+    ///   references.
     ///
     /// An `error_XXX` key set to a non-object, or `body`/`content_type` with
     /// a non-string value, fails at config load. Setting a key to an empty
@@ -105,13 +114,11 @@ impl ErrorPagePlugin {
                     .to_string(),
             };
 
-            pages.insert(
-                status,
-                ErrorPage {
-                    body: Bytes::from(body),
-                    content_type,
-                },
-            );
+            // Discard warnings here — the compile-time walk (a later task)
+            // reports well-formed-but-unknown references; execution must not.
+            let body = Template::parse(&body).0;
+            let content_type = Template::parse(&content_type).0;
+            pages.insert(status, ErrorPage { body, content_type });
         }
 
         Ok(Self { pages })
@@ -135,10 +142,12 @@ impl Plugin for ErrorPagePlugin {
 
         if gateway_generated {
             if let Some(page) = self.pages.get(&ctx.response.status_code) {
-                ctx.response.body = page.body.clone();
+                let body = Bytes::from(page.body.render(&ctx).into_owned());
+                let content_type = page.content_type.render(&ctx).into_owned();
+                ctx.response.body = body;
                 ctx.response
                     .headers
-                    .insert("content-type".to_string(), vec![page.content_type.clone()]);
+                    .insert("content-type".to_string(), vec![content_type]);
                 // Body-mutation convention: the server layer recomputes the
                 // length; the configured page is not encoded.
                 ctx.response.headers.remove("content-length");
@@ -255,6 +264,43 @@ mod tests {
             Some(&vec!["text/plain".to_string()])
         );
         assert!(out.context.response.headers.contains_key("content-length"));
+    }
+
+    #[tokio::test]
+    async fn test_error_page_body_renders_template() {
+        let p = plugin(serde_json::json!({
+            "error_503": {
+                "body": "{\"error\": \"unavailable\", \"path\": \"{{request.path}}\"}",
+                "content_type": "application/json"
+            }
+        }));
+        let out = p
+            .execute(test_context(503, true), &HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            out.context.response.body.as_ref(),
+            b"{\"error\": \"unavailable\", \"path\": \"/test\"}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_error_page_content_type_renders_template() {
+        let p = plugin(serde_json::json!({
+            "error_503": {
+                "body": "unavailable",
+                "content_type": "text/plain; charset={{request.headers.x-charset}}"
+            }
+        }));
+        let mut ctx = test_context(503, true);
+        ctx.request
+            .headers
+            .insert("x-charset".to_string(), vec!["utf-16".to_string()]);
+        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        assert_eq!(
+            out.context.response.headers.get("content-type"),
+            Some(&vec!["text/plain; charset=utf-16".to_string()])
+        );
     }
 
     #[tokio::test]

@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use crate::context::{Context, GatewayError};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Blocks requests whose URI matches any configured `block_rules` regex.
 ///
@@ -24,8 +25,11 @@ pub struct UriBlockerPlugin {
     block_rules: Vec<Regex>,
     /// HTTP status for rejections (default 403).
     rejected_code: u16,
-    /// Optional rejection body message; when unset the response body is empty.
-    rejected_msg: Option<String>,
+    /// Optional rejection body message; when unset the response body is
+    /// empty. Supports `{{namespace.path}}` references (no legacy `$var`
+    /// interpolation — this field never supported it, so this sweep must not
+    /// start).
+    rejected_msg: Option<Template>,
 }
 
 impl UriBlockerPlugin {
@@ -38,7 +42,7 @@ impl UriBlockerPlugin {
     /// - `rejected_code` (integer 200–599, default `403`): rejection status.
     /// - `rejected_msg` (string, optional): when set, rejections carry a JSON
     ///   body `{"error_msg": ...}`; when unset the body is empty (APISIX
-    ///   parity).
+    ///   parity). Supports `{{namespace.path}}` references.
     /// - `case_insensitive` (bool, default `false`): match rules
     ///   case-insensitively.
     ///
@@ -103,7 +107,10 @@ impl UriBlockerPlugin {
             rejected_msg: config
                 .get("rejected_msg")
                 .and_then(|v| v.as_str())
-                .map(String::from),
+                // Discard warnings here — the compile-time walk (a later
+                // task) reports well-formed-but-unknown references;
+                // execution must not.
+                .map(|s| Template::parse(s).0),
         })
     }
 }
@@ -126,7 +133,11 @@ impl Plugin for UriBlockerPlugin {
         if self.block_rules.iter().any(|re| re.is_match(&request_uri)) {
             let mut ctx = ctx;
             ctx.response.status_code = self.rejected_code;
-            if let Some(ref msg) = self.rejected_msg {
+            let rendered_msg = self
+                .rejected_msg
+                .as_ref()
+                .map(|t| t.render(&ctx).into_owned());
+            if let Some(ref msg) = rendered_msg {
                 ctx.response.body =
                     Bytes::from(serde_json::json!({ "error_msg": msg }).to_string());
                 ctx.response.headers.insert(
@@ -141,10 +152,7 @@ impl Plugin for UriBlockerPlugin {
                 error: GatewayError {
                     node_id: String::new(),
                     code: "URI_BLOCKED".to_string(),
-                    message: self
-                        .rejected_msg
-                        .clone()
-                        .unwrap_or_else(|| "request URI is blocked".to_string()),
+                    message: rendered_msg.unwrap_or_else(|| "request URI is blocked".to_string()),
                     metadata: HashMap::new(),
                 },
             });
@@ -302,5 +310,21 @@ mod tests {
         assert_eq!(err.context.response.status_code, 404);
         let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
         assert_eq!(body["error_msg"], "not found");
+    }
+
+    #[tokio::test]
+    async fn test_rejected_msg_renders_template() {
+        let plugin = UriBlockerPlugin::from_config(&config(serde_json::json!({
+            "block_rules": ["^/admin"], "rejected_msg": "blocked {{request.path}}"
+        })))
+        .unwrap();
+
+        let err = plugin
+            .execute(test_context("/admin/x", &[]), &HashMap::new())
+            .await
+            .unwrap_err();
+        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        assert_eq!(body["error_msg"], "blocked /admin/x");
+        assert_eq!(err.error.message, "blocked /admin/x");
     }
 }

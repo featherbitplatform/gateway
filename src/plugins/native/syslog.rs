@@ -32,7 +32,7 @@ use tokio::net::{TcpStream, UdpSocket};
 
 use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Syslog facility `SYSLOG` (5), matching APISIX's hard-coded choice.
@@ -174,7 +174,7 @@ impl BatchFlusher for SyslogFlusher {
 /// The `syslog` plugin node.
 pub struct SyslogPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
     app_name: String,
@@ -191,7 +191,7 @@ impl SyslogPlugin {
     /// - `timeout` (integer ms, default `3000`): connect/send timeout.
     /// - `tls` (bool, default `false`): **not yet supported** — `true` is rejected.
     /// - `flush_limit`, `drop_limit`, `pool_size`: accepted, not honored.
-    /// - `log_format` (object): custom `name -> "$var"` entry.
+    /// - `log_format` (object): custom `name -> "template"` entry (`{{namespace.path}}` references plus legacy `$var` interpolation).
     /// - `include_req_body` / `include_resp_body` (bool, default `false`).
     /// - batch keys — see [`BatchConfig::from_config`].
     ///

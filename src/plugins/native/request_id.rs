@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Guarantees a request-id header on the request: when the header is absent
 /// (or empty) a fresh UUID v4 is generated and set; an id supplied by the
@@ -24,8 +25,9 @@ use crate::plugins::{Plugin, PluginOutput, PluginResult};
 /// request header already set, reuses the same id, and stamps it on the
 /// response.
 pub struct RequestIdPlugin {
-    /// Lowercased name of the id header.
-    header_name: String,
+    /// Name of the id header (rendered per request, then lowercased).
+    /// Supports `{{namespace.path}}` template references.
+    header_name: Template,
     /// When true, the id is echoed on the response (if not already present).
     include_in_response: bool,
 }
@@ -36,6 +38,7 @@ impl RequestIdPlugin {
     /// Accepted keys (all optional):
     /// - `header_name` (string, default `X-Request-Id`): header carrying the
     ///   id (lowercased internally, per featherbit's header convention).
+    ///   Supports `{{namespace.path}}` references.
     /// - `include_in_response` (bool, default `true`): also set the id on the
     ///   response when the response does not already carry the header.
     /// - `algorithm` (string, default `uuid`): id generation algorithm. Only
@@ -53,8 +56,10 @@ impl RequestIdPlugin {
         let header_name = config
             .get("header_name")
             .and_then(|v| v.as_str())
-            .unwrap_or("X-Request-Id")
-            .to_lowercase();
+            .unwrap_or("X-Request-Id");
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let header_name = Template::parse(header_name).0;
 
         let include_in_response = config
             .get("include_in_response")
@@ -98,14 +103,16 @@ impl Plugin for RequestIdPlugin {
         mut ctx: Context,
         _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
+        let header_name = self.header_name.render(&ctx).to_lowercase();
+
         // Keep a client-supplied id; generate one otherwise (APISIX rewrite phase).
-        let id = match first_non_empty(&ctx.request.headers, &self.header_name) {
+        let id = match first_non_empty(&ctx.request.headers, &header_name) {
             Some(existing) => existing,
             None => {
                 let id = uuid::Uuid::new_v4().to_string();
                 ctx.request
                     .headers
-                    .insert(self.header_name.clone(), vec![id.clone()]);
+                    .insert(header_name.clone(), vec![id.clone()]);
                 id
             }
         };
@@ -113,11 +120,9 @@ impl Plugin for RequestIdPlugin {
         // Echo on the response unless it already carries the header
         // (APISIX header_filter phase).
         if self.include_in_response
-            && first_non_empty(&ctx.response.headers, &self.header_name).is_none()
+            && first_non_empty(&ctx.response.headers, &header_name).is_none()
         {
-            ctx.response
-                .headers
-                .insert(self.header_name.clone(), vec![id]);
+            ctx.response.headers.insert(header_name, vec![id]);
         }
 
         Ok(PluginOutput {
@@ -253,6 +258,33 @@ mod tests {
         assert_eq!(
             result.context.response.headers.get("x-request-id"),
             Some(&vec!["upstream-id".to_string()])
+        );
+    }
+
+    /// TDD (Task 3): `header_name` renders `{{...}}` references, letting the
+    /// id header's own name vary per request (e.g. by tenant).
+    #[tokio::test]
+    async fn test_request_id_custom_header_name_renders_template() {
+        let mut config = HashMap::new();
+        config.insert(
+            "header_name".to_string(),
+            serde_json::json!("X-{{request.headers.x-tenant}}-Id"),
+        );
+        let plugin = RequestIdPlugin::from_config(&config).unwrap();
+        let mut ctx = test_context();
+        ctx.request
+            .headers
+            .insert("x-tenant".to_string(), vec!["acme".to_string()]);
+
+        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let req_id = &result.context.request.headers.get("x-acme-id").unwrap()[0];
+        assert!(
+            uuid::Uuid::parse_str(req_id).is_ok(),
+            "not a uuid: {req_id}"
+        );
+        assert_eq!(
+            result.context.response.headers.get("x-acme-id"),
+            Some(&vec![req_id.clone()])
         );
     }
 

@@ -25,7 +25,8 @@ use crate::context::{Context, GatewayError};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 use crate::ratelimit::CounterStore;
-use crate::vars::{interpolate, Expr};
+use crate::vars::template::Template;
+use crate::vars::Expr;
 
 /// Distinguishes counter namespaces between workflow node instances so two
 /// nodes with identical rules don't share windows (APISIX isolates with a
@@ -55,10 +56,15 @@ enum Action {
 struct LimitCount {
     count: u64,
     time_window: Duration,
-    /// `$var` template resolved per request into the counter key.
-    key_template: String,
+    /// Counter-key template: supports `{{namespace.path}}` references and
+    /// legacy `$var` interpolation (see [`Template::render_with_legacy`]),
+    /// resolved per request.
+    key_template: Template,
     rejected_code: u16,
-    rejected_msg: Option<String>,
+    /// Optional rejection body message. Supports `{{namespace.path}}`
+    /// references (no legacy `$var` interpolation — this field never
+    /// supported it, so this sweep must not start).
+    rejected_msg: Option<Template>,
     /// Namespaces this action's counters: `workflow:<instance>:<rule idx>`.
     counter_prefix: String,
     store: Arc<dyn CounterStore>,
@@ -81,11 +87,13 @@ impl WorkflowPlugin {
     ///     - `"limit-count"` — params:
     ///       - `count` (integer > 0, **required**): allowed requests per window.
     ///       - `time_window` (number > 0, seconds, **required**).
-    ///       - `key` (string, default `"$remote_addr"`): `$var` template
-    ///         resolved per request into the counter key.
+    ///       - `key` (string, default `"$remote_addr"`): template (supports
+    ///         `{{namespace.path}}` references plus legacy `$var`
+    ///         interpolation) resolved per request into the counter key.
     ///       - `rejected_code` (integer 200-599, default `503`).
     ///       - `rejected_msg` (string, optional): when set, the rejection body
-    ///         is `{"error_msg": "<msg>"}`; empty body otherwise.
+    ///         is `{"error_msg": "<msg>"}`; empty body otherwise. Supports
+    ///         `{{namespace.path}}` references.
     ///       - `policy` (string, default `"local"`): counter backend name.
     ///
     /// ```yaml
@@ -186,6 +194,10 @@ impl WorkflowPlugin {
                         })
                         .transpose()?
                         .unwrap_or_else(|| "$remote_addr".to_string());
+                    // Discard warnings here — the compile-time walk (a later
+                    // task) reports well-formed-but-unknown references;
+                    // execution must not.
+                    let key_template = Template::parse(&key_template).0;
                     let rejected_code =
                         params
                             .get("rejected_code")
@@ -203,7 +215,11 @@ impl WorkflowPlugin {
                                 format!("rules[{idx}]: 'rejected_msg' must be a string")
                             })
                         })
-                        .transpose()?;
+                        .transpose()?
+                        // Discard warnings here — the compile-time walk (a
+                        // later task) reports well-formed-but-unknown
+                        // references; execution must not.
+                        .map(|s| Template::parse(&s).0);
                     let policy = params
                         .get("policy")
                         .and_then(|v| v.as_str())
@@ -308,7 +324,7 @@ impl Plugin for WorkflowPlugin {
                     let key = format!(
                         "{}:{}",
                         lc.counter_prefix,
-                        interpolate(&ctx, &lc.key_template)
+                        lc.key_template.render_with_legacy(&ctx)
                     );
                     let window = match lc
                         .store
@@ -338,7 +354,8 @@ impl Plugin for WorkflowPlugin {
                     }
                     let body = match &lc.rejected_msg {
                         Some(msg) => {
-                            Bytes::from(serde_json::json!({ "error_msg": msg }).to_string())
+                            let rendered = msg.render(&ctx).into_owned();
+                            Bytes::from(serde_json::json!({ "error_msg": rendered }).to_string())
                         }
                         None => Bytes::new(),
                     };
@@ -494,6 +511,30 @@ mod tests {
         assert_eq!(
             err.context.response.headers.get("x-ratelimit-remaining"),
             Some(&vec!["0".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_limit_count_rejected_msg_renders_template() {
+        let p = plugin(serde_json::json!({
+            "rules": [{
+                "actions": [["limit-count", {
+                    "count": 1,
+                    "time_window": 60,
+                    "rejected_msg": "over quota on {{request.path}}"
+                }]]
+            }]
+        }))
+        .unwrap();
+
+        assert!(p.execute(test_ctx("/x"), &HashMap::new()).await.is_ok());
+        let err = p
+            .execute(test_ctx("/x"), &HashMap::new())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.context.response.body,
+            Bytes::from(r#"{"error_msg":"over quota on /x"}"#)
         );
     }
 

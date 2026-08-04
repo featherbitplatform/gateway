@@ -267,6 +267,12 @@ async fn run_sandbox(
             Err(e) => return bad_request(e),
         }
     };
+    // Same load-time template-warning sweep compile_routes runs, on the same
+    // resolved single-policy gateway, so the sandbox never diverges from what
+    // the data plane would warn about for this policy.
+    for warning in crate::config::collect_template_warnings(&resolved) {
+        tracing::warn!("{warning}");
+    }
     let policy = resolved.policies.into_iter().next().expect("one policy in");
     let policy = match crate::graph::expand_policy(&policy, &resolved.supernodes) {
         Ok(p) => p,

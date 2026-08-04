@@ -22,7 +22,7 @@ use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// How batched entries are serialized into the request body.
@@ -97,7 +97,7 @@ impl BatchFlusher for HttpLoggerFlusher {
 /// Batches access-log entries and POSTs them to an HTTP endpoint.
 pub struct HttpLoggerPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
 }
@@ -119,9 +119,9 @@ impl HttpLoggerPlugin {
     /// - `ssl_verify` (bool, default `false`): verify TLS certificates for
     ///   `https` endpoints.
     /// - `timeout` (integer seconds, default `3`): whole-call deadline per flush.
-    /// - `log_format` (object, optional): custom flat entry of
-    ///   `name -> "$var template"`; when absent the default structured entry is
-    ///   used.
+    /// - `log_format` (object, optional): custom flat entry of `name ->
+    ///   "template"` (`{{namespace.path}}` references plus legacy `$var`
+    ///   interpolation); when absent the default structured entry is used.
     /// - `include_req_body` / `include_resp_body` (bool, default `false`): add
     ///   the request/response body to the default entry.
     /// - Batch keys (`batch_max_size`, `inactive_timeout`, `buffer_duration`,
