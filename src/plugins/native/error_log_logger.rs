@@ -35,7 +35,7 @@ use tokio::net::TcpStream;
 
 use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Serializes each entry as one line of JSON, newline-terminated. Pure helper.
@@ -83,7 +83,7 @@ impl BatchFlusher for TcpFlusher {
 /// The `error-log-logger` plugin node.
 pub struct ErrorLogLoggerPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
 }
 
 impl ErrorLogLoggerPlugin {
@@ -96,7 +96,7 @@ impl ErrorLogLoggerPlugin {
     /// - `level` (string, default `"WARN"`): accepted for APISIX compatibility;
     ///   featherbit logs on the presence of `context.errors`, not on severity.
     /// - `tls` (bool, default `false`): **not yet supported** — `true` rejected.
-    /// - `log_format` (object): custom `name -> "$var"` entry.
+    /// - `log_format` (object): custom `name -> "template"` entry (`{{namespace.path}}` references plus legacy `$var` interpolation).
     /// - batch keys — see [`BatchConfig::from_config`].
     ///
     /// ```yaml

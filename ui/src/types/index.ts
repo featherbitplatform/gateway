@@ -214,6 +214,13 @@ export interface VarEntry {
   description: string;
   /** Example `$var` usage shown in the UI. */
   example: string;
+  /**
+   * Universal-template namespace spelling (e.g. `request.method`), or `""`
+   * when this entry has no direct `{{...}}` equivalent (e.g. `protocol`,
+   * `query_string`, `post_arg_*`) — those remain legacy-`$`-only and are
+   * skipped when building path-keyed suggestions.
+   */
+  path: string;
 }
 
 /** Redacted point-in-time view of the gateway Context. */

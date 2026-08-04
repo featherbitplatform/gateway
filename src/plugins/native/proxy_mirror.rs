@@ -20,6 +20,7 @@ use crate::context::Context;
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Whole-call deadline for a mirrored (best-effort) request.
 const MIRROR_TIMEOUT: Duration = Duration::from_secs(60);
@@ -27,10 +28,13 @@ const MIRROR_TIMEOUT: Duration = Duration::from_secs(60);
 /// Mirrors matching requests to a shadow host, best-effort.
 pub struct ProxyMirrorPlugin {
     /// Shadow base URL, e.g. `http://shadow:8080` (scheme + host + optional
-    /// port, no trailing path).
-    host: String,
+    /// port, no trailing path). The `http://`/`https://` prefix is validated
+    /// against the raw config string at load time; the value itself supports
+    /// `{{namespace.path}}` template references, rendered per request.
+    host: Template,
     /// Optional path override; when unset the original request path is used.
-    path: Option<String>,
+    /// Supports `{{namespace.path}}` references.
+    path: Option<Template>,
     /// Fraction of requests to mirror, in `0.0..=1.0`.
     sample_ratio: f64,
     /// Shared pooled outbound HTTP client (from `PluginResources`).
@@ -89,12 +93,15 @@ impl ProxyMirrorPlugin {
                 "proxy-mirror 'host' must start with http:// or https:// (got '{host}')"
             ));
         }
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let host = Template::parse(&host).0;
 
         let path = config
             .get("path")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(String::from);
+            .map(|s| Template::parse(s).0);
 
         let sample_ratio = match config.get("sample_ratio") {
             None => 1.0,
@@ -129,13 +136,14 @@ impl ProxyMirrorPlugin {
     /// path) + the original query string. All request headers and the body are
     /// copied.
     fn build_request(&self, ctx: &Context) -> OutboundRequest {
-        let path = self
-            .path
-            .clone()
-            .unwrap_or_else(|| ctx.request.path.clone());
+        let host = self.host.render(ctx);
+        let path = match &self.path {
+            Some(tpl) => tpl.render(ctx),
+            None => std::borrow::Cow::Borrowed(ctx.request.path.as_str()),
+        };
         let url = match crate::vars::resolve(ctx, "query_string") {
-            Some(qs) => format!("{}{}?{}", self.host, path, qs),
-            None => format!("{}{}", self.host, path),
+            Some(qs) => format!("{}{}?{}", host, path, qs),
+            None => format!("{}{}", host, path),
         };
 
         let method: http::Method = ctx.request.method.parse().unwrap_or(http::Method::GET);
@@ -254,6 +262,24 @@ mod tests {
         assert_eq!(req.method, http::Method::POST);
         assert_eq!(req.body, Bytes::from_static(b"payload"));
         assert!(req.headers.iter().any(|(k, v)| k == "x-trace" && v == "t1"));
+    }
+
+    #[test]
+    fn test_build_request_host_and_path_render_template() {
+        let p = plugin(serde_json::json!({
+            "host": "http://{{request.headers.x-shadow-host}}",
+            "path": "/mirror/{{request.headers.x-tenant}}"
+        }))
+        .unwrap();
+        let mut ctx = test_ctx();
+        ctx.request
+            .headers
+            .insert("x-shadow-host".to_string(), vec!["shadow:9090".to_string()]);
+        ctx.request
+            .headers
+            .insert("x-tenant".to_string(), vec!["acme".to_string()]);
+        let req = p.build_request(&ctx);
+        assert_eq!(req.url, "http://shadow:9090/mirror/acme?q=1");
     }
 
     #[test]

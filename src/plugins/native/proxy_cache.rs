@@ -42,6 +42,7 @@ use std::time::Duration;
 use crate::context::{Context, GatewayError};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Header written by both nodes to report the cache outcome.
 const CACHE_STATUS_HEADER: &str = "featherbit-cache-status";
@@ -65,8 +66,10 @@ pub struct ProxyCachePlugin {
     role: Role,
     /// Shared cache namespace — links the lookup and store nodes.
     id: String,
-    /// Cache-key components, each interpolated and joined per request.
-    cache_key: Vec<String>,
+    /// Cache-key components, each rendered (supports `{{namespace.path}}`
+    /// references and legacy `$var` interpolation — see
+    /// [`Template::render_with_legacy`]) and joined per request.
+    cache_key: Vec<Template>,
     /// Freshness lifetime for stored entries.
     cache_ttl: Duration,
     /// Response statuses eligible for caching.
@@ -87,9 +90,11 @@ impl ProxyCachePlugin {
     /// - `id` (string, **required**): shared cache namespace; the lookup and
     ///   store nodes of one pair must use the same `id`.
     /// - `cache_key` (array of string templates **or** a single string,
-    ///   default `["$request_method", "$host", "$uri"]`): components
-    ///   interpolated (see [`crate::vars::interpolate`]) and joined to form the
-    ///   key. Both nodes must configure it identically.
+    ///   default `["$request_method", "$host", "$uri"]`): components rendered
+    ///   (supports `{{namespace.path}}` references plus legacy `$var`
+    ///   interpolation — see
+    ///   [`crate::vars::template::Template::render_with_legacy`]) and joined
+    ///   to form the key. Both nodes must configure it identically.
     /// - `cache_ttl` (integer seconds, default `300`): freshness lifetime.
     /// - `cache_http_statuses` (array, default `[200, 301, 404]`): statuses
     ///   eligible for caching. (`cache_http_status`, APISIX's singular spelling,
@@ -147,7 +152,7 @@ impl ProxyCachePlugin {
             .ok_or("proxy-cache: 'id' is required (links the lookup/store pair)")?
             .to_string();
 
-        let cache_key = match config.get("cache_key") {
+        let cache_key: Vec<String> = match config.get("cache_key") {
             None => vec![
                 "$request_method".to_string(),
                 "$host".to_string(),
@@ -173,6 +178,9 @@ impl ProxyCachePlugin {
                 )
             }
         };
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let cache_key: Vec<Template> = cache_key.iter().map(|s| Template::parse(s).0).collect();
 
         let ttl_secs = config
             .get("cache_ttl")
@@ -232,15 +240,17 @@ impl ProxyCachePlugin {
         self.cache_methods.contains(&method)
     }
 
-    /// Derives the cache key: `id` namespace + interpolated `cache_key`
-    /// components joined by a control-char separator (outside the character set
-    /// of any header/method/path, so components can't collide).
+    /// Derives the cache key: `id` namespace + `cache_key` components
+    /// (each rendered via `{{namespace.path}}` references plus legacy `$var`
+    /// interpolation) joined by a control-char separator (outside the
+    /// character set of any header/method/path, so components can't
+    /// collide).
     fn derive_key(&self, ctx: &Context) -> String {
         let mut key = String::with_capacity(64);
         key.push_str(&self.id);
         for component in &self.cache_key {
             key.push('\u{1}');
-            key.push_str(&crate::vars::interpolate(ctx, component));
+            key.push_str(&component.render_with_legacy(ctx));
         }
         key
     }

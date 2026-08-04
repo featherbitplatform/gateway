@@ -6,15 +6,22 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Mutates either `Context.request` or `Context.response` (selected by
 /// `phase`): strips/adds a path prefix and adds/removes headers. Path
 /// rewriting only applies in the request phase; header names are lowercased
 /// before being applied. This plugin never fails at execution time.
+///
+/// `add_path_prefix` and `add_headers` values support `{{namespace.path}}`
+/// template references, rendered per request (see
+/// [`crate::vars::template::Template`]); `strip_path_prefix` and
+/// `remove_headers` are matchers, not emitted values, and are never
+/// templated.
 pub struct ProxyRewritePlugin {
     strip_path_prefix: Option<String>,
-    add_path_prefix: Option<String>,
-    add_headers: HashMap<String, String>,
+    add_path_prefix: Option<Template>,
+    add_headers: HashMap<String, Template>,
     remove_headers: Vec<String>,
     phase: RewritePhase,
 }
@@ -42,10 +49,13 @@ fn header_value_to_string(v: &serde_json::Value) -> Option<String> {
 /// - array form (UI editor): `add_headers: [{ name: x-foo, value: bar }]`
 ///
 /// Scalar values (numbers, bools) are stringified; array entries with a blank
-/// `name` are skipped; any other shape is an error at config load.
+/// `name` are skipped; any other shape is an error at config load. Each value
+/// is parsed into a [`Template`] (warnings discarded — Task 6 reports them);
+/// it renders `{{namespace.path}}` references per request and never touches
+/// `$var` syntax.
 fn parse_add_headers(
     config: &HashMap<String, serde_json::Value>,
-) -> Result<HashMap<String, String>, String> {
+) -> Result<HashMap<String, Template>, String> {
     let Some(raw) = config.get("add_headers") else {
         return Ok(HashMap::new());
     };
@@ -55,7 +65,7 @@ fn parse_add_headers(
             .iter()
             .map(|(k, v)| {
                 header_value_to_string(v)
-                    .map(|s| (k.clone(), s))
+                    .map(|s| (k.clone(), Template::parse(&s).0))
                     .ok_or_else(|| format!("add_headers['{}'] must be a scalar value", k))
             })
             .collect(),
@@ -75,7 +85,7 @@ fn parse_add_headers(
                     Some(v) => header_value_to_string(v)
                         .ok_or_else(|| format!("add_headers['{}'] must be a scalar value", name))?,
                 };
-                headers.insert(name.to_string(), value);
+                headers.insert(name.to_string(), Template::parse(&value).0);
             }
             Ok(headers)
         }
@@ -136,7 +146,7 @@ impl ProxyRewritePlugin {
         let add_path_prefix = config
             .get("add_path_prefix")
             .and_then(|v| v.as_str())
-            .map(String::from);
+            .map(|s| Template::parse(s).0);
 
         let add_headers = parse_add_headers(config)?;
 
@@ -187,16 +197,18 @@ impl Plugin for ProxyRewritePlugin {
 
                 // Add path prefix
                 if let Some(ref prefix) = self.add_path_prefix {
-                    ctx.request.path = format!("{}{}", prefix, ctx.request.path);
+                    let rendered = prefix.render(&ctx).into_owned();
+                    ctx.request.path = format!("{}{}", rendered, ctx.request.path);
                 }
 
                 // Add headers
-                for (key, value) in &self.add_headers {
+                for (key, tpl) in &self.add_headers {
+                    let value = tpl.render(&ctx).into_owned();
                     ctx.request
                         .headers
                         .entry(key.to_lowercase())
                         .or_default()
-                        .push(value.clone());
+                        .push(value);
                 }
 
                 // Remove headers (case-insensitive: the stored key may not be lowercase)
@@ -206,12 +218,13 @@ impl Plugin for ProxyRewritePlugin {
             }
             RewritePhase::Response => {
                 // Add headers to response
-                for (key, value) in &self.add_headers {
+                for (key, tpl) in &self.add_headers {
+                    let value = tpl.render(&ctx).into_owned();
                     ctx.response
                         .headers
                         .entry(key.to_lowercase())
                         .or_default()
-                        .push(value.clone());
+                        .push(value);
                 }
 
                 // Remove headers from response (case-insensitive)
@@ -408,6 +421,66 @@ mod tests {
 
         let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
         assert!(!result.context.response.headers.contains_key("x-internal"));
+    }
+
+    /// TDD (Task 3): an `add_headers` value templated with
+    /// `{{request.method}}` must render against the live request and reach
+    /// the upstream-bound request headers.
+    #[tokio::test]
+    async fn test_add_headers_value_renders_template() {
+        let mut config = HashMap::new();
+        config.insert(
+            "add_headers".to_string(),
+            serde_json::json!({ "x-method": "{{request.method}}" }),
+        );
+
+        let plugin = ProxyRewritePlugin::from_config(&config).unwrap();
+        let mut ctx = test_context("/test");
+        ctx.request.method = "POST".to_string();
+        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        assert_eq!(
+            result.context.request.headers.get("x-method"),
+            Some(&vec!["POST".to_string()])
+        );
+    }
+
+    /// TDD (Task 3): a literal `$` in an `add_headers` value (e.g. a password
+    /// fragment) must never be touched by the template engine — the safety
+    /// property this sweep exists to prove. Plain `render` never processes
+    /// `$var` syntax, unlike the legacy fields swept in Task 2.
+    #[tokio::test]
+    async fn test_add_headers_value_dollar_untouched() {
+        let mut config = HashMap::new();
+        config.insert(
+            "add_headers".to_string(),
+            serde_json::json!({ "x-secret": "pa$sword4" }),
+        );
+
+        let plugin = ProxyRewritePlugin::from_config(&config).unwrap();
+        let ctx = test_context("/test");
+        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        assert_eq!(
+            result.context.request.headers.get("x-secret"),
+            Some(&vec!["pa$sword4".to_string()])
+        );
+    }
+
+    /// TDD (Task 3): `add_path_prefix` renders `{{...}}` references too.
+    #[tokio::test]
+    async fn test_add_path_prefix_renders_template() {
+        let mut config = HashMap::new();
+        config.insert(
+            "add_path_prefix".to_string(),
+            serde_json::json!("/{{request.headers.x-tenant}}"),
+        );
+
+        let plugin = ProxyRewritePlugin::from_config(&config).unwrap();
+        let mut ctx = test_context("/users");
+        ctx.request
+            .headers
+            .insert("x-tenant".to_string(), vec!["acme".to_string()]);
+        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        assert_eq!(result.context.request.path, "/acme/users");
     }
 
     /// Header names are case-insensitive: a response header stored with a

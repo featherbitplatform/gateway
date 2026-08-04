@@ -17,10 +17,12 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 use crate::vars::{interpolate, resolve};
 
-/// Builds a redirect response from either a `uri` template (with `$var`
-/// interpolation) or the `http_to_https` shortcut.
+/// Builds a redirect response from either a `uri` template (with
+/// `{{namespace.path}}` references plus legacy `$var` interpolation) or the
+/// `http_to_https` shortcut.
 ///
 /// This plugin never fails at execution time. The only case where it does
 /// **not** redirect is `http_to_https` on a request that is already HTTPS
@@ -30,8 +32,10 @@ use crate::vars::{interpolate, resolve};
 pub struct RedirectPlugin {
     /// Redirect plain-HTTP requests to `https://$host$request_uri`.
     http_to_https: bool,
-    /// Redirect target template; `$var` / `${var}` are interpolated.
-    uri: Option<String>,
+    /// Redirect target template; supports `{{namespace.path}}` references and
+    /// legacy `$var` / `${var}` interpolation (see
+    /// [`Template::render_with_legacy`]).
+    uri_tpl: Option<Template>,
     /// Status code for `uri` redirects (`http_to_https` picks 301/308 itself).
     ret_code: u16,
     /// Append the original query string to the target.
@@ -43,10 +47,12 @@ impl RedirectPlugin {
     ///
     /// Accepted keys — exactly one of `uri` / `http_to_https: true` is
     /// required:
-    /// - `uri` (string): redirect target template. `$var` and `${var}`
-    ///   references are interpolated against the context (see
-    ///   [`crate::vars::interpolate`]), e.g. `/new$request_uri` or
-    ///   `https://$host/login`. Unknown variables resolve to `""`.
+    /// - `uri` (string): redirect target template. Supports
+    ///   `{{namespace.path}}` references (e.g. `{{request.host}}`) plus
+    ///   legacy `$var` / `${var}` interpolation against the context (see
+    ///   [`crate::vars::template::Template::render_with_legacy`]), e.g.
+    ///   `/new$request_uri` or `https://$host/login`. Unknown legacy
+    ///   variables resolve to `""`.
     /// - `http_to_https` (bool): redirect HTTP requests to
     ///   `https://$host$request_uri` with `301` for GET/HEAD and `308`
     ///   otherwise (so the method and body survive). Already-HTTPS requests
@@ -103,9 +109,13 @@ impl RedirectPlugin {
             );
         }
 
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let uri_tpl = uri.as_deref().map(|s| Template::parse(s).0);
+
         Ok(Self {
             http_to_https,
-            uri,
+            uri_tpl,
             ret_code,
             append_query_string,
         })
@@ -148,9 +158,11 @@ impl Plugin for RedirectPlugin {
             };
             (interpolate(&ctx, "https://$host$request_uri"), ret_code)
         } else {
-            // from_config guarantees `uri` is set in this branch.
-            let template = self.uri.as_deref().unwrap_or("");
-            let mut new_uri = interpolate(&ctx, template);
+            // from_config guarantees `uri_tpl` is set in this branch.
+            let mut new_uri = match &self.uri_tpl {
+                Some(tpl) => tpl.render_with_legacy(&ctx),
+                None => String::new(),
+            };
 
             if self.append_query_string {
                 if let Some(qs) = resolve(&ctx, "query_string") {
@@ -264,6 +276,25 @@ mod tests {
             Some(&vec!["https://example.com/moved/old/path".to_string()])
         );
         assert!(ctx.response.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_redirect_uri_superset_template_and_legacy_dollar() {
+        // The `uri` field must render both the new `{{...}}` template syntax
+        // and the legacy `$var` syntax in the same value (superset behavior).
+        let plugin = RedirectPlugin::from_config(&config(serde_json::json!({
+            "uri": "{{request.scheme}}://x$uri"
+        })))
+        .unwrap();
+
+        let result = plugin
+            .execute(test_context("/p"), &HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            result.context.response.headers.get("location"),
+            Some(&vec!["http://x/p".to_string()])
+        );
     }
 
     #[tokio::test]

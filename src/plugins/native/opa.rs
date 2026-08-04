@@ -30,6 +30,7 @@ use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Sends an OPA input document to an external policy server and routes on the
 /// returned decision: `allow: true` continues (success port), otherwise
@@ -46,8 +47,9 @@ pub struct OpaPlugin {
     /// Include the matched consumer object in the input document.
     with_consumer: bool,
     /// OPA-response header names copied onto the request forwarded upstream on
-    /// allow (lowercased). Empty means none are copied.
-    send_headers_upstream: Vec<String>,
+    /// allow (rendered per request, then lowercased). Empty means none are
+    /// copied. Supports `{{namespace.path}}` template references.
+    send_headers_upstream: Vec<Template>,
     /// Shared pooled HTTP client (from [`PluginResources`]).
     client: Arc<OutboundClient>,
 }
@@ -141,12 +143,14 @@ impl OpaPlugin {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
         let send_headers_upstream = config
             .get("send_headers_upstream")
             .and_then(|v| v.as_array())
             .map(|seq| {
                 seq.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                    .filter_map(|v| v.as_str().map(|s| Template::parse(s).0))
                     .collect()
             })
             .unwrap_or_default();
@@ -205,15 +209,14 @@ impl OpaPlugin {
     /// from the OPA response onto the request forwarded upstream. A configured
     /// header absent from the OPA response removes any client-supplied value.
     fn apply_allow(&self, ctx: &mut Context, decision: &OpaDecision) {
-        for name in &self.send_headers_upstream {
-            match decision.headers.get(name) {
+        for name_tpl in &self.send_headers_upstream {
+            let name = name_tpl.render(ctx).to_lowercase();
+            match decision.headers.get(&name) {
                 Some(value) => {
-                    ctx.request
-                        .headers
-                        .insert(name.clone(), vec![value.clone()]);
+                    ctx.request.headers.insert(name, vec![value.clone()]);
                 }
                 None => {
-                    ctx.request.headers.remove(name);
+                    ctx.request.headers.remove(&name);
                 }
             }
         }
@@ -647,6 +650,30 @@ mod tests {
             Some(&vec!["u42".to_string()])
         );
         assert!(!ctx.request.headers.contains_key("x-absent"));
+    }
+
+    #[test]
+    fn test_send_headers_upstream_name_renders_template() {
+        let p = plugin(serde_json::json!({
+            "host": "http://opa",
+            "policy": "p",
+            "send_headers_upstream": ["X-{{request.headers.x-suffix}}"]
+        }));
+        let mut ctx = test_ctx();
+        ctx.request
+            .headers
+            .insert("x-suffix".to_string(), vec!["User-Id".to_string()]);
+        let decision = OpaDecision {
+            allow: true,
+            status: None,
+            reason: None,
+            headers: HashMap::from([("x-user-id".to_string(), "u42".to_string())]),
+        };
+        p.apply_allow(&mut ctx, &decision);
+        assert_eq!(
+            ctx.request.headers.get("x-user-id"),
+            Some(&vec!["u42".to_string()])
+        );
     }
 
     #[test]
