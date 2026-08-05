@@ -71,6 +71,7 @@ pub mod request_validation;
 pub mod response_rewrite;
 pub mod serverless_post_function;
 pub mod serverless_pre_function;
+pub mod set_vars;
 pub mod skywalking;
 pub mod skywalking_logger;
 pub mod sls_logger;

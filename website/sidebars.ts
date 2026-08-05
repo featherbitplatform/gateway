@@ -56,6 +56,7 @@ const sidebars: SidebarsConfig = {
                 'reference/plugins/listener-client',
                 'reference/plugins/upstream',
                 'reference/plugins/proxy-rewrite',
+                'reference/plugins/set-vars',
                 'reference/plugins/response-rewrite',
                 'reference/plugins/body-transformer',
                 'reference/plugins/degraphql',
