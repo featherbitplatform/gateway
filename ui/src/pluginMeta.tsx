@@ -56,6 +56,7 @@ import {
   TriangleAlert,
   UserCheck,
   UserRound,
+  Variable,
   Waypoints,
   Webhook,
   Workflow,
@@ -119,6 +120,7 @@ export const pluginMeta: Record<string, PluginMeta> = {
   'request-validation': { color: '#eab308', icon: FileCheck },
   'body-transformer':   { color: '#22c55e', icon: Replace },
   degraphql:            { color: '#d946ef', icon: Waypoints },
+  'set-vars':           { color: '#10b981', icon: Variable },
   // Wave 2 — consumer/auth core.
   'hmac-auth':          { color: '#14b8a6', icon: FileSignature },
   'multi-auth':         { color: '#0ea5e9', icon: ShieldCheck },

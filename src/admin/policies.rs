@@ -190,6 +190,10 @@ fn plugin_catalog() -> Vec<serde_json::Value> {
             "degraphql",
             "Expose a REST endpoint backed by a GraphQL upstream",
         ),
+        (
+            "set-vars",
+            "Compute named variables into the context for downstream {{message.*}} reuse",
+        ),
         ("redirect", "HTTP redirect, or force HTTP→HTTPS"),
         ("echo", "Wrap or replace the response body (demo/testing)"),
         ("gzip", "Compress the response body with gzip"),

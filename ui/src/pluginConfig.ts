@@ -781,6 +781,13 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'variables', label: 'Variables', type: 'list', addLabel: 'Variable', item: { type: 'text', placeholder: 'name', template: 'full' }, hint: 'resolved from query params first, then JSON body fields' },
     { key: 'operation_name', label: 'Operation name', type: 'text', placeholder: 'ListPersons', hint: 'for multi-operation documents', template: 'full' },
   ],
+  'set-vars': [
+    { key: 'vars', label: 'Variables', type: 'objects', addLabel: 'Variable', itemLabel: 'Variable',
+      fields: [
+        { key: 'name', label: 'Name', type: 'text', placeholder: 'tenant' },
+        { key: 'value', label: 'Value', type: 'text', placeholder: '{{request.headers.x-tenant-id}}', template: 'full' },
+      ] },
+  ],
 };
 
 /**
