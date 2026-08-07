@@ -345,16 +345,12 @@ impl Plugin for OpenTelemetryPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, Value>,
     ) -> PluginResult {
         match self.phase {
             Phase::Start => self.run_start(&mut ctx),
             Phase::End => self.run_end(&ctx),
         }
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -465,7 +461,7 @@ mod tests {
     #[tokio::test]
     async fn start_creates_new_trace_and_injects_header() {
         let p = plugin(json!({ "phase": "start", "sampler": { "name": "always_on" } })).unwrap();
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
         // A span was stored...
         let span = load_span(&out.context).expect("span stored");
         assert!(span.parent_span_id.is_none());
@@ -484,7 +480,7 @@ mod tests {
             "traceparent".to_string(),
             vec!["00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_string()],
         );
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let span = load_span(&out.context).unwrap();
         assert_eq!(span.trace_id, "0af7651916cd43dd8448eb211c80319c");
         assert_eq!(span.parent_span_id.as_deref(), Some("b7ad6b7169203331"));
@@ -496,7 +492,7 @@ mod tests {
     #[tokio::test]
     async fn end_passes_through_without_span() {
         let p = plugin(json!({ "phase": "end" })).unwrap();
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
         assert_eq!(out.context.response.status_code, 200);
     }
 
@@ -506,7 +502,7 @@ mod tests {
         let mut ctx = test_ctx();
         store_span(&mut ctx, &a_span(true, None));
         // The spawned export is best-effort; we only assert execute returns Ok.
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.request.path, "/api/users");
     }
 
@@ -515,7 +511,7 @@ mod tests {
         let p = plugin(json!({ "phase": "end" })).unwrap();
         let mut ctx = test_ctx();
         store_span(&mut ctx, &a_span(false, None));
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.response.status_code, 200);
     }
 }

@@ -211,7 +211,6 @@ impl Plugin for LimitConnPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let key = self.resolve_key(&ctx);
         let counter = self.resources.traffic.conn.counter(&key);
@@ -247,10 +246,7 @@ impl Plugin for LimitConnPlugin {
                         error,
                     });
                 }
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             Role::Release => {
                 // Decrement, floored at zero so a stray release (e.g. an
@@ -268,10 +264,7 @@ impl Plugin for LimitConnPlugin {
                         Err(actual) => cur = actual,
                     }
                 }
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
         }
     }
@@ -385,17 +378,17 @@ mod tests {
 
         // conn=3, burst=0 → 3 concurrent allowed, the 4th rejected.
         for i in 0..3 {
-            let out = acquire.execute(ctx(), &HashMap::new()).await;
+            let out = acquire.execute(ctx()).await;
             assert!(out.is_ok(), "acquire #{} should be allowed", i + 1);
         }
-        let rejected = acquire.execute(ctx(), &HashMap::new()).await;
+        let rejected = acquire.execute(ctx()).await;
         let err = rejected.expect_err("4th concurrent acquire must be rejected");
         assert_eq!(err.error.code, "LIMIT_CONN_EXCEEDED");
         assert_eq!(err.context.response.status_code, 503);
 
         // Release one slot → the next acquire succeeds again.
-        release.execute(ctx(), &HashMap::new()).await.unwrap();
-        let out = acquire.execute(ctx(), &HashMap::new()).await;
+        release.execute(ctx()).await.unwrap();
+        let out = acquire.execute(ctx()).await;
         assert!(
             out.is_ok(),
             "acquire should succeed after a release freed a slot"
@@ -416,8 +409,8 @@ mod tests {
         )
         .unwrap();
         // Extra releases must not drive the counter negative.
-        release.execute(ctx(), &HashMap::new()).await.unwrap();
-        release.execute(ctx(), &HashMap::new()).await.unwrap();
+        release.execute(ctx()).await.unwrap();
+        release.execute(ctx()).await.unwrap();
         assert_eq!(r.traffic.conn.counter("const").load(Ordering::SeqCst), 0);
     }
 }

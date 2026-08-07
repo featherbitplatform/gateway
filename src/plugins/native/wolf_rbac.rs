@@ -247,7 +247,6 @@ impl Plugin for WolfRbacPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let token = match extract_rbac_token(&ctx.request.headers, &ctx.request.query_params) {
             Some(t) => t,
@@ -330,10 +329,7 @@ impl Plugin for WolfRbacPlugin {
         }
 
         if response.status == 200 {
-            Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            })
+            Ok(PluginOutput::success(ctx))
         } else {
             let reason = serde_json::from_slice::<serde_json::Value>(&response.body)
                 .ok()
@@ -459,7 +455,7 @@ mod tests {
             remote_addr: "1.2.3.4:5".into(),
             protocol: crate::context::Protocol::Http1,
         });
-        let err = plugin.execute(ctx, &HashMap::new()).await.unwrap_err();
+        let err = plugin.execute(ctx).await.unwrap_err();
         assert_eq!(err.error.code, "WOLF_RBAC_DENIED");
         assert_eq!(err.context.response.status_code, 401);
     }
@@ -485,6 +481,6 @@ mod tests {
             protocol: crate::context::Protocol::Http1,
         });
         // Parse failure is caught before any network call.
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_err());
+        assert!(plugin.execute(ctx).await.is_err());
     }
 }

@@ -276,7 +276,6 @@ impl Plugin for JweDecryptPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Fetch the token, stripping a Bearer prefix (case-insensitive).
         let raw = ctx
@@ -298,10 +297,7 @@ impl Plugin for JweDecryptPlugin {
                 if self.strict {
                     return Self::reject(ctx, "missing JWE token in request");
                 }
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         };
 
@@ -371,10 +367,7 @@ impl Plugin for JweDecryptPlugin {
                 ctx.request
                     .headers
                     .insert(self.forward_header.clone(), vec![value]);
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             None => Self::reject(ctx, "failed to decrypt JWE token"),
         }
@@ -466,7 +459,7 @@ mod tests {
         let plugin = JweDecryptPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
 
         let ctx = ctx_with_header("authorization", Some(&format!("Bearer {}", token)));
-        let out = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("x-decrypted"),
             Some(&vec!["hello-plaintext".to_string()])
@@ -503,7 +496,7 @@ mod tests {
         let plugin = JweDecryptPlugin::from_config(&cfg, &resources).unwrap();
 
         let ctx = ctx_with_header("authorization", Some(&token));
-        let out = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("x-decrypted"),
             Some(&vec!["consumer-body".to_string()])
@@ -522,7 +515,7 @@ mod tests {
 
         // Only 4 segments -> malformed.
         let ctx = ctx_with_header("authorization", Some("not.a.valid.jwe"));
-        let err = plugin.execute(ctx, &HashMap::new()).await.unwrap_err();
+        let err = plugin.execute(ctx).await.unwrap_err();
         assert_eq!(err.error.code, "JWE_INVALID");
         assert_eq!(err.context.response.status_code, 401);
     }
@@ -545,7 +538,7 @@ mod tests {
         );
         let plugin = JweDecryptPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
         let ctx = ctx_with_header("authorization", Some(&tampered));
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_err());
+        assert!(plugin.execute(ctx).await.is_err());
     }
 
     #[tokio::test]
@@ -559,6 +552,6 @@ mod tests {
         cfg.insert("strict".to_string(), serde_json::json!(false));
         let plugin = JweDecryptPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
         let ctx = ctx_with_header("authorization", None);
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_ok());
+        assert!(plugin.execute(ctx).await.is_ok());
     }
 }

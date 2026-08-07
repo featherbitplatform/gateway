@@ -393,7 +393,6 @@ impl Plugin for OpaPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -446,10 +445,7 @@ impl Plugin for OpaPlugin {
         }
 
         self.apply_allow(&mut ctx, &decision);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 

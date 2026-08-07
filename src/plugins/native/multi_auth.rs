@@ -131,7 +131,6 @@ impl Plugin for MultiAuthPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Snapshot the pristine response so a failed attempt's rejection body
         // never leaks onto the request if a later attempt succeeds.
@@ -139,7 +138,7 @@ impl Plugin for MultiAuthPlugin {
         let mut ctx = ctx;
 
         for sub in &self.sub_plugins {
-            match sub.execute(ctx, named_inputs).await {
+            match sub.execute(ctx).await {
                 Ok(output) => return Ok(output),
                 Err(err) => {
                     ctx = err.context;
@@ -195,7 +194,7 @@ mod tests {
                 .unwrap();
         // "beta" fails the first key-auth but passes the second -> Ok.
         let out = plugin
-            .execute(ctx_with_key(Some("beta")), &HashMap::new())
+            .execute(ctx_with_key(Some("beta")))
             .await
             .unwrap();
         // A prior failed attempt must not leave a 401 body behind.
@@ -208,7 +207,7 @@ mod tests {
             MultiAuthPlugin::from_config(&two_key_auth_config(), &PluginResources::empty())
                 .unwrap();
         let err = plugin
-            .execute(ctx_with_key(Some("gamma")), &HashMap::new())
+            .execute(ctx_with_key(Some("gamma")))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "MULTI_AUTH_FAILED");

@@ -380,7 +380,6 @@ impl Plugin for DingtalkAuthPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Never let a client-supplied X-Userinfo bleed through to the upstream.
         ctx.request.headers.remove("x-userinfo");
@@ -401,10 +400,7 @@ impl Plugin for DingtalkAuthPlugin {
         };
 
         attach_identity(&mut ctx, &userinfo, self.set_userinfo_header);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -559,7 +555,7 @@ mod tests {
     async fn test_missing_code_rejected_401() {
         let cfg = cfg(&[("app_key", "k"), ("app_secret", "s")]);
         let plugin = DingtalkAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
-        let out = plugin.execute(base_ctx(), &HashMap::new()).await;
+        let out = plugin.execute(base_ctx()).await;
         let err = out.unwrap_err();
         assert_eq!(err.context.response.status_code, 401);
         assert_eq!(err.error.code, "DINGTALK_AUTH_FAILED");

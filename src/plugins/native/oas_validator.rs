@@ -384,16 +384,12 @@ impl Plugin for OasValidatorPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Find the matching operation; no match → pass through (not our job to 404).
         let op = match self.match_operation(&ctx.request.method, &ctx.request.path) {
             Some(op) => op,
             None => {
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                return Ok(PluginOutput::success(ctx))
             }
         };
 
@@ -442,10 +438,7 @@ impl Plugin for OasValidatorPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -530,7 +523,7 @@ mod tests {
         c.request
             .headers
             .insert("x-trace".to_string(), vec!["abc".to_string()]);
-        assert!(p.execute(c, &HashMap::new()).await.is_ok());
+        assert!(p.execute(c).await.is_ok());
     }
 
     #[tokio::test]
@@ -541,7 +534,7 @@ mod tests {
             .headers
             .insert("x-trace".to_string(), vec!["abc".to_string()]);
         // no verbose query param
-        let err = p.execute(c, &HashMap::new()).await.unwrap_err();
+        let err = p.execute(c).await.unwrap_err();
         assert_eq!(err.error.code, "OAS_VALIDATION_FAILED");
         assert_eq!(err.context.response.status_code, 400);
         let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
@@ -555,7 +548,7 @@ mod tests {
         c.request
             .query_params
             .insert("verbose".to_string(), vec!["true".to_string()]);
-        let err = p.execute(c, &HashMap::new()).await.unwrap_err();
+        let err = p.execute(c).await.unwrap_err();
         assert_eq!(err.error.code, "OAS_VALIDATION_FAILED");
     }
 
@@ -568,7 +561,7 @@ mod tests {
             vec!["application/json".to_string()],
         );
         c.request.body = Bytes::from(r#"{"name":"jack"}"#);
-        assert!(p.execute(c, &HashMap::new()).await.is_ok());
+        assert!(p.execute(c).await.is_ok());
     }
 
     #[tokio::test]
@@ -581,7 +574,7 @@ mod tests {
         );
         // missing required "name" (via $ref schema)
         c.request.body = Bytes::from(r#"{"age":3}"#);
-        let err = p.execute(c, &HashMap::new()).await.unwrap_err();
+        let err = p.execute(c).await.unwrap_err();
         assert_eq!(err.error.code, "OAS_VALIDATION_FAILED");
     }
 
@@ -589,7 +582,7 @@ mod tests {
     async fn test_oas_required_body_missing_rejected() {
         let p = plugin();
         let c = ctx("POST", "/users/42"); // empty body, requestBody.required
-        let err = p.execute(c, &HashMap::new()).await.unwrap_err();
+        let err = p.execute(c).await.unwrap_err();
         assert_eq!(err.error.code, "OAS_VALIDATION_FAILED");
     }
 
@@ -598,13 +591,13 @@ mod tests {
         let p = plugin();
         // No operation for this path → pass through untouched.
         let out = p
-            .execute(ctx("GET", "/nope/here"), &HashMap::new())
+            .execute(ctx("GET", "/nope/here"))
             .await
             .unwrap();
         assert_eq!(out.context.response.status_code, 0);
         // wrong method on a known path also passes through
         assert!(p
-            .execute(ctx("DELETE", "/users/42"), &HashMap::new())
+            .execute(ctx("DELETE", "/users/42"))
             .await
             .is_ok());
     }

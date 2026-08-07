@@ -243,17 +243,13 @@ impl Plugin for AuthzCasbinPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let subject = self.subject(&ctx);
         let object = ctx.request.path.clone();
         let action = ctx.request.method.clone();
 
         match self.enforcer.enforce((subject, object, action)) {
-            Ok(true) => Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            }),
+            Ok(true) => Ok(PluginOutput::success(ctx)),
             Ok(false) => Self::deny(ctx),
             Err(e) => {
                 // An evaluation error (should not happen with a valid model)
@@ -348,7 +344,6 @@ g, alice, admin
         let out = plugin
             .execute(
                 ctx_for("GET", "/data", Some("alice"), None),
-                &HashMap::new(),
             )
             .await;
         assert!(out.is_ok());
@@ -362,7 +357,6 @@ g, alice, admin
         let out = plugin
             .execute(
                 ctx_for("GET", "/data", Some("nobody"), Some("alice")),
-                &HashMap::new(),
             )
             .await;
         assert!(out.is_ok());
@@ -374,7 +368,7 @@ g, alice, admin
             AuthzCasbinPlugin::from_config(&inline_config(), &PluginResources::empty()).unwrap();
         // bob has no role -> denied
         let err = plugin
-            .execute(ctx_for("GET", "/data", Some("bob"), None), &HashMap::new())
+            .execute(ctx_for("GET", "/data", Some("bob"), None))
             .await
             .unwrap_err();
         assert_eq!(err.context.response.status_code, 403);
@@ -389,7 +383,6 @@ g, alice, admin
         let err = plugin
             .execute(
                 ctx_for("POST", "/data", Some("alice"), None),
-                &HashMap::new(),
             )
             .await
             .unwrap_err();

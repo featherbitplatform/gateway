@@ -96,7 +96,6 @@ impl Plugin for RequestIdPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Keep a client-supplied id; generate one otherwise (APISIX rewrite phase).
         let id = match first_non_empty(&ctx.request.headers, &self.header_name) {
@@ -120,10 +119,7 @@ impl Plugin for RequestIdPlugin {
                 .insert(self.header_name.clone(), vec![id]);
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -160,7 +156,7 @@ mod tests {
     async fn test_request_id_generates_uuid_when_absent() {
         let plugin = RequestIdPlugin::from_config(&HashMap::new()).unwrap();
         let result = plugin
-            .execute(test_context(), &HashMap::new())
+            .execute(test_context())
             .await
             .unwrap();
         let ctx = result.context;
@@ -186,7 +182,7 @@ mod tests {
             .headers
             .insert("x-request-id".to_string(), vec!["client-id-1".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.request.headers.get("x-request-id"),
             Some(&vec!["client-id-1".to_string()])
@@ -205,7 +201,7 @@ mod tests {
             .headers
             .insert("x-request-id".to_string(), vec!["".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         let req_id = &result.context.request.headers.get("x-request-id").unwrap()[0];
         assert!(uuid::Uuid::parse_str(req_id).is_ok());
     }
@@ -219,7 +215,7 @@ mod tests {
         );
         let plugin = RequestIdPlugin::from_config(&config).unwrap();
         let result = plugin
-            .execute(test_context(), &HashMap::new())
+            .execute(test_context())
             .await
             .unwrap();
         assert!(result
@@ -235,7 +231,7 @@ mod tests {
         config.insert("include_in_response".to_string(), serde_json::json!(false));
         let plugin = RequestIdPlugin::from_config(&config).unwrap();
         let result = plugin
-            .execute(test_context(), &HashMap::new())
+            .execute(test_context())
             .await
             .unwrap();
         assert!(!result.context.response.headers.contains_key("x-request-id"));
@@ -249,7 +245,7 @@ mod tests {
             .headers
             .insert("x-request-id".to_string(), vec!["upstream-id".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.response.headers.get("x-request-id"),
             Some(&vec!["upstream-id".to_string()])

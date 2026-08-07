@@ -143,7 +143,6 @@ impl Plugin for EchoPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Body mutation (always: from_config requires at least one body key).
         let current: Bytes = match &self.body {
@@ -190,10 +189,7 @@ impl Plugin for EchoPlugin {
                 .insert(name.clone(), vec![value.clone()]);
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -275,7 +271,7 @@ mod tests {
             .headers
             .insert("content-length".to_string(), vec!["13".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.response.body, Bytes::from("replaced"));
         // Stale content-length dropped per the body-mutation convention.
         assert!(!result
@@ -294,7 +290,7 @@ mod tests {
         .unwrap();
 
         let result = plugin
-            .execute(test_context("upstream"), &HashMap::new())
+            .execute(test_context("upstream"))
             .await
             .unwrap();
         assert_eq!(
@@ -313,7 +309,7 @@ mod tests {
         .unwrap();
 
         let result = plugin
-            .execute(test_context("ignored"), &HashMap::new())
+            .execute(test_context("ignored"))
             .await
             .unwrap();
         assert_eq!(result.context.response.body, Bytes::from("a|mid|z"));
@@ -335,7 +331,7 @@ mod tests {
             .headers
             .insert("content-length".to_string(), vec!["28".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         let ctx = result.context;
         assert_eq!(ctx.response.body, Bytes::from("pre|upstream"));
         assert!(!ctx.response.headers.contains_key("content-encoding"));
@@ -355,7 +351,7 @@ mod tests {
         .unwrap();
 
         let result = plugin
-            .execute(test_context("upstream"), &HashMap::new())
+            .execute(test_context("upstream"))
             .await
             .unwrap();
         let headers = &result.context.response.headers;
@@ -381,7 +377,7 @@ mod tests {
             .headers
             .insert("x-served-by".to_string(), vec!["upstream-host".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         let headers = &result.context.response.headers;
         // Name lowercased, existing value replaced (not appended).
         assert_eq!(

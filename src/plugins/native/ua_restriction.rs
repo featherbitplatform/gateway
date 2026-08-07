@@ -156,7 +156,6 @@ impl Plugin for UaRestrictionPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let user_agents: Vec<&str> = ctx
             .request
@@ -167,10 +166,7 @@ impl Plugin for UaRestrictionPlugin {
 
         if user_agents.is_empty() {
             if self.bypass_missing {
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
             return self.reject(ctx);
         }
@@ -191,10 +187,7 @@ impl Plugin for UaRestrictionPlugin {
             return self.reject(ctx);
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -278,7 +271,7 @@ mod tests {
         .unwrap();
 
         let err = plugin
-            .execute(test_context(Some("curl/8.1.2")), &HashMap::new())
+            .execute(test_context(Some("curl/8.1.2")))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "UA_RESTRICTED");
@@ -286,7 +279,7 @@ mod tests {
 
         // non-matching UA passes
         assert!(plugin
-            .execute(test_context(Some("Mozilla/5.0")), &HashMap::new())
+            .execute(test_context(Some("Mozilla/5.0")))
             .await
             .is_ok());
     }
@@ -299,16 +292,16 @@ mod tests {
         .unwrap();
 
         assert!(plugin
-            .execute(test_context(Some("Mozilla/5.0")), &HashMap::new())
+            .execute(test_context(Some("Mozilla/5.0")))
             .await
             .is_ok());
         // trimmed before matching (APISIX str_strip parity)
         assert!(plugin
-            .execute(test_context(Some("  Mozilla/5.0  ")), &HashMap::new())
+            .execute(test_context(Some("  Mozilla/5.0  ")))
             .await
             .is_ok());
         assert!(plugin
-            .execute(test_context(Some("curl/8.1.2")), &HashMap::new())
+            .execute(test_context(Some("curl/8.1.2")))
             .await
             .is_err());
     }
@@ -321,7 +314,7 @@ mod tests {
         .unwrap();
         // default: missing UA is rejected
         assert!(deny
-            .execute(test_context(None), &HashMap::new())
+            .execute(test_context(None))
             .await
             .is_err());
 
@@ -330,7 +323,7 @@ mod tests {
         })))
         .unwrap();
         assert!(bypass
-            .execute(test_context(None), &HashMap::new())
+            .execute(test_context(None))
             .await
             .is_ok());
     }
@@ -342,7 +335,7 @@ mod tests {
         })))
         .unwrap();
         let err = plugin
-            .execute(test_context(Some("curl/8.1.2")), &HashMap::new())
+            .execute(test_context(Some("curl/8.1.2")))
             .await
             .unwrap_err();
         assert_eq!(err.context.response.status_code, 405);
