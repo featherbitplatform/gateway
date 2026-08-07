@@ -248,7 +248,6 @@ impl Plugin for BodyTransformerPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         if let Some(template) = &self.request {
             let parsed = match parse_body(&ctx.request.body) {
@@ -294,10 +293,7 @@ impl Plugin for BodyTransformerPlugin {
             ctx.response.headers.remove("content-encoding");
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -358,7 +354,7 @@ mod tests {
             r#"{"name":"{{body.user.name}}","first_tag":"{{body.user.tags.0}}","count":{{body.count}},"uri":"$uri","trace":"{{$http_x_request_id}}"}"#,
         );
         let ctx = test_context(r#"{"user":{"name":"jack","tags":["a","b"]},"count":7}"#, "");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(parsed["name"], "jack");
         assert_eq!(parsed["first_tag"], "a");
@@ -372,7 +368,7 @@ mod tests {
     async fn test_body_transformer_missing_fields_render_empty() {
         let p = request_plugin("[{{body.missing.deep}}][{{body.n}}][{{$arg_nope}}]");
         let ctx = test_context(r#"{"n":null}"#, "");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.request.body, Bytes::from("[][][]"));
     }
 
@@ -380,7 +376,7 @@ mod tests {
     async fn test_body_transformer_whole_body_and_containers() {
         let p = request_plugin(r#"{"wrapped":{{body}},"list":{{body.list}}}"#);
         let ctx = test_context(r#"{"list":[1,2]}"#, "");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(parsed["wrapped"], serde_json::json!({"list": [1, 2]}));
         assert_eq!(parsed["list"], serde_json::json!([1, 2]));
@@ -390,7 +386,7 @@ mod tests {
     async fn test_body_transformer_empty_body_renders() {
         let p = request_plugin(r#"{"q":"$arg_page","body_was":"{{body}}"}"#);
         let ctx = test_context("", "");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(parsed["q"], "3");
         assert_eq!(parsed["body_was"], "");
@@ -400,7 +396,7 @@ mod tests {
     async fn test_body_transformer_invalid_request_body_errors() {
         let p = request_plugin("{{body.a}}");
         let ctx = test_context("not json", "");
-        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
+        let err = p.execute(ctx).await.unwrap_err();
         assert_eq!(err.error.code, "BODY_DECODE_FAILED");
         assert_eq!(err.context.response.status_code, 400);
     }
@@ -414,7 +410,7 @@ mod tests {
         );
         let p = BodyTransformerPlugin::from_config(&config).unwrap();
         let ctx = test_context("", r#"{"result":"ok"}"#);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(parsed["status"], "ok");
         assert_eq!(parsed["code"], 200);
@@ -435,7 +431,7 @@ mod tests {
         ctx.response
             .headers
             .insert("content-encoding".to_string(), vec!["gzip".to_string()]);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.response.body, Bytes::from("value=9"));
         // decoded body left plain -> encoding header removed
         assert!(!out

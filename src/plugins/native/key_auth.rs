@@ -162,7 +162,6 @@ impl Plugin for KeyAuthPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Try header first
         let key = ctx
@@ -189,10 +188,7 @@ impl Plugin for KeyAuthPlugin {
                 if self.hide_credentials {
                     self.strip_credential(&mut ctx);
                 }
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         }
 
@@ -205,10 +201,7 @@ impl Plugin for KeyAuthPlugin {
                         self.strip_credential(&mut ctx);
                     }
                     attach_consumer(&mut ctx, &consumer, "key-auth");
-                    return Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    });
+                    return Ok(PluginOutput::success(ctx));
                 }
             }
         }
@@ -218,10 +211,7 @@ impl Plugin for KeyAuthPlugin {
             let store = self.resources.consumers.load();
             if let Some(consumer) = store.get(name) {
                 attach_consumer(&mut ctx, &consumer, "key-auth");
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         }
 
@@ -287,7 +277,7 @@ mod tests {
         let plugin = KeyAuthPlugin::from_config(&config, &resources).unwrap();
 
         let result = plugin
-            .execute(ctx_with_key(Some("alice-key")), &HashMap::new())
+            .execute(ctx_with_key(Some("alice-key")))
             .await
             .unwrap();
         let ctx = result.context;
@@ -310,7 +300,7 @@ mod tests {
         config.insert("use_consumers".to_string(), serde_json::json!(true));
         let plugin = KeyAuthPlugin::from_config(&config, &resources).unwrap();
         assert!(plugin
-            .execute(ctx_with_key(Some("wrong")), &HashMap::new())
+            .execute(ctx_with_key(Some("wrong")))
             .await
             .is_err());
 
@@ -319,7 +309,7 @@ mod tests {
         config.insert("anonymous_consumer".to_string(), serde_json::json!("guest"));
         let plugin = KeyAuthPlugin::from_config(&config, &resources).unwrap();
         let result = plugin
-            .execute(ctx_with_key(None), &HashMap::new())
+            .execute(ctx_with_key(None))
             .await
             .unwrap();
         assert_eq!(
@@ -334,11 +324,11 @@ mod tests {
         config.insert("keys".to_string(), serde_json::json!(["k1"]));
         let plugin = KeyAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
         assert!(plugin
-            .execute(ctx_with_key(Some("k1")), &HashMap::new())
+            .execute(ctx_with_key(Some("k1")))
             .await
             .is_ok());
         assert!(plugin
-            .execute(ctx_with_key(Some("k2")), &HashMap::new())
+            .execute(ctx_with_key(Some("k2")))
             .await
             .is_err());
     }

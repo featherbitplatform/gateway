@@ -127,7 +127,6 @@ impl Plugin for ErrorPagePlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Only gateway-generated responses are intercepted (APISIX skips
         // responses sourced from the upstream).
@@ -146,10 +145,7 @@ impl Plugin for ErrorPagePlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -209,7 +205,7 @@ mod tests {
             }
         }));
         let out = p
-            .execute(test_context(502, true), &HashMap::new())
+            .execute(test_context(502, true))
             .await
             .unwrap();
         assert_eq!(
@@ -228,7 +224,7 @@ mod tests {
     async fn test_error_page_default_body_and_content_type() {
         let p = plugin(serde_json::json!({ "error_503": {} }));
         let out = p
-            .execute(test_context(503, true), &HashMap::new())
+            .execute(test_context(503, true))
             .await
             .unwrap();
         let body = String::from_utf8(out.context.response.body.to_vec()).unwrap();
@@ -246,7 +242,7 @@ mod tests {
         // the upstream and must pass through untouched.
         let p = plugin(serde_json::json!({ "error_502": {} }));
         let out = p
-            .execute(test_context(502, false), &HashMap::new())
+            .execute(test_context(502, false))
             .await
             .unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");
@@ -262,7 +258,7 @@ mod tests {
         let p = plugin(serde_json::json!({ "error_502": {} }));
         // 500 is a supported status but has no configured page here.
         let out = p
-            .execute(test_context(500, true), &HashMap::new())
+            .execute(test_context(500, true))
             .await
             .unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");
@@ -270,7 +266,7 @@ mod tests {
         // Non-error statuses always pass through.
         let p = plugin(serde_json::json!({ "error_502": {} }));
         let out = p
-            .execute(test_context(200, true), &HashMap::new())
+            .execute(test_context(200, true))
             .await
             .unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");

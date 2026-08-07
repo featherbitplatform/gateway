@@ -213,7 +213,6 @@ impl Plugin for UpstreamPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let target_idx = self.balancer.select(&ctx.request.remote_addr);
         let target = self.balancer.target(target_idx);
@@ -250,10 +249,7 @@ impl Plugin for UpstreamPlugin {
                 );
             }
             ctx.response.status_code = 101;
-            return Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            });
+            return Ok(PluginOutput::success(ctx));
         }
 
         let _in_flight_guard = self.balancer.acquire(target_idx);
@@ -331,10 +327,7 @@ impl Plugin for UpstreamPlugin {
         ctx.response.headers = response.headers;
         ctx.response.body = response.body;
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -424,7 +417,7 @@ mod tests {
 
         // No target is reachable, but the WS branch must NOT do a round-trip —
         // it resolves the target and returns a 101 without any network call.
-        let out = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = plugin.execute(ctx).await.unwrap();
         assert_eq!(out.context.response.status_code, 101);
         assert_eq!(
             out.context.message.get("__ws_upstream_host").unwrap(),

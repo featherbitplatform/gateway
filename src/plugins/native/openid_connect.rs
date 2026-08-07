@@ -616,10 +616,7 @@ impl OpenidConnectPlugin {
                         .insert("x-access-token".to_string(), vec![tok.clone()]);
                 }
             }
-            return Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            });
+            return Ok(PluginOutput::success(ctx));
         }
 
         // No session → begin the Authorization Code flow.
@@ -1326,7 +1323,6 @@ impl Plugin for OpenidConnectPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Strip any client-supplied userinfo header before authentication.
         ctx.request.headers.remove("x-userinfo");
@@ -1358,10 +1354,7 @@ impl Plugin for OpenidConnectPlugin {
         match result {
             Ok(claims) => {
                 self.attach(&mut ctx, claims, &token);
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             Err(e) => Self::reject(ctx, &e),
         }

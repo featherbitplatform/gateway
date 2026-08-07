@@ -116,7 +116,6 @@ impl Plugin for ExitTransformerPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Gate: gateway-generated exits only, unless `always`.
         let applies = self.always || !ctx.errors.is_empty();
@@ -138,10 +137,7 @@ impl Plugin for ExitTransformerPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -198,7 +194,7 @@ mod tests {
             "body": "{\"status\": $status, \"path\": \"$uri\"}"
         }));
         let out = p
-            .execute(test_context(502, true), &HashMap::new())
+            .execute(test_context(502, true))
             .await
             .unwrap();
         assert_eq!(out.context.response.status_code, 503);
@@ -218,7 +214,7 @@ mod tests {
         }));
         // 502 from the upstream itself: no gateway errors → passthrough.
         let out = p
-            .execute(test_context(502, false), &HashMap::new())
+            .execute(test_context(502, false))
             .await
             .unwrap();
         assert_eq!(out.context.response.status_code, 502);
@@ -233,7 +229,7 @@ mod tests {
             "always": true
         }));
         let out = p
-            .execute(test_context(502, false), &HashMap::new())
+            .execute(test_context(502, false))
             .await
             .unwrap();
         assert_eq!(out.context.response.status_code, 503);
@@ -248,7 +244,7 @@ mod tests {
             "status_map": { "502": 503 }
         }));
         let out = p
-            .execute(test_context(401, true), &HashMap::new())
+            .execute(test_context(401, true))
             .await
             .unwrap();
         assert_eq!(out.context.response.status_code, 401);

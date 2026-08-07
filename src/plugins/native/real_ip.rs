@@ -195,13 +195,9 @@ impl Plugin for RealIpPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let passthrough = |ctx: Context| {
-            Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            })
+            Ok(PluginOutput::success(ctx))
         };
 
         // Only rewrite when the DIRECT peer is a trusted proxy.
@@ -308,7 +304,7 @@ mod tests {
             .headers
             .insert("x-real-ip".to_string(), vec!["203.0.113.7".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         // Source had no port: the original peer port is kept.
         assert_eq!(result.context.request.remote_addr, "203.0.113.7:5000");
     }
@@ -326,7 +322,7 @@ mod tests {
             .headers
             .insert("x-real-ip".to_string(), vec!["203.0.113.7".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.request.remote_addr, "198.51.100.9:5000");
     }
 
@@ -340,7 +336,7 @@ mod tests {
 
         // Header absent
         let ctx = test_context("127.0.0.1:5000");
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.request.remote_addr, "127.0.0.1:5000");
 
         // Header present but not an IP
@@ -348,7 +344,7 @@ mod tests {
         ctx.request
             .headers
             .insert("x-real-ip".to_string(), vec!["unknown".to_string()]);
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.request.remote_addr, "127.0.0.1:5000");
     }
 
@@ -366,7 +362,7 @@ mod tests {
             vec!["203.0.113.7, 10.1.1.1, 10.2.2.2".to_string()],
         );
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.request.remote_addr, "10.2.2.2:5000");
     }
 
@@ -386,7 +382,7 @@ mod tests {
             "x-forwarded-for".to_string(),
             vec!["203.0.113.7, 10.1.1.1, 10.2.2.2".to_string()],
         );
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.request.remote_addr, "203.0.113.7:5000");
 
         // Every hop trusted: fall back to the leftmost entry.
@@ -395,7 +391,7 @@ mod tests {
             "x-forwarded-for".to_string(),
             vec!["10.9.9.9, 10.1.1.1".to_string()],
         );
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.request.remote_addr, "10.9.9.9:5000");
     }
 
@@ -412,7 +408,7 @@ mod tests {
             "x-real-ip".to_string(),
             vec!["203.0.113.7:8443".to_string()],
         );
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.request.remote_addr, "203.0.113.7:8443");
     }
 
@@ -429,14 +425,14 @@ mod tests {
             "x-real-ip".to_string(),
             vec!["[2001:db8::1]:9000".to_string()],
         );
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.request.remote_addr, "[2001:db8::1]:9000");
 
         let mut ctx = test_context("127.0.0.1:5000");
         ctx.request
             .headers
             .insert("x-real-ip".to_string(), vec!["2001:db8::1".to_string()]);
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         // Bare v6 source, original peer port kept, bracketed for ip:port form.
         assert_eq!(result.context.request.remote_addr, "[2001:db8::1]:5000");
     }

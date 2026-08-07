@@ -350,16 +350,12 @@ impl Plugin for TrafficSplitPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // No rule matched → fall through to the route's normal upstream.
         let rule = match self.select_rule(&ctx) {
             Some(rule) => rule,
             None => {
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                return Ok(PluginOutput::success(ctx))
             }
         };
 
@@ -367,10 +363,7 @@ impl Plugin for TrafficSplitPlugin {
         let targets = match &slot.targets {
             // Default slot → fall through to the normal upstream (success port).
             None => {
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                return Ok(PluginOutput::success(ctx))
             }
             Some(targets) => targets,
         };
@@ -543,7 +536,7 @@ mod tests {
             "rules": [{ "weighted_upstreams": [{ "weight": 1 }] }]
         }))
         .unwrap();
-        let out = p.execute(test_ctx(None), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx(None)).await.unwrap();
         assert_eq!(out.context.response.status_code, 0);
     }
 
@@ -561,7 +554,7 @@ mod tests {
         .unwrap();
         // canary != yes → no rule matches → Ok passthrough, no proxy attempt.
         let out = p
-            .execute(test_ctx(Some("no")), &HashMap::new())
+            .execute(test_ctx(Some("no")))
             .await
             .unwrap();
         assert_eq!(out.context.response.status_code, 0);

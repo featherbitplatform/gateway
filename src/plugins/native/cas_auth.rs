@@ -325,10 +325,7 @@ impl CasAuthPlugin {
         // 1. Valid session cookie → authenticate straight from it.
         if let Some(user) = self.read_session(&ctx) {
             self.attach_user(&mut ctx, &user);
-            return Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            });
+            return Ok(PluginOutput::success(ctx));
         }
 
         // 2. Callback: a CAS ticket came back on the service URL. Validate it,
@@ -363,10 +360,7 @@ impl CasAuthPlugin {
         match self.cas_validate(&ctx, &ticket).await {
             Ok(user) => {
                 self.attach_user(&mut ctx, &user);
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             Err(reason) => self.reject(ctx, &reason),
         }
@@ -501,7 +495,6 @@ impl Plugin for CasAuthPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         if self.sealer.is_some() {
             self.execute_interactive(ctx).await
@@ -693,7 +686,7 @@ mod tests {
     async fn test_missing_ticket_rejected() {
         let p = plugin();
         let err = p
-            .execute(ctx("/", HashMap::new()), &HashMap::new())
+            .execute(ctx("/", HashMap::new()))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "CAS_AUTH_FAILED");
@@ -723,7 +716,7 @@ mod tests {
         let p = CasAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
 
         let err = p
-            .execute(ctx("/dashboard", HashMap::new()), &HashMap::new())
+            .execute(ctx("/dashboard", HashMap::new()))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "CAS_REDIRECT");
@@ -761,7 +754,7 @@ mod tests {
             vec![format!("cas_session={}", sealed)],
         );
 
-        let out = p.execute(c, &HashMap::new()).await.unwrap();
+        let out = p.execute(c).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("x-cas-user").unwrap()[0],
             "dave"
@@ -781,7 +774,7 @@ mod tests {
         let p = CasAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
 
         let err = p
-            .execute(ctx("/logout", HashMap::new()), &HashMap::new())
+            .execute(ctx("/logout", HashMap::new()))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "CAS_REDIRECT");

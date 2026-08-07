@@ -59,7 +59,6 @@ impl Plugin for LoggingPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let mut fields = serde_json::json!({
             "method": ctx.request.method,
@@ -83,10 +82,7 @@ impl Plugin for LoggingPlugin {
 
         info!(target: "access_log", "{}", fields);
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -130,7 +126,7 @@ mod tests {
         map.insert("include_headers".to_string(), serde_json::json!(true));
         let plugin = LoggingPlugin::from_config(&map).unwrap();
 
-        let out = plugin.execute(ctx(), &HashMap::new()).await.unwrap();
+        let out = plugin.execute(ctx()).await.unwrap();
         // A logger must not mutate the traffic it observes.
         assert_eq!(out.context.response.status_code, 200);
         assert_eq!(out.context.response.body, Bytes::from_static(b"resp"));

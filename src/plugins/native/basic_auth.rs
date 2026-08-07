@@ -151,7 +151,6 @@ impl Plugin for BasicAuthPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let auth_header = ctx
             .request
@@ -184,10 +183,7 @@ impl Plugin for BasicAuthPlugin {
                         "user".to_string(),
                         serde_json::Value::String(username.clone()),
                     );
-                    return Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    });
+                    return Ok(PluginOutput::success(ctx));
                 }
             }
         }
@@ -212,10 +208,7 @@ impl Plugin for BasicAuthPlugin {
                             "user".to_string(),
                             serde_json::Value::String(username.clone()),
                         );
-                        return Ok(PluginOutput {
-                            context: ctx,
-                            named_outputs: HashMap::new(),
-                        });
+                        return Ok(PluginOutput::success(ctx));
                     }
                 }
             }
@@ -230,10 +223,7 @@ impl Plugin for BasicAuthPlugin {
                     "user".to_string(),
                     serde_json::Value::String(consumer.name.clone()),
                 );
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         }
 
@@ -406,7 +396,6 @@ mod tests {
         let ok = plugin
             .execute(
                 ctx_with_auth(Some(&basic("alice", "s3cret"))),
-                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -418,7 +407,6 @@ mod tests {
         assert!(plugin
             .execute(
                 ctx_with_auth(Some(&basic("alice", "wrong"))),
-                &HashMap::new()
             )
             .await
             .is_err());
@@ -432,7 +420,6 @@ mod tests {
         let ok = plugin
             .execute(
                 ctx_with_auth(Some(&basic("alice", "s3cret"))),
-                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -445,13 +432,12 @@ mod tests {
         assert!(plugin
             .execute(
                 ctx_with_auth(Some(&basic("alice", "nope"))),
-                &HashMap::new()
             )
             .await
             .is_err());
         // missing header
         assert!(plugin
-            .execute(ctx_with_auth(None), &HashMap::new())
+            .execute(ctx_with_auth(None))
             .await
             .is_err());
     }
@@ -463,7 +449,7 @@ mod tests {
         let plugin = BasicAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
 
         let err = plugin
-            .execute(ctx_with_auth(None), &HashMap::new())
+            .execute(ctx_with_auth(None))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "UNAUTHORIZED");
@@ -483,7 +469,7 @@ mod tests {
         let plugin = BasicAuthPlugin::from_config(&config, &resources).unwrap();
 
         let out = plugin
-            .execute(ctx_with_auth(Some(&basic("alice", "pw"))), &HashMap::new())
+            .execute(ctx_with_auth(Some(&basic("alice", "pw"))))
             .await
             .unwrap();
         let ctx = out.context;
@@ -503,7 +489,6 @@ mod tests {
         assert!(plugin
             .execute(
                 ctx_with_auth(Some(&basic("alice", "wrong"))),
-                &HashMap::new()
             )
             .await
             .is_err());
@@ -518,7 +503,7 @@ mod tests {
         let plugin = BasicAuthPlugin::from_config(&config, &resources).unwrap();
 
         let out = plugin
-            .execute(ctx_with_auth(None), &HashMap::new())
+            .execute(ctx_with_auth(None))
             .await
             .unwrap();
         assert_eq!(

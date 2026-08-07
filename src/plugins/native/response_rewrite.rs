@@ -423,15 +423,11 @@ impl Plugin for ResponseRewritePlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // `vars` gate: when configured and false, the node is a no-op.
         if let Some(expr) = &self.vars {
             if !expr.eval(&ctx) {
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         }
 
@@ -464,10 +460,7 @@ impl Plugin for ResponseRewritePlugin {
             crate::plugins::util::headers::remove_ci(&mut ctx.response.headers, name);
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -514,7 +507,7 @@ mod tests {
             "body": "not found\n"
         }));
         let ctx = test_context(200, b"original");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.response.status_code, 404);
         assert_eq!(out.context.response.body.as_ref(), b"not found\n");
         // Body-mutation convention: stale content-length is gone.
@@ -528,7 +521,7 @@ mod tests {
             "body_base64": true
         }));
         let ctx = test_context(200, b"x");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"hello world");
     }
 
@@ -634,7 +627,7 @@ mod tests {
             .headers
             .insert("x-server".to_string(), vec!["nginx".to_string()]);
 
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let headers = &out.context.response.headers;
         // add appends alongside the existing value
         assert_eq!(
@@ -659,7 +652,7 @@ mod tests {
             "headers": { "X-Flat": "yes" }
         }));
         let ctx = test_context(200, b"body");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.response.headers.get("x-flat"),
             Some(&vec!["yes".to_string()])
@@ -674,7 +667,7 @@ mod tests {
             }
         }));
         let ctx = test_context(201, b"body");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.response.headers.get("x-origin"),
             Some(&vec!["127.0.0.1".to_string()])
@@ -691,7 +684,7 @@ mod tests {
             "filters": [{ "regex": "foo", "replace": "bar" }]
         }));
         let ctx = test_context(200, b"foo foo foo");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"bar foo foo");
         assert!(!out.context.response.headers.contains_key("content-length"));
 
@@ -699,7 +692,7 @@ mod tests {
             "filters": [{ "regex": "FOO", "replace": "bar", "scope": "global", "options": "i" }]
         }));
         let ctx = test_context(200, b"foo Foo fOO");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"bar bar bar");
     }
 
@@ -719,7 +712,7 @@ mod tests {
             .headers
             .insert("etag".to_string(), vec!["\"abc\"".to_string()]);
 
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         // Body is decoded, filtered, and left decoded (as in APISIX).
         assert_eq!(out.context.response.body.as_ref(), b"hello decoded world");
         let headers = &out.context.response.headers;
@@ -738,7 +731,7 @@ mod tests {
             .headers
             .insert("content-encoding".to_string(), vec!["zstd".to_string()]);
 
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         // Unsupported encoding: body and headers untouched.
         assert_eq!(out.context.response.body.as_ref(), b"foo body");
         assert_eq!(
@@ -758,7 +751,7 @@ mod tests {
             .headers
             .insert("content-encoding".to_string(), vec!["gzip".to_string()]);
 
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"\x00not gzip\xff");
         assert!(out
             .context
@@ -779,7 +772,7 @@ mod tests {
         // Gate matches → rewrite applies.
         let p = plugin(config.clone());
         let out = p
-            .execute(test_context(200, b"orig"), &HashMap::new())
+            .execute(test_context(200, b"orig"))
             .await
             .unwrap();
         assert_eq!(out.context.response.status_code, 500);
@@ -788,7 +781,7 @@ mod tests {
         // Gate does not match → complete passthrough.
         let p = plugin(config);
         let out = p
-            .execute(test_context(404, b"orig"), &HashMap::new())
+            .execute(test_context(404, b"orig"))
             .await
             .unwrap();
         assert_eq!(out.context.response.status_code, 404);

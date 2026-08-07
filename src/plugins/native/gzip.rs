@@ -207,7 +207,6 @@ impl Plugin for GzipPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let skip = !accepts_encoding(&ctx, "gzip")
             || response_already_encoded(&ctx)
@@ -240,10 +239,7 @@ impl Plugin for GzipPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -296,7 +292,7 @@ mod tests {
     async fn test_gzip_compresses_matching_response() {
         let p = plugin(serde_json::json!({ "vary": true }));
         let ctx = compressible_context(BODY, "text/html; charset=utf-8");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
 
         let headers = &out.context.response.headers;
         assert_eq!(
@@ -319,7 +315,7 @@ mod tests {
         let p = plugin(serde_json::json!({}));
         let mut ctx = compressible_context(BODY, "text/html");
         ctx.request.headers.remove("accept-encoding");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), BODY);
         assert!(!out
             .context
@@ -334,7 +330,7 @@ mod tests {
             "accept-encoding".to_string(),
             vec!["gzip;q=0, br".to_string()],
         );
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert!(!out
             .context
             .response
@@ -352,7 +348,7 @@ mod tests {
         ctx.response
             .headers
             .insert("content-encoding".to_string(), vec!["br".to_string()]);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
 
         // Untouched: still brotli, not double-compressed.
         assert_eq!(
@@ -368,7 +364,7 @@ mod tests {
         // Non-matching content type.
         let p = plugin(serde_json::json!({}));
         let ctx = compressible_context(BODY, "application/json");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert!(!out
             .context
             .response
@@ -379,7 +375,7 @@ mod tests {
         let p = plugin(serde_json::json!({ "types": "*" }));
         let mut ctx = compressible_context(BODY, "text/html");
         ctx.response.headers.remove("content-type");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert!(!out
             .context
             .response
@@ -389,7 +385,7 @@ mod tests {
         // Wildcard matches any present content type.
         let p = plugin(serde_json::json!({ "types": "*" }));
         let ctx = compressible_context(BODY, "application/octet-stream");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert!(out
             .context
             .response
@@ -399,7 +395,7 @@ mod tests {
         // Body below min_length.
         let p = plugin(serde_json::json!({ "min_length": 1000 }));
         let ctx = compressible_context(BODY, "text/html");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert!(!out
             .context
             .response

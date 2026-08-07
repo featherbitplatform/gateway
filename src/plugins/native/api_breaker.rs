@@ -254,7 +254,6 @@ impl Plugin for ApiBreakerPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let breaker = self.resources.traffic.breakers.breaker(&self.id);
 
@@ -262,10 +261,7 @@ impl Plugin for ApiBreakerPlugin {
             Role::Check => {
                 let allowed = breaker.lock().await.allow();
                 if allowed {
-                    Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    })
+                    Ok(PluginOutput::success(ctx))
                 } else {
                     ctx.response.status_code = self.break_response_code;
                     if let Some(body) = &self.break_response_body {
@@ -294,10 +290,7 @@ impl Plugin for ApiBreakerPlugin {
                 } else if self.healthy_statuses.contains(&status) {
                     breaker.lock().await.record_healthy(self.healthy_successes);
                 }
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
         }
     }
@@ -398,15 +391,15 @@ mod tests {
         .unwrap();
 
         // Breaker starts closed → check allows.
-        assert!(check.execute(ctx(0), &HashMap::new()).await.is_ok());
+        assert!(check.execute(ctx(0)).await.is_ok());
 
         // Two unhealthy responses (threshold 2) → breaker opens.
-        observe.execute(ctx(500), &HashMap::new()).await.unwrap();
-        observe.execute(ctx(500), &HashMap::new()).await.unwrap();
+        observe.execute(ctx(500)).await.unwrap();
+        observe.execute(ctx(500)).await.unwrap();
 
         // Now check rejects with the break response.
         let err = check
-            .execute(ctx(0), &HashMap::new())
+            .execute(ctx(0))
             .await
             .expect_err("check should reject while the breaker is open");
         assert_eq!(err.error.code, "API_BREAKER_OPEN");
@@ -445,11 +438,11 @@ mod tests {
         )
         .unwrap();
 
-        observe.execute(ctx(500), &HashMap::new()).await.unwrap();
-        observe.execute(ctx(500), &HashMap::new()).await.unwrap();
-        observe.execute(ctx(200), &HashMap::new()).await.unwrap(); // resets
-        observe.execute(ctx(500), &HashMap::new()).await.unwrap();
+        observe.execute(ctx(500)).await.unwrap();
+        observe.execute(ctx(500)).await.unwrap();
+        observe.execute(ctx(200)).await.unwrap(); // resets
+        observe.execute(ctx(500)).await.unwrap();
         // Only one unhealthy since the reset (< threshold 3) → still closed.
-        assert!(check.execute(ctx(0), &HashMap::new()).await.is_ok());
+        assert!(check.execute(ctx(0)).await.is_ok());
     }
 }

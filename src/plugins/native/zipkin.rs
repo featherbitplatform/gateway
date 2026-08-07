@@ -315,16 +315,12 @@ impl Plugin for ZipkinPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, Value>,
     ) -> PluginResult {
         match self.phase {
             Phase::Start => self.run_start(&mut ctx),
             Phase::End => self.run_end(&ctx),
         }
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -427,7 +423,7 @@ mod tests {
     async fn start_creates_new_trace_and_injects_headers() {
         let p =
             plugin(json!({ "phase": "start", "endpoint": "http://z", "sample_ratio": 1 })).unwrap();
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
         let span = load_span(&out.context).expect("span stored");
         assert!(span.parent_span_id.is_none());
         assert!(span.sampled);
@@ -448,7 +444,7 @@ mod tests {
         ctx.request
             .headers
             .insert("b3".to_string(), vec!["trace1-span1-1".to_string()]);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let span = load_span(&out.context).unwrap();
         assert_eq!(span.trace_id, "trace1");
         assert_eq!(span.parent_span_id.as_deref(), Some("span1"));
@@ -470,7 +466,7 @@ mod tests {
         ctx.request
             .headers
             .insert("x-b3-sampled".to_string(), vec!["0".to_string()]);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let span = load_span(&out.context).unwrap();
         assert_eq!(span.trace_id, "t9");
         assert_eq!(span.parent_span_id.as_deref(), Some("s9"));
@@ -480,7 +476,7 @@ mod tests {
     #[tokio::test]
     async fn end_passes_through_without_span() {
         let p = plugin(json!({ "phase": "end", "endpoint": "http://z" })).unwrap();
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
         assert_eq!(out.context.response.status_code, 201);
     }
 
@@ -491,7 +487,7 @@ mod tests {
         let mut ctx = test_ctx();
         store_span(&mut ctx, &a_span(true, None));
         // The spawned export is best-effort; we only assert execute returns Ok.
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.request.path, "/api/users");
     }
 
@@ -500,7 +496,7 @@ mod tests {
         let p = plugin(json!({ "phase": "end", "endpoint": "http://z" })).unwrap();
         let mut ctx = test_ctx();
         store_span(&mut ctx, &a_span(false, None));
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.response.status_code, 201);
     }
 }

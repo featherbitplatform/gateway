@@ -52,7 +52,6 @@ impl Plugin for RequestSizeLimitPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let body_len = ctx.request.body.len();
         if body_len > self.max_bytes {
@@ -76,10 +75,7 @@ impl Plugin for RequestSizeLimitPlugin {
             });
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -123,21 +119,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_body_under_limit_passes() {
-        let out = plugin(10).execute(ctx(b"12345"), &HashMap::new()).await;
+        let out = plugin(10).execute(ctx(b"12345")).await;
         assert!(out.is_ok());
     }
 
     #[tokio::test]
     async fn test_body_at_limit_passes() {
         // Boundary: exactly max_bytes is allowed (only strictly greater fails).
-        let out = plugin(5).execute(ctx(b"12345"), &HashMap::new()).await;
+        let out = plugin(5).execute(ctx(b"12345")).await;
         assert!(out.is_ok());
     }
 
     #[tokio::test]
     async fn test_body_over_limit_rejected_413() {
         let err = plugin(5)
-            .execute(ctx(b"123456"), &HashMap::new())
+            .execute(ctx(b"123456"))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "PAYLOAD_TOO_LARGE");
@@ -146,7 +142,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_body_passes() {
-        assert!(plugin(0).execute(ctx(b""), &HashMap::new()).await.is_ok());
+        assert!(plugin(0).execute(ctx(b"")).await.is_ok());
     }
 
     #[test]

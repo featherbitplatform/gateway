@@ -269,17 +269,13 @@ impl Plugin for AuthzKeycloakPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Empty permissions: deny under ENFORCING, allow under PERMISSIVE.
         if self.permissions.is_empty() {
             return if self.enforcing {
                 Self::deny(ctx, "no permissions configured (ENFORCING)")
             } else {
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             };
         }
 
@@ -313,10 +309,7 @@ impl Plugin for AuthzKeycloakPlugin {
         };
 
         match self.outbound.request(request).await {
-            Ok(resp) if decision_allows(resp.status) => Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            }),
+            Ok(resp) if decision_allows(resp.status) => Ok(PluginOutput::success(ctx)),
             Ok(resp) => Self::deny(
                 ctx,
                 format!("Keycloak denied permission (status {})", resp.status),
@@ -426,7 +419,7 @@ mod tests {
         );
         let plugin = AuthzKeycloakPlugin::from_config(&config, &PluginResources::empty()).unwrap();
         assert!(plugin
-            .execute(ctx_with_auth(Some("Bearer x")), &HashMap::new())
+            .execute(ctx_with_auth(Some("Bearer x")))
             .await
             .is_ok());
     }
@@ -441,7 +434,7 @@ mod tests {
         config.insert("client_id".to_string(), serde_json::json!("my-api"));
         let plugin = AuthzKeycloakPlugin::from_config(&config, &PluginResources::empty()).unwrap();
         let err = plugin
-            .execute(ctx_with_auth(Some("Bearer x")), &HashMap::new())
+            .execute(ctx_with_auth(Some("Bearer x")))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "AUTHZ_KEYCLOAK_DENIED");

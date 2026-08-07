@@ -232,7 +232,7 @@ impl Plugin for LagoPlugin {
         "lago"
     }
 
-    async fn execute(&self, ctx: Context, _named_inputs: &HashMap<String, Value>) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let transaction_id = vars::interpolate(&ctx, &self.event_transaction_id);
         let external_subscription_id = vars::interpolate(&ctx, &self.subscription_id);
         let properties = build_entry(
@@ -250,10 +250,7 @@ impl Plugin for LagoPlugin {
         );
         self.sink.push(event);
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 

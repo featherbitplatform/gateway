@@ -220,7 +220,6 @@ impl Plugin for ConsumerRestrictionPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let value = ctx
             .message
@@ -270,10 +269,7 @@ impl Plugin for ConsumerRestrictionPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -321,11 +317,11 @@ mod tests {
     async fn test_consumer_restriction_whitelist() {
         let p = plugin(serde_json::json!({ "whitelist": ["alice", "bob"] }));
         assert!(p
-            .execute(ctx("GET", Some("alice"), None), &HashMap::new())
+            .execute(ctx("GET", Some("alice"), None))
             .await
             .is_ok());
         let err = p
-            .execute(ctx("GET", Some("mallory"), None), &HashMap::new())
+            .execute(ctx("GET", Some("mallory"), None))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "CONSUMER_RESTRICTED");
@@ -336,11 +332,11 @@ mod tests {
     async fn test_consumer_restriction_blacklist() {
         let p = plugin(serde_json::json!({ "blacklist": ["mallory"] }));
         assert!(p
-            .execute(ctx("GET", Some("alice"), None), &HashMap::new())
+            .execute(ctx("GET", Some("alice"), None))
             .await
             .is_ok());
         assert!(p
-            .execute(ctx("GET", Some("mallory"), None), &HashMap::new())
+            .execute(ctx("GET", Some("mallory"), None))
             .await
             .is_err());
     }
@@ -350,11 +346,11 @@ mod tests {
         let p =
             plugin(serde_json::json!({ "type": "consumer_group_id", "whitelist": ["partners"] }));
         assert!(p
-            .execute(ctx("GET", Some("alice"), Some("partners")), &HashMap::new())
+            .execute(ctx("GET", Some("alice"), Some("partners")))
             .await
             .is_ok());
         assert!(p
-            .execute(ctx("GET", Some("alice"), Some("randoms")), &HashMap::new())
+            .execute(ctx("GET", Some("alice"), Some("randoms")))
             .await
             .is_err());
     }
@@ -363,7 +359,7 @@ mod tests {
     async fn test_no_consumer_attached_401() {
         let p = plugin(serde_json::json!({ "whitelist": ["alice"] }));
         let err = p
-            .execute(ctx("GET", None, None), &HashMap::new())
+            .execute(ctx("GET", None, None))
             .await
             .unwrap_err();
         assert_eq!(err.context.response.status_code, 401);
@@ -377,16 +373,16 @@ mod tests {
         }));
         // alice restricted to GET
         assert!(p
-            .execute(ctx("GET", Some("alice"), None), &HashMap::new())
+            .execute(ctx("GET", Some("alice"), None))
             .await
             .is_ok());
         assert!(p
-            .execute(ctx("POST", Some("alice"), None), &HashMap::new())
+            .execute(ctx("POST", Some("alice"), None))
             .await
             .is_err());
         // bob has no entry -> unrestricted
         assert!(p
-            .execute(ctx("DELETE", Some("bob"), None), &HashMap::new())
+            .execute(ctx("DELETE", Some("bob"), None))
             .await
             .is_ok());
     }
@@ -399,7 +395,7 @@ mod tests {
         }));
         // whitelisted -> method restriction skipped
         assert!(p
-            .execute(ctx("POST", Some("alice"), None), &HashMap::new())
+            .execute(ctx("POST", Some("alice"), None))
             .await
             .is_ok());
     }

@@ -126,7 +126,6 @@ impl Plugin for CorsPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let origin = ctx
             .request
@@ -175,10 +174,7 @@ impl Plugin for CorsPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -238,7 +234,7 @@ mod tests {
     #[tokio::test]
     async fn test_default_config_allows_any_origin() {
         let out = plugin(serde_json::json!({}))
-            .execute(ctx("GET", Some("http://anything.example")), &HashMap::new())
+            .execute(ctx("GET", Some("http://anything.example")))
             .await
             .unwrap();
         assert_eq!(hdr(&out.context, "access-control-allow-origin"), Some("*"));
@@ -250,7 +246,7 @@ mod tests {
         let out = plugin(serde_json::json!({
             "allowed_origins": ["http://sub.domain.com", "http://sub2.domain.com"]
         }))
-        .execute(ctx("GET", Some("http://sub2.domain.com")), &HashMap::new())
+        .execute(ctx("GET", Some("http://sub2.domain.com")))
         .await
         .unwrap();
         // The matched origin is echoed, not `*`.
@@ -266,7 +262,7 @@ mod tests {
         let out = plugin(serde_json::json!({
             "allowed_origins": ["http://sub.domain.com"]
         }))
-        .execute(ctx("GET", Some("http://evil.example")), &HashMap::new())
+        .execute(ctx("GET", Some("http://evil.example")))
         .await
         .unwrap();
         assert_eq!(hdr(&out.context, "access-control-allow-origin"), None);
@@ -279,7 +275,7 @@ mod tests {
         let out = plugin(serde_json::json!({
             "allowed_origins": ["http://sub.domain.com"]
         }))
-        .execute(ctx("GET", None), &HashMap::new())
+        .execute(ctx("GET", None))
         .await
         .unwrap();
         assert_eq!(hdr(&out.context, "access-control-allow-origin"), None);
@@ -292,7 +288,7 @@ mod tests {
             "allowed_origins": ["http://sub.domain.com"],
             "allow_credentials": true
         }))
-        .execute(ctx("GET", Some("http://sub.domain.com")), &HashMap::new())
+        .execute(ctx("GET", Some("http://sub.domain.com")))
         .await
         .unwrap();
         assert_eq!(
@@ -317,7 +313,6 @@ mod tests {
         }))
         .execute(
             ctx("OPTIONS", Some("http://sub.domain.com")),
-            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -337,7 +332,7 @@ mod tests {
         let out = plugin(serde_json::json!({
             "allowed_origins": ["http://sub.domain.com"]
         }))
-        .execute(ctx("OPTIONS", Some("http://evil.example")), &HashMap::new())
+        .execute(ctx("OPTIONS", Some("http://evil.example")))
         .await
         .unwrap();
         assert_ne!(out.context.response.status_code, 204);

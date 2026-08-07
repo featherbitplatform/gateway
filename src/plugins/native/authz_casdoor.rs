@@ -390,10 +390,7 @@ impl AuthzCasdoorPlugin {
         if let Some(session) = self.read_session(&ctx) {
             if session.client_id == self.client_id {
                 self.attach_session(&mut ctx, &session);
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         }
 
@@ -499,10 +496,7 @@ impl AuthzCasdoorPlugin {
         };
 
         match self.outbound.request(request).await {
-            Ok(resp) if resp.status == 200 && token_is_active(&resp.body) => Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            }),
+            Ok(resp) if resp.status == 200 && token_is_active(&resp.body) => Ok(PluginOutput::success(ctx)),
             Ok(resp) => Self::deny(
                 ctx,
                 format!(
@@ -749,7 +743,6 @@ impl Plugin for AuthzCasdoorPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         if self.sealer.is_some() {
             self.execute_interactive(ctx).await
@@ -889,7 +882,7 @@ mod tests {
         // stateless by default
         assert!(plugin.sealer.is_none());
         let err = plugin
-            .execute(ctx_with_auth(None), &HashMap::new())
+            .execute(ctx_with_auth(None))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "AUTHZ_CASDOOR_DENIED");
@@ -1041,7 +1034,7 @@ mod tests {
         let p =
             AuthzCasdoorPlugin::from_config(&interactive_cfg(), &PluginResources::empty()).unwrap();
         let err = p
-            .execute(ctx("/protected", HashMap::new()), &HashMap::new())
+            .execute(ctx("/protected", HashMap::new()))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "CASDOOR_REDIRECT");
@@ -1078,7 +1071,7 @@ mod tests {
             vec![format!("casdoor_session={}", sealed)],
         );
 
-        let out = p.execute(c, &HashMap::new()).await.unwrap();
+        let out = p.execute(c).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("authorization").unwrap()[0],
             "Bearer tok-xyz"
@@ -1109,7 +1102,7 @@ mod tests {
             vec![format!("casdoor_session_flow={}", sealed)],
         );
 
-        let err = p.execute(c, &HashMap::new()).await.unwrap_err();
+        let err = p.execute(c).await.unwrap_err();
         assert_eq!(err.error.code, "AUTHZ_CASDOOR_DENIED");
         assert_eq!(err.context.response.status_code, 403);
     }

@@ -252,23 +252,16 @@ impl Plugin for CsrfPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         if self.phase == CsrfPhase::Response {
             // Cookie issuance only (APISIX header_filter).
             self.set_cookie(&mut ctx);
-            return Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            });
+            return Ok(PluginOutput::success(ctx));
         }
 
         if SAFE_METHODS.contains(&ctx.request.method.as_str()) {
             self.set_cookie(&mut ctx);
-            return Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            });
+            return Ok(PluginOutput::success(ctx));
         }
 
         let header_token = ctx
@@ -297,10 +290,7 @@ impl Plugin for CsrfPlugin {
         }
 
         self.set_cookie(&mut ctx);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -372,7 +362,7 @@ mod tests {
     async fn test_safe_method_passes_and_sets_cookie() {
         let p = plugin(serde_json::json!({"key": "secret"}));
         let out = p
-            .execute(test_context("GET"), &HashMap::new())
+            .execute(test_context("GET"))
             .await
             .unwrap();
         let cookies = out.context.response.headers.get("set-cookie").unwrap();
@@ -387,7 +377,7 @@ mod tests {
         let p = plugin(serde_json::json!({"key": "secret", "phase": "response"}));
         // even for an unsafe method, response phase never validates
         let out = p
-            .execute(test_context("POST"), &HashMap::new())
+            .execute(test_context("POST"))
             .await
             .unwrap();
         assert!(out.context.response.headers.contains_key("set-cookie"));
@@ -398,7 +388,7 @@ mod tests {
         let p = plugin(serde_json::json!({"key": "secret"}));
 
         let err = p
-            .execute(test_context("POST"), &HashMap::new())
+            .execute(test_context("POST"))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "CSRF_INVALID");
@@ -411,7 +401,7 @@ mod tests {
         ctx.request
             .headers
             .insert(NAME.to_string(), vec!["sometoken".to_string()]);
-        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
+        let err = p.execute(ctx).await.unwrap_err();
         let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
         assert_eq!(body["error_msg"], "no csrf cookie");
     }
@@ -421,7 +411,7 @@ mod tests {
         let p = plugin(serde_json::json!({"key": "secret"}));
         let token = p.gen_token();
         let out = p
-            .execute(with_tokens("POST", &token, &token), &HashMap::new())
+            .execute(with_tokens("POST", &token, &token))
             .await
             .unwrap();
         // a fresh cookie is issued after successful validation
@@ -436,7 +426,7 @@ mod tests {
 
         // header != cookie
         let err = p
-            .execute(with_tokens("POST", &token, &other), &HashMap::new())
+            .execute(with_tokens("POST", &token, &other))
             .await
             .unwrap_err();
         let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
@@ -446,7 +436,7 @@ mod tests {
         let wrong_key = plugin(serde_json::json!({"key": "other-secret"}));
         let forged = wrong_key.gen_token();
         let err = p
-            .execute(with_tokens("POST", &forged, &forged), &HashMap::new())
+            .execute(with_tokens("POST", &forged, &forged))
             .await
             .unwrap_err();
         let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
@@ -457,7 +447,7 @@ mod tests {
 
         // garbage token
         assert!(p
-            .execute(with_tokens("POST", "nonsense", "nonsense"), &HashMap::new())
+            .execute(with_tokens("POST", "nonsense", "nonsense"))
             .await
             .is_err());
     }
@@ -467,7 +457,7 @@ mod tests {
         let p = plugin(serde_json::json!({"key": "secret", "expires": 10}));
         let stale = p.token_at(now() - 60);
         assert!(p
-            .execute(with_tokens("POST", &stale, &stale), &HashMap::new())
+            .execute(with_tokens("POST", &stale, &stale))
             .await
             .is_err());
 
@@ -475,12 +465,12 @@ mod tests {
         let no_expiry = plugin(serde_json::json!({"key": "secret", "expires": 0}));
         let ancient = no_expiry.token_at(now() - 1_000_000);
         assert!(no_expiry
-            .execute(with_tokens("POST", &ancient, &ancient), &HashMap::new())
+            .execute(with_tokens("POST", &ancient, &ancient))
             .await
             .is_ok());
         // session cookie: no Max-Age
         let out = no_expiry
-            .execute(test_context("GET"), &HashMap::new())
+            .execute(test_context("GET"))
             .await
             .unwrap();
         assert!(!out.context.response.headers.get("set-cookie").unwrap()[0].contains("Max-Age"));
