@@ -211,7 +211,6 @@ impl Plugin for LdapAuthPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let auth_header = ctx
             .request
@@ -246,10 +245,7 @@ impl Plugin for LdapAuthPlugin {
                     "user".to_string(),
                     serde_json::Value::String(username.clone()),
                 );
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             Ok(Ok(false)) => self.reject(ctx, "Invalid user authorization"),
             Ok(Err(e)) => {
@@ -363,7 +359,7 @@ mod tests {
             remote_addr: "1.2.3.4:5".into(),
             protocol: crate::context::Protocol::Http1,
         });
-        let err = plugin.execute(ctx, &HashMap::new()).await.unwrap_err();
+        let err = plugin.execute(ctx).await.unwrap_err();
         assert_eq!(err.error.code, "LDAP_AUTH_FAILED");
         assert_eq!(err.context.response.status_code, 401);
         assert_eq!(
@@ -399,6 +395,6 @@ mod tests {
             protocol: crate::context::Protocol::Http1,
         });
         // Never reaches the network: empty password is rejected before binding.
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_err());
+        assert!(plugin.execute(ctx).await.is_err());
     }
 }

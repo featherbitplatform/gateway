@@ -63,7 +63,6 @@ impl Plugin for ErrorHandlerPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Render the template using the last error in the context
         let body = if let Some(last_error) = ctx.errors.last() {
@@ -82,10 +81,7 @@ impl Plugin for ErrorHandlerPlugin {
             vec!["application/json".to_string()],
         );
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -144,7 +140,6 @@ mod tests {
         let out = p
             .execute(
                 ctx_with_error(Some(err("UPSTREAM_ERROR", "connection refused", "backend"))),
-                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -165,7 +160,7 @@ mod tests {
         let mut ctx = ctx_with_error(Some(err("FIRST", "first", "a")));
         ctx.errors.push(err("SECOND", "second", "b"));
         let out = plugin(serde_json::json!({ "body_template": "{{error.code}}" }))
-            .execute(ctx, &HashMap::new())
+            .execute(ctx)
             .await
             .unwrap();
         assert_eq!(
@@ -177,7 +172,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_error_leaves_template_literal() {
         let out = plugin(serde_json::json!({ "body_template": "{{error.code}}" }))
-            .execute(ctx_with_error(None), &HashMap::new())
+            .execute(ctx_with_error(None))
             .await
             .unwrap();
         // With no error to substitute, the raw template is emitted unchanged.

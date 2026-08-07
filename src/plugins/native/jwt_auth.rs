@@ -203,7 +203,6 @@ impl Plugin for JwtAuthPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let token = ctx
             .request
@@ -225,10 +224,7 @@ impl Plugin for JwtAuthPlugin {
         if let Some(ref secret) = self.secret {
             match Self::verify(&token, secret, self.algorithm, &mut ctx) {
                 Ok(_) => {
-                    return Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    })
+                    return Ok(PluginOutput::success(ctx))
                 }
                 // With consumers also enabled, fall through and try them;
                 // otherwise reject now.
@@ -257,10 +253,7 @@ impl Plugin for JwtAuthPlugin {
                         match Self::verify(&token, secret, algorithm, &mut ctx) {
                             Ok(_) => {
                                 attach_consumer(&mut ctx, &consumer, "jwt-auth");
-                                return Ok(PluginOutput {
-                                    context: ctx,
-                                    named_outputs: HashMap::new(),
-                                });
+                                return Ok(PluginOutput::success(ctx));
                             }
                             Err(e) => return Self::reject(ctx, &e),
                         }
@@ -366,7 +359,7 @@ mod tests {
             Algorithm::HS256,
         );
         let out = plugin
-            .execute(ctx_with_token(Some(&token)), &HashMap::new())
+            .execute(ctx_with_token(Some(&token)))
             .await
             .unwrap();
         assert_eq!(
@@ -381,7 +374,7 @@ mod tests {
             Algorithm::HS256,
         );
         assert!(plugin
-            .execute(ctx_with_token(Some(&forged)), &HashMap::new())
+            .execute(ctx_with_token(Some(&forged)))
             .await
             .is_err());
     }
@@ -416,7 +409,7 @@ mod tests {
             Algorithm::HS256,
         );
         let out = plugin
-            .execute(ctx_with_token(Some(&token)), &HashMap::new())
+            .execute(ctx_with_token(Some(&token)))
             .await
             .unwrap();
         assert_eq!(
@@ -431,7 +424,7 @@ mod tests {
             Algorithm::HS256,
         );
         assert!(plugin
-            .execute(ctx_with_token(Some(&forged)), &HashMap::new())
+            .execute(ctx_with_token(Some(&forged)))
             .await
             .is_err());
 
@@ -442,7 +435,7 @@ mod tests {
             Algorithm::HS256,
         );
         assert!(plugin
-            .execute(ctx_with_token(Some(&unknown)), &HashMap::new())
+            .execute(ctx_with_token(Some(&unknown)))
             .await
             .is_err());
     }

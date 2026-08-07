@@ -240,16 +240,13 @@ impl Plugin for DatadogPlugin {
         "datadog"
     }
 
-    async fn execute(&self, ctx: Context, _named_inputs: &HashMap<String, Value>) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         // Datadog derives metrics from the default structured entry; it does
         // not support log_format or body capture.
         let _ = (self.include_path, self.include_method);
         let entry = build_entry(&ctx, None, false, false);
         self.sink.push(entry);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 

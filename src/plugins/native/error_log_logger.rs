@@ -163,16 +163,13 @@ impl Plugin for ErrorLogLoggerPlugin {
         "error-log-logger"
     }
 
-    async fn execute(&self, ctx: Context, _named_inputs: &HashMap<String, Value>) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         // Only log requests that accumulated errors.
         if !ctx.errors.is_empty() {
             let entry = build_entry(&ctx, self.log_format.as_ref(), false, false);
             self.sink.push(entry);
         }
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 

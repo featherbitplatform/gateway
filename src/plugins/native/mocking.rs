@@ -204,7 +204,6 @@ impl Plugin for MockingPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
@@ -232,10 +231,7 @@ impl Plugin for MockingPlugin {
             ctx.response.headers.insert(name, vec![value]);
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -284,7 +280,7 @@ mod tests {
         }))
         .unwrap();
 
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
         let resp = out.context.response;
         assert_eq!(resp.status_code, 201);
         assert_eq!(
@@ -313,7 +309,7 @@ mod tests {
             "with_mock_header": false
         }))
         .unwrap();
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
         let resp = out.context.response;
         assert_eq!(resp.status_code, 200);
         assert_eq!(resp.body, Bytes::from("hello"));
@@ -332,7 +328,7 @@ mod tests {
         }))
         .unwrap();
         let start = Instant::now();
-        p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        p.execute(test_ctx()).await.unwrap();
         assert!(start.elapsed() >= Duration::from_millis(45));
     }
 

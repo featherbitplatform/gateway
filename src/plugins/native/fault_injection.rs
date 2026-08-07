@@ -295,7 +295,6 @@ impl Plugin for FaultInjectionPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         if let Some(delay) = &self.delay {
             if sample_hit(delay.percentage) && vars_match(&delay.vars, &ctx) {
@@ -335,10 +334,7 @@ impl Plugin for FaultInjectionPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -389,7 +385,7 @@ mod tests {
         }))
         .unwrap();
 
-        let err = p.execute(test_ctx(), &HashMap::new()).await.unwrap_err();
+        let err = p.execute(test_ctx()).await.unwrap_err();
         assert_eq!(err.error.code, "FAULT_INJECTED");
         let ctx = err.context;
         assert_eq!(ctx.response.status_code, 503);
@@ -413,7 +409,7 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(p.execute(test_ctx(), &HashMap::new()).await.is_err());
+        assert!(p.execute(test_ctx()).await.is_err());
 
         // No expression matches -> passthrough on success.
         let p = plugin(serde_json::json!({
@@ -423,7 +419,7 @@ mod tests {
             }
         }))
         .unwrap();
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
         assert_eq!(out.context.response.status_code, 0);
     }
 
@@ -436,7 +432,7 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(p.execute(test_ctx(), &HashMap::new()).await.is_err());
+        assert!(p.execute(test_ctx()).await.is_err());
     }
 
     #[tokio::test]
@@ -451,8 +447,8 @@ mod tests {
         }))
         .unwrap();
         for _ in 0..20 {
-            assert!(p0.execute(test_ctx(), &HashMap::new()).await.is_ok());
-            assert!(p100.execute(test_ctx(), &HashMap::new()).await.is_err());
+            assert!(p0.execute(test_ctx()).await.is_ok());
+            assert!(p100.execute(test_ctx()).await.is_err());
         }
     }
 
@@ -463,7 +459,7 @@ mod tests {
         }))
         .unwrap();
         let start = Instant::now();
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
         assert!(start.elapsed() >= Duration::from_millis(45));
         assert_eq!(out.context.response.status_code, 0);
     }
@@ -478,7 +474,7 @@ mod tests {
         }))
         .unwrap();
         let start = Instant::now();
-        p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        p.execute(test_ctx()).await.unwrap();
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 

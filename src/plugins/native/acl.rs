@@ -125,7 +125,6 @@ impl Plugin for AclPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // No consumer attached at all -> authentication is missing.
         if ctx
@@ -164,10 +163,7 @@ impl Plugin for AclPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -215,19 +211,19 @@ mod tests {
     async fn test_allowed_by() {
         let p = plugin(serde_json::json!({ "allowed_by": ["partners"] }));
         assert!(p
-            .execute(ctx(Some("alice"), Some("partners")), &HashMap::new())
+            .execute(ctx(Some("alice"), Some("partners")))
             .await
             .is_ok());
         // group not in allowlist
         let err = p
-            .execute(ctx(Some("alice"), Some("randoms")), &HashMap::new())
+            .execute(ctx(Some("alice"), Some("randoms")))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "ACL_DENIED");
         assert_eq!(err.context.response.status_code, 403);
         // consumer with no group is rejected under an allowlist
         assert!(p
-            .execute(ctx(Some("alice"), None), &HashMap::new())
+            .execute(ctx(Some("alice"), None))
             .await
             .is_err());
     }
@@ -239,12 +235,12 @@ mod tests {
             "denied_by": ["banned"]
         }));
         assert!(p
-            .execute(ctx(Some("alice"), Some("partners")), &HashMap::new())
+            .execute(ctx(Some("alice"), Some("partners")))
             .await
             .is_ok());
         // in allowlist but also denied -> deny wins
         assert!(p
-            .execute(ctx(Some("bob"), Some("banned")), &HashMap::new())
+            .execute(ctx(Some("bob"), Some("banned")))
             .await
             .is_err());
     }
@@ -254,11 +250,11 @@ mod tests {
         let p = plugin(serde_json::json!({ "denied_by": ["banned"] }));
         // no allowlist: everything not denied passes, incl. groupless consumers
         assert!(p
-            .execute(ctx(Some("alice"), None), &HashMap::new())
+            .execute(ctx(Some("alice"), None))
             .await
             .is_ok());
         assert!(p
-            .execute(ctx(Some("bob"), Some("banned")), &HashMap::new())
+            .execute(ctx(Some("bob"), Some("banned")))
             .await
             .is_err());
     }
@@ -267,7 +263,7 @@ mod tests {
     async fn test_no_consumer_attached_401() {
         let p = plugin(serde_json::json!({ "allowed_by": ["partners"] }));
         let err = p
-            .execute(ctx(None, None), &HashMap::new())
+            .execute(ctx(None, None))
             .await
             .unwrap_err();
         assert_eq!(err.context.response.status_code, 401);

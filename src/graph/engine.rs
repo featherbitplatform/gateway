@@ -112,11 +112,9 @@ impl CompiledGraph {
                 }
             };
 
-            let named_inputs = HashMap::new();
-
             let node_type = node.plugin_type().to_string();
             let started = std::time::Instant::now();
-            let result = node.execute(ctx, &named_inputs).await;
+            let result = node.execute(ctx).await;
             let elapsed = started.elapsed();
             if let Some(ref m) = self.resources.metrics {
                 m.node_execution_count
@@ -568,11 +566,7 @@ mod tests {
         fn plugin_type(&self) -> &str {
             "always-fails"
         }
-        async fn execute(
-            &self,
-            ctx: Context,
-            _: &HashMap<String, serde_json::Value>,
-        ) -> crate::plugins::PluginResult {
+        async fn execute(&self, ctx: Context) -> crate::plugins::PluginResult {
             Err(crate::plugins::PluginExecutionError {
                 context: ctx,
                 error: crate::context::GatewayError {

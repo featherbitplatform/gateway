@@ -338,7 +338,6 @@ impl Plugin for DataMaskPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Body rules share one lazily-parsed JSON document.
         let mut json_body: Option<serde_json::Value> = None;
@@ -384,10 +383,7 @@ impl Plugin for DataMaskPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -441,7 +437,7 @@ mod tests {
             { "type": "query", "name": "token", "action": "remove" },
             { "type": "query", "name": "name", "action": "replace", "value": "***" }
         ]));
-        let out = p.execute(test_context(""), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_context("")).await.unwrap();
         assert!(!out.context.request.query_params.contains_key("token"));
         assert_eq!(
             out.context.request.query_params.get("name"),
@@ -455,7 +451,7 @@ mod tests {
             { "type": "header", "name": "Authorization", "action": "regex",
               "regex": "Bearer .*", "value": "Bearer ***" }
         ]));
-        let out = p.execute(test_context(""), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_context("")).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("authorization"),
             Some(&vec!["Bearer ***".to_string()])
@@ -474,7 +470,7 @@ mod tests {
             { "type": "body", "body_format": "json", "name": "user.missing", "action": "remove" }
         ]));
         let out = p
-            .execute(test_context(body), &HashMap::new())
+            .execute(test_context(body))
             .await
             .unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
@@ -492,7 +488,7 @@ mod tests {
             { "type": "body", "body_format": "json", "name": "items.1", "action": "remove" }
         ]));
         let out = p
-            .execute(test_context(body), &HashMap::new())
+            .execute(test_context(body))
             .await
             .unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
@@ -505,7 +501,7 @@ mod tests {
             { "type": "body", "body_format": "json", "name": "password", "action": "remove" }
         ]));
         let ctx = test_context("not json at all");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.request.body, Bytes::from("not json at all"));
         // untouched body -> content-length preserved
         assert!(out.context.request.headers.contains_key("content-length"));
@@ -523,7 +519,7 @@ mod tests {
         config.insert("max_body_size".to_string(), serde_json::json!(4));
         let p = DataMaskPlugin::from_config(&config).unwrap();
         let out = p
-            .execute(test_context(r#"{"a":1}"#), &HashMap::new())
+            .execute(test_context(r#"{"a":1}"#))
             .await
             .unwrap();
         assert_eq!(out.context.request.body, Bytes::from(r#"{"a":1}"#));
@@ -537,7 +533,7 @@ mod tests {
               "action": "regex", "regex": r"id=\d+", "value": "id=***" }
         ]));
         let out = p
-            .execute(test_context(body), &HashMap::new())
+            .execute(test_context(body))
             .await
             .unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();

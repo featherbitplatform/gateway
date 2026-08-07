@@ -119,7 +119,6 @@ impl Plugin for IpRestrictionPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let addr = &ctx.request.remote_addr;
 
@@ -165,10 +164,7 @@ impl Plugin for IpRestrictionPlugin {
             });
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -215,7 +211,7 @@ mod tests {
     #[tokio::test]
     async fn test_allow_cidr_match() {
         let p = plugin(serde_json::json!({ "allow": ["127.0.0.0/24", "113.74.26.106"] }));
-        assert!(p.execute(ctx("127.0.0.1:5"), &HashMap::new()).await.is_ok());
+        assert!(p.execute(ctx("127.0.0.1:5")).await.is_ok());
     }
 
     /// APISIX TEST 9: an exact whitelisted IP is allowed.
@@ -223,7 +219,7 @@ mod tests {
     async fn test_allow_exact_match() {
         let p = plugin(serde_json::json!({ "allow": ["127.0.0.0/24", "113.74.26.106"] }));
         assert!(p
-            .execute(ctx("113.74.26.106:80"), &HashMap::new())
+            .execute(ctx("113.74.26.106:80"))
             .await
             .is_ok());
     }
@@ -233,7 +229,7 @@ mod tests {
     async fn test_allow_unlisted_rejected() {
         let p = plugin(serde_json::json!({ "allow": ["127.0.0.0/24"] }));
         let err = p
-            .execute(ctx("114.114.114.114:5"), &HashMap::new())
+            .execute(ctx("114.114.114.114:5"))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "IP_NOT_ALLOWED");
@@ -245,13 +241,13 @@ mod tests {
     async fn test_deny_match_rejected() {
         let p = plugin(serde_json::json!({ "deny": ["127.0.0.0/24", "113.74.26.106"] }));
         let by_cidr = p
-            .execute(ctx("127.0.0.1:5"), &HashMap::new())
+            .execute(ctx("127.0.0.1:5"))
             .await
             .unwrap_err();
         assert_eq!(by_cidr.error.code, "IP_DENIED");
         assert_eq!(by_cidr.context.response.status_code, 403);
         assert!(p
-            .execute(ctx("113.74.26.106:5"), &HashMap::new())
+            .execute(ctx("113.74.26.106:5"))
             .await
             .is_err());
     }
@@ -261,7 +257,7 @@ mod tests {
     async fn test_deny_unlisted_allowed() {
         let p = plugin(serde_json::json!({ "deny": ["127.0.0.0/24"] }));
         assert!(p
-            .execute(ctx("114.114.114.114:5"), &HashMap::new())
+            .execute(ctx("114.114.114.114:5"))
             .await
             .is_ok());
     }
@@ -270,15 +266,15 @@ mod tests {
     #[tokio::test]
     async fn test_deny_ipv6() {
         let p = plugin(serde_json::json!({ "deny": ["::1", "fe80::/32"] }));
-        assert!(p.execute(ctx("::1"), &HashMap::new()).await.is_err()); // exact
-        assert!(p.execute(ctx("fe80::1:1"), &HashMap::new()).await.is_err()); // in fe80::/32
+        assert!(p.execute(ctx("::1")).await.is_err()); // exact
+        assert!(p.execute(ctx("fe80::1:1")).await.is_err()); // in fe80::/32
     }
 
     /// APISIX TEST 21: an IPv4 client is allowed by an IPv6-only blacklist.
     #[tokio::test]
     async fn test_deny_ipv6_allows_ipv4() {
         let p = plugin(serde_json::json!({ "deny": ["::1", "fe80::/32"] }));
-        assert!(p.execute(ctx("127.0.0.1:5"), &HashMap::new()).await.is_ok());
+        assert!(p.execute(ctx("127.0.0.1:5")).await.is_ok());
     }
 
     /// Deny takes precedence over allow when an IP is on both lists.
@@ -286,7 +282,7 @@ mod tests {
     async fn test_deny_precedes_allow() {
         let p = plugin(serde_json::json!({ "allow": ["10.0.0.1"], "deny": ["10.0.0.1"] }));
         let err = p
-            .execute(ctx("10.0.0.1:5"), &HashMap::new())
+            .execute(ctx("10.0.0.1:5"))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "IP_DENIED");

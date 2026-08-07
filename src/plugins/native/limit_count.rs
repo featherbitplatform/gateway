@@ -205,7 +205,6 @@ impl Plugin for LimitCountPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let key = self.resolve_key(&ctx);
 
@@ -219,10 +218,7 @@ impl Plugin for LimitCountPlugin {
                 // Counter backend failed. Fail open when configured to
                 // degrade, otherwise reject with a 500 through the error port.
                 if self.allow_degradation {
-                    return Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    });
+                    return Ok(PluginOutput::success(ctx));
                 }
                 ctx.response.status_code = 500;
                 ctx.response.body = Bytes::from(r#"{"error_msg": "failed to limit count"}"#);
@@ -244,10 +240,7 @@ impl Plugin for LimitCountPlugin {
 
         if result.allowed {
             self.set_quota_headers(&mut ctx, result.remaining, result.reset);
-            return Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            });
+            return Ok(PluginOutput::success(ctx));
         }
 
         // Rejected: quota headers show 0 remaining, then a JSON error body.
@@ -373,7 +366,7 @@ mod tests {
 
         // First `count` requests pass.
         for i in 0..count {
-            let out = p.execute(test_ctx(), &HashMap::new()).await;
+            let out = p.execute(test_ctx()).await;
             assert!(out.is_ok(), "request {i} should pass");
             let ctx = out.unwrap().context;
             assert_eq!(
@@ -387,7 +380,7 @@ mod tests {
         }
 
         // The next one is rejected.
-        let err = p.execute(test_ctx(), &HashMap::new()).await.unwrap_err();
+        let err = p.execute(test_ctx()).await.unwrap_err();
         assert_eq!(err.error.code, "RATE_LIMITED");
         assert_eq!(err.context.response.status_code, 429);
         assert_eq!(
@@ -404,8 +397,8 @@ mod tests {
             "count": 1, "time_window": 60, "rejected_msg": "slow down"
         }))
         .unwrap();
-        assert!(p.execute(test_ctx(), &HashMap::new()).await.is_ok());
-        let err = p.execute(test_ctx(), &HashMap::new()).await.unwrap_err();
+        assert!(p.execute(test_ctx()).await.is_ok());
+        let err = p.execute(test_ctx()).await.unwrap_err();
         let body = String::from_utf8(err.context.response.body.to_vec()).unwrap();
         assert!(body.contains("slow down"), "{body}");
         assert_eq!(err.error.message, "slow down");
@@ -418,7 +411,7 @@ mod tests {
         }))
         .unwrap();
         let ctx = p
-            .execute(test_ctx(), &HashMap::new())
+            .execute(test_ctx())
             .await
             .unwrap()
             .context;

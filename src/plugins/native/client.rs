@@ -1,7 +1,6 @@
 //! The `client` node — the fixed terminal point of every policy graph.
 
 use async_trait::async_trait;
-use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
@@ -23,11 +22,7 @@ impl Plugin for ClientPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }

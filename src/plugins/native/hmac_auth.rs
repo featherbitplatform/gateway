@@ -520,7 +520,6 @@ impl Plugin for HmacAuthPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let params = match Self::retrieve_params(&ctx) {
             Some(p) => p,
@@ -541,10 +540,7 @@ impl Plugin for HmacAuthPlugin {
             if &params.access_key == ak {
                 if self.verify_signature(&ctx, &params, sk) {
                     self.strip_headers(&mut ctx);
-                    return Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    });
+                    return Ok(PluginOutput::success(ctx));
                 }
                 return self.reject(ctx, "Invalid signature");
             }
@@ -563,10 +559,7 @@ impl Plugin for HmacAuthPlugin {
                     if self.verify_signature(&ctx, &params, secret) {
                         self.strip_headers(&mut ctx);
                         attach_consumer(&mut ctx, &consumer, "hmac-auth");
-                        return Ok(PluginOutput {
-                            context: ctx,
-                            named_outputs: HashMap::new(),
-                        });
+                        return Ok(PluginOutput::success(ctx));
                     }
                 }
                 return self.reject(ctx, "Invalid signature");
@@ -589,10 +582,7 @@ impl HmacAuthPlugin {
             let store = self.resources.consumers.load();
             if let Some(consumer) = store.get(name) {
                 attach_consumer(&mut ctx, &consumer, "hmac-auth");
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         }
         self.reject(ctx, "Invalid user authorization")
@@ -752,7 +742,7 @@ mod tests {
         let plugin = inline_plugin(serde_json::json!({}));
         let date = http_date(now() as i64);
         let ctx = signed_request("sk1", "ak1", HmacAlgorithm::Sha256, &date);
-        let out = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = plugin.execute(ctx).await.unwrap();
         // keep_headers defaults false → proof headers stripped
         assert!(!out.context.request.headers.contains_key(HDR_SIGNATURE));
     }
@@ -763,7 +753,7 @@ mod tests {
         let date = http_date(now() as i64);
         // client signs with the wrong secret
         let ctx = signed_request("wrong", "ak1", HmacAlgorithm::Sha256, &date);
-        let err = plugin.execute(ctx, &HashMap::new()).await.unwrap_err();
+        let err = plugin.execute(ctx).await.unwrap_err();
         assert_eq!(err.error.code, "HMAC_INVALID");
         assert_eq!(err.context.response.status_code, 401);
     }
@@ -773,7 +763,7 @@ mod tests {
         let plugin = inline_plugin(serde_json::json!({ "clock_skew": 10 }));
         let stale = http_date(now() as i64 - 3600);
         let ctx = signed_request("sk1", "ak1", HmacAlgorithm::Sha256, &stale);
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_err());
+        assert!(plugin.execute(ctx).await.is_err());
     }
 
     #[tokio::test]
@@ -782,7 +772,7 @@ mod tests {
         let plugin = inline_plugin(serde_json::json!({ "signed_headers": ["@request-target"] }));
         let date = http_date(now() as i64);
         let ctx = signed_request("sk1", "ak1", HmacAlgorithm::Sha256, &date);
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_err());
+        assert!(plugin.execute(ctx).await.is_err());
     }
 
     #[tokio::test]
@@ -804,7 +794,7 @@ mod tests {
         ctx.request
             .headers
             .insert("authorization".to_string(), vec![auth]);
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_ok());
+        assert!(plugin.execute(ctx).await.is_ok());
     }
 
     fn resources_with_consumers() -> Arc<PluginResources> {
@@ -833,7 +823,7 @@ mod tests {
 
         let date = http_date(now() as i64);
         let ctx = signed_request("alice-sk", "alice-ak", HmacAlgorithm::Sha256, &date);
-        let out = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.message.get("consumer.name"),
             Some(&serde_json::json!("alice"))
@@ -845,7 +835,7 @@ mod tests {
 
         // unknown access key rejected
         let ctx = signed_request("x", "nobody", HmacAlgorithm::Sha256, &date);
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_err());
+        assert!(plugin.execute(ctx).await.is_err());
     }
 
     #[tokio::test]
@@ -857,7 +847,7 @@ mod tests {
         let plugin = HmacAuthPlugin::from_config(&config, &resources).unwrap();
 
         // no signature at all → anonymous
-        let out = plugin.execute(base_ctx(), &HashMap::new()).await.unwrap();
+        let out = plugin.execute(base_ctx()).await.unwrap();
         assert_eq!(
             out.context.message.get("consumer.name"),
             Some(&serde_json::json!("guest"))

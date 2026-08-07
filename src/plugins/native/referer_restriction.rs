@@ -184,7 +184,6 @@ impl Plugin for RefererRestrictionPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let host = ctx
             .request
@@ -209,10 +208,7 @@ impl Plugin for RefererRestrictionPlugin {
             return self.reject(ctx);
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -310,23 +306,22 @@ mod tests {
         .unwrap();
 
         assert!(plugin
-            .execute(test_context(Some("http://example.com/x")), &HashMap::new())
+            .execute(test_context(Some("http://example.com/x")))
             .await
             .is_ok());
         assert!(plugin
             .execute(
                 test_context(Some("https://api.example.org/x")),
-                &HashMap::new()
             )
             .await
             .is_ok());
         // apex does not match "*.example.org"
         assert!(plugin
-            .execute(test_context(Some("https://example.org/")), &HashMap::new())
+            .execute(test_context(Some("https://example.org/")))
             .await
             .is_err());
         let err = plugin
-            .execute(test_context(Some("https://evil.com/")), &HashMap::new())
+            .execute(test_context(Some("https://evil.com/")))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "REFERER_RESTRICTED");
@@ -341,20 +336,20 @@ mod tests {
         .unwrap();
 
         assert!(plugin
-            .execute(test_context(Some("http://sub.evil.com/")), &HashMap::new())
+            .execute(test_context(Some("http://sub.evil.com/")))
             .await
             .is_err());
         assert!(plugin
-            .execute(test_context(Some("http://bad.org/")), &HashMap::new())
+            .execute(test_context(Some("http://bad.org/")))
             .await
             .is_err());
         assert!(plugin
-            .execute(test_context(Some("http://good.org/")), &HashMap::new())
+            .execute(test_context(Some("http://good.org/")))
             .await
             .is_ok());
         // blacklist mode: missing referer is still blocked by default
         assert!(plugin
-            .execute(test_context(None), &HashMap::new())
+            .execute(test_context(None))
             .await
             .is_err());
     }
@@ -367,12 +362,12 @@ mod tests {
         .unwrap();
 
         assert!(plugin
-            .execute(test_context(None), &HashMap::new())
+            .execute(test_context(None))
             .await
             .is_ok());
         // malformed referer counts as missing
         assert!(plugin
-            .execute(test_context(Some("not a url")), &HashMap::new())
+            .execute(test_context(Some("not a url")))
             .await
             .is_ok());
 
@@ -381,11 +376,11 @@ mod tests {
         })))
         .unwrap();
         assert!(strict
-            .execute(test_context(None), &HashMap::new())
+            .execute(test_context(None))
             .await
             .is_err());
         assert!(strict
-            .execute(test_context(Some("not a url")), &HashMap::new())
+            .execute(test_context(Some("not a url")))
             .await
             .is_err());
     }

@@ -356,7 +356,6 @@ impl Plugin for FeishuAuthPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         ctx.request.headers.remove("x-userinfo");
 
@@ -376,10 +375,7 @@ impl Plugin for FeishuAuthPlugin {
         };
 
         attach_identity(&mut ctx, &userinfo, self.set_userinfo_header);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -509,7 +505,7 @@ mod tests {
     async fn test_missing_code_rejected_401() {
         let plugin = FeishuAuthPlugin::from_config(&full_cfg(), &PluginResources::empty()).unwrap();
         let err = plugin
-            .execute(base_ctx(), &HashMap::new())
+            .execute(base_ctx())
             .await
             .unwrap_err();
         assert_eq!(err.context.response.status_code, 401);

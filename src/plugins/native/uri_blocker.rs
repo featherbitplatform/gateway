@@ -117,7 +117,6 @@ impl Plugin for UriBlockerPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let request_uri = crate::vars::resolve(&ctx, "request_uri")
             .map(|v| v.into_owned())
@@ -150,10 +149,7 @@ impl Plugin for UriBlockerPlugin {
             });
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -229,7 +225,7 @@ mod tests {
         .unwrap();
 
         let err = plugin
-            .execute(test_context("/admin/users", &[]), &HashMap::new())
+            .execute(test_context("/admin/users", &[]))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "URI_BLOCKED");
@@ -238,7 +234,7 @@ mod tests {
         assert!(err.context.response.body.is_empty());
 
         assert!(plugin
-            .execute(test_context("/public", &[]), &HashMap::new())
+            .execute(test_context("/public", &[]))
             .await
             .is_ok());
     }
@@ -254,14 +250,12 @@ mod tests {
         assert!(plugin
             .execute(
                 test_context("/download", &[("file", "root.exe")]),
-                &HashMap::new()
             )
             .await
             .is_err());
         assert!(plugin
             .execute(
                 test_context("/download", &[("file", "notes.txt")]),
-                &HashMap::new()
             )
             .await
             .is_ok());
@@ -274,7 +268,7 @@ mod tests {
         })))
         .unwrap();
         assert!(sensitive
-            .execute(test_context("/ADMIN/panel", &[]), &HashMap::new())
+            .execute(test_context("/ADMIN/panel", &[]))
             .await
             .is_ok());
 
@@ -283,7 +277,7 @@ mod tests {
         })))
         .unwrap();
         assert!(insensitive
-            .execute(test_context("/ADMIN/panel", &[]), &HashMap::new())
+            .execute(test_context("/ADMIN/panel", &[]))
             .await
             .is_err());
     }
@@ -296,7 +290,7 @@ mod tests {
         .unwrap();
 
         let err = plugin
-            .execute(test_context("/admin", &[]), &HashMap::new())
+            .execute(test_context("/admin", &[]))
             .await
             .unwrap_err();
         assert_eq!(err.context.response.status_code, 404);

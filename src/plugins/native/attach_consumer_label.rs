@@ -59,7 +59,6 @@ impl Plugin for AttachConsumerLabelPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Only act when a consumer with labels is attached; otherwise passthrough.
         if let Some(labels) = ctx
@@ -76,10 +75,7 @@ impl Plugin for AttachConsumerLabelPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -128,7 +124,6 @@ mod tests {
         let out = p
             .execute(
                 ctx(Some(serde_json::json!({ "tier": "gold", "region": "eu" }))),
-                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -149,7 +144,6 @@ mod tests {
         let out = p
             .execute(
                 ctx(Some(serde_json::json!({ "tier": "gold" }))),
-                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -162,7 +156,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_consumer_is_passthrough() {
         let p = plugin(serde_json::json!({}));
-        let out = p.execute(ctx(None), &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx(None)).await.unwrap();
         // no consumer -> no headers injected, no error
         assert!(out
             .context

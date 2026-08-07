@@ -313,7 +313,6 @@ impl Plugin for ForwardAuthPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let headers = self.build_callout_headers(&ctx);
         let body = if self.is_post {
@@ -337,10 +336,7 @@ impl Plugin for ForwardAuthPlugin {
             Err(e) => {
                 if self.allow_degradation {
                     // Degrade open: let the request continue unchanged.
-                    return Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    });
+                    return Ok(PluginOutput::success(ctx));
                 }
                 return Err(self.build_error(ctx, format!("forward-auth callout failed: {}", e)));
             }
@@ -351,10 +347,7 @@ impl Plugin for ForwardAuthPlugin {
         }
 
         self.apply_allow(&mut ctx, &response.headers);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 

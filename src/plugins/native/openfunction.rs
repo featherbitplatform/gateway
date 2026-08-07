@@ -134,7 +134,6 @@ impl Plugin for OpenFunctionPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let request = match self.build_request(&ctx) {
             Ok(req) => req,
@@ -144,10 +143,7 @@ impl Plugin for OpenFunctionPlugin {
         match self.client.request(request).await {
             Ok(response) => {
                 apply_response(&mut ctx, response);
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             Err(e) => {
                 let (status, message) = faas::classify_error("openfunction", &e);
@@ -243,7 +239,7 @@ mod tests {
             "function_uri": "http://127.0.0.1:1/fn",
             "timeout": 200
         }));
-        let err = p.execute(ctx(), &HashMap::new()).await.unwrap_err();
+        let err = p.execute(ctx()).await.unwrap_err();
         assert_eq!(err.error.code, "OPENFUNCTION_CALLOUT_ERROR");
         assert!(err.context.response.status_code >= 502);
     }

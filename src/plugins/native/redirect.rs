@@ -121,7 +121,6 @@ impl Plugin for RedirectPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let (new_uri, ret_code) = if self.http_to_https {
             // Honor x-forwarded-proto from an outer proxy, like APISIX.
@@ -135,10 +134,7 @@ impl Plugin for RedirectPlugin {
 
             if scheme == "https" {
                 // Already secure: pass through untouched.
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
 
             let ret_code = match ctx.request.method.as_str() {
@@ -172,10 +168,7 @@ impl Plugin for RedirectPlugin {
         ctx.response.headers.remove("content-length");
         ctx.response.headers.remove("content-encoding");
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -254,7 +247,7 @@ mod tests {
         .unwrap();
 
         let result = plugin
-            .execute(test_context("/old/path"), &HashMap::new())
+            .execute(test_context("/old/path"))
             .await
             .unwrap();
         let ctx = result.context;
@@ -275,7 +268,7 @@ mod tests {
         .unwrap();
 
         let result = plugin
-            .execute(test_context("/old"), &HashMap::new())
+            .execute(test_context("/old"))
             .await
             .unwrap();
         assert_eq!(result.context.response.status_code, 301);
@@ -293,7 +286,7 @@ mod tests {
         ctx.request
             .query_params
             .insert("a".to_string(), vec!["1".to_string()]);
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.response.headers.get("location"),
             Some(&vec!["/new?a=1".to_string()])
@@ -309,7 +302,7 @@ mod tests {
         ctx.request
             .query_params
             .insert("a".to_string(), vec!["1".to_string()]);
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.response.headers.get("location"),
             Some(&vec!["/new?x=y&a=1".to_string()])
@@ -317,7 +310,7 @@ mod tests {
 
         // No query params: nothing appended.
         let result = plugin
-            .execute(test_context("/old"), &HashMap::new())
+            .execute(test_context("/old"))
             .await
             .unwrap();
         assert_eq!(
@@ -338,7 +331,7 @@ mod tests {
         ctx.request
             .query_params
             .insert("a".to_string(), vec!["1".to_string()]);
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.response.status_code, 301);
         assert_eq!(
             result.context.response.headers.get("location"),
@@ -348,7 +341,7 @@ mod tests {
         // Non-GET/HEAD -> 308
         let mut ctx = test_context("/path");
         ctx.request.method = "POST".to_string();
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.response.status_code, 308);
     }
 
@@ -362,7 +355,7 @@ mod tests {
         // Scheme https
         let mut ctx = test_context("/path");
         ctx.request.scheme = "https".to_string();
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.response.status_code, 0);
         assert!(!result.context.response.headers.contains_key("location"));
 
@@ -371,7 +364,7 @@ mod tests {
         ctx.request
             .headers
             .insert("x-forwarded-proto".to_string(), vec!["https".to_string()]);
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.response.status_code, 0);
     }
 }

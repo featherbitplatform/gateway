@@ -209,7 +209,6 @@ impl Plugin for RequestValidationPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         if let Some(validator) = &self.header_schema {
             let headers: serde_json::Map<String, serde_json::Value> = ctx
@@ -269,10 +268,7 @@ impl Plugin for RequestValidationPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -327,7 +323,7 @@ mod tests {
             "properties": { "name": { "type": "string" } }
         }));
         let ctx = test_context(r#"{"name":  "jack"}"#, Some("application/json"));
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         // validated JSON is re-serialized (normalized) and content-length dropped
         assert_eq!(out.context.request.body, Bytes::from(r#"{"name":"jack"}"#));
         assert!(!out.context.request.headers.contains_key("content-length"));
@@ -340,7 +336,7 @@ mod tests {
             "required": ["name"]
         }));
         let ctx = test_context(r#"{"age": 3}"#, Some("application/json"));
-        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
+        let err = p.execute(ctx).await.unwrap_err();
         assert_eq!(err.error.code, "VALIDATION_FAILED");
         assert_eq!(err.context.response.status_code, 400);
         let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
@@ -351,7 +347,7 @@ mod tests {
     async fn test_request_validation_non_json_body_rejected() {
         let p = body_plugin(serde_json::json!({ "type": "object" }));
         let ctx = test_context("this is not json", Some("application/json"));
-        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
+        let err = p.execute(ctx).await.unwrap_err();
         assert_eq!(err.error.code, "VALIDATION_FAILED");
     }
 
@@ -359,7 +355,7 @@ mod tests {
     async fn test_request_validation_missing_body_rejected() {
         let p = body_plugin(serde_json::json!({ "type": "object" }));
         let err = p
-            .execute(test_context("", Some("application/json")), &HashMap::new())
+            .execute(test_context("", Some("application/json")))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "VALIDATION_FAILED");
@@ -376,7 +372,7 @@ mod tests {
             "user=jack&note=hello%20world",
             Some("application/x-www-form-urlencoded"),
         );
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         // urlencoded bodies are not rewritten
         assert_eq!(
             out.context.request.body,
@@ -384,7 +380,7 @@ mod tests {
         );
 
         let ctx = test_context("note=only", Some("application/x-www-form-urlencoded"));
-        assert!(p.execute(ctx, &HashMap::new()).await.is_err());
+        assert!(p.execute(ctx).await.is_err());
     }
 
     #[tokio::test]
@@ -401,13 +397,13 @@ mod tests {
         let p = RequestValidationPlugin::from_config(&config).unwrap();
 
         assert!(p
-            .execute(test_context("", None), &HashMap::new())
+            .execute(test_context("", None))
             .await
             .is_ok());
 
         let mut ctx = test_context("", None);
         ctx.request.headers.remove("x-api-version");
-        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
+        let err = p.execute(ctx).await.unwrap_err();
         assert_eq!(err.error.code, "VALIDATION_FAILED");
     }
 
@@ -423,7 +419,7 @@ mod tests {
         let p = RequestValidationPlugin::from_config(&config).unwrap();
 
         let ctx = test_context("[1,2,3]", Some("application/json"));
-        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
+        let err = p.execute(ctx).await.unwrap_err();
         assert_eq!(err.context.response.status_code, 422);
         assert_eq!(err.error.message, "bad payload");
     }

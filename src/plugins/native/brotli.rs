@@ -137,7 +137,6 @@ impl Plugin for BrotliPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let skip = !accepts_encoding(&ctx, "br")
             || response_already_encoded(&ctx)
@@ -174,10 +173,7 @@ impl Plugin for BrotliPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -227,7 +223,7 @@ mod tests {
     async fn test_brotli_compresses_matching_response() {
         let p = plugin(serde_json::json!({ "vary": true }));
         let ctx = test_context(BODY, "text/html; charset=utf-8", "gzip, br");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
 
         let headers = &out.context.response.headers;
         assert_eq!(
@@ -249,7 +245,7 @@ mod tests {
     async fn test_brotli_skips_when_client_does_not_accept_br() {
         let p = plugin(serde_json::json!({}));
         let ctx = test_context(BODY, "text/html", "gzip, deflate");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), BODY);
         assert!(!out
             .context
@@ -260,7 +256,7 @@ mod tests {
         // But a wildcard accept matches.
         let p = plugin(serde_json::json!({}));
         let ctx = test_context(BODY, "text/html", "*");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.response.headers.get("content-encoding"),
             Some(&vec!["br".to_string()])
@@ -277,7 +273,7 @@ mod tests {
         ctx.response
             .headers
             .insert("content-encoding".to_string(), vec!["gzip".to_string()]);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
 
         assert_eq!(
             out.context.response.headers.get("content-encoding"),
@@ -291,7 +287,7 @@ mod tests {
     async fn test_brotli_type_and_length_gates() {
         let p = plugin(serde_json::json!({}));
         let ctx = test_context(BODY, "application/json", "br");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert!(!out
             .context
             .response
@@ -300,7 +296,7 @@ mod tests {
 
         let p = plugin(serde_json::json!({ "min_length": 1000 }));
         let ctx = test_context(BODY, "text/html", "br");
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert!(!out
             .context
             .response
@@ -316,7 +312,7 @@ mod tests {
         ctx.response
             .headers
             .insert("etag".to_string(), vec!["\"abc123\"".to_string()]);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.response.headers.get("etag"),
             Some(&vec!["W/\"abc123\"".to_string()])
@@ -328,7 +324,7 @@ mod tests {
         ctx.response
             .headers
             .insert("etag".to_string(), vec!["W/\"abc123\"".to_string()]);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.response.headers.get("etag"),
             Some(&vec!["W/\"abc123\"".to_string()])
@@ -340,7 +336,7 @@ mod tests {
         ctx.response
             .headers
             .insert("etag".to_string(), vec!["abc123".to_string()]);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert!(!out.context.response.headers.contains_key("etag"));
     }
 

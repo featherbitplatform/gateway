@@ -280,14 +280,10 @@ impl Plugin for ProxyCachePlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         // Non-cacheable methods bypass the cache entirely in both phases.
         if !self.method_cacheable(&ctx) {
-            return Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            });
+            return Ok(PluginOutput::success(ctx));
         }
 
         let key = self.derive_key(&ctx);
@@ -321,10 +317,7 @@ impl Plugin for ProxyCachePlugin {
                     });
                 }
                 // Miss: continue to the upstream.
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             Role::Store => {
                 let status = ctx.response.status_code;
@@ -341,10 +334,7 @@ impl Plugin for ProxyCachePlugin {
                 ctx.response
                     .headers
                     .insert(CACHE_STATUS_HEADER.to_string(), vec!["MISS".to_string()]);
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
         }
     }
@@ -443,14 +433,14 @@ mod tests {
         let s = store(&r);
 
         // Cold lookup → miss (passes through).
-        let miss = l.execute(ctx("GET"), &HashMap::new()).await;
+        let miss = l.execute(ctx("GET")).await;
         assert!(miss.is_ok(), "cold lookup should miss and pass through");
 
         // Upstream produced a 200 body → store caches it.
         let mut resp = ctx("GET");
         resp.response.status_code = 200;
         resp.response.body = Bytes::from_static(b"cached-body");
-        let stored = s.execute(resp, &HashMap::new()).await.unwrap();
+        let stored = s.execute(resp).await.unwrap();
         assert_eq!(
             stored.context.response.headers.get(CACHE_STATUS_HEADER),
             Some(&vec!["MISS".to_string()])
@@ -458,7 +448,7 @@ mod tests {
 
         // Warm lookup → hit, short-circuits with the cached body.
         let hit = l
-            .execute(ctx("GET"), &HashMap::new())
+            .execute(ctx("GET"))
             .await
             .expect_err("warm lookup should hit and short-circuit");
         assert_eq!(hit.error.code, "PROXY_CACHE_HIT");
@@ -483,9 +473,9 @@ mod tests {
         let mut resp = ctx("POST");
         resp.response.status_code = 200;
         resp.response.body = Bytes::from_static(b"not-cached");
-        s.execute(resp, &HashMap::new()).await.unwrap();
+        s.execute(resp).await.unwrap();
 
-        let out = l.execute(ctx("POST"), &HashMap::new()).await;
+        let out = l.execute(ctx("POST")).await;
         assert!(out.is_ok(), "non-cacheable method must never hit the cache");
     }
 }

@@ -133,7 +133,6 @@ impl Plugin for RateLimitPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         let key = match &self.key_source {
             KeySource::RemoteAddr => ctx.request.remote_addr.clone(),
@@ -154,10 +153,7 @@ impl Plugin for RateLimitPlugin {
         };
 
         if allowed {
-            Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            })
+            Ok(PluginOutput::success(ctx))
         } else {
             ctx.response.status_code = 429;
             ctx.response.body =
@@ -234,16 +230,16 @@ mod tests {
         let p = plugin(serde_json::json!({ "requests_per_second": 1, "burst": 2 }));
         // Two tokens available -> two passes.
         assert!(p
-            .execute(ctx("1.2.3.4:5", None), &HashMap::new())
+            .execute(ctx("1.2.3.4:5", None))
             .await
             .is_ok());
         assert!(p
-            .execute(ctx("1.2.3.4:5", None), &HashMap::new())
+            .execute(ctx("1.2.3.4:5", None))
             .await
             .is_ok());
         // Third exhausts the bucket -> 429.
         let err = p
-            .execute(ctx("1.2.3.4:5", None), &HashMap::new())
+            .execute(ctx("1.2.3.4:5", None))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "RATE_LIMITED");
@@ -265,17 +261,17 @@ mod tests {
     async fn test_buckets_are_per_key() {
         let p = plugin(serde_json::json!({ "requests_per_second": 1, "burst": 1 }));
         assert!(p
-            .execute(ctx("10.0.0.1:5", None), &HashMap::new())
+            .execute(ctx("10.0.0.1:5", None))
             .await
             .is_ok());
         // Same client is now throttled...
         assert!(p
-            .execute(ctx("10.0.0.1:5", None), &HashMap::new())
+            .execute(ctx("10.0.0.1:5", None))
             .await
             .is_err());
         // ...but a different client still has a full bucket.
         assert!(p
-            .execute(ctx("10.0.0.2:5", None), &HashMap::new())
+            .execute(ctx("10.0.0.2:5", None))
             .await
             .is_ok());
     }
@@ -290,14 +286,12 @@ mod tests {
         assert!(p
             .execute(
                 ctx("10.0.0.1:5", Some(("x-api-key", "k1"))),
-                &HashMap::new()
             )
             .await
             .is_ok());
         assert!(p
             .execute(
                 ctx("10.0.0.2:5", Some(("x-api-key", "k1"))),
-                &HashMap::new()
             )
             .await
             .is_err());
@@ -305,7 +299,6 @@ mod tests {
         assert!(p
             .execute(
                 ctx("10.0.0.3:5", Some(("x-api-key", "k2"))),
-                &HashMap::new()
             )
             .await
             .is_ok());

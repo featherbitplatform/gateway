@@ -22,12 +22,21 @@ use ports::PortSpec;
 pub struct PluginOutput {
     /// The (possibly mutated) context, passed on to the next node in the graph.
     pub context: Context,
-    /// Values published under names that downstream nodes can consume as
-    /// `named_inputs`; most plugins leave this empty.
-    // Part of the plugin contract: every plugin populates it, but the engine
-    // does not yet wire named inputs between nodes.
-    #[allow(dead_code)]
-    pub named_outputs: HashMap<String, serde_json::Value>,
+    /// Declared output port this result leaves on. `None` = `success`.
+    /// Must name a port of kind `outcome` in the node type's [`PortSpec`].
+    pub port: Option<&'static str>,
+}
+
+impl PluginOutput {
+    /// The normal exit: continue through the `success` port.
+    pub fn success(context: Context) -> Self {
+        Self { context, port: None }
+    }
+
+    /// Exit through a declared named `outcome` port (e.g. `"denied"`).
+    pub fn on_port(context: Context, port: &'static str) -> Self {
+        Self { context, port: Some(port) }
+    }
 }
 
 /// The result of a plugin execution: either success or an error with the context preserved.
@@ -61,18 +70,19 @@ pub trait Plugin: Send + Sync {
     ///   duration of the call and must hand it back in either outcome — inside
     ///   [`PluginOutput`] on success, or inside [`PluginExecutionError`] on
     ///   failure. The context is never lost.
-    /// - `named_inputs` carries values that upstream nodes published as
-    ///   `named_outputs`, keyed by name; most plugins ignore it.
     /// - On `Ok`, the graph engine routes the returned context through the
     ///   node's `success` port. On `Err`, the [`PluginExecutionError`] carries
     ///   both the context and a [`GatewayError`], letting the engine record
     ///   the error and continue through the node's `error` port (typically
     ///   toward an `error-handler` node) instead of aborting the request.
-    async fn execute(
-        &self,
-        ctx: Context,
-        named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult;
+    async fn execute(&self, ctx: Context) -> PluginResult;
+
+    /// Static declaration of this node type's ports. Never overridden —
+    /// resolved through the factory registry so the engine, catalog, and
+    /// plugins can't drift.
+    fn ports(&self) -> &'static PortSpec {
+        port_spec(self.plugin_type()).unwrap_or(&ports::DEFAULT_SPEC)
+    }
 }
 
 /// Every plugin type [`create_plugin`] can build, for save-time validation of

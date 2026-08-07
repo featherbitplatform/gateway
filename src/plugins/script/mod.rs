@@ -132,14 +132,10 @@ impl Plugin for ScriptPlugin {
     async fn execute(
         &self,
         ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         match &self.runtime {
             ScriptRuntime::Lua(rt) => match rt.execute(ctx) {
-                Ok(new_ctx) => Ok(PluginOutput {
-                    context: new_ctx,
-                    named_outputs: HashMap::new(),
-                }),
+                Ok(new_ctx) => Ok(PluginOutput::success(new_ctx)),
                 Err(e) => Err(PluginExecutionError {
                     context: e.context,
                     error: e.error,

@@ -285,7 +285,6 @@ impl Plugin for WorkflowPlugin {
     async fn execute(
         &self,
         mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
     ) -> PluginResult {
         for rule in &self.rules {
             let matched = rule.case.as_ref().is_none_or(|e| e.eval(&ctx));
@@ -331,10 +330,7 @@ impl Plugin for WorkflowPlugin {
                     set_quota_headers(&mut ctx, window.limit, window.remaining, window.reset);
 
                     if window.allowed {
-                        return Ok(PluginOutput {
-                            context: ctx,
-                            named_outputs: HashMap::new(),
-                        });
+                        return Ok(PluginOutput::success(ctx));
                     }
                     let body = match &lc.rejected_msg {
                         Some(msg) => {
@@ -354,10 +350,7 @@ impl Plugin for WorkflowPlugin {
         }
 
         // No rule matched: passthrough.
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -405,7 +398,7 @@ mod tests {
         .unwrap();
 
         let err = p
-            .execute(test_ctx("/admin/users"), &HashMap::new())
+            .execute(test_ctx("/admin/users"))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "WORKFLOW_REJECTED");
@@ -417,7 +410,7 @@ mod tests {
 
         // Non-matching request passes through untouched.
         let out = p
-            .execute(test_ctx("/public"), &HashMap::new())
+            .execute(test_ctx("/public"))
             .await
             .unwrap();
         assert_eq!(out.context.response.status_code, 0);
@@ -430,7 +423,7 @@ mod tests {
         }))
         .unwrap();
         let err = p
-            .execute(test_ctx("/anything"), &HashMap::new())
+            .execute(test_ctx("/anything"))
             .await
             .unwrap_err();
         assert_eq!(err.context.response.status_code, 418);
@@ -446,12 +439,12 @@ mod tests {
         }))
         .unwrap();
         let err = p
-            .execute(test_ctx("/both"), &HashMap::new())
+            .execute(test_ctx("/both"))
             .await
             .unwrap_err();
         assert_eq!(err.context.response.status_code, 401);
         let err = p
-            .execute(test_ctx("/other"), &HashMap::new())
+            .execute(test_ctx("/other"))
             .await
             .unwrap_err();
         assert_eq!(err.context.response.status_code, 403);
@@ -472,7 +465,7 @@ mod tests {
 
         for i in 0..2 {
             let out = p
-                .execute(test_ctx("/x"), &HashMap::new())
+                .execute(test_ctx("/x"))
                 .await
                 .unwrap_or_else(|_| panic!("request {i} should pass"));
             assert_eq!(
@@ -482,7 +475,7 @@ mod tests {
         }
 
         let err = p
-            .execute(test_ctx("/x"), &HashMap::new())
+            .execute(test_ctx("/x"))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "RATE_LIMITED");
@@ -506,13 +499,13 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(p.execute(test_ctx("/x"), &HashMap::new()).await.is_ok());
-        assert!(p.execute(test_ctx("/x"), &HashMap::new()).await.is_err());
+        assert!(p.execute(test_ctx("/x")).await.is_ok());
+        assert!(p.execute(test_ctx("/x")).await.is_err());
 
         // A different remote_addr gets its own window (default key $remote_addr).
         let mut other = test_ctx("/x");
         other.request.remote_addr = "192.168.9.9:1".to_string();
-        assert!(p.execute(other, &HashMap::new()).await.is_ok());
+        assert!(p.execute(other).await.is_ok());
     }
 
     #[test]
