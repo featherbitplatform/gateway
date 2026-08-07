@@ -24,6 +24,8 @@ pub struct PluginOutput {
     pub context: Context,
     /// Declared output port this result leaves on. `None` = `success`.
     /// Must name a port of kind `outcome` in the node type's [`PortSpec`].
+    // Part of the plugin contract: routing consumes this from Task 3 (engine per-port routing).
+    #[allow(dead_code)]
     pub port: Option<&'static str>,
 }
 
@@ -34,6 +36,8 @@ impl PluginOutput {
     }
 
     /// Exit through a declared named `outcome` port (e.g. `"denied"`).
+    // Part of the plugin contract: consumed once plugins gain outcome ports.
+    #[allow(dead_code)]
     pub fn on_port(context: Context, port: &'static str) -> Self {
         Self { context, port: Some(port) }
     }
@@ -80,6 +84,9 @@ pub trait Plugin: Send + Sync {
     /// Static declaration of this node type's ports. Never overridden —
     /// resolved through the factory registry so the engine, catalog, and
     /// plugins can't drift.
+    // Part of the plugin contract: this surface is resolved via the registry
+    // once callers (catalog, engine routing) land in later tasks.
+    #[allow(dead_code)]
     fn ports(&self) -> &'static PortSpec {
         port_spec(self.plugin_type()).unwrap_or(&ports::DEFAULT_SPEC)
     }
