@@ -4,6 +4,7 @@
 //! maps node-type strings from YAML config to plugin instances.
 
 pub mod native;
+pub mod ports;
 pub mod resources;
 pub mod script;
 pub mod util;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 
 use crate::context::{Context, GatewayError};
 use resources::PluginResources;
+use ports::PortSpec;
 
 /// The result of a successful plugin execution.
 #[derive(Debug)]
@@ -421,6 +423,20 @@ pub fn create_plugin(
         )),
         "script" => Ok(Box::new(script::ScriptPlugin::from_config(config)?)),
         _ => Err(format!("Unknown plugin type: {}", node_type)),
+    }
+}
+
+/// Static port declaration for a node type. `None` for unknown types.
+///
+/// This match is the port registry: sweep tasks add arms here as plugins
+/// gain outcome ports. Keep in sync with `KNOWN_PLUGIN_TYPES`
+/// (enforced by `test_every_known_type_has_a_valid_spec`).
+pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
+    match plugin_type {
+        "listener" => Some(&ports::LISTENER_SPEC),
+        "client" => Some(&ports::CLIENT_SPEC),
+        _ if KNOWN_PLUGIN_TYPES.contains(&plugin_type) => Some(&ports::DEFAULT_SPEC),
+        _ => None,
     }
 }
 
