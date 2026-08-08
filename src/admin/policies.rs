@@ -345,7 +345,14 @@ fn plugin_catalog() -> Vec<serde_json::Value> {
 
     CATALOG
         .iter()
-        .map(|(t, d)| serde_json::json!({"type": t, "description": d}))
+        .map(|(t, d)| {
+            let spec = crate::plugins::port_spec(t).expect("catalog type is registered");
+            serde_json::json!({
+                "type": t,
+                "description": d,
+                "ports": serde_json::to_value(spec).unwrap()
+            })
+        })
         .collect()
 }
 
@@ -457,5 +464,23 @@ mod tests {
             missing.is_empty(),
             "plugins with no icon in ui/src/pluginMeta.tsx (they fall back to the generic cube): {missing:?}"
         );
+    }
+
+    /// Every catalog entry carries its port spec, and outcome ports match the registry.
+    #[test]
+    fn test_catalog_entries_carry_ports() {
+        for p in plugin_catalog() {
+            let ty = p["type"].as_str().unwrap();
+            let ports = &p["ports"];
+            assert!(ports["outputs"].is_array(), "'{ty}' catalog entry lacks ports.outputs");
+            let spec = crate::plugins::port_spec(ty).unwrap();
+            let names: Vec<&str> = ports["outputs"].as_array().unwrap()
+                .iter().map(|o| o["name"].as_str().unwrap()).collect();
+            assert_eq!(names, spec.outputs.iter().map(|o| o.name).collect::<Vec<_>>());
+        }
+        // spot-check kind serialization
+        let cors = plugin_catalog().into_iter()
+            .find(|p| p["type"] == "cors").unwrap();
+        assert_eq!(cors["ports"]["outputs"][1]["kind"], "outcome");
     }
 }
