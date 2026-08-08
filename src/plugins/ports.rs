@@ -3,8 +3,9 @@
 //! One [`PortSpec`] per plugin type, resolved through
 //! [`crate::plugins::port_spec`] — the single source of truth shared by the
 //! graph compiler (edge validation), the admin catalog (`GET /api/plugins`),
-//! and by extension the UI editor. Plugins never override the `Plugin::ports`
-//! trait method; the registry match in `port_spec` IS the declaration.
+//! and by extension the UI editor. The [`crate::plugins::Plugin`] trait has no
+//! port method at all: the registry match in `port_spec` IS the declaration,
+//! so a plugin cannot drift from its own ports.
 
 use serde::Serialize;
 
@@ -16,7 +17,6 @@ pub enum PortKind {
     Success,
     /// The node did its job and chose an alternate route (deny, redirect,
     /// throttle, preflight). Mandatory wiring, same as success.
-    #[allow(dead_code)]
     Outcome,
     /// The node could not do its job. Optional wiring (fallback chain:
     /// per-node edge -> policy catch-all -> default 500).
