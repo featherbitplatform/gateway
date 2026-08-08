@@ -1,8 +1,38 @@
 //! The `exit-transformer` node — reshapes gateway-generated responses
-//! ("exits": auth rejections, rate-limit denials, upstream failures, ...)
-//! with a status-code remap and a body template. Reinterpreted subset of
-//! APISIX's `exit-transformer` plugin (response-phase: place after
+//! ("exits") with a status-code remap and a body template. Reinterpreted
+//! subset of APISIX's `exit-transformer` plugin (response-phase: place after
 //! `upstream`, before `client`).
+//!
+//! ## Which exits it applies to
+//!
+//! By default the node acts only on responses whose context carries an
+//! **error record** (`Context.errors` non-empty) — a failed upstream, a failed
+//! auth callout, an `error-handler`-rendered body. A deliberate rejection that
+//! left its node on an *outcome* port (`denied`, `limited`, `broken`, `abort`,
+//! `redirect`, ...) carries **no** error record and is therefore **not**
+//! transformed unless `always: true` is set.
+//!
+//! So to reshape denials and throttles, set `always: true` and put the node on
+//! the path the outcome port takes:
+//!
+//! ```yaml
+//! nodes:
+//!   - id: shape-exits
+//!     type: exit-transformer
+//!     config:
+//!       always: true                 # required: a denial carries no error record
+//!       status_map: { "401": 403 }
+//!       body: '{"status": $status, "path": "$uri"}'
+//! edges:
+//!   - from: auth.denied
+//!     to: shape-exits.in             # not straight to client
+//!   - from: shape-exits.success
+//!     to: client.in
+//! ```
+//!
+//! With `always: true` the node transforms *every* response reaching it,
+//! clean upstream replies included — so give it its own branch as above
+//! rather than putting it on the main success path.
 //!
 //! **This is a deliberate reinterpretation, not a faithful port.** APISIX's
 //! plugin registers user-supplied *Lua functions* that receive

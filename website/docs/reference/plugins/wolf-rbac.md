@@ -34,16 +34,16 @@ Authorizes each request against a [wolf](https://github.com/iGeeky/wolf) RBAC se
 3. The plugin calls `GET <server>/wolf/rbac/access_check` with query arguments `appID`, `resName` (the request path), `action` (the request method), and `clientIP`, sending the `x-rbac-token` header.
 4. The response body's `data.userInfo` (`id`, `username`, `nickname` — `nickname` falling back to `username`) is, when present, propagated onto the request as `<prefix>UserId` / `<prefix>Username` / `<prefix>Nickname` headers (nickname percent-encoded) and into `context.message["user"]` and `context.message["wolf_rbac.user_id"]`.
 
-On a wolf-server **200** the context passes through the **success** port. On any other status, or a missing/unparseable token, the plugin rejects and exits through the **`denied`** port:
+On a wolf-server **200** the context passes through the **success** port. On a **401** or **403** — wolf-server evaluated the token and refused it — or on a missing/unparseable token, the plugin rejects and exits through the **`denied`** port:
 
 - `context.response.status_code` = `401`
 - Body: `{"error": "forbidden", "message": "<reason>"}` (the wolf-server `reason` field when available) with `content-type: application/json`
 
-A wolf-server callout that fails outright (network error, unreachable) is a genuine **infrastructure failure**, not a rejection — it stays on the **error** port instead, with `context.response.status_code = 500` and error code `WOLF_RBAC_UPSTREAM_ERROR`.
+Anything else is a genuine **infrastructure failure**, not a rejection, and exits on the **error** port with `context.response.status_code = 500` and error code `WOLF_RBAC_UPSTREAM_ERROR`: a callout that fails outright (network error, unreachable, timeout), *and* any other status from `access_check` — `5xx`, or a `404` from a mistyped `server` base URL. The node never obtained a verdict in those cases, and reporting them as a `401` would hide a broken deployment behind a plausible-looking denial.
 
 ## Ports
 
-`wolf-rbac` declares three output ports: `success`, `denied` (a deliberate rejection is prepared — missing/unparseable token, or a wolf-server deny decision), and `error` (the wolf-server callout itself failed). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `wolf-rbac.denied` straight to `client` so the prepared `401` reaches the caller instead of continuing into `upstream`; wire `error` to an error-handler (or leave it unwired for the default 500):
+`wolf-rbac` declares three output ports: `success`, `denied` (a deliberate rejection is prepared — missing/unparseable token, or a wolf-server `401`/`403` deny decision), and `error` (the wolf-server callout failed, or answered with a status that is not an authorization verdict). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `wolf-rbac.denied` straight to `client` so the prepared `401` reaches the caller instead of continuing into `upstream`; wire `error` to an error-handler (or leave it unwired for the default 500):
 
 ```yaml
 edges:

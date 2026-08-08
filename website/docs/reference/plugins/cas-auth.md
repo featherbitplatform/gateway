@@ -69,7 +69,12 @@ Setting a session secret enables the interactive login flow.
 2. The plugin calls `GET <idp_uri>/serviceValidate?ticket=<ticket>&service=<service>`, where `service` is the configured value or the request-derived `scheme://host/path`.
 3. The response is parsed for the authenticated user. Both the default CAS 2.0 **XML** (`<cas:authenticationSuccess>` / `<cas:user>`, with or without the `cas:` prefix) and the CAS 3.0 **JSON** (`serviceResponse.authenticationSuccess.user`) formats are supported.
 
-On success the context passes through the **success** port, with the username exposed as `context.message["user"]` / `context.message["user_id"]` and injected onto the request as the `X-CAS-User` header. On a missing ticket, a non-200 validation response, an authentication-failure body, or a callout failure, the plugin rejects and exits through the **`denied`** port with `context.response.status_code = 401` and body `{"error": "unauthorized", "message": "<reason>"}`.
+On success the context passes through the **success** port, with the username exposed as `context.message["user"]` / `context.message["user_id"]` and injected onto the request as the `X-CAS-User` header.
+
+Otherwise the outcome depends on whether CAS gave a verdict:
+
+- **Missing ticket**, or an authentication-failure (or unparseable) `/serviceValidate` body — CAS said no, so this is a deliberate rejection: the **`denied`** port, with `context.response.status_code = 401` and body `{"error": "unauthorized", "message": "<reason>"}`.
+- **Callout failure** (CAS unreachable, timed out) or a **non-200** `/serviceValidate` reply — no verdict was obtained, so this is an infrastructure failure: the **`error`** port, error code `CAS_AUTH_PROVIDER_ERROR`. The prepared response mirrors the `denied` shape, so what the client sees is unchanged if the error edge leads to `client`.
 
 ### Interactive mode (session secret set)
 
@@ -87,7 +92,16 @@ Every `302` in interactive mode (login redirect, post-callback redirect, logout)
 
 ## Ports
 
-`cas-auth` declares four output ports: `success`, `denied` (a deliberate `401` rejection is prepared — invalid/missing ticket), `redirect` (a `302` browser move is prepared — login, post-callback, or logout; interactive mode only, but the port is always declared), and `error` (never actually used in either mode — the plugin never fails outright). Like `success`, `denied` and `redirect` are both mandatory ports: the policy compiler rejects any policy that leaves either unwired, **even in stateless mode where `redirect` is never actually taken**. Wire both straight to `client`:
+`cas-auth` declares four output ports:
+
+| Port | When it fires |
+|---|---|
+| `success` | The request is authenticated (valid ticket, or a valid session cookie in interactive mode). |
+| `denied` | A deliberate `401` is prepared: no ticket at all, or the CAS server answered and refused the ticket. |
+| `redirect` | A `302` browser move is prepared — login, post-callback, or logout. Interactive mode only, but the port is always declared. |
+| `error` | The ticket-validation callout **failed**: the CAS server was unreachable, timed out, or answered `/serviceValidate` with a non-200. The node never obtained a verdict, so this is not a denial. Error code `CAS_AUTH_PROVIDER_ERROR`; the client-visible response is the same `401` JSON shape as `denied`. |
+
+Like `success`, `denied` and `redirect` are both mandatory ports: the policy compiler rejects any policy that leaves either unwired, **even in stateless mode where `redirect` is never actually taken**. Wire both straight to `client`; `error` is optional and falls back to the policy catch-all:
 
 ```yaml
 edges:
@@ -97,6 +111,8 @@ edges:
     to: client.in
   - from: cas-auth.redirect
     to: client.in
+  - from: cas-auth.error        # optional; omit to use the policy catch-all
+    to: error-handler.in
 ```
 
 #### Session cookie attributes
