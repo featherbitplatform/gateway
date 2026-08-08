@@ -346,6 +346,11 @@ fn plugin_catalog() -> Vec<serde_json::Value> {
     CATALOG
         .iter()
         .map(|(t, d)| {
+            // Infallible: the drift tests keep CATALOG, KNOWN_PLUGIN_TYPES,
+            // the factory, and the port registry in lockstep — see
+            // `test_catalog_covers_factory` / `test_catalog_has_no_unknown_types`
+            // below, `plugins::tests::test_known_plugin_types_matches_factory`,
+            // and `plugins::ports::tests::test_every_known_type_has_a_valid_spec`.
             let spec = crate::plugins::port_spec(t).expect("catalog type is registered");
             serde_json::json!({
                 "type": t,
