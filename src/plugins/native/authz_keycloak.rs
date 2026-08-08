@@ -6,7 +6,9 @@
 //! whether it grants the configured permissions, using the
 //! `urn:ietf:params:oauth:grant-type:uma-ticket` grant with
 //! `response_mode=decision` — exactly the request APISIX's `evaluate_permissions`
-//! builds. A `200` decision allows the request; anything else denies it.
+//! builds. A `200` decision allows the request; a `401`/`403` is Keycloak
+//! refusing it; any other status means no decision was obtained at all (see
+//! [`classify_decision`]).
 //!
 //! ## Implemented subset
 //!
@@ -24,10 +26,13 @@
 //! - Response/token caching and `access_denied_redirect_uri` redirects.
 //!
 //! Deliberate denials (missing bearer, no configured permission under
-//! `ENFORCING`, or a non-`200` UMA decision) map to `403` and exit through the
-//! dedicated **`denied`** port. A genuine callout failure (the Keycloak token
-//! endpoint unreachable or timing out) exits through the ordinary **`error`**
-//! port instead, since the node could not do its job.
+//! `ENFORCING`, or a `401`/`403` UMA decision) map to `403` and exit through
+//! the dedicated **`denied`** port. Genuine failures exit through the ordinary
+//! **`error`** port instead, since the node could not do its job: the Keycloak
+//! token endpoint unreachable or timing out, *and* any unexpected status from
+//! it (`400`, `404` from a misconfigured endpoint path, `5xx`). Only a status
+//! Keycloak uses to express an access verdict is treated as a verdict —
+//! otherwise a broken deployment would masquerade as a legitimate 403.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -279,10 +284,34 @@ fn form_encode(s: &str) -> String {
     out
 }
 
-/// Maps a Keycloak UMA response status to an allow/deny decision: only `200`
-/// (the decision endpoint's "granted" response) allows.
-fn decision_allows(status: u16) -> bool {
-    status == 200
+/// What a Keycloak UMA `response_mode=decision` reply means.
+#[derive(Debug, PartialEq, Eq)]
+enum Decision {
+    /// `200` — the decision endpoint granted the requested permissions.
+    Granted,
+    /// Keycloak evaluated the request and refused it: `403` (`access_denied`)
+    /// or `401` (the bearer token was rejected). A deliberate, client-facing
+    /// decision → the `denied` port.
+    Denied,
+    /// Anything else — `5xx`, or a `4xx` that means the *request to Keycloak*
+    /// was wrong rather than the client's access (`400 invalid_grant`,
+    /// `404` from a misconfigured token endpoint). The node never obtained a
+    /// decision → the `error` port.
+    Unexpected,
+}
+
+/// Classifies a Keycloak UMA response status.
+///
+/// The split matters: a misconfigured `token_endpoint` answering `404`, or a
+/// Keycloak having a bad day answering `502`, is *not* "this client may not
+/// pass" — reporting it as a denial hides a broken deployment behind a
+/// plausible-looking 403.
+fn classify_decision(status: u16) -> Decision {
+    match status {
+        200 => Decision::Granted,
+        401 | 403 => Decision::Denied,
+        _ => Decision::Unexpected,
+    }
 }
 
 #[async_trait]
@@ -334,11 +363,23 @@ impl Plugin for AuthzKeycloakPlugin {
         };
 
         match self.outbound.request(request).await {
-            Ok(resp) if decision_allows(resp.status) => Ok(PluginOutput::success(ctx)),
-            Ok(resp) => Self::deny(
-                ctx,
-                format!("Keycloak denied permission (status {})", resp.status),
-            ),
+            Ok(resp) => match classify_decision(resp.status) {
+                Decision::Granted => Ok(PluginOutput::success(ctx)),
+                Decision::Denied => Self::deny(
+                    ctx,
+                    format!("Keycloak denied permission (status {})", resp.status),
+                ),
+                // The node never got a decision — a broken endpoint or a
+                // failing Keycloak, not a verdict about this client.
+                Decision::Unexpected => Self::callout_error(
+                    ctx,
+                    format!(
+                        "unexpected status {} from the Keycloak token endpoint \
+                         (expected 200/401/403)",
+                        resp.status
+                    ),
+                ),
+            },
             Err(e) => {
                 let detail = match &e {
                     OutboundError::Timeout(d) => format!("Keycloak request timed out after {d:?}"),
@@ -422,12 +463,21 @@ mod tests {
         assert!(body.contains("permission=Default+Resource%23read"));
     }
 
+    /// Only a status Keycloak uses to express an access verdict counts as a
+    /// verdict. Everything else means the node never got one, so it must not
+    /// be laundered into a 403 denial.
     #[test]
-    fn test_decision_allows() {
-        assert!(decision_allows(200));
-        assert!(!decision_allows(401));
-        assert!(!decision_allows(403));
-        assert!(!decision_allows(500));
+    fn test_classify_decision_splits_verdicts_from_failures() {
+        assert_eq!(classify_decision(200), Decision::Granted);
+        assert_eq!(classify_decision(401), Decision::Denied);
+        assert_eq!(classify_decision(403), Decision::Denied);
+        for status in [400u16, 404, 500, 502, 503] {
+            assert_eq!(
+                classify_decision(status),
+                Decision::Unexpected,
+                "status {status}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -508,6 +558,90 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.error.code, "AUTHZ_KEYCLOAK_ERROR");
         assert_eq!(err.context.response.status_code, 403);
+    }
+
+    /// Minimal one-shot HTTP server that answers any request with a fixed
+    /// status line and no body. Returns its port.
+    async fn spawn_status_server(status_line: &'static str) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(
+                        format!("HTTP/1.1 {status_line}\r\ncontent-length: 0\r\n\r\n").as_bytes(),
+                    )
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        port
+    }
+
+    fn enforcing_cfg(port: u16) -> HashMap<String, serde_json::Value> {
+        let mut config = HashMap::new();
+        config.insert(
+            "token_endpoint".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{port}/token")),
+        );
+        config.insert("client_id".to_string(), serde_json::json!("my-api"));
+        config.insert(
+            "permissions".to_string(),
+            serde_json::json!(["Default Resource#read"]),
+        );
+        config.insert("timeout".to_string(), serde_json::json!(2000));
+        config
+    }
+
+    /// Keycloak evaluated the request and refused it (`403 access_denied`):
+    /// a deliberate decision → the `denied` port.
+    #[tokio::test]
+    async fn test_keycloak_403_decision_is_denied() {
+        let port = spawn_status_server("403 Forbidden").await;
+        let plugin =
+            AuthzKeycloakPlugin::from_config(&enforcing_cfg(port), &PluginResources::empty())
+                .unwrap();
+        let out = plugin
+            .execute(ctx_with_auth(Some("Bearer x")))
+            .await
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
+    }
+
+    /// Regression: a `500` (or a `404` from a misconfigured token endpoint)
+    /// used to be laundered into the same 403 denial as a real refusal, hiding
+    /// a broken deployment. It must exit on `error`.
+    #[tokio::test]
+    async fn test_keycloak_5xx_is_error_port_not_denied() {
+        let port = spawn_status_server("500 Internal Server Error").await;
+        let plugin =
+            AuthzKeycloakPlugin::from_config(&enforcing_cfg(port), &PluginResources::empty())
+                .unwrap();
+        let err = plugin
+            .execute(ctx_with_auth(Some("Bearer x")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.error.code, "AUTHZ_KEYCLOAK_ERROR");
+        assert!(err.error.message.contains("unexpected status 500"), "{}", err.error.message);
+        assert_eq!(err.context.response.status_code, 403);
+    }
+
+    /// A `404` from a wrong `token_endpoint` path is the same class of problem.
+    #[tokio::test]
+    async fn test_keycloak_404_is_error_port_not_denied() {
+        let port = spawn_status_server("404 Not Found").await;
+        let plugin =
+            AuthzKeycloakPlugin::from_config(&enforcing_cfg(port), &PluginResources::empty())
+                .unwrap();
+        let err = plugin
+            .execute(ctx_with_auth(Some("Bearer x")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.error.code, "AUTHZ_KEYCLOAK_ERROR");
     }
 
     #[test]
