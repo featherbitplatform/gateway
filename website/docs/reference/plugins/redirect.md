@@ -5,7 +5,7 @@ description: Answer the request with an HTTP redirect — a URI template with va
 
 <span className="plugin-chip" style={{'--chip-color': '#eab308'}}>redirect</span>
 
-Builds a redirect response from either a `uri` template (with `$var` interpolation) or the `http_to_https` shortcut, then stops the request from going upstream. In featherbit terms "stopping" means the plugin fills in `context.response` (status + `location` header) and exits through `success` — so **wire the node's `success` edge straight to `client.in`**, not through an `upstream` node, which would overwrite the response.
+Builds a redirect response from either a `uri` template (with `$var` interpolation) or the `http_to_https` shortcut, then stops the request from going upstream. In featherbit terms "stopping" means the plugin fills in `context.response` (status + `location` header) and exits through the dedicated `redirect` output port — so **wire the node's `redirect` edge straight to `client.in`**, not through an `upstream` node, which would overwrite the response.
 
 ## Configuration
 
@@ -28,13 +28,25 @@ config:
 
 ## Behavior
 
-This plugin never fails at execution time — it always exits through the `success` port, and the `error` port is never taken.
+This plugin never fails at execution time — the `error` port is never taken.
 
-In **`uri` mode**, the template is interpolated, the query string is optionally appended, and the response is set: `status_code = ret_code`, `location` header = the new URI, empty body (stale `content-length`/`content-encoding` are dropped per the body-mutation convention).
+In **`uri` mode**, the template is interpolated, the query string is optionally appended, and the response is set: `status_code = ret_code`, `location` header = the new URI, empty body (stale `content-length`/`content-encoding` are dropped per the body-mutation convention). The response is fully prepared, so the node exits through the dedicated **`redirect`** output port.
 
 In **`http_to_https` mode**, the effective scheme is the first `x-forwarded-proto` request header value when present (an outer proxy's word wins), otherwise `context.request.scheme`:
 
-- If the scheme is already `https`, the context **passes through unchanged** — no redirect is set. Since the `success` edge goes to `client.in`, that would produce an empty response, so only attach `http_to_https` to routes served over plain HTTP.
-- Otherwise the response redirects to `https://$host$request_uri` (`$host` keeps a port carried by the `Host` header) with `301` for GET/HEAD and `308` for every other method.
+- If the scheme is already `https`, the context **passes through unchanged** on the **`success`** port — no redirect is set. Only attach `http_to_https` to routes served over plain HTTP.
+- Otherwise the response redirects to `https://$host$request_uri` (`$host` keeps a port carried by the `Host` header) with `301` for GET/HEAD and `308` for every other method, and exits through **`redirect`**.
 
 **Limitations:** `regex_uri` (regex-substitution targets) and `encode_uri` are not implemented; `http_to_https` always targets the default HTTPS port — there is no `https_port` plugin attribute; the template has no `\$` escape for a literal dollar sign.
+
+## Ports
+
+`redirect` declares three output ports: `success` (the `http_to_https` already-secure passthrough, unchanged request), `redirect` (a 3xx response is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `redirect` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `redirect.redirect` straight to `client` so the prepared response reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: redirect.success
+    to: upstream.in
+  - from: redirect.redirect
+    to: client.in
+```

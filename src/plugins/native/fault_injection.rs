@@ -7,21 +7,20 @@
 //!
 //! **Early-exit wiring**: an aborted request has the configured response
 //! already written onto `Context.response` and exits through the node's
-//! **error** port with code `FAULT_INJECTED`; non-aborted requests continue
-//! through the **success** port. Wire `error` to a pass-through path (e.g.
-//! straight to `client.in`, or an `error-handler` that preserves the prepared
-//! response) so the injected status/body reach the client, and wire `success`
-//! to the rest of the pipeline. This deviates mechanically from APISIX (where
-//! abort is a direct exit, not an error) because featherbit pipelines need a
-//! distinct port for "stop here" versus "keep going".
+//! dedicated **`abort`** output port; non-aborted requests (nothing
+//! triggered, or delay-only) continue through the **success** port. Wire
+//! `abort` to a pass-through path (e.g. straight to `client.in`, or an
+//! `error-handler` that preserves the prepared response) so the injected
+//! status/body reach the client, and wire `success` to the rest of the
+//! pipeline.
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 use crate::vars::{interpolate, Expr};
 
 /// Injects delays and/or abort responses into matching requests.
@@ -322,15 +321,10 @@ impl Plugin for FaultInjectionPlugin {
                     ctx.response.headers.insert(name, vec![value]);
                 }
 
-                return Err(PluginExecutionError {
-                    context: ctx,
-                    error: GatewayError {
-                        node_id: String::new(),
-                        code: "FAULT_INJECTED".to_string(),
-                        message: format!("fault injected: abort with status {}", abort.http_status),
-                        metadata: HashMap::new(),
-                    },
-                });
+                // The abort response is fully prepared: exit on the
+                // dedicated `abort` port rather than `error`, and rather
+                // than `success` (which would continue into `upstream`).
+                return Ok(PluginOutput::on_port(ctx, "abort"));
             }
         }
 
@@ -375,7 +369,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_abort_prepares_response_and_errors() {
+    async fn test_abort_exits_on_abort_port() {
         let p = plugin(serde_json::json!({
             "abort": {
                 "http_status": 503,
@@ -385,9 +379,9 @@ mod tests {
         }))
         .unwrap();
 
-        let err = p.execute(test_ctx()).await.unwrap_err();
-        assert_eq!(err.error.code, "FAULT_INJECTED");
-        let ctx = err.context;
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("abort"));
+        let ctx = out.context;
         assert_eq!(ctx.response.status_code, 503);
         assert_eq!(ctx.response.body, Bytes::from("injected for /api/users"));
         assert_eq!(
@@ -409,7 +403,8 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(p.execute(test_ctx()).await.is_err());
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("abort"));
 
         // No expression matches -> passthrough on success.
         let p = plugin(serde_json::json!({
@@ -420,6 +415,7 @@ mod tests {
         }))
         .unwrap();
         let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, None);
         assert_eq!(out.context.response.status_code, 0);
     }
 
@@ -432,7 +428,8 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(p.execute(test_ctx()).await.is_err());
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("abort"));
     }
 
     #[tokio::test]
@@ -447,8 +444,10 @@ mod tests {
         }))
         .unwrap();
         for _ in 0..20 {
-            assert!(p0.execute(test_ctx()).await.is_ok());
-            assert!(p100.execute(test_ctx()).await.is_err());
+            let out0 = p0.execute(test_ctx()).await.unwrap();
+            assert_eq!(out0.port, None);
+            let out100 = p100.execute(test_ctx()).await.unwrap();
+            assert_eq!(out100.port, Some("abort"));
         }
     }
 
