@@ -255,7 +255,11 @@ impl AuthzCasdoorPlugin {
     /// Builds the 403 denial and exits on the `denied` port. Reserved for
     /// deliberate denials — a missing/invalid token, OAuth state mismatch, or
     /// Casdoor actively refusing the decision.
-    fn deny(ctx: Context, _message: impl Into<String>) -> PluginResult {
+    fn deny(ctx: Context, message: impl Into<String>) -> PluginResult {
+        // The reason never reaches the client (the `denied` port carries no
+        // error record, unlike `Err`), but it's still useful for operators
+        // debugging why a request was denied.
+        tracing::debug!("authz-casdoor: denying request: {}", message.into());
         let mut ctx = ctx;
         ctx.response.status_code = 403;
         ctx.response.body = Bytes::from(r#"{"error":"access_denied"}"#);
@@ -513,12 +517,16 @@ impl AuthzCasdoorPlugin {
 
         match self.outbound.request(request).await {
             Ok(resp) if resp.status == 200 && token_is_active(&resp.body) => Ok(PluginOutput::success(ctx)),
-            Ok(resp) => Self::deny(
+            // Per RFC 7662, a `200` with `active: false` is the introspection
+            // endpoint doing its job and saying "no" — a deliberate denial.
+            Ok(resp) if resp.status == 200 => Self::deny(ctx, "Casdoor token inactive"),
+            // A non-200 from the introspection endpoint is not a token
+            // decision at all (e.g. the gateway's own client credentials were
+            // rejected, or a fronting proxy is down) — a genuine callout
+            // failure, not a deliberate denial.
+            Ok(resp) => Self::callout_error(
                 ctx,
-                format!(
-                    "Casdoor token inactive or rejected (status {})",
-                    resp.status
-                ),
+                format!("Casdoor introspection returned status {}", resp.status),
             ),
             Err(e) => {
                 let detail = match &e {
@@ -914,6 +922,49 @@ mod tests {
             serde_json::json!("http://127.0.0.1:1"),
         );
         config.insert("timeout".to_string(), serde_json::json!(200));
+        let plugin = AuthzCasdoorPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+        let err = plugin
+            .execute(ctx_with_auth(Some("Bearer tok")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.error.code, "AUTHZ_CASDOOR_ERROR");
+        assert_eq!(err.context.response.status_code, 403);
+    }
+
+    /// Minimal one-shot HTTP server that answers any request with a fixed
+    /// status line and no body. Returns its port.
+    async fn spawn_status_server(status_line: &'static str) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(
+                        format!("HTTP/1.1 {status_line}\r\ncontent-length: 0\r\n\r\n").as_bytes(),
+                    )
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        port
+    }
+
+    /// Regression: a non-200 from the introspection endpoint is not an
+    /// `active: false` token decision (RFC 7662 signals that with `200`); it
+    /// means the callout itself went wrong (bad client credentials, a
+    /// fronting proxy down, ...), so it must stay a genuine `Err`, not be
+    /// folded into `denied`.
+    #[tokio::test]
+    async fn test_introspection_non_200_is_callout_error_not_denied() {
+        let port = spawn_status_server("500 Internal Server Error").await;
+        let mut config = stateless_cfg();
+        config.insert(
+            "endpoint_addr".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{port}")),
+        );
         let plugin = AuthzCasdoorPlugin::from_config(&config, &PluginResources::empty()).unwrap();
         let err = plugin
             .execute(ctx_with_auth(Some("Bearer tok")))

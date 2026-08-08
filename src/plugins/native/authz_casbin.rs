@@ -243,8 +243,13 @@ impl Plugin for AuthzCasbinPlugin {
             Ok(true) => Ok(PluginOutput::success(ctx)),
             Ok(false) => Self::deny(ctx),
             // An evaluation error (should not happen with a valid model) is
-            // treated as a denial, same as an explicit `false` decision.
-            Err(_) => Self::deny(ctx),
+            // treated as a denial, same as an explicit `false` decision, but
+            // logged so a genuine enforcement bug doesn't look identical to a
+            // policy denial in the logs.
+            Err(e) => {
+                tracing::warn!("Casbin enforcement error, denying request: {e}");
+                Self::deny(ctx)
+            }
         }
     }
 }
