@@ -1,8 +1,10 @@
 //! CORS plugin (`cors`).
 //!
-//! Adds `Access-Control-*` response headers for allowed origins and
-//! short-circuits `OPTIONS` preflight requests with a 204 response. Never
-//! errors: disallowed origins simply pass through without CORS headers.
+//! Adds `Access-Control-*` response headers for allowed origins and answers
+//! `OPTIONS` preflight requests with a prepared 204, exiting through the
+//! dedicated `preflight` port so the engine routes the response straight to
+//! the client instead of continuing to `upstream`. Never errors: disallowed
+//! origins simply pass through on `success` without CORS headers.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -16,9 +18,11 @@ use crate::plugins::{Plugin, PluginOutput, PluginResult};
 /// For an allowed origin the plugin sets `access-control-allow-origin`
 /// (echoing the origin, or `*` when wildcarded) and, when enabled,
 /// `access-control-allow-credentials`. For preflight (`OPTIONS`) requests it
-/// additionally sets the allow-methods/allow-headers/max-age headers and
-/// short-circuits with a 204 empty response. Does not write to
-/// `context.message` and always succeeds.
+/// additionally sets the allow-methods/allow-headers/max-age headers,
+/// prepares a 204 empty response, and exits through the `preflight` port —
+/// the policy must wire that port (typically straight to `client`) or
+/// compilation rejects it. Does not write to `context.message` and always
+/// succeeds.
 pub struct CorsPlugin {
     /// Origins granted CORS access; `"*"` matches any origin.
     allowed_origins: Vec<String>,
@@ -168,9 +172,12 @@ impl Plugin for CorsPlugin {
                     "access-control-max-age".to_string(),
                     vec![self.max_age.to_string()],
                 );
-                // Short-circuit: return 204 for preflight
+                // Short-circuit: the 204 is fully prepared, exit on the
+                // dedicated `preflight` port rather than continuing to
+                // `success` (and from there to `upstream`).
                 ctx.response.status_code = 204;
                 ctx.response.body = Bytes::new();
+                return Ok(PluginOutput::on_port(ctx, "preflight"));
             }
         }
 
@@ -297,36 +304,38 @@ mod tests {
         );
     }
 
-    /// APISIX TEST 14: an OPTIONS preflight on an allowed origin is answered with
-    /// 204 and the advertised methods/headers/max-age.
-    ///
-    /// NOTE: this is the *plugin-level* contract — the plugin prepares the 204.
-    /// End-to-end the graph engine still walks the success edge into `upstream`,
-    /// so a real preflight is not short-circuited; that gap is tracked by the
-    /// (expected-failure) `E2E-DP-09` e2e test, not here.
+    /// APISIX TEST 14: an OPTIONS preflight on an allowed origin exits on the
+    /// `preflight` port with the 204 fully prepared — the engine routes it
+    /// away from upstream (E2E-DP-09 covers the end-to-end short-circuit).
     #[tokio::test]
-    async fn test_preflight_prepares_204() {
+    async fn test_preflight_exits_on_preflight_port() {
         let out = plugin(serde_json::json!({
             "allowed_origins": ["http://sub.domain.com"],
             "allowed_methods": ["GET", "POST"],
             "max_age": 50
         }))
-        .execute(
-            ctx("OPTIONS", Some("http://sub.domain.com")),
-        )
+        .execute(ctx("OPTIONS", Some("http://sub.domain.com")))
         .await
         .unwrap();
+        assert_eq!(out.port, Some("preflight"));
         assert_eq!(out.context.response.status_code, 204);
-        assert_eq!(
-            hdr(&out.context, "access-control-allow-methods"),
-            Some("GET, POST")
-        );
+        assert_eq!(hdr(&out.context, "access-control-allow-methods"), Some("GET, POST"));
         assert_eq!(hdr(&out.context, "access-control-max-age"), Some("50"));
         assert!(out.context.response.body.is_empty());
     }
 
+    /// Non-preflight requests and disallowed origins stay on success.
+    #[tokio::test]
+    async fn test_non_preflight_stays_on_success() {
+        let out = plugin(serde_json::json!({}))
+            .execute(ctx("GET", Some("http://x.example")))
+            .await
+            .unwrap();
+        assert_eq!(out.port, None);
+    }
+
     /// A preflight for a *disallowed* origin is not short-circuited (no 204, no
-    /// CORS headers) — it falls through untouched.
+    /// CORS headers) — it falls through on success untouched.
     #[tokio::test]
     async fn test_preflight_disallowed_origin_untouched() {
         let out = plugin(serde_json::json!({
@@ -335,6 +344,7 @@ mod tests {
         .execute(ctx("OPTIONS", Some("http://evil.example")))
         .await
         .unwrap();
+        assert_eq!(out.port, None);
         assert_ne!(out.context.response.status_code, 204);
         assert_eq!(hdr(&out.context, "access-control-allow-origin"), None);
     }
