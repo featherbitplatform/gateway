@@ -90,6 +90,34 @@ pub const CORS_SPEC: PortSpec = PortSpec {
     ],
 };
 
+/// `redirect`: prepared 3xx responses exit on their own port.
+pub const REDIRECT_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "redirect",
+            kind: PortKind::Outcome,
+            description: "A 3xx redirect response is prepared; wire to client.",
+        },
+        ERROR,
+    ],
+};
+
+/// `fault-injection`: injected abort responses exit on their own port.
+pub const FAULT_INJECTION_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "abort",
+            kind: PortKind::Outcome,
+            description: "An injected fault response is prepared; wire to client.",
+        },
+        ERROR,
+    ],
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

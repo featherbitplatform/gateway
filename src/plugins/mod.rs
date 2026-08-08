@@ -449,6 +449,8 @@ pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
         "listener" => Some(&ports::LISTENER_SPEC),
         "client" => Some(&ports::CLIENT_SPEC),
         "cors" => Some(&ports::CORS_SPEC),
+        "redirect" => Some(&ports::REDIRECT_SPEC),
+        "fault-injection" => Some(&ports::FAULT_INJECTION_SPEC),
         _ if KNOWN_PLUGIN_TYPES.contains(&plugin_type) => Some(&ports::DEFAULT_SPEC),
         _ => None,
     }
