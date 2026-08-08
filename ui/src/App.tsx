@@ -485,6 +485,7 @@ export default function App() {
           plugins={plugins}
           scripts={scripts}
           onSavePolicy={handleSaveGraph}
+          onSaveWarning={(title, message) => setToast({ tone: 'warning', title, message })}
           kind={selectedSupernodeDef ? 'supernode' : 'policy'}
           supernodes={supernodes}
           pluginConfigs={pluginConfigs}

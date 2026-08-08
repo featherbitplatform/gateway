@@ -22,6 +22,8 @@ interface TraceViewerProps {
 /** Human wording for each edge the engine can follow after a node. */
 const EDGE_LABEL: Record<EdgeKind, string> = {
   success: 'success →',
+  // Followed by the port-name badge below (e.g. "outcome → denied").
+  outcome: 'outcome →',
   error: 'error →',
   catch_all: 'catch-all →',
   terminal: 'terminal (response sent)',
@@ -242,6 +244,20 @@ export function TraceViewer({ trace }: TraceViewerProps) {
                 }}
               >
                 {EDGE_LABEL[step.edge]}
+                {step.port && (
+                  <span
+                    style={{
+                      marginLeft: 4,
+                      padding: '1px 6px',
+                      borderRadius: 'var(--radius-sm)',
+                      background: 'var(--accent-soft)',
+                      color: 'var(--accent)',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {step.port}
+                  </span>
+                )}
                 {step.next_node_id ? (
                   <>
                     {' '}

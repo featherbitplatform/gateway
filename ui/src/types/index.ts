@@ -126,6 +126,37 @@ export interface PluginConfigDef {
 }
 
 /**
+ * One declared output port on a plugin type.
+ *
+ * @remarks
+ * Mirrors `src/plugins/ports.rs::PortDecl` field for field. `kind` drives
+ * both graph-compiler validation (`success`/`outcome` ports must be wired;
+ * `error` is optional) and the editor's handle color.
+ */
+export interface PortDecl {
+  /** Port name, serialized as the `node_id.port` edge endpoint (e.g. `denied`, `success`). */
+  name: string;
+  /** Port flavor: `success` (normal completion), `outcome` (an alternate named exit,
+   * mandatory wiring like `success`), or `error` (failure, optional wiring). */
+  kind: 'success' | 'outcome' | 'error';
+  /** One-line human-readable explanation, shown as the handle's tooltip. */
+  description: string;
+}
+
+/**
+ * A plugin type's full port declaration.
+ *
+ * @remarks
+ * Mirrors `src/plugins/ports.rs::PortSpec` field for field.
+ */
+export interface PortSpec {
+  /** Description of the single `in` port; `null` = the node has no input (only `listener`). */
+  input: string | null;
+  /** Declared output ports, in display order. */
+  outputs: PortDecl[];
+}
+
+/**
  * A plugin type available on the gateway, as listed by `GET /api/plugins`.
  *
  * @remarks
@@ -137,6 +168,8 @@ export interface PluginType {
   type: string;
   /** Human-readable one-line description. */
   description: string;
+  /** Declared input/output ports, resolved from src/plugins/ports.rs. */
+  ports: PortSpec;
 }
 
 /**
@@ -247,6 +280,7 @@ export interface Change {
 /** Which edge the engine followed after a node. */
 export type EdgeKind =
   | 'success'
+  | 'outcome'
   | 'error'
   | 'catch_all'
   | 'terminal'
@@ -262,6 +296,8 @@ export interface NodeStep {
   outcome: { kind: 'success' } | { kind: 'error'; code: string; message: string };
   duration_us: number;
   edge: EdgeKind;
+  /** Set when `edge` is `outcome` — the named port the step left on (e.g. `denied`). */
+  port?: string;
   next_node_id?: string;
   after: ContextSnapshot;
   /** Computed server-side when a trace is fetched. */

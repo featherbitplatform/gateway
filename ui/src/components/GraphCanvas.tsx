@@ -28,7 +28,45 @@ import { PluginNode, type PluginNodeData } from './PluginNode';
 import { PluginDrawer } from './PluginDrawer';
 import { NodeInspector } from './NodeInspector';
 import { ThemeToggle } from './ThemeToggle';
-import type { DebugConfig, Policy, PluginConfigDef, PluginType, ScriptFile, Supernode } from '../types';
+import type {
+  DebugConfig,
+  Policy,
+  PluginConfigDef,
+  PluginType,
+  PortDecl,
+  ScriptFile,
+  Supernode,
+} from '../types';
+import { buildPortSpecs, getPortSpec, type PortSpecLookup } from '../portSpecs';
+
+/** Stroke color for each port kind, used for both edges and connection previews. */
+const PORT_STROKE: Record<PortDecl['kind'], string> = {
+  success: 'var(--success)',
+  outcome: 'var(--accent)',
+  error: 'var(--error)',
+};
+
+/**
+ * Resolves the {@link PortDecl.kind} of a source node's output port, falling
+ * back to `success` styling for a port name the type's catalog spec doesn't
+ * declare (or a type missing from the catalog entirely) — mirroring
+ * PluginNode's default-pair fallback so an unknown port never renders as an
+ * error edge by mistake.
+ *
+ * @param sourceType - Plugin type of the edge's source node.
+ * @param port - Source port name (already normalized; `out` should be
+ *   resolved to `success` by the caller).
+ * @param portSpecs - Catalog-derived lookup from {@link buildPortSpecs}.
+ */
+function portKindFor(
+  sourceType: string | undefined,
+  port: string,
+  portSpecs: PortSpecLookup
+): PortDecl['kind'] {
+  const spec = sourceType ? getPortSpec(portSpecs, sourceType) : undefined;
+  const decl = spec?.outputs.find((p) => p.name === port);
+  return decl?.kind ?? (port === 'error' ? 'error' : 'success');
+}
 
 /**
  * Builds the shared inline style for floating-toolbar buttons.
@@ -59,6 +97,13 @@ interface GraphCanvasProps {
   scripts: ScriptFile[];
   /** Fires when the user clicks Save Policy, with the graph converted back to the Policy contract. */
   onSavePolicy: (policy: Policy) => void;
+  /**
+   * Fires just before `onSavePolicy`, only when the graph has mandatory
+   * (`success`/`outcome`) ports with no outgoing edge — a client-side
+   * heads-up ahead of the server's authoritative "must be wired" rejection
+   * (see `findUnwiredPorts`); the save attempt proceeds regardless.
+   */
+  onSaveWarning?: (title: string, message: string) => void;
   /** Whether the canvas is editing a policy or a supernode definition. */
   kind: 'policy' | 'supernode';
   /** Supernode definitions offered in the policy palette (empty in supernode mode). */
@@ -84,9 +129,17 @@ const nodeTypes = { pluginNode: PluginNode };
  * @param policy - Policy whose `nodes`/`edges` describe the graph.
  * @param onSelect - Callback wired into each node's data so clicking a
  *   rendered {@link PluginNode} selects it in the canvas.
+ * @param portSpecs - Catalog-derived lookup threaded into each node's
+ *   {@link PluginNodeData.ports} so PluginNode can render the declared
+ *   handles; a type missing from the lookup leaves `ports` undefined and
+ *   PluginNode synthesizes the default success+error pair.
  * @returns ReactFlow nodes of type `pluginNode` carrying {@link PluginNodeData}.
  */
-function policyToNodes(policy: Policy, onSelect: (id: string) => void): Node[] {
+function policyToNodes(
+  policy: Policy,
+  onSelect: (id: string) => void,
+  portSpecs: PortSpecLookup
+): Node[] {
   const positions = new Map<string, { x: number; y: number }>();
 
   // Auto-layout: place listener at left, then each connected node to the right
@@ -139,6 +192,7 @@ function policyToNodes(policy: Policy, onSelect: (id: string) => void): Node[] {
       pluginType: node.type,
       config: node.config || {},
       configRef: node.config_ref,
+      ports: portSpecs[node.type],
       onSelect: onSelect,
     } satisfies PluginNodeData,
   }));
@@ -149,34 +203,41 @@ function policyToNodes(policy: Policy, onSelect: (id: string) => void): Node[] {
  *
  * Each `node_id.port` endpoint is split with `splitEdge`. A source port
  * of `out` is normalized to the `success` handle (PluginNode renders no `out`
- * handle). Edges leaving an `error` port are identified by that source port
- * alone and styled distinctly: animated, red (`var(--error)`) stroke and
- * arrowhead; all other edges are green (`var(--success)`). Edge ids are
- * positional (`e-<index>`).
+ * handle). Each edge's color/animation is driven by its source port's
+ * declared {@link PortDecl.kind} (via `portKindFor`): `error` → red
+ * (`var(--error)`) and animated, `outcome` → accent (`var(--accent)`),
+ * `success` (or an unknown port/type) → green (`var(--success)`). Edge ids
+ * are positional (`e-<index>`).
  *
  * @param policy - Policy whose edges use the `node_id.port` endpoint format.
+ * @param portSpecs - Catalog-derived lookup used to resolve each source
+ *   port's kind.
  * @returns ReactFlow edges targeting each node's `in` handle.
  *
  * @remarks
  * The endpoint format mirrors what the Rust engine parses in
  * src/graph/engine.rs (parse_edge_endpoint), where error-port edges feed the
- * error-routing table used by CompiledGraph::execute.
+ * error-routing table used by CompiledGraph::execute and outcome-port edges
+ * feed the named-port routing table.
  */
-function policyToEdges(policy: Policy): Edge[] {
+function policyToEdges(policy: Policy, portSpecs: PortSpecLookup): Edge[] {
   return policy.edges.map((edge, i) => {
     const [fromNode, fromPort] = splitEdge(edge.from);
     const [toNode] = splitEdge(edge.to);
-    const isError = fromPort === 'error';
+    const sourceHandle = fromPort === 'out' ? 'success' : fromPort;
+    const sourceType = policy.nodes.find((n) => n.id === fromNode)?.type;
+    const kind = portKindFor(sourceType, sourceHandle, portSpecs);
+    const color = PORT_STROKE[kind];
 
     return {
       id: `e-${i}`,
       source: fromNode,
-      sourceHandle: fromPort === 'out' ? 'success' : fromPort,
+      sourceHandle,
       target: toNode,
       targetHandle: 'in',
-      animated: isError,
-      style: { stroke: isError ? 'var(--error)' : 'var(--success)', strokeWidth: 2 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: isError ? 'var(--error)' : 'var(--success)' },
+      animated: kind === 'error',
+      style: { stroke: color, strokeWidth: 2 },
+      markerEnd: { type: MarkerType.ArrowClosed, color },
     };
   });
 }
@@ -198,6 +259,36 @@ function splitEdge(endpoint: string): [string, string] {
   const dot = endpoint.lastIndexOf('.');
   if (dot === -1) return [endpoint, 'out'];
   return [endpoint.substring(0, dot), endpoint.substring(dot + 1)];
+}
+
+/**
+ * Finds every `success`/`outcome` port across a policy's nodes that has no
+ * outgoing edge.
+ *
+ * The gateway rejects a saved policy that leaves a mandatory port unwired
+ * (error ports are optional — the engine falls back to the policy's
+ * `error_handler`, then a generic 500), so this lets the editor warn before
+ * the round-trip to the server, without duplicating or overriding that
+ * server-side validation.
+ *
+ * @param policy - Policy already rebuilt by `nodesToPolicy` (so `edge.from`
+ *   is already the exact `node_id.port` string to match against).
+ * @param portSpecs - Catalog-derived lookup used to enumerate each node
+ *   type's declared outputs.
+ * @returns `node_id.port` strings for every unwired mandatory port, in node order.
+ */
+function findUnwiredPorts(policy: Policy, portSpecs: PortSpecLookup): string[] {
+  const wired = new Set(policy.edges.map((e) => e.from));
+  const missing: string[] = [];
+  for (const node of policy.nodes) {
+    const spec = getPortSpec(portSpecs, node.type);
+    for (const port of spec.outputs) {
+      if (port.kind === 'error') continue;
+      const key = `${node.id}.${port.name}`;
+      if (!wired.has(key)) missing.push(key);
+    }
+  }
+  return missing;
 }
 
 /**
@@ -275,6 +366,7 @@ export function GraphCanvas({
   plugins,
   scripts,
   onSavePolicy,
+  onSaveWarning,
   kind,
   supernodes,
   pluginConfigs,
@@ -302,14 +394,22 @@ export function GraphCanvas({
     [plugins, kind]
   );
 
+  // Catalog-derived port declarations, keyed by plugin type; threaded into
+  // every node's data so PluginNode can render its declared handles, and
+  // consulted for edge coloring and the unwired-port save warning below.
+  const portSpecs = useMemo(() => buildPortSpecs(plugins), [plugins]);
+
   // The parent keys this component by policy name, so a different policy
   // remounts the canvas and nodes/edges/selection all start fresh from the
   // prop. Refetches of the same policy keep the local (unsaved) graph state.
   const initialNodes = useMemo(
-    () => (policy ? policyToNodes(policy, handleSelect) : []),
-    [policy, handleSelect]
+    () => (policy ? policyToNodes(policy, handleSelect, portSpecs) : []),
+    [policy, handleSelect, portSpecs]
   );
-  const initialEdges = useMemo(() => (policy ? policyToEdges(policy) : []), [policy]);
+  const initialEdges = useMemo(
+    () => (policy ? policyToEdges(policy, portSpecs) : []),
+    [policy, portSpecs]
+  );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
@@ -335,22 +435,25 @@ export function GraphCanvas({
           }
         }
 
-        const isError = connection.sourceHandle === 'error';
+        const sourceNode = nodes.find((n) => n.id === connection.source);
+        const sourceType = (sourceNode?.data as unknown as PluginNodeData)?.pluginType;
+        const kind = portKindFor(sourceType, connection.sourceHandle || 'success', portSpecs);
+        const color = PORT_STROKE[kind];
         return addEdge(
           {
             ...connection,
-            animated: isError,
-            style: { stroke: isError ? 'var(--error)' : 'var(--success)', strokeWidth: 2 },
+            animated: kind === 'error',
+            style: { stroke: color, strokeWidth: 2 },
             markerEnd: {
               type: MarkerType.ArrowClosed,
-              color: isError ? 'var(--error)' : 'var(--success)',
+              color,
             },
           },
           eds
         );
       });
     },
-    [setEdges, nodes]
+    [setEdges, nodes, portSpecs]
   );
 
   const onEdgeClick = useCallback((_event: React.MouseEvent, edge: Edge) => {
@@ -398,6 +501,7 @@ export function GraphCanvas({
         label: id,
         pluginType: type,
         config: {},
+        ports: portSpecs[type],
         onSelect: handleSelect,
       } satisfies PluginNodeData,
     };
@@ -419,6 +523,7 @@ export function GraphCanvas({
           runtime: script.runtime,
           source: script.file,
         },
+        ports: portSpecs['script'],
         onSelect: handleSelect,
       } satisfies PluginNodeData,
     };
@@ -437,6 +542,11 @@ export function GraphCanvas({
         label: `⬡ ${sn.name}`,
         pluginType: 'supernode',
         config: { name: sn.name },
+        // 'supernode' has no catalog entry (it's not a src/plugins/mod.rs
+        // type); portSpecs lookup misses and PluginNode falls back to the
+        // default success+error pair, matching a supernode instance's fixed
+        // output/error boundary exits (src/graph/expand.rs).
+        ports: portSpecs['supernode'],
         onSelect: handleSelect,
       } satisfies PluginNodeData,
     };
@@ -470,6 +580,19 @@ export function GraphCanvas({
   const handleSave = () => {
     if (!policy) return;
     const updated = nodesToPolicy(policy.name, nodes, edges, policy.error_handler);
+
+    // Client-side heads-up only: the server is the authority (it rejects the
+    // save outright with a "must be wired — add an edge from ..." message,
+    // which the existing error toast already surfaces), so this warns without
+    // blocking the attempt.
+    const unwired = findUnwiredPorts(updated, portSpecs);
+    if (unwired.length > 0) {
+      onSaveWarning?.(
+        'Unwired ports',
+        `No outgoing edge for: ${unwired.join(', ')} — the save may be rejected.`
+      );
+    }
+
     console.log('Saving policy:', JSON.stringify(updated, null, 2));
     onSavePolicy(updated);
   };
