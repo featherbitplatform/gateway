@@ -930,6 +930,86 @@ mod tests {
         assert_eq!(trace.steps[0].next_node_id.as_deref(), Some("client"));
     }
 
+    /// A real `cors` node, compiled through `compile_policy` (not a hand-built
+    /// graph), with its `preflight` port wired to `client`. An OPTIONS
+    /// preflight from an allowed origin must exit on the `preflight` outcome
+    /// port — not `success` — with the prepared 204 reaching the final
+    /// context, exercising the whole compile+execute+trace path end-to-end
+    /// for an outcome-port node.
+    fn cors_policy() -> PolicyConfig {
+        let mut cfg = HashMap::new();
+        cfg.insert(
+            "allowed_origins".to_string(),
+            serde_json::json!(["http://sub.domain.com"]),
+        );
+        PolicyConfig {
+            name: "cors-preflight".to_string(),
+            error_handler: None,
+            nodes: vec![
+                NodeConfig {
+                    id: "listener".to_string(),
+                    node_type: "listener".to_string(),
+                    config: HashMap::new(),
+                    config_ref: None,
+                    position: None,
+                },
+                NodeConfig {
+                    id: "cors".to_string(),
+                    node_type: "cors".to_string(),
+                    config: cfg,
+                    config_ref: None,
+                    position: None,
+                },
+                NodeConfig {
+                    id: "client".to_string(),
+                    node_type: "client".to_string(),
+                    config: HashMap::new(),
+                    config_ref: None,
+                    position: None,
+                },
+            ],
+            edges: vec![
+                EdgeConfig {
+                    from: "listener.out".to_string(),
+                    to: "cors.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "cors.success".to_string(),
+                    to: "client.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "cors.preflight".to_string(),
+                    to: "client.in".to_string(),
+                },
+            ],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cors_preflight_exits_via_preflight_edge_end_to_end() {
+        let graph = compile_policy(&cors_policy(), PluginResources::empty()).unwrap();
+
+        let mut ctx = test_context("/x");
+        ctx.request.method = "OPTIONS".to_string();
+        ctx.request.headers.insert(
+            "origin".to_string(),
+            vec!["http://sub.domain.com".to_string()],
+        );
+        let rec = recorder(&ctx);
+        let (out, rec) = graph.execute_traced(ctx, rec).await;
+        let trace = finish(rec, &out);
+
+        assert_eq!(trace.steps[0].node_id, "cors");
+        assert_eq!(trace.steps[0].edge, EdgeKind::Outcome);
+        assert_eq!(trace.steps[0].port.as_deref(), Some("preflight"));
+        assert_eq!(trace.steps[0].next_node_id.as_deref(), Some("client"));
+        assert_eq!(out.response.status_code, 204);
+        assert_eq!(
+            out.response.headers.get("access-control-allow-origin"),
+            Some(&vec!["http://sub.domain.com".to_string()])
+        );
+    }
+
     // ---- compile-time mandatory-wiring validation -------------------------
 
     fn policy_missing_success_edge() -> PolicyConfig {

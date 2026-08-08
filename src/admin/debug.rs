@@ -629,6 +629,7 @@ supernodes:
     edges:
       - { from: input.out, to: c.in }
       - { from: c.success, to: output.in }
+      - { from: c.preflight, to: output.in }
 policies:
   - name: p
     nodes:

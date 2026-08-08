@@ -78,6 +78,8 @@ policies:
         to: cors.in
       - from: cors.success
         to: api-key.in
+      - from: cors.preflight
+        to: client.in
       - from: api-key.success
         to: rate-limit.in
       - from: rate-limit.success

@@ -35,17 +35,23 @@ The plugin reads the request's `origin` header and checks it against `allowed_or
 - `access-control-allow-origin` — `*` when the allowed list contains the wildcard, otherwise the request's origin echoed back.
 - `access-control-allow-credentials: true` — only when `allow_credentials` is enabled.
 
-When the request method is `OPTIONS` (preflight) and the origin is allowed, it additionally sets `access-control-allow-methods`, `access-control-allow-headers`, and `access-control-max-age`, then writes a complete response onto the context: status `204` with an empty body.
+When the request method is `OPTIONS` (preflight) and the origin is allowed, it additionally sets `access-control-allow-methods`, `access-control-allow-headers`, and `access-control-max-age`, writes a complete response onto the context (status `204` with an empty body), and **exits through the `preflight` output port** instead of `success`.
 
-:::caution Known issue — preflight is not actually short-circuited
-Writing a response onto the context does **not** stop graph execution. The engine follows the node's `success` edge to the next node, so if `cors` is wired ahead of an `upstream` (the placement this page recommends), the `OPTIONS` request is proxied to the backend anyway and the backend's response overwrites the `204`.
+## Ports
 
-There is currently no way to wire around this: expressing "terminate here, but only for `OPTIONS`" needs either a conditional/second output port on the node or an engine-level terminal signal, and neither exists yet. Tracked as `E2E-DP-09` in the [e2e suite](https://github.com/featherbitplatform/gateway/blob/main/e2e/E2E_TESTBOOK.md), which asserts the intended behavior and is marked as an expected failure until it is fixed.
-:::
+`cors` declares three output ports: `success` (non-preflight requests, and preflights for disallowed origins), `preflight` (an answered `OPTIONS` preflight), and `error` (never actually used — the plugin never fails). Like `success`, `preflight` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `cors.preflight` straight to `client` so the prepared `204` reaches the caller instead of continuing into `upstream`:
 
-Disallowed origins simply pass through with no CORS headers added — the request itself is not rejected.
+```yaml
+edges:
+  - from: cors.success
+    to: upstream.in
+  - from: cors.preflight
+    to: client.in
+```
 
-This plugin never errors: it always exits through the `success` port, emits no error codes, and does not write to `context.message` or `context.errors`.
+Disallowed origins simply pass through on `success` with no CORS headers added — the request itself is not rejected.
+
+This plugin never errors: it never exits through the `error` port, emits no error codes, and does not write to `context.message` or `context.errors`.
 
 :::note Legacy configs
 Older UI builds saved the keys `allow_origins`, `allow_methods`, and `max_age_s`, which the plugin ignores - nodes saved with them run with the defaults above. Re-save the node (the editor now uses the plugin's keys, including `allowed_headers`) or update the YAML to the keys in the table.
