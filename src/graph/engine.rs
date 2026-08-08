@@ -144,6 +144,14 @@ impl CompiledGraph {
                 Ok(output) => {
                     ctx = output.context;
                     let port = output.port.unwrap_or("success");
+                    // `error` is reachable only through `Err`, which records a
+                    // GatewayError and follows the error/catch-all fallback
+                    // chain. An `Ok` naming it would silently take an error
+                    // edge with no error record attached.
+                    debug_assert!(
+                        port != "error",
+                        "plugins must not emit on the error port via Ok"
+                    );
 
                     // If this is a terminal node (client), we're done
                     let terminal = self.terminal_node_ids.contains(&current_node_id);
@@ -552,11 +560,100 @@ mod tests {
         );
     }
 
+    /// The policy-level catch-all: a node whose own `error` port is unwired
+    /// falls through to the named handler, which then renders the error.
+    ///
+    /// The failing node is a real one (an `upstream` pointed at a closed port),
+    /// not a bare `listener -> error-handler` chain: since the port migration,
+    /// `error-handler` passes an **errorless** context straight through, so a
+    /// handler reached without a preceding failure has nothing to render.
     #[tokio::test]
     async fn test_graph_error_handler_catch_all() {
         let policy = PolicyConfig {
             name: "test".to_string(),
             error_handler: Some("error-handler".to_string()),
+            nodes: vec![
+                NodeConfig {
+                    id: "listener".to_string(),
+                    node_type: "listener".to_string(),
+                    config: HashMap::new(),
+                    config_ref: None,
+                    position: None,
+                },
+                NodeConfig {
+                    id: "backend".to_string(),
+                    node_type: "upstream".to_string(),
+                    config: {
+                        let mut c = HashMap::new();
+                        // Nothing listens on port 1: connect fails instantly.
+                        c.insert(
+                            "targets".to_string(),
+                            serde_json::json!([{ "host": "127.0.0.1", "port": 1 }]),
+                        );
+                        c.insert("timeout_ms".to_string(), serde_json::json!(500));
+                        c
+                    },
+                    config_ref: None,
+                    position: None,
+                },
+                NodeConfig {
+                    id: "error-handler".to_string(),
+                    node_type: "error-handler".to_string(),
+                    config: {
+                        let mut c = HashMap::new();
+                        c.insert("status_code".to_string(), serde_json::json!(503));
+                        c.insert(
+                            "body_template".to_string(),
+                            serde_json::Value::String(r#"{"error": "{{error.code}}"}"#.to_string()),
+                        );
+                        c
+                    },
+                    config_ref: None,
+                    position: None,
+                },
+                NodeConfig {
+                    id: "client".to_string(),
+                    node_type: "client".to_string(),
+                    config: HashMap::new(),
+                    config_ref: None,
+                    position: None,
+                },
+            ],
+            edges: vec![
+                EdgeConfig {
+                    from: "listener.out".to_string(),
+                    to: "backend.in".to_string(),
+                },
+                // backend.error is deliberately unwired -> catch-all.
+                EdgeConfig {
+                    from: "backend.success".to_string(),
+                    to: "client.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "error-handler.success".to_string(),
+                    to: "client.in".to_string(),
+                },
+            ],
+        };
+
+        let graph = compile_policy(&policy, PluginResources::empty()).unwrap();
+        let ctx = test_context("/test");
+        let result = graph.execute(ctx).await;
+
+        assert_eq!(result.response.status_code, 503);
+        let body = String::from_utf8(result.response.body.to_vec()).unwrap();
+        assert!(!body.contains("{{"), "template must be rendered: {body}");
+    }
+
+    /// The complement of the test above: an `error-handler` reached with an
+    /// **empty** `context.errors` — what every outcome exit looks like — must
+    /// leave the already-prepared response alone instead of clobbering it with
+    /// its own status and an unrendered template.
+    #[tokio::test]
+    async fn test_error_handler_passes_errorless_context_through() {
+        let policy = PolicyConfig {
+            name: "test".to_string(),
+            error_handler: None,
             nodes: vec![
                 NodeConfig {
                     id: "listener".to_string(),
@@ -601,10 +698,17 @@ mod tests {
         };
 
         let graph = compile_policy(&policy, PluginResources::empty()).unwrap();
-        let ctx = test_context("/test");
+        let mut ctx = test_context("/test");
+        // Stand in for an outcome exit: a fully prepared 401, no error record.
+        ctx.response.status_code = 401;
+        ctx.response.body = Bytes::from(r#"{"error":"unauthorized"}"#);
         let result = graph.execute(ctx).await;
 
-        assert_eq!(result.response.status_code, 503);
+        assert_eq!(result.response.status_code, 401);
+        assert_eq!(
+            String::from_utf8(result.response.body.to_vec()).unwrap(),
+            r#"{"error":"unauthorized"}"#
+        );
     }
 
     // ---- debug tracing ---------------------------------------------------
