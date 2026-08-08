@@ -229,4 +229,42 @@ test.describe('Admin API', () => {
     // ...while the API behind it still demands credentials.
     expect((await anonymous('/api/routes')).status).toBe(401);
   });
+
+  /**
+   * Mandatory-port wiring, the admin-API half of the named-output-ports feature:
+   * `cors` declares `success`/`preflight`/`error` outputs, and every non-error
+   * output must have an outgoing edge or the graph refuses to compile
+   * (src/graph/engine.rs, "must be wired -- add an edge from"). This never
+   * touches the fixture's real policies -- like E2E-API-09/E2E-LOOP-02, the PUT
+   * is rejected before anything is swapped, so there is nothing to clean up.
+   */
+  test('E2E-API-13: a policy with an unwired mandatory port is rejected', async () => {
+    const api = await adminApi();
+
+    const res = await api.put('/api/policies/tmp-unwired-cors', {
+      data: {
+        name: 'tmp-unwired-cors',
+        nodes: [
+          {id: 'listener', type: 'listener'},
+          {id: 'cors', type: 'cors'},
+          {id: 'client', type: 'client'},
+        ],
+        edges: [
+          {from: 'listener.out', to: 'cors.in'},
+          {from: 'cors.success', to: 'client.in'},
+          // No edge from cors.preflight -- the mandatory outcome port is left dangling.
+        ],
+      },
+    });
+
+    expect(res.ok()).toBeFalsy();
+    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status()).toBeLessThan(500);
+
+    const body = await res.text();
+    expect(body).toContain('must be wired — add an edge from');
+    expect(body).toContain('cors.preflight');
+
+    await api.dispose();
+  });
 });
