@@ -162,6 +162,86 @@ test.describe('Web UI', () => {
     await page.reload();
     expect(await theme()).toBe(after);
   });
+
+  /**
+   * Named-output-ports, the UI half. `cors` declares three output ports
+   * (success, preflight, error) in src/plugins/ports.rs, and PluginNode
+   * renders one `Handle` per declared port (see its module doc). This is the
+   * first automated assertion on that rendering -- Task 12 shipped the dynamic
+   * handles with none, a gap flagged in review -- so it checks the DOM
+   * directly: handle count, the preflight handle's title, and (cheaply) that
+   * success/preflight/error render with visibly different colors via the
+   * inline style GraphCanvas's PORT_COLOR map sets (var(--success) vs
+   * var(--accent) vs var(--error)), rather than just trusting three dots exist.
+   *
+   * The second half proves the save-time guardrail end to end: deleting the
+   * mandatory `preflight` edge and saving must surface both the client's
+   * pre-flight (no pun intended) warning ("Unwired ports", added in Task 12)
+   * and the server's authoritative rejection ("must be wired...", Task 3) --
+   * the client warning does not block the save attempt, it only warns ahead of
+   * it. The PUT is intercepted and delayed so the short-lived warning toast
+   * (replaced the instant the response lands, since the app shows one toast at
+   * a time) has time to be observed before checking for the rejection.
+   */
+  test('E2E-UI-15: cors renders its declared ports, and an unwired preflight port fails to save', async ({
+    page,
+  }) => {
+    await openRoute(page, 'echo-api');
+    const corsNode = page.locator('.react-flow__node', {hasText: 'cors'}).first();
+
+    // Three source (output) handles: success, preflight, error.
+    await expect(corsNode.locator('.react-flow__handle.source')).toHaveCount(3);
+
+    const preflightHandle = corsNode.locator('[data-handleid="preflight"]');
+    await expect(preflightHandle).toHaveCount(1);
+    await expect(preflightHandle).toHaveAttribute('title', /preflight/);
+
+    // Kind distinction: success is colored via --success, preflight (an
+    // outcome port) via --accent -- not the same dot repeated three times.
+    const successStyle = await corsNode.locator('[data-handleid="success"]').getAttribute('style');
+    const preflightStyle = await preflightHandle.getAttribute('style');
+    const errorStyle = await corsNode.locator('[data-handleid="error"]').getAttribute('style');
+    expect(successStyle).toContain('--success');
+    expect(preflightStyle).toContain('--accent');
+    expect(errorStyle).toContain('--error');
+
+    // Delay the save PUT so the client-side warning toast is still on screen
+    // when we check for it, before it is replaced by the server's rejection.
+    await page.route('**/api/policies/echo-policy', async (route) => {
+      if (route.request().method() !== 'PUT') return route.continue();
+      await new Promise((r) => setTimeout(r, 400));
+      await route.continue();
+    });
+
+    // Delete cors's preflight edge (cors -> client; its success edge goes to
+    // strip-prefix instead, so this aria-label is unambiguous). The edge here
+    // renders as a perfectly horizontal path, so ReactFlow's SVG <g> reports a
+    // zero-height bounding box -- Playwright's actionability check treats that
+    // as "not visible" and a plain .click() times out. Read the geometry
+    // directly and click the midpoint with the mouse instead.
+    const preflightEdge = page.locator('[aria-label="Edge from cors to client"]');
+    const edgeBox = await preflightEdge.boundingBox();
+    if (!edgeBox) throw new Error('preflight edge (cors -> client) not found on canvas');
+    await page.mouse.click(edgeBox.x + edgeBox.width / 2, edgeBox.y + edgeBox.height / 2);
+    await page.getByRole('button', {name: 'Delete Edge'}).click();
+
+    await page.getByRole('button', {name: 'Save Policy'}).click();
+
+    // The client-side heads-up, shown immediately (before the delayed PUT resolves).
+    await expect(page.getByText('Unwired ports')).toBeVisible();
+
+    // The server's authoritative rejection, once the delayed PUT comes back --
+    // proving the client warning did not block the save attempt.
+    await expect(page.getByText(/must be wired — add an edge from/)).toBeVisible();
+
+    // Nothing was actually persisted: the server rejected the save.
+    const api = await adminApi();
+    const policy = (await (await api.get('/api/policies/echo-policy')).json()) as {
+      edges: {from: string; to: string}[];
+    };
+    expect(policy.edges.some((e) => e.from === 'cors.preflight')).toBe(true);
+    await api.dispose();
+  });
 });
 
 test.describe('The loop: browser -> admin API -> hot-swap -> live traffic', () => {

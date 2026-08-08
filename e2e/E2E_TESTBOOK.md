@@ -138,6 +138,7 @@ compilation fails (every non-error output port is mandatory).
 | E2E-API-10 | `/healthz`, `/readyz`, `/metrics` | `200`; metrics render Prometheus text |
 | E2E-API-11 | UI static assets | Served **without** auth, unlike `/api/*` |
 | E2E-API-12 | `GET /api/config/export` | `200` `text/yaml`; contains the live routes/policies; behind auth |
+| E2E-API-13 | `PUT` a policy with a `cors` node missing its `preflight` edge | Rejected; body contains `must be wired — add an edge from` naming `cors.preflight` — the mandatory-outcome-port validation added for named output ports |
 
 ## Data plane — `tests/data-plane.spec.ts`
 
@@ -166,6 +167,7 @@ compilation fails (every non-error output port is mandatory).
 | E2E-UI-06 | Create a route via the **New** dialog | Route appears in the sidebar **and** in `GET /api/routes` |
 | E2E-UI-07 | Delete a route | Gone from the sidebar and the API |
 | E2E-UI-08 | Toggle the theme | Theme flips and survives a reload (persisted) |
+| E2E-UI-15 | Open `echo-api`'s `cors` node, then delete its `preflight` edge and save | The node renders exactly three source handles (`success`/`preflight`/`error`, `[data-handleid]`) with distinct colors and a title mentioning `preflight`; after deleting that edge, Save Policy shows the client's "Unwired ports" warning **and** the server's `must be wired` rejection — the warning does not block the save attempt, it only precedes it |
 
 ## openid-connect — `tests/openid-connect.spec.ts`
 
@@ -185,6 +187,7 @@ against a fetched JWKS, and a browser actually bounced through the IdP.
 | E2E-OIDC-08 | A browser completes login | Bounced IdP → callback → token exchange → lands on the upstream; `oidc_session` cookie set (sealed, not plaintext); claims in `x-userinfo` |
 | E2E-OIDC-09 | Second request with the session cookie | Served **without** another trip to the IdP |
 | E2E-OIDC-10 | A forged session cookie | Not accepted — redirected to log in |
+| E2E-OIDC-11 | Trigger the interactive login redirect, then `GET /metrics` | `gateway_node_errors_total{policy="app-policy",node_id="oidc"}` does **not** increment — the redirect exits on its own outcome port as a successful result, not an `Err`. No dead-discovery-endpoint fixture exists for this plugin in the suite, so only the non-increment side is asserted here |
 
 ## External auth — `tests/external-auth.spec.ts`
 
@@ -308,6 +311,7 @@ namespacing is what a trace's `node_id`s reveal.
 | ID | Scenario | Expected |
 |---|---|---|
 | E2E-SN-01 | Create a supernode wrapping the seeded echo upstream, reference it from a policy (`type: supernode`) attached to a route, then request through it | `200` from the expanded pipeline; a traced request (`x-featherbit-debug`) reports a step whose `node_id` starts with `sec/` — proving compile-time expansion, not a live indirection; `GET /api/config/export` contains `supernodes:`, the definition's name and `type: supernode`, but never the expanded `sec/up` id (expansion is never persisted); deleting the supernode while referenced is `400`; deleting it once the route and policy are removed succeeds |
+| E2E-SN-02 | Open a freshly saved supernode in the editor **(regression guard)** and click Save Supernode | `Supernode saved` toast; **no** "Unwired ports" warning — guards against `output`/`error` (the boundary pseudo-nodes, no catalog entry) being wrongly treated as needing a `success` edge they can never have |
 
 ## Plugin configs — `tests/plugin-configs.spec.ts`
 
