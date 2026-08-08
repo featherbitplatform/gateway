@@ -24,8 +24,6 @@ pub struct PluginOutput {
     pub context: Context,
     /// Declared output port this result leaves on. `None` = `success`.
     /// Must name a port of kind `outcome` in the node type's [`PortSpec`].
-    // Part of the plugin contract: routing consumes this from Task 3 (engine per-port routing).
-    #[allow(dead_code)]
     pub port: Option<&'static str>,
 }
 

@@ -349,6 +349,8 @@ pub enum StepOutcome {
 pub enum EdgeKind {
     /// Followed the node's success edge.
     Success,
+    /// Followed a named outcome port (see [`NodeStep::port`]).
+    Outcome,
     /// Followed the node's own `error` edge.
     Error,
     /// Fell through to the policy-level `error_handler`.
@@ -373,6 +375,9 @@ pub struct NodeStep {
     pub outcome: StepOutcome,
     pub duration_us: u64,
     pub edge: EdgeKind,
+    /// Set when the step left on a named outcome port (e.g. "denied").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_node_id: Option<String>,
     /// The context as it stood *after* this node ran.
