@@ -36,14 +36,71 @@ edges:
     to: backend.in
 ```
 
-| Port | Direction | Meaning |
-|---|---|---|
-| `out` | output | The listener's output port; treated identically to `success` |
-| `success` | output | Emits the context when the node completes successfully |
-| `error` | output | Emits the context (with the node's error appended) when the node fails |
-| `in` | input | Receives the context |
+| Port | Kind | Direction | Meaning |
+|---|---|---|---|
+| `out` | — | output | Alias for `success` on edge endpoints; the only output `listener` declares |
+| `success` | `success` | output | Emits the context when the node completes normally and the request continues |
+| *(plugin-declared)* | `outcome` | output | The node did its job and chose a deliberate alternate route — a rejection, redirect, throttle, or short-circuit, usually with the response already fully prepared. Names are drawn from a shared vocabulary (below), not invented per plugin |
+| `error` | `error` | output | Emits the context (with the node's error appended) when the node **could not** do its job — configuration, parse, or infrastructure failure |
+| `in` | — | input | Receives the context |
 
 The endpoint string is split on the **last** dot, so node IDs may themselves contain dots. An endpoint with no dot at all defaults its port to `out`.
+
+### Outcome ports and the mandatory-wiring rule
+
+Most plugins declare only the default `success`/`error` pair. 37 node types
+additionally declare one or more **outcome** ports for a deliberate
+alternate result that isn't a failure — `key-auth` exits on `denied` for an
+invalid API key, `cors` exits on `preflight` for an answered `OPTIONS`
+request, `rate-limit` exits on `limited` for a 429, and so on. Every plugin's
+full port declaration (name, kind, and a description) is inspectable from the
+plugin catalog at `GET /api/plugins` — the same catalog the web UI's
+node-graph editor reads to render each node's handles, colored by port kind,
+with a warning badge on anything required but unconnected.
+
+Every port of kind `success` or `outcome` is **mandatory**: the policy
+compiler rejects any policy that leaves one unwired. For example, a policy
+that wires `key-auth`'s `success` edge but not its `denied` edge fails
+compilation (at startup, on hot-reload, or on an Admin API write) with:
+
+```
+policy 'my-policy': output port 'denied' of node 'auth' (type 'key-auth') must be wired — add an edge from 'auth.denied'
+```
+
+The message names the policy, the port, the node, and the node's type, and
+validation collects **all** such violations at once rather than stopping at
+the first. Only `error` stays optional — its fallback chain (per-node error
+edge → policy catch-all → a generic 500, see [Error
+handling](error-handling.md)) is unchanged, because it's fine for "the node
+might fail someday" to have no dedicated handler; it is never fine for "the
+node just produced a fully-formed rejection" to have nowhere to go.
+
+The standard outcome vocabulary — no plugin invents a synonym:
+
+| Port | Meaning | Typical status |
+|---|---|---|
+| `denied` | Deliberate policy rejection | 401 / 403 / 405 / 413 |
+| `redirect` | Deliberate 3xx response | 301 / 302 / 307 / 308 |
+| `limited` | Traffic-control rejection | 429 |
+| `broken` | Circuit breaker open | 502 / 503 |
+| `preflight` | CORS preflight answered | 204 |
+| `abort` | Injected fault response | configurable |
+| `routed` | Steered to and served by an alternate weighted target | backend-defined |
+| `hit` | Served from cache | cached status |
+
+Outcome ports typically carry a response that's already fully prepared, so
+they're almost always wired straight to `client` — routing one through
+`upstream` would let it overwrite the prepared response, and routing it
+through `error-handler` would replace the prepared body with the handler's
+template. A handful of node types (`limit-conn`, `api-breaker`,
+`proxy-cache`) are expressed as a pair of nodes sharing one type and
+therefore one port declaration, so the role that never actually emits the
+outcome (e.g. `limit-conn`'s release node) still has to have it wired.
+
+For any specific plugin's exact ports, when each one fires, and a wiring
+example, see that plugin's own page in the [plugin
+reference](../reference/plugins/index.md) — every plugin with outcome ports
+carries a **Ports** section.
 
 ## Full YAML example
 
@@ -109,11 +166,12 @@ Before serving traffic, each policy is validated (see the rules in [Error handli
 
 - instantiates each node's plugin from its `type` and `config`;
 - records every `client` node as a **terminal** — execution stops when the context reaches one;
-- indexes edges by their **source port**: `success` and `out` become the node's success edge, `error` becomes its error edge; any other source port is a compile error;
+- indexes edges by their **source port**, normalizing `out` to `success`; an edge naming a port the node's type doesn't declare is a compile error, and two edges leaving the same `node.port` (fan-out) is also a compile error;
+- enforces the **mandatory-wiring rule**: every `success` or `outcome` port of every node must have an outgoing edge, or compilation fails naming the missing edge (`error` ports are exempt — see [Error handling](error-handling.md));
 - determines the **entry node** as the target of the listener's `success`/`out` edge — this is the first node executed for each request;
 - fails if the policy has no `listener` node or a plugin cannot be constructed from its config.
 
-Each node has at most one success edge and one error edge. At runtime the engine walks the graph from the entry node: success edge after each successful node, error edge (or the policy's catch-all handler) after a failure, ending at a terminal client node or at a node with no success edge.
+Each node has at most one edge per output port. At runtime the engine follows the port the executing plugin's result names: `success` after a normal result, the plugin's own outcome port (e.g. `denied`, `redirect`) after a deliberate alternate result, or the error edge (or the policy's catch-all handler) after a failure — ending at a terminal client node or at a node with no outgoing edge for the port it just took.
 
 One compiled graph instance serves all requests for the routes that reference its policy; it is shared read-only across requests.
 
