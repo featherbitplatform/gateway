@@ -1991,6 +1991,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             .execute(with_bearer(req_ctx("/", HashMap::new()), &token))
             .await
             .unwrap_err();
+        assert_eq!(err.error.code, "OIDC_PROVIDER_ERROR");
         assert_eq!(err.context.response.status_code, 401);
     }
 
@@ -2013,6 +2014,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             .execute(with_bearer(req_ctx("/", HashMap::new()), "opaque-token"))
             .await
             .unwrap_err();
+        assert_eq!(err.error.code, "OIDC_PROVIDER_ERROR");
         assert_eq!(err.context.response.status_code, 401);
     }
 
@@ -2175,6 +2177,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         );
 
         let err = plugin.execute(c).await.unwrap_err();
+        assert_eq!(err.error.code, "OIDC_PROVIDER_ERROR");
         assert_eq!(err.context.response.status_code, 401);
     }
 }

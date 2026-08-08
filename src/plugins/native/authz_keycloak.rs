@@ -166,7 +166,11 @@ impl AuthzKeycloakPlugin {
     /// Builds the 403 denial and exits on the `denied` port. Reserved for
     /// deliberate denials — a missing bearer token, no permission configured
     /// under `ENFORCING`, or Keycloak actively refusing the UMA decision.
-    fn deny(ctx: Context, _message: impl Into<String>) -> PluginResult {
+    fn deny(ctx: Context, message: impl Into<String>) -> PluginResult {
+        // The reason never reaches the client (the `denied` port carries no
+        // error record, unlike `Err`), but it's still useful for operators
+        // debugging why a request was denied.
+        tracing::debug!("authz-keycloak: denying request: {}", message.into());
         let mut ctx = ctx;
         ctx.response.status_code = 403;
         ctx.response.body =
