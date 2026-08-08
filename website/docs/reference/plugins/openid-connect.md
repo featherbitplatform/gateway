@@ -94,12 +94,13 @@ On success the context passes through the **success** port with the claims expos
 
 Any client-supplied `X-Userinfo` header is stripped before validation so it cannot bleed through to the upstream.
 
-On a missing token or any verification failure (bad signature, expired, unknown `kid`, wrong issuer/audience, inactive introspection result), the plugin rejects and routes through the **error** port:
+On a missing token, or the token being deliberately invalid (bad signature, expired, unknown `kid`, wrong issuer/audience, an introspection response saying `active: false`), the plugin rejects and exits through the **`denied`** port:
 
 - `context.response.status_code` = `401`
 - `WWW-Authenticate: Bearer error="invalid_token"`
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
-- Error code appended to `context.errors`: `OIDC_UNAUTHORIZED`
+
+A **genuine provider failure** — the discovery document, JWKS endpoint, or introspection endpoint being unreachable, timing out, returning a non-2xx status, or handing back unparseable data — is not a token rejection; the node could not do its job, so it exits through the ordinary **error** port instead (same response shape, error code `OIDC_PROVIDER_ERROR` appended to `context.errors`).
 
 ## Interactive login
 
@@ -111,7 +112,7 @@ The node handles three cases per request:
 2. **Callback** (request path = `redirect_uri` path, carrying `code` + `state`) → the plugin verifies `state` against the flow cookie (CSRF), exchanges the code at the token endpoint (with the PKCE `code_verifier`), validates the `id_token` against the JWKS and checks its `nonce`, seals a session cookie, and `302`-redirects to the originally requested URL.
 3. **No session** → generates `state`/`nonce`/PKCE, sets a short-lived flow cookie, and `302`-redirects to the IdP authorization endpoint.
 
-**Wiring:** in interactive mode the node exits through its **error port** for every browser redirect (`OIDC_REDIRECT`) and for auth failures (`OIDC_UNAUTHORIZED`) — the prepared `302`/`401` response is already on the context. **Wire the node's `error` edge to `client.in`.** Only a request with a valid session cookie leaves the `success` port. The node must sit on a route whose match rule also covers the `redirect_uri` path, so the callback reaches it.
+**Wiring:** in interactive mode every browser move (the `302` to the IdP, the post-callback `302`, or a logout redirect) exits through the dedicated **`redirect`** port with the prepared response already on the context — **wire the node's `redirect` edge to `client.in`.** A deliberate rejection (missing/invalid flow cookie, CSRF `state` mismatch, an invalid `id_token`, a nonce mismatch) exits through **`denied`** — wire that to `client.in` too, or a custom denial handler. A genuine discovery/token-endpoint callout failure exits through the ordinary **error** port. Only a request with a valid session cookie leaves the `success` port. The node must sit on a route whose match rule also covers the `redirect_uri` path, so the callback reaches it.
 
 Cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` when the request is HTTPS.
 
@@ -174,3 +175,17 @@ Two `openid-connect` nodes on different routes can hold separate browser session
 :::note Limitations
 Sessions live entirely in the encrypted cookie, so there is **no server-side revocation** before the cookie's `lifetime` expires (use short lifetimes) and **no token refresh** yet — an expired session triggers a fresh, fast redirect round-trip. Only the Authorization Code grant is implemented. Server-side sessions with instant revocation would need a shared store (a future feature).
 :::
+
+## Ports
+
+`openid-connect` declares four output ports: `success`, `denied` (a deliberate `401` rejection is prepared — missing/invalid bearer token, or in interactive mode a CSRF/nonce/session-flow failure), `redirect` (a `302` browser move is prepared — login, callback, or logout; interactive mode only, but the port is always declared), and `error` (a genuine provider failure — discovery, JWKS, or introspection/token-endpoint callout trouble). `denied` and `redirect` are both mandatory ports, same as `success`: the policy compiler rejects any policy that leaves either unwired, **even in bearer-only mode where `redirect` is never actually taken**. Wire both straight to `client`:
+
+```yaml
+edges:
+  - from: openid-connect.success
+    to: upstream.in
+  - from: openid-connect.denied
+    to: client.in
+  - from: openid-connect.redirect
+    to: client.in
+```

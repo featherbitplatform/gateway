@@ -23,8 +23,11 @@
 //! - **`password_grant_token_generation_incoming_uri`** token minting.
 //! - Response/token caching and `access_denied_redirect_uri` redirects.
 //!
-//! All denials and callout errors map to `403` (code `AUTHZ_KEYCLOAK_DENIED`)
-//! routed through the node's **error** port.
+//! Deliberate denials (missing bearer, no configured permission under
+//! `ENFORCING`, or a non-`200` UMA decision) map to `403` and exit through the
+//! dedicated **`denied`** port. A genuine callout failure (the Keycloak token
+//! endpoint unreachable or timing out) exits through the ordinary **`error`**
+//! port instead, since the node could not do its job.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -160,8 +163,26 @@ impl AuthzKeycloakPlugin {
         })
     }
 
-    /// Builds the 403 denial carrying the context.
-    fn deny(ctx: Context, message: impl Into<String>) -> PluginResult {
+    /// Builds the 403 denial and exits on the `denied` port. Reserved for
+    /// deliberate denials — a missing bearer token, no permission configured
+    /// under `ENFORCING`, or Keycloak actively refusing the UMA decision.
+    fn deny(ctx: Context, _message: impl Into<String>) -> PluginResult {
+        let mut ctx = ctx;
+        ctx.response.status_code = 403;
+        ctx.response.body =
+            Bytes::from(r#"{"error":"access_denied","error_description":"not_authorized"}"#);
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
+        Ok(PluginOutput::on_port(ctx, "denied"))
+    }
+
+    /// Builds a genuine infrastructure-failure `Err` (the Keycloak token
+    /// endpoint unreachable, timed out, or otherwise untransportable) — exits
+    /// through the `error` port because the node could not do its job, unlike
+    /// `deny` which is a deliberate, client-facing decision.
+    fn callout_error(ctx: Context, message: String) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 403;
         ctx.response.body =
@@ -174,8 +195,8 @@ impl AuthzKeycloakPlugin {
             context: ctx,
             error: GatewayError {
                 node_id: String::new(),
-                code: "AUTHZ_KEYCLOAK_DENIED".to_string(),
-                message: message.into(),
+                code: "AUTHZ_KEYCLOAK_ERROR".to_string(),
+                message,
                 metadata: HashMap::new(),
             },
         })
@@ -320,7 +341,7 @@ impl Plugin for AuthzKeycloakPlugin {
                     OutboundError::InvalidRequest(m) => format!("invalid Keycloak request: {m}"),
                     OutboundError::Transport(m) => format!("Keycloak request failed: {m}"),
                 };
-                Self::deny(ctx, detail)
+                Self::callout_error(ctx, detail)
             }
         }
     }
@@ -433,11 +454,55 @@ mod tests {
         );
         config.insert("client_id".to_string(), serde_json::json!("my-api"));
         let plugin = AuthzKeycloakPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+        let out = plugin
+            .execute(ctx_with_auth(Some("Bearer x")))
+            .await
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
+    }
+
+    #[tokio::test]
+    async fn test_missing_bearer_denies() {
+        let mut config = HashMap::new();
+        config.insert(
+            "token_endpoint".to_string(),
+            serde_json::json!("https://kc/realms/r/protocol/openid-connect/token"),
+        );
+        config.insert("client_id".to_string(), serde_json::json!("my-api"));
+        config.insert(
+            "permissions".to_string(),
+            serde_json::json!(["Default Resource#read"]),
+        );
+        let plugin = AuthzKeycloakPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+        let out = plugin.execute(ctx_with_auth(None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
+    }
+
+    /// Regression: before the port split, a Keycloak callout failure (nothing
+    /// listening on the token endpoint) was folded into the same denial as an
+    /// actual permission refusal. It is a genuine infra failure and must stay
+    /// on `Err`.
+    #[tokio::test]
+    async fn test_token_endpoint_unreachable_stays_on_error_port() {
+        let mut config = HashMap::new();
+        config.insert(
+            "token_endpoint".to_string(),
+            serde_json::json!("http://127.0.0.1:1/token"),
+        );
+        config.insert("client_id".to_string(), serde_json::json!("my-api"));
+        config.insert(
+            "permissions".to_string(),
+            serde_json::json!(["Default Resource#read"]),
+        );
+        config.insert("timeout".to_string(), serde_json::json!(200));
+        let plugin = AuthzKeycloakPlugin::from_config(&config, &PluginResources::empty()).unwrap();
         let err = plugin
             .execute(ctx_with_auth(Some("Bearer x")))
             .await
             .unwrap_err();
-        assert_eq!(err.error.code, "AUTHZ_KEYCLOAK_DENIED");
+        assert_eq!(err.error.code, "AUTHZ_KEYCLOAK_ERROR");
         assert_eq!(err.context.response.status_code, 403);
     }
 
