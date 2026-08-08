@@ -10,8 +10,8 @@ use bytes::Bytes;
 use regex::Regex;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Blocks requests whose URI matches any configured `block_rules` regex.
 ///
@@ -135,18 +135,7 @@ impl Plugin for UriBlockerPlugin {
             } else {
                 ctx.response.body = Bytes::new();
             }
-            return Err(PluginExecutionError {
-                context: ctx,
-                error: GatewayError {
-                    node_id: String::new(),
-                    code: "URI_BLOCKED".to_string(),
-                    message: self
-                        .rejected_msg
-                        .clone()
-                        .unwrap_or_else(|| "request URI is blocked".to_string()),
-                    metadata: HashMap::new(),
-                },
-            });
+            return Ok(PluginOutput::on_port(ctx, "denied"));
         }
 
         Ok(PluginOutput::success(ctx))
@@ -224,19 +213,21 @@ mod tests {
         })))
         .unwrap();
 
-        let err = plugin
+        let out = plugin
             .execute(test_context("/admin/users", &[]))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "URI_BLOCKED");
-        assert_eq!(err.context.response.status_code, 403);
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
         // no rejected_msg -> empty body (APISIX parity)
-        assert!(err.context.response.body.is_empty());
+        assert!(out.context.response.body.is_empty());
 
         assert!(plugin
             .execute(test_context("/public", &[]))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     #[tokio::test]
@@ -247,18 +238,20 @@ mod tests {
         .unwrap();
 
         // rule matches inside the query string, like APISIX's request_uri
+        assert_eq!(
+            plugin
+                .execute(test_context("/download", &[("file", "root.exe")]))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
         assert!(plugin
-            .execute(
-                test_context("/download", &[("file", "root.exe")]),
-            )
+            .execute(test_context("/download", &[("file", "notes.txt")]))
             .await
-            .is_err());
-        assert!(plugin
-            .execute(
-                test_context("/download", &[("file", "notes.txt")]),
-            )
-            .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     #[tokio::test]
@@ -270,16 +263,22 @@ mod tests {
         assert!(sensitive
             .execute(test_context("/ADMIN/panel", &[]))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
 
         let insensitive = UriBlockerPlugin::from_config(&config(serde_json::json!({
             "block_rules": ["/admin"], "case_insensitive": true
         })))
         .unwrap();
-        assert!(insensitive
-            .execute(test_context("/ADMIN/panel", &[]))
-            .await
-            .is_err());
+        assert_eq!(
+            insensitive
+                .execute(test_context("/ADMIN/panel", &[]))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
     }
 
     #[tokio::test]
@@ -289,12 +288,10 @@ mod tests {
         })))
         .unwrap();
 
-        let err = plugin
-            .execute(test_context("/admin", &[]))
-            .await
-            .unwrap_err();
-        assert_eq!(err.context.response.status_code, 404);
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        let out = plugin.execute(test_context("/admin", &[])).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 404);
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["error_msg"], "not found");
     }
 }

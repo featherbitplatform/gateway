@@ -109,17 +109,18 @@ wrong-key, wrong-audience) for the negative cases. The mock is reusable for the
 other SSO plugins (`authz-keycloak`, `authz-casdoor`, `cas-auth`) when they get
 e2e coverage.
 
-Both OIDC policies wire `oidc.error → client.in`: the plugin prepares its response
-(a `401`, or the `302` to the IdP) and then returns an *error*, so the error edge
-to `client` is what carries it to the caller — the same graph semantic as
-`key-auth`, and just as easy to get wrong.
+Both OIDC policies wire `oidc.denied → client.in` and `oidc.redirect → client.in`:
+the plugin prepares its response (a `401`, or the `302` to the IdP) and exits
+through its own dedicated outcome port, so that edge is what carries it to the
+caller — the same graph semantic as `key-auth`, and just as easy to get wrong.
 
-`secure-policy` wires `key-auth.error` and `rate-limit.error` **straight to
+`secure-policy` wires `key-auth.denied` and `rate-limit.limited` **straight to
 `client.in`**. That is deliberate and worth stating, because it is the one piece
 of graph semantics people get wrong: a rejecting plugin sets the 401/429 on the
-context and *then* returns an error. The status only survives if the error edge
-reaches `client`. Wire it to an `error-handler` instead and the handler's own
-status code overwrites it; leave it unwired and the generic 500 fallback does.
+context and *then* exits through its dedicated outcome port. The status only
+survives if that edge reaches `client`. Wire it to an `error-handler` instead
+and the handler's own status code overwrites it; leave it unwired and policy
+compilation fails (every non-error output port is mandatory).
 
 ## Admin API — `tests/admin-api.spec.ts`
 

@@ -456,6 +456,14 @@ pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
         | "wolf-rbac" => Some(&ports::AUTH_SPEC),
         "cas-auth" | "openid-connect" | "authz-casdoor" => Some(&ports::INTERACTIVE_AUTH_SPEC),
         "authz-casbin" | "authz-keycloak" => Some(&ports::AUTH_SPEC),
+        "acl" | "ip-restriction" | "ua-restriction" | "referer-restriction"
+        | "consumer-restriction" | "uri-blocker" | "csrf" | "request-size-limit"
+        | "request-validation" | "oas-validator" => Some(&ports::DENY_SPEC),
+        "rate-limit" | "limit-conn" | "limit-count" => Some(&ports::LIMIT_SPEC),
+        "api-breaker" => Some(&ports::BREAKER_SPEC),
+        "workflow" => Some(&ports::WORKFLOW_SPEC),
+        "traffic-split" => Some(&ports::TRAFFIC_SPLIT_SPEC),
+        "proxy-cache" => Some(&ports::PROXY_CACHE_SPEC),
         _ if KNOWN_PLUGIN_TYPES.contains(&plugin_type) => Some(&ports::DEFAULT_SPEC),
         _ => None,
     }

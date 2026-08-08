@@ -153,6 +153,107 @@ pub const INTERACTIVE_AUTH_SPEC: PortSpec = PortSpec {
     ],
 };
 
+/// Restriction and request-shape plugins: a deliberate policy rejection
+/// (IP/UA/referer/consumer/group deny, blocked URI, missing/invalid CSRF
+/// token, oversized body, schema mismatch) exits on `denied`. Same shape as
+/// [`AUTH_SPEC`] but kept as its own const so the description can speak to
+/// policy rejections rather than credentials.
+pub const DENY_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "denied",
+            kind: PortKind::Outcome,
+            description: "The request was denied by a policy rule; a 4xx response is prepared. Wire to client.",
+        },
+        ERROR,
+    ],
+};
+
+/// Traffic-control plugins (`rate-limit`, `limit-conn`, `limit-count`): a
+/// throttled request exits on `limited`.
+pub const LIMIT_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "limited",
+            kind: PortKind::Outcome,
+            description: "The request exceeded a traffic limit; a 429 response is prepared. Wire to client.",
+        },
+        ERROR,
+    ],
+};
+
+/// `api-breaker`: the check phase's open-circuit short-circuit exits on
+/// `broken`.
+pub const BREAKER_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "broken",
+            kind: PortKind::Outcome,
+            description: "The circuit breaker is open; the break response is prepared. Wire to client.",
+        },
+        ERROR,
+    ],
+};
+
+/// `workflow`: a rejecting `return` rule exits on `denied`; an exceeded
+/// `limit-count` rule exits on `limited`.
+pub const WORKFLOW_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "denied",
+            kind: PortKind::Outcome,
+            description: "A 'return' rule rejected the request; the configured response is prepared. Wire to client.",
+        },
+        PortDecl {
+            name: "limited",
+            kind: PortKind::Outcome,
+            description: "A 'limit-count' rule's quota was exceeded; a rejection response is prepared. Wire to client.",
+        },
+        ERROR,
+    ],
+};
+
+/// `traffic-split`: a request steered to and served by a weighted split
+/// target exits on `routed`. `success` covers both "no rule matched" and
+/// "the default slot was picked" — the request continues to the route's
+/// normal upstream unchanged.
+pub const TRAFFIC_SPLIT_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "routed",
+            kind: PortKind::Outcome,
+            description: "The request was steered to and served by a weighted split target; wire to client.",
+        },
+        ERROR,
+    ],
+};
+
+/// `proxy-cache` (lookup phase): a cache hit exits on `hit`. `success`
+/// covers a miss or a non-cacheable method/bypass — the request continues to
+/// the upstream.
+pub const PROXY_CACHE_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "hit",
+            kind: PortKind::Outcome,
+            description: "The response was served from cache; wire to client.",
+        },
+        ERROR,
+    ],
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

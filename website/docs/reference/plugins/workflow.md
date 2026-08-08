@@ -52,22 +52,25 @@ config:
 
 Rules are checked top to bottom; a rule without a `case` always matches. The **first matching rule wins** — its action applies and no further rules are evaluated.
 
-- **`return` matches** — the plugin writes the rejection onto `context.response` (configured status, JSON body `{"error_msg":"rejected by workflow"}`, `content-type: application/json`) and fails with error code `WORKFLOW_REJECTED`, routing through the **`error` port**.
+- **`return` matches** — the plugin writes the rejection onto `context.response` (configured status, JSON body `{"error_msg":"rejected by workflow"}`, `content-type: application/json`) and exits through the **`denied` port**.
 - **`limit-count`, within limit** — the plugin sets `x-ratelimit-limit` / `x-ratelimit-remaining` / `x-ratelimit-reset` response headers and continues through the **`success` port**.
-- **`limit-count`, exceeded** — rejection written onto `context.response` (status `rejected_code`, quota headers, body from `rejected_msg` or empty) and fails with error code `RATE_LIMITED` through the **`error` port**.
+- **`limit-count`, exceeded** — rejection written onto `context.response` (status `rejected_code`, quota headers, body from `rejected_msg` or empty) and exits through the **`limited` port**.
+- **`limit-count`, counter backend failure** — a genuine infrastructure failure; fails with error code `RATE_LIMIT_ERROR` through the **`error` port** (rare — the in-memory `local` backend is effectively infallible).
 - **No rule matches** — passthrough on `success`, Context untouched.
 
 ### Wiring the early exits
 
-Rejections exit via `error` with the response **already prepared** — wire the `error` port to a pass-through path so the prepared rejection reaches the client:
+Rejections exit via `denied` or `limited` with the response **already prepared** — wire both ports to a pass-through path so the prepared rejection reaches the client:
 
 ```yaml
 edges:
   - { from: workflow.success, to: upstream.in }  # allowed traffic continues
-  - { from: workflow.error,   to: client.in }    # rejected: prepared response goes out as-is
+  - { from: workflow.denied,  to: client.in }    # 'return' rejection: prepared response goes out as-is
+  - { from: workflow.limited, to: client.in }    # 'limit-count' rejection: prepared response goes out as-is
+  - { from: workflow.error,   to: client.in }    # counter-backend failure (rare)
 ```
 
-Routing `error` through an `error-handler` will replace the prepared body with the handler's template.
+Routing `denied`/`limited` through an `error-handler` will replace the prepared body with the handler's template.
 
 Counters are isolated per workflow node instance and per rule, live in process memory, and reset on restart/config reload.
 
@@ -76,4 +79,7 @@ Counters are isolated per workflow node instance and per rule, live in process m
 - Only the `return` and `limit-count` actions are supported.
 - `limit-count`'s `key` is a `$var` template (default `"$remote_addr"`); there is no separate `key_type`, and `policy` supports only `local`.
 - Quota headers are always sent (not configurable).
-- Rejections route through the `error` port with codes `WORKFLOW_REJECTED` / `RATE_LIMITED` (graph-wiring mechanics).
+
+## Ports
+
+`workflow` declares four output ports: `success`, `denied` (a `return` rule rejected the request), `limited` (a `limit-count` rule's quota was exceeded), and `error` (a genuine counter-backend failure). `success`, `denied`, and `limited` are mandatory — the policy compiler rejects any policy that leaves one unwired. See [Wiring the early exits](#wiring-the-early-exits) above.
