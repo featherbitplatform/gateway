@@ -56,11 +56,18 @@ pub struct PluginExecutionError {
 /// Every plugin (native or scripted) implements this trait.
 ///
 /// A plugin is a node in a compiled policy graph. The engine drives each node
-/// through [`execute`](Plugin::execute) and follows the node's `success` or
-/// `error` port depending on the result.
+/// through [`execute`](Plugin::execute) and follows the output port the result
+/// names.
+///
+/// A node type's ports are **not** declared on this trait: they live in the
+/// static registry ([`port_spec`] over [`ports`]), the single source of truth
+/// shared by the graph compiler, the admin catalog, and the UI editor. A
+/// plugin therefore cannot drift from its own declaration.
 #[async_trait]
 pub trait Plugin: Send + Sync {
     /// Unique identifier for the plugin type (e.g., "proxy-rewrite", "upstream").
+    /// This is also the key its [`PortSpec`] is registered under in
+    /// [`port_spec`].
     fn plugin_type(&self) -> &str;
 
     /// Executes the plugin logic against the request/response context.
@@ -70,22 +77,22 @@ pub trait Plugin: Send + Sync {
     ///   duration of the call and must hand it back in either outcome — inside
     ///   [`PluginOutput`] on success, or inside [`PluginExecutionError`] on
     ///   failure. The context is never lost.
-    /// - On `Ok`, the graph engine routes the returned context through the
-    ///   node's `success` port. On `Err`, the [`PluginExecutionError`] carries
-    ///   both the context and a [`GatewayError`], letting the engine record
-    ///   the error and continue through the node's `error` port (typically
-    ///   toward an `error-handler` node) instead of aborting the request.
+    /// - On `Ok`, the engine routes the returned context through the port the
+    ///   [`PluginOutput`] names: [`PluginOutput::success`] takes the node's
+    ///   `success` port, and [`PluginOutput::on_port`] takes a named
+    ///   **outcome** port — the node did its job and chose a deliberate
+    ///   alternate route (`denied`, `redirect`, `limited`, `broken`,
+    ///   `preflight`, `abort`, `routed`, `hit`), normally with the
+    ///   client-facing response already prepared. The named port must be one
+    ///   this type declares in its `PortSpec`, or the policy would not have
+    ///   compiled; nothing is appended to `ctx.errors`.
+    /// - On `Err`, the [`PluginExecutionError`] carries both the context and a
+    ///   [`GatewayError`], which the engine appends to `ctx.errors` before
+    ///   continuing through the node's `error` port (or the policy catch-all,
+    ///   or a generic 500) instead of aborting the request. `Err` is reserved
+    ///   for *the node could not do its job* — configuration, parse, or
+    ///   infrastructure failure. A plugin must never name `error` from `Ok`.
     async fn execute(&self, ctx: Context) -> PluginResult;
-
-    /// Static declaration of this node type's ports. Never overridden —
-    /// resolved through the factory registry so the engine, catalog, and
-    /// plugins can't drift.
-    // Part of the plugin contract: this surface is resolved via the registry
-    // once callers (catalog, engine routing) land in later tasks.
-    #[allow(dead_code)]
-    fn ports(&self) -> &'static PortSpec {
-        port_spec(self.plugin_type()).unwrap_or(&ports::DEFAULT_SPEC)
-    }
 }
 
 /// Every plugin type [`create_plugin`] can build, for save-time validation of
