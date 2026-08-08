@@ -1,5 +1,18 @@
 //! The `error-handler` node — turns accumulated gateway errors into a JSON
 //! error response. Typically wired to other nodes' error ports.
+//!
+//! ## Outcome exits pass through untouched
+//!
+//! A context that arrives with an **empty** `ctx.errors` is passed through
+//! unchanged: no template render, no status rewrite. That is the case for
+//! every *outcome* exit (`denied`, `limited`, `broken`, `abort`, `redirect`,
+//! `preflight`, `routed`, `hit`) — the emitting node did its job and already
+//! prepared the client-facing response, so there is no error record to report
+//! and nothing for this node to add. Without the guard, such a context would
+//! have its prepared body replaced by the raw, unsubstituted template (or by
+//! the default 500), which is precisely what the named-output-ports model
+//! exists to avoid. Outcome ports should normally be wired straight to
+//! `client`; routing one here is harmless but does nothing.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -64,15 +77,20 @@ impl Plugin for ErrorHandlerPlugin {
         &self,
         mut ctx: Context,
     ) -> PluginResult {
-        // Render the template using the last error in the context
-        let body = if let Some(last_error) = ctx.errors.last() {
-            self.body_template
-                .replace("{{error.code}}", &last_error.code)
-                .replace("{{error.message}}", &last_error.message)
-                .replace("{{error.node_id}}", &last_error.node_id)
-        } else {
-            self.body_template.clone()
+        // No error to report — an outcome exit (denied/limited/broken/abort/
+        // redirect/preflight/routed/hit) or a plain success path. The response
+        // it carries is already prepared; leave it exactly as it is rather
+        // than clobbering it with an unrendered template or a default 500.
+        let Some(last_error) = ctx.errors.last() else {
+            return Ok(PluginOutput::success(ctx));
         };
+
+        // Render the template using the last error in the context
+        let body = self
+            .body_template
+            .replace("{{error.code}}", &last_error.code)
+            .replace("{{error.message}}", &last_error.message)
+            .replace("{{error.node_id}}", &last_error.node_id);
 
         ctx.response.status_code = self.status_code;
         ctx.response.body = Bytes::from(body);
@@ -169,16 +187,70 @@ mod tests {
         );
     }
 
+    /// An errorless context carrying an already-prepared response — what every
+    /// outcome exit (`denied`, `limited`, `broken`, ...) looks like — must pass
+    /// through completely untouched: same status, same body, same headers, and
+    /// no unrendered `{{error.code}}` placeholder anywhere.
     #[tokio::test]
-    async fn test_no_error_leaves_template_literal() {
-        let out = plugin(serde_json::json!({ "body_template": "{{error.code}}" }))
-            .execute(ctx_with_error(None))
-            .await
-            .unwrap();
-        // With no error to substitute, the raw template is emitted unchanged.
+    async fn test_errorless_prepared_response_passes_through_intact() {
+        let mut ctx = ctx_with_error(None);
+        ctx.response.status_code = 401;
+        ctx.response.body = Bytes::from(r#"{"error":"unauthorized"}"#);
+        ctx.response.headers.insert(
+            "www-authenticate".to_string(),
+            vec!["Basic realm=\"api\"".to_string()],
+        );
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
+
+        let out = plugin(serde_json::json!({
+            "status_code": 500,
+            "body_template": "{{error.code}}"
+        }))
+        .execute(ctx)
+        .await
+        .unwrap();
+
+        assert_eq!(out.port, None, "still exits on the success port");
+        assert_eq!(out.context.response.status_code, 401);
         assert_eq!(
             String::from_utf8(out.context.response.body.to_vec()).unwrap(),
-            "{{error.code}}"
+            r#"{"error":"unauthorized"}"#
+        );
+        assert_eq!(
+            out.context.response.headers.get("www-authenticate").unwrap()[0],
+            "Basic realm=\"api\""
+        );
+    }
+
+    /// The pass-through guard must not disturb the with-error behavior: a
+    /// context carrying an error still gets the configured status and the
+    /// rendered template.
+    #[tokio::test]
+    async fn test_with_error_behavior_unchanged_by_passthrough_guard() {
+        let mut ctx = ctx_with_error(Some(err("UPSTREAM_ERROR", "refused", "backend")));
+        // A stale prepared response must still be replaced when an error exists.
+        ctx.response.status_code = 200;
+        ctx.response.body = Bytes::from("stale");
+
+        let out = plugin(serde_json::json!({
+            "status_code": 502,
+            "body_template": "{\"code\":\"{{error.code}}\"}"
+        }))
+        .execute(ctx)
+        .await
+        .unwrap();
+
+        assert_eq!(out.context.response.status_code, 502);
+        assert_eq!(
+            String::from_utf8(out.context.response.body.to_vec()).unwrap(),
+            r#"{"code":"UPSTREAM_ERROR"}"#
+        );
+        assert_eq!(
+            out.context.response.headers.get("content-type").unwrap()[0],
+            "application/json"
         );
     }
 }
