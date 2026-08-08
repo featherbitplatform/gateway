@@ -48,8 +48,21 @@ On success the context passes through the **success** port:
 - `context.message["user_id"]` = `userid` (or `unionid`), when present
 - `X-Userinfo` request header = base64-encoded userinfo JSON (when `set_userinfo_header`)
 
-On a missing code, a rejected code (`errcode != 0`), or a callout failure, the plugin rejects and routes through the **error** port:
+On a missing code or a code DingTalk actively rejects (`errcode != 0`), the plugin rejects and exits through the **`denied`** port:
 
 - `context.response.status_code` = `401`
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
-- Error code appended to `context.errors`: `DINGTALK_AUTH_FAILED`
+
+A DingTalk callout that fails outright — network error, non-200 response, or an unparseable body, for either the access-token or userinfo call — is a genuine **infrastructure failure**, not a rejection. It stays on the **error** port instead (`context.response.status_code = 502`, error code `DINGTALK_UPSTREAM_ERROR`).
+
+## Ports
+
+`dingtalk-auth` declares three output ports: `success`, `denied` (a deliberate denial is prepared — missing code, or DingTalk-rejected code), and `error` (the DingTalk callout itself failed). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `dingtalk-auth.denied` straight to `client` so the prepared `401` reaches the caller instead of continuing into `upstream`; wire `error` to an error-handler (or leave it unwired for the default 500):
+
+```yaml
+edges:
+  - from: dingtalk-auth.success
+    to: upstream.in
+  - from: dingtalk-auth.denied
+    to: client.in
+```

@@ -69,21 +69,35 @@ Setting a session secret enables the interactive login flow.
 2. The plugin calls `GET <idp_uri>/serviceValidate?ticket=<ticket>&service=<service>`, where `service` is the configured value or the request-derived `scheme://host/path`.
 3. The response is parsed for the authenticated user. Both the default CAS 2.0 **XML** (`<cas:authenticationSuccess>` / `<cas:user>`, with or without the `cas:` prefix) and the CAS 3.0 **JSON** (`serviceResponse.authenticationSuccess.user`) formats are supported.
 
-On success the context passes through the **success** port, with the username exposed as `context.message["user"]` / `context.message["user_id"]` and injected onto the request as the `X-CAS-User` header. On a missing ticket, a non-200 validation response, an authentication-failure body, or a callout failure, the plugin rejects through the **error** port with `context.response.status_code = 401`, body `{"error": "unauthorized", "message": "<reason>"}`, and error code `CAS_AUTH_FAILED`.
+On success the context passes through the **success** port, with the username exposed as `context.message["user"]` / `context.message["user_id"]` and injected onto the request as the `X-CAS-User` header. On a missing ticket, a non-200 validation response, an authentication-failure body, or a callout failure, the plugin rejects and exits through the **`denied`** port with `context.response.status_code = 401` and body `{"error": "unauthorized", "message": "<reason>"}`.
 
 ### Interactive mode (session secret set)
 
 Each request is resolved through three branches:
 
 1. **Valid session cookie.** If the `<session.cookie.name>` cookie opens successfully, the sealed username is attached (`context.message["user"]` / `["user_id"]` and the `X-CAS-User` header) and the request continues through the **success** port.
-2. **Callback (ticket present).** A request carrying the CAS `ticket` is validated via `/serviceValidate` (same logic as stateless mode). On success the username is sealed into a fresh session cookie and the browser is **302-redirected to the ticket-free service URL** with a `Set-Cookie`. On failure the request is rejected with `401` (`CAS_AUTH_FAILED`).
-3. **No session, not a callback.** The browser is **302-redirected to `<idp_uri>/login?service=<service-url>`** to begin CAS login. (CAS returns the ticket to the same service URL, so no flow cookie is needed.)
+2. **Callback (ticket present).** A request carrying the CAS `ticket` is validated via `/serviceValidate` (same logic as stateless mode). On success the username is sealed into a fresh session cookie and the browser is **302-redirected to the ticket-free service URL** with a `Set-Cookie`, exiting on the **`redirect`** port. On failure the request is rejected with `401` on the **`denied`** port.
+3. **No session, not a callback.** The browser is **302-redirected to `<idp_uri>/login?service=<service-url>`** to begin CAS login, exiting on the **`redirect`** port. (CAS returns the ticket to the same service URL, so no flow cookie is needed.)
 
-If `logout_path` is configured and the request path matches, the session cookie is deleted and the browser is redirected to `/`.
+If `logout_path` is configured and the request path matches, the session cookie is deleted and the browser is redirected to `/` on the **`redirect`** port.
 
 #### Redirect wiring (important)
 
-Every `302` in interactive mode (login redirect, post-callback redirect, logout) is emitted as an **error-port** exit with error code `CAS_REDIRECT`, carrying the prepared `302` response. This follows the same early-exit convention as the `fault-injection` and `mocking` nodes. **Wire the node's `error` edge to `client.in`** so the redirect (and its `Set-Cookie`) reaches the browser; wire the `success` edge onward to the upstream for authenticated requests.
+Every `302` in interactive mode (login redirect, post-callback redirect, logout) exits through the dedicated **`redirect`** output port, carrying the prepared `302` response. This follows the same convention as the standalone `redirect` node. **Wire the node's `redirect` edge to `client.in`** so the redirect (and its `Set-Cookie`) reaches the browser; wire `denied` to `client.in` too (or a custom denial handler) for deliberate rejections; wire the `success` edge onward to the upstream for authenticated requests.
+
+## Ports
+
+`cas-auth` declares four output ports: `success`, `denied` (a deliberate `401` rejection is prepared — invalid/missing ticket), `redirect` (a `302` browser move is prepared — login, post-callback, or logout; interactive mode only, but the port is always declared), and `error` (never actually used in either mode — the plugin never fails outright). Like `success`, `denied` and `redirect` are both mandatory ports: the policy compiler rejects any policy that leaves either unwired, **even in stateless mode where `redirect` is never actually taken**. Wire both straight to `client`:
+
+```yaml
+edges:
+  - from: cas-auth.success
+    to: upstream.in
+  - from: cas-auth.denied
+    to: client.in
+  - from: cas-auth.redirect
+    to: client.in
+```
 
 #### Session cookie attributes
 

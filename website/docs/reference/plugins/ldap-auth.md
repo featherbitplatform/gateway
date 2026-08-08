@@ -40,12 +40,25 @@ Authenticates a request's HTTP Basic credentials against an LDAP server. The bin
 
 On a successful bind the context passes through the **success** port, with the authenticated username exposed to downstream nodes as `context.message["user"]`.
 
-On a missing header, malformed credentials, empty username/password, a bind rejection, a connection error, or a timeout, the plugin rejects and routes through the **error** port:
+On a missing header, malformed credentials, empty username/password, or a bind rejection, the plugin rejects and exits through the **`denied`** port:
 
 - `context.response.status_code` = `401`
 - `WWW-Authenticate: Basic realm="<realm>"` challenge header
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
-- Error code appended to `context.errors`: `LDAP_AUTH_FAILED`
+
+A connection error or a connect+bind timeout is a genuine **infrastructure failure**, not a credential decision — it stays on the **error** port instead, with the same `WWW-Authenticate` challenge and error code `LDAP_AUTH_FAILED`.
+
+## Ports
+
+`ldap-auth` declares three output ports: `success`, `denied` (a deliberate credential rejection is prepared), and `error` (the LDAP server was unreachable, or the connect+bind deadline elapsed — a genuine infra failure, not a rejection). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `ldap-auth.denied` straight to `client` so the prepared `401` reaches the caller instead of continuing into `upstream`; wire `error` to an error-handler (or leave it unwired for the default 500) since that path represents the node failing to do its job, not a policy decision:
+
+```yaml
+edges:
+  - from: ldap-auth.success
+    to: upstream.in
+  - from: ldap-auth.denied
+    to: client.in
+```
 
 ## Behavior notes
 

@@ -10,7 +10,7 @@
 //!   behaves exactly as before: a request carrying a CAS service `ticket`
 //!   query parameter is validated against the CAS server's `/serviceValidate`
 //!   endpoint and, on success, the authenticated user is attached to the
-//!   request; anything else is rejected with `CAS_AUTH_FAILED` (`401`).
+//!   request; anything else is rejected with a `401` on the `denied` port.
 //! - **Interactive (opt-in)** — set `session.secret` (or `session_secret`) to
 //!   turn on the full browser login flow. The authenticated user is sealed
 //!   into an encrypted client-side cookie (no server-side session store), so
@@ -22,11 +22,12 @@
 //! ## Redirect wiring (interactive mode)
 //!
 //! A `302` produced by this node (login redirect, post-callback redirect, or
-//! logout) is returned as an [`Err`] carrying the prepared response with code
-//! `CAS_REDIRECT`, following the same early-exit convention as the
-//! `fault-injection`/`mocking` nodes. **Wire the node's `error` edge to
-//! `client.in`** so the redirect reaches the browser; the `success` edge
-//! carries authenticated requests on to the upstream.
+//! logout) exits on the dedicated `redirect` output port, following the same
+//! convention as the standalone `redirect` node. **Wire the node's `redirect`
+//! edge to `client.in`** so the response reaches the browser; deliberate
+//! denials exit on `denied` (also wired to `client.in`, or a custom denial
+//! handler); the `success` edge carries authenticated requests on to the
+//! upstream.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -35,13 +36,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::util::cookie_session::{
     build_set_cookie, delete_cookie, read_cookie, CookieAttrs, CookieSealer, SameSite,
 };
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Session payload sealed into the CAS session cookie (interactive mode).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,7 +179,7 @@ impl CasAuthPlugin {
         })
     }
 
-    /// Builds a 401 rejection routed through the node's error port.
+    /// Builds a 401 rejection and exits on the `denied` port.
     fn reject(&self, ctx: Context, message: &str) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 401;
@@ -190,19 +191,12 @@ impl CasAuthPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "CAS_AUTH_FAILED".to_string(),
-                message: message.to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 
-    /// Builds a `302` early-exit carrying the prepared response. Wire the
-    /// node's **error** edge to `client.in` so this reaches the browser.
+    /// Builds a `302` early-exit carrying the prepared response, and exits on
+    /// the `redirect` port. Wire the node's `redirect` edge to `client.in` so
+    /// this reaches the browser.
     fn redirect(
         &self,
         mut ctx: Context,
@@ -219,15 +213,7 @@ impl CasAuthPlugin {
                 .insert("set-cookie".to_string(), set_cookies);
         }
         ctx.response.body = Bytes::new();
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "CAS_REDIRECT".to_string(),
-                message: "cas-auth redirect".to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "redirect"))
     }
 
     /// The service URL sent to `/serviceValidate`: the configured value, or one
@@ -685,12 +671,9 @@ mod tests {
     #[tokio::test]
     async fn test_missing_ticket_rejected() {
         let p = plugin();
-        let err = p
-            .execute(ctx("/", HashMap::new()))
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "CAS_AUTH_FAILED");
-        assert_eq!(err.context.response.status_code, 401);
+        let out = p.execute(ctx("/", HashMap::new())).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
     }
 
     #[test]
@@ -715,19 +698,19 @@ mod tests {
         cfg.insert("session_secret".to_string(), serde_json::json!("s3cr3t"));
         let p = CasAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
 
-        let err = p
+        let out = p
             .execute(ctx("/dashboard", HashMap::new()))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "CAS_REDIRECT");
-        assert_eq!(err.context.response.status_code, 302);
-        let location = &err.context.response.headers.get("location").unwrap()[0];
+            .unwrap();
+        assert_eq!(out.port, Some("redirect"));
+        assert_eq!(out.context.response.status_code, 302);
+        let location = &out.context.response.headers.get("location").unwrap()[0];
         assert!(
             location.starts_with("https://cas.example.org/cas/login?service="),
             "{location}"
         );
         // No cookie is set when merely beginning login.
-        assert!(!err.context.response.headers.contains_key("set-cookie"));
+        assert!(!out.context.response.headers.contains_key("set-cookie"));
     }
 
     #[tokio::test]
@@ -773,17 +756,17 @@ mod tests {
         cfg.insert("logout_path".to_string(), serde_json::json!("/logout"));
         let p = CasAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
 
-        let err = p
+        let out = p
             .execute(ctx("/logout", HashMap::new()))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "CAS_REDIRECT");
-        assert_eq!(err.context.response.status_code, 302);
+            .unwrap();
+        assert_eq!(out.port, Some("redirect"));
+        assert_eq!(out.context.response.status_code, 302);
         assert_eq!(
-            err.context.response.headers.get("location").unwrap()[0],
+            out.context.response.headers.get("location").unwrap()[0],
             "/"
         );
-        let set = &err.context.response.headers.get("set-cookie").unwrap()[0];
+        let set = &out.context.response.headers.get("set-cookie").unwrap()[0];
         assert!(
             set.contains("cas_session=") && set.contains("Max-Age=0"),
             "{set}"

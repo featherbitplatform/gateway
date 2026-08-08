@@ -2,7 +2,7 @@
 //!
 //! Validates the `Authorization: Basic ...` header against a static user map
 //! and/or the shared consumer store, and rejects unauthenticated requests with
-//! a 401 challenge so the graph engine routes through the node's error port.
+//! a 401 challenge so the graph engine routes through the node's `denied` port.
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD;
@@ -12,9 +12,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::consumers::attach_consumer;
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Authenticates requests using HTTP Basic credentials checked against a
 /// configured username/password map and/or the consumer store.
@@ -109,9 +109,8 @@ impl BasicAuthPlugin {
     }
 
     /// Builds the 401 rejection: sets a JSON error body plus the
-    /// `WWW-Authenticate` challenge on the response and returns a
-    /// `PluginExecutionError` (code `UNAUTHORIZED`) carrying the context so
-    /// the graph engine routes through the error port.
+    /// `WWW-Authenticate` challenge on the response and exits on the
+    /// `denied` port.
     fn reject(&self, ctx: Context) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 401;
@@ -125,15 +124,7 @@ impl BasicAuthPlugin {
             "www-authenticate".to_string(),
             vec![format!("Basic realm=\"{}\"", self.realm)],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "UNAUTHORIZED".to_string(),
-                message: "Invalid credentials".to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 
     /// Removes the `Authorization` header (per `hide_credentials`).
@@ -404,12 +395,11 @@ mod tests {
             Some(&serde_json::json!("alice"))
         );
 
-        assert!(plugin
-            .execute(
-                ctx_with_auth(Some(&basic("alice", "wrong"))),
-            )
+        let out = plugin
+            .execute(ctx_with_auth(Some(&basic("alice", "wrong"))))
             .await
-            .is_err());
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -429,17 +419,14 @@ mod tests {
         );
 
         // wrong password
-        assert!(plugin
-            .execute(
-                ctx_with_auth(Some(&basic("alice", "nope"))),
-            )
+        let out = plugin
+            .execute(ctx_with_auth(Some(&basic("alice", "nope"))))
             .await
-            .is_err());
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
         // missing header
-        assert!(plugin
-            .execute(ctx_with_auth(None))
-            .await
-            .is_err());
+        let out = plugin.execute(ctx_with_auth(None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -448,14 +435,11 @@ mod tests {
         config.insert("realm".to_string(), serde_json::json!("internal-api"));
         let plugin = BasicAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
 
-        let err = plugin
-            .execute(ctx_with_auth(None))
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "UNAUTHORIZED");
-        assert_eq!(err.context.response.status_code, 401);
+        let out = plugin.execute(ctx_with_auth(None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
         assert_eq!(
-            err.context.response.headers.get("www-authenticate"),
+            out.context.response.headers.get("www-authenticate"),
             Some(&vec!["Basic realm=\"internal-api\"".to_string()])
         );
     }
@@ -486,12 +470,11 @@ mod tests {
         assert!(!ctx.request.headers.contains_key("authorization"));
 
         // wrong password against a known consumer is rejected
-        assert!(plugin
-            .execute(
-                ctx_with_auth(Some(&basic("alice", "wrong"))),
-            )
+        let out = plugin
+            .execute(ctx_with_auth(Some(&basic("alice", "wrong"))))
             .await
-            .is_err());
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]

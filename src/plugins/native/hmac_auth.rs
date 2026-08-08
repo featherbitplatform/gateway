@@ -5,8 +5,8 @@
 //! request and sending the base64 signature alongside the `access_key` that
 //! identifies the credential. featherbit recomputes the signature with the
 //! matching secret and compares; a mismatch, an unknown key, a stale `Date`,
-//! or a missing required signed header is rejected as `401 HMAC_INVALID`
-//! through the node's error port.
+//! or a missing required signed header is rejected with a `401` through the
+//! node's `denied` port.
 //!
 //! # Wire format
 //!
@@ -62,9 +62,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::consumers::attach_consumer;
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// The X-HMAC-* header names (lowercased) used as the alternative to the
 /// `Authorization: Signature ...` presentation.
@@ -321,8 +321,7 @@ impl HmacAuthPlugin {
         })
     }
 
-    /// Builds the 401 rejection routed through the error port with code
-    /// `HMAC_INVALID`.
+    /// Builds the 401 rejection and exits on the `denied` port.
     fn reject(&self, mut ctx: Context, msg: &str) -> PluginResult {
         ctx.response.status_code = 401;
         ctx.response.body = Bytes::from(format!(
@@ -337,15 +336,7 @@ impl HmacAuthPlugin {
             "www-authenticate".to_string(),
             vec![format!("hmac realm=\"{}\"", self.realm)],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "HMAC_INVALID".to_string(),
-                message: msg.to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 
     /// Reads a single-valued request header (lowercased key).
@@ -753,9 +744,9 @@ mod tests {
         let date = http_date(now() as i64);
         // client signs with the wrong secret
         let ctx = signed_request("wrong", "ak1", HmacAlgorithm::Sha256, &date);
-        let err = plugin.execute(ctx).await.unwrap_err();
-        assert_eq!(err.error.code, "HMAC_INVALID");
-        assert_eq!(err.context.response.status_code, 401);
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
     }
 
     #[tokio::test]
@@ -763,7 +754,8 @@ mod tests {
         let plugin = inline_plugin(serde_json::json!({ "clock_skew": 10 }));
         let stale = http_date(now() as i64 - 3600);
         let ctx = signed_request("sk1", "ak1", HmacAlgorithm::Sha256, &stale);
-        assert!(plugin.execute(ctx).await.is_err());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -772,7 +764,8 @@ mod tests {
         let plugin = inline_plugin(serde_json::json!({ "signed_headers": ["@request-target"] }));
         let date = http_date(now() as i64);
         let ctx = signed_request("sk1", "ak1", HmacAlgorithm::Sha256, &date);
-        assert!(plugin.execute(ctx).await.is_err());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -835,7 +828,8 @@ mod tests {
 
         // unknown access key rejected
         let ctx = signed_request("x", "nobody", HmacAlgorithm::Sha256, &date);
-        assert!(plugin.execute(ctx).await.is_err());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]

@@ -55,6 +55,18 @@ Headers and query parameters collapse to a string when single-valued and to an a
 The OPA reply's `result` object determines routing:
 
 - **`allow: true`** → the request passes through the **success** port. If `send_headers_upstream` is set, each named header from `result.headers` is copied onto the request forwarded upstream; a named header absent from the OPA response is removed.
-- **`allow: false` or missing** → the request is rejected through the **error** port with error `OPA_DENIED`. OPA-supplied `result.status_code` (or `result.status`) sets the response status (default `403`), `result.headers` are copied onto the response, and `result.reason` becomes the response body (objects are JSON-encoded).
-- **Callout failure** (timeout / transport error) → rejected with status `403` and error `OPA_ERROR` (block-by-default).
-- **Unparseable response** (not JSON, or missing `result`) → rejected with status `503` and error `OPA_ERROR`.
+- **`allow: false` or missing** → the request is denied, exiting through the **`denied`** port. OPA-supplied `result.status_code` (or `result.status`) sets the response status (default `403`), `result.headers` are copied onto the response, and `result.reason` becomes the response body (objects are JSON-encoded).
+- **Callout failure** (timeout / transport error) → a genuine infrastructure failure: exits through the **error** port with status `403` and error `OPA_ERROR` (block-by-default).
+- **Unparseable response** (not JSON, or missing `result`) → also a genuine infrastructure failure: exits through the **error** port with status `503` and error `OPA_ERROR`.
+
+## Ports
+
+`opa` declares three output ports: `success`, `denied` (an `allow: false`/missing decision is prepared), and `error` (the callout failed, or its response could not be parsed). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `opa.denied` straight to `client` so the prepared response reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: opa.success
+    to: upstream.in
+  - from: opa.denied
+    to: client.in
+```

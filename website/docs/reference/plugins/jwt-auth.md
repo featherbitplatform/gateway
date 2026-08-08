@@ -49,8 +49,19 @@ On success the context passes through the **success** port with the claims expos
 - `context.message["jwt_claims"]` = the full decoded claims object
 - `context.message["user_id"]` = the `sub` claim, when present (convenience copy)
 
-On a missing token or any verification failure (bad signature, expired, malformed, unknown `key` claim), the plugin sets a rejection on the response and routes through the **error** port:
+On a missing token or any verification failure (bad signature, expired, malformed, unknown `key` claim), the plugin sets a rejection on the response and exits through the **`denied`** port:
 
 - `context.response.status_code` = `401`
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
-- Error code appended to `context.errors`: `JWT_INVALID`
+
+## Ports
+
+`jwt-auth` declares three output ports: `success`, `denied` (a rejection is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `jwt-auth.denied` straight to `client` so the prepared `401` reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: jwt-auth.success
+    to: upstream.in
+  - from: jwt-auth.denied
+    to: client.in
+```

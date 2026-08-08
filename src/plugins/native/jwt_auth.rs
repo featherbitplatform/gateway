@@ -3,7 +3,7 @@
 //! Validates HMAC-signed JWTs (HS256/HS384/HS512) taken from a configurable
 //! header, enforcing expiry, and exposes the verified claims to downstream
 //! nodes via `context.message`. Invalid or missing tokens are rejected with a
-//! 401 error routed through the node's error port.
+//! 401 routed through the node's `denied` port.
 //!
 //! Two modes, usable together:
 //! - **inline secret** (`secret` set): every token is verified with one
@@ -22,9 +22,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::consumers::attach_consumer;
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Parses a supported HMAC algorithm name, defaulting to HS256 when absent.
 ///
@@ -53,8 +53,8 @@ fn parse_algorithm(name: Option<&str>) -> Result<Algorithm, String> {
 /// In consumer mode the matched consumer's identity is also attached
 /// (`consumer.*` message keys + `X-Consumer-*` headers).
 ///
-/// On failure the request is rejected with a 401 JSON response and a
-/// `JWT_INVALID` error routed through the error port.
+/// On failure the request is rejected with a 401 JSON response routed
+/// through the node's `denied` port.
 pub struct JwtAuthPlugin {
     /// Shared HMAC secret used to verify token signatures (inline mode).
     /// `None` when only consumer mode is configured.
@@ -128,9 +128,8 @@ impl JwtAuthPlugin {
         })
     }
 
-    /// Builds the 401 rejection with a JSON error body and returns a
-    /// `PluginExecutionError` (code `JWT_INVALID`) carrying the context so the
-    /// graph engine routes through the error port.
+    /// Builds the 401 rejection with a JSON error body and exits on the
+    /// `denied` port.
     fn reject(ctx: Context, message: &str) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 401;
@@ -142,15 +141,7 @@ impl JwtAuthPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "JWT_INVALID".to_string(),
-                message: message.to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 
     /// Verifies `token` with `secret`/`algorithm` and, on success, writes the
@@ -373,10 +364,12 @@ mod tests {
             "other",
             Algorithm::HS256,
         );
-        assert!(plugin
+        let out = plugin
             .execute(ctx_with_token(Some(&forged)))
             .await
-            .is_err());
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
     }
 
     fn resources_with_consumers() -> Arc<PluginResources> {
@@ -423,10 +416,11 @@ mod tests {
             "wrong-secret",
             Algorithm::HS256,
         );
-        assert!(plugin
+        let out = plugin
             .execute(ctx_with_token(Some(&forged)))
             .await
-            .is_err());
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
 
         // unknown key claim is rejected
         let unknown = make_token(
@@ -434,9 +428,10 @@ mod tests {
             "x",
             Algorithm::HS256,
         );
-        assert!(plugin
+        let out = plugin
             .execute(ctx_with_token(Some(&unknown)))
             .await
-            .is_err());
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 }

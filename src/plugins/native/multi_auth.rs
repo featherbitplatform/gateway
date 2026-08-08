@@ -1,10 +1,11 @@
 //! Multi-authentication plugin (`multi-auth`).
 //!
 //! Chains several auth plugins and accepts the request as soon as **any** of
-//! them succeeds (first success wins); the request is rejected with a 401 only
-//! when *all* of them fail. This mirrors APISIX's `multi-auth`, which runs each
-//! configured auth plugin's `rewrite` phase in order and short-circuits on the
-//! first that authenticates.
+//! them succeeds (first success wins); the request is rejected with a 401,
+//! exiting on the `denied` port, only when *all* of them fail (or exit on a
+//! sub-plugin's own alternate outcome port). This mirrors APISIX's
+//! `multi-auth`, which runs each configured auth plugin's `rewrite` phase in
+//! order and short-circuits on the first that authenticates.
 //!
 //! Sub-plugins are built at config load via [`crate::plugins::create_plugin`],
 //! so every sub-config is validated up front and a bad entry fails fast.
@@ -14,21 +15,26 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{create_plugin, Plugin, PluginExecutionError, PluginResult};
+use crate::plugins::{create_plugin, Plugin, PluginOutput, PluginResult};
 
 /// Authenticates a request by trying a list of auth sub-plugins in order and
 /// accepting the first that succeeds.
 ///
-/// Each sub-plugin is a fully-fledged [`Plugin`] instance; on success it has
-/// already mutated the context (e.g. attached a consumer identity), so the
-/// winning sub-plugin's output is returned verbatim. Sub-plugins run in the
-/// listed order; a later sub-plugin sees the context as left by prior *failed*
-/// attempts, except that the response is reset between attempts so a losing
-/// plugin's rejection body never leaks onto a subsequent success. Auth plugins
-/// generally mutate the context only on success (leaving request/message
-/// untouched on failure), so ordering is safe.
+/// Each sub-plugin is a fully-fledged [`Plugin`] instance; on a **clean
+/// success** (no named exit port) it has already mutated the context (e.g.
+/// attached a consumer identity), so the winning sub-plugin's output is
+/// returned verbatim. Anything else a sub-plugin returns — a raw `Err`, or an
+/// `Ok` on an alternate outcome port such as a credential-auth plugin's
+/// `denied` — is treated as a failed attempt, not a match: `multi-auth` has
+/// no way to fan a single request out to more than one downstream route, so
+/// only a plain success can end the chain early. Sub-plugins run in the
+/// listed order; a later sub-plugin sees the context as left by prior
+/// *failed* attempts, except that the response is reset between attempts so
+/// a losing plugin's rejection body never leaks onto a subsequent success.
+/// Auth plugins generally mutate the context only on success (leaving
+/// request/message untouched on failure), so ordering is safe.
 ///
 /// Only auth-type plugins are meaningful here, but the set is **not**
 /// hard-restricted — any registered plugin type may be listed, and non-auth
@@ -98,9 +104,8 @@ impl MultiAuthPlugin {
         Ok(Self { sub_plugins })
     }
 
-    /// Builds the 401 rejection (code `MULTI_AUTH_FAILED`) returned when every
-    /// sub-plugin failed, carrying the context so the graph engine routes
-    /// through the error port.
+    /// Builds the 401 rejection returned when every sub-plugin failed, and
+    /// exits on the `denied` port.
     fn reject(ctx: Context) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 401;
@@ -110,15 +115,7 @@ impl MultiAuthPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "MULTI_AUTH_FAILED".to_string(),
-                message: "all authentication methods failed".to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -139,7 +136,17 @@ impl Plugin for MultiAuthPlugin {
 
         for sub in &self.sub_plugins {
             match sub.execute(ctx).await {
-                Ok(output) => return Ok(output),
+                // A clean success ends the chain.
+                Ok(output) if output.port.is_none() => return Ok(output),
+                // Anything else — a deliberate alternate outcome (e.g. a
+                // credential-auth sub-plugin's `denied`) or a raw `Err` — is
+                // treated as a failed attempt: reset the response (so a
+                // losing rejection body never leaks onto a later success)
+                // and try the next sub-plugin.
+                Ok(output) => {
+                    ctx = output.context;
+                    ctx.response = original_response.clone();
+                }
                 Err(err) => {
                     ctx = err.context;
                     ctx.response = original_response.clone();
@@ -192,11 +199,13 @@ mod tests {
         let plugin =
             MultiAuthPlugin::from_config(&two_key_auth_config(), &PluginResources::empty())
                 .unwrap();
-        // "beta" fails the first key-auth but passes the second -> Ok.
+        // "beta" fails the first key-auth (which now exits Ok on the `denied`
+        // port, not Err) but passes the second -> a clean success.
         let out = plugin
             .execute(ctx_with_key(Some("beta")))
             .await
             .unwrap();
+        assert_eq!(out.port, None);
         // A prior failed attempt must not leave a 401 body behind.
         assert_eq!(out.context.response.status_code, 0);
     }
@@ -206,12 +215,12 @@ mod tests {
         let plugin =
             MultiAuthPlugin::from_config(&two_key_auth_config(), &PluginResources::empty())
                 .unwrap();
-        let err = plugin
+        let out = plugin
             .execute(ctx_with_key(Some("gamma")))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "MULTI_AUTH_FAILED");
-        assert_eq!(err.context.response.status_code, 401);
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
     }
 
     #[test]

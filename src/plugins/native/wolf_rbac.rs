@@ -4,7 +4,9 @@
 //! On each request it extracts the caller's wolf RBAC token, parses it, and asks
 //! the wolf-server whether that token may perform the request's method on the
 //! request's path. On allow it copies the returned user identity into request
-//! headers and `context.message`; on deny it rejects with `WOLF_RBAC_DENIED`.
+//! headers and `context.message`; on deny it exits on the `denied` port. A
+//! wolf-server callout that fails outright is a genuine infrastructure
+//! failure and stays on the `error` port.
 //!
 //! Only the `_M.rewrite` authorization path is ported. The interactive
 //! `/apisix/plugin/wolf-rbac/{login,change_pwd,user_info}` admin endpoints —
@@ -118,7 +120,7 @@ impl WolfRbacPlugin {
         })
     }
 
-    /// Builds a denial routed through the node's error port.
+    /// Builds a denial and exits on the node's `denied` port.
     fn reject(&self, ctx: Context, message: &str) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = self.rejected_code;
@@ -130,15 +132,7 @@ impl WolfRbacPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "WOLF_RBAC_DENIED".to_string(),
-                message: message.to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -294,13 +288,15 @@ impl Plugin for WolfRbacPlugin {
         let response = match self.client.request(outbound).await {
             Ok(resp) => resp,
             Err(e) => {
+                // A genuine infrastructure failure (wolf-server unreachable),
+                // not a deliberate denial: stays on the `error` port.
                 let mut ctx = ctx;
                 ctx.response.status_code = 500;
                 return Err(PluginExecutionError {
                     context: ctx,
                     error: GatewayError {
                         node_id: String::new(),
-                        code: "WOLF_RBAC_DENIED".to_string(),
+                        code: "WOLF_RBAC_UPSTREAM_ERROR".to_string(),
                         message: format!("request to wolf-server failed: {}", e),
                         metadata: HashMap::new(),
                     },
@@ -455,9 +451,9 @@ mod tests {
             remote_addr: "1.2.3.4:5".into(),
             protocol: crate::context::Protocol::Http1,
         });
-        let err = plugin.execute(ctx).await.unwrap_err();
-        assert_eq!(err.error.code, "WOLF_RBAC_DENIED");
-        assert_eq!(err.context.response.status_code, 401);
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
     }
 
     #[tokio::test]
@@ -481,6 +477,36 @@ mod tests {
             protocol: crate::context::Protocol::Http1,
         });
         // Parse failure is caught before any network call.
-        assert!(plugin.execute(ctx).await.is_err());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+    }
+
+    #[tokio::test]
+    async fn test_upstream_callout_failure_stays_on_error_port() {
+        // A genuine infra failure (nothing listening on the wolf-server port)
+        // must stay a raw `Err`, unlike the deliberate denials above.
+        let mut cfg = HashMap::new();
+        cfg.insert("server".to_string(), serde_json::json!("http://127.0.0.1:1"));
+        cfg.insert("timeout_ms".to_string(), serde_json::json!(200));
+        let plugin = WolfRbacPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
+
+        let mut headers = HashMap::new();
+        headers.insert(
+            "x-rbac-token".to_string(),
+            vec!["V1#app#tok".to_string()],
+        );
+        let ctx = crate::context::Context::new(crate::context::GatewayRequest {
+            method: "GET".into(),
+            path: "/pet".into(),
+            host: "h".into(),
+            scheme: "http".into(),
+            headers,
+            query_params: HashMap::new(),
+            body: Bytes::new(),
+            remote_addr: "1.2.3.4:5".into(),
+            protocol: crate::context::Protocol::Http1,
+        });
+        let err = plugin.execute(ctx).await.unwrap_err();
+        assert_eq!(err.error.code, "WOLF_RBAC_UPSTREAM_ERROR");
     }
 }

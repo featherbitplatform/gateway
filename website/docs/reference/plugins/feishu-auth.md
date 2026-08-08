@@ -49,8 +49,21 @@ On success the context passes through the **success** port:
 - `context.message["user_id"]` = `user_id` (or `open_id` / `union_id`), when present
 - `X-Userinfo` request header = base64-encoded userinfo JSON (when `set_userinfo_header`)
 
-On a missing code, a rejected code / token (non-zero `code`), or a callout failure, the plugin rejects and routes through the **error** port:
+On a missing code or a code/token Feishu actively rejects (non-zero `code`), the plugin rejects and exits through the **`denied`** port:
 
 - `context.response.status_code` = `401`
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
-- Error code appended to `context.errors`: `FEISHU_AUTH_FAILED`
+
+A Feishu callout that fails outright — network error, non-200 response, or an unparseable body, for either the token or userinfo call — is a genuine **infrastructure failure**, not a rejection. It stays on the **error** port instead (`context.response.status_code = 502`, error code `FEISHU_UPSTREAM_ERROR`).
+
+## Ports
+
+`feishu-auth` declares three output ports: `success`, `denied` (a deliberate denial is prepared — missing code, or Feishu-rejected code/token), and `error` (the Feishu callout itself failed). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `feishu-auth.denied` straight to `client` so the prepared `401` reaches the caller instead of continuing into `upstream`; wire `error` to an error-handler (or leave it unwired for the default 500):
+
+```yaml
+edges:
+  - from: feishu-auth.success
+    to: upstream.in
+  - from: feishu-auth.denied
+    to: client.in
+```

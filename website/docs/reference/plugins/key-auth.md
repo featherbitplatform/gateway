@@ -32,8 +32,19 @@ The plugin reads the key from `header_name` first, then falls back to `query_par
 
 Unlike the other auth plugins, key-auth does **not** write any identity information into `context.message` — a valid key simply lets the request continue.
 
-On a missing or invalid key the plugin sets a rejection on the response and routes through the **error** port:
+On a missing or invalid key the plugin sets a rejection on the response and exits through the **`denied`** port:
 
 - `context.response.status_code` = `401`
 - Body: `{"error": "unauthorized", "message": "Invalid or missing API key"}` with `content-type: application/json`
-- Error code appended to `context.errors`: `UNAUTHORIZED`
+
+## Ports
+
+`key-auth` declares three output ports: `success`, `denied` (a rejection is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `key-auth.denied` straight to `client` so the prepared `401` reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: key-auth.success
+    to: upstream.in
+  - from: key-auth.denied
+    to: client.in
+```
