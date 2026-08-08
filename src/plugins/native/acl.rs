@@ -16,8 +16,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Admits or blocks requests based on the attached consumer's group.
 ///
@@ -96,7 +96,8 @@ impl AclPlugin {
         })
     }
 
-    /// Builds a rejection carrying the context so the graph routes the error port.
+    /// Builds a rejection carrying the context so the graph routes it through
+    /// the `denied` port.
     fn reject(&self, mut ctx: Context, status: u16, message: String) -> PluginResult {
         ctx.response.status_code = status;
         ctx.response.body = Bytes::from(serde_json::json!({ "message": message }).to_string());
@@ -104,15 +105,7 @@ impl AclPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "ACL_DENIED".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -213,19 +206,19 @@ mod tests {
         assert!(p
             .execute(ctx(Some("alice"), Some("partners")))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         // group not in allowlist
-        let err = p
+        let out = p
             .execute(ctx(Some("alice"), Some("randoms")))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "ACL_DENIED");
-        assert_eq!(err.context.response.status_code, 403);
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
         // consumer with no group is rejected under an allowlist
-        assert!(p
-            .execute(ctx(Some("alice"), None))
-            .await
-            .is_err());
+        let out = p.execute(ctx(Some("alice"), None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -237,12 +230,12 @@ mod tests {
         assert!(p
             .execute(ctx(Some("alice"), Some("partners")))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         // in allowlist but also denied -> deny wins
-        assert!(p
-            .execute(ctx(Some("bob"), Some("banned")))
-            .await
-            .is_err());
+        let out = p.execute(ctx(Some("bob"), Some("banned"))).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -252,22 +245,19 @@ mod tests {
         assert!(p
             .execute(ctx(Some("alice"), None))
             .await
-            .is_ok());
-        assert!(p
-            .execute(ctx(Some("bob"), Some("banned")))
-            .await
-            .is_err());
+            .unwrap()
+            .port
+            .is_none());
+        let out = p.execute(ctx(Some("bob"), Some("banned"))).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
     async fn test_no_consumer_attached_401() {
         let p = plugin(serde_json::json!({ "allowed_by": ["partners"] }));
-        let err = p
-            .execute(ctx(None, None))
-            .await
-            .unwrap_err();
-        assert_eq!(err.context.response.status_code, 401);
-        assert_eq!(err.error.code, "ACL_DENIED");
+        let out = p.execute(ctx(None, None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
     }
 
     #[test]

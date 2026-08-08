@@ -26,8 +26,8 @@ use ring::rand::{SecureRandom, SystemRandom};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 const SAFE_METHODS: [&str; 3] = ["GET", "HEAD", "OPTIONS"];
 
@@ -222,8 +222,7 @@ impl CsrfPlugin {
             .push(cookie);
     }
 
-    /// Builds the 401 rejection routed through the error port with code
-    /// `CSRF_INVALID`.
+    /// Builds the 401 rejection routed through the `denied` port.
     fn reject(&self, mut ctx: Context, msg: &str) -> PluginResult {
         ctx.response.status_code = 401;
         ctx.response.body = Bytes::from(serde_json::json!({ "error_msg": msg }).to_string());
@@ -231,15 +230,7 @@ impl CsrfPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "CSRF_INVALID".to_string(),
-                message: msg.to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -387,13 +378,10 @@ mod tests {
     async fn test_unsafe_method_without_tokens_rejected() {
         let p = plugin(serde_json::json!({"key": "secret"}));
 
-        let err = p
-            .execute(test_context("POST"))
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "CSRF_INVALID");
-        assert_eq!(err.context.response.status_code, 401);
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        let out = p.execute(test_context("POST")).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["error_msg"], "no csrf token in headers");
 
         // header token present but no cookie
@@ -401,8 +389,9 @@ mod tests {
         ctx.request
             .headers
             .insert(NAME.to_string(), vec!["sometoken".to_string()]);
-        let err = p.execute(ctx).await.unwrap_err();
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        let out = p.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["error_msg"], "no csrf cookie");
     }
 
@@ -425,41 +414,46 @@ mod tests {
         let other = p.gen_token();
 
         // header != cookie
-        let err = p
-            .execute(with_tokens("POST", &token, &other))
-            .await
-            .unwrap_err();
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        let out = p.execute(with_tokens("POST", &token, &other)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["error_msg"], "csrf token mismatch");
 
         // token signed with a different key
         let wrong_key = plugin(serde_json::json!({"key": "other-secret"}));
         let forged = wrong_key.gen_token();
-        let err = p
+        let out = p
             .execute(with_tokens("POST", &forged, &forged))
             .await
-            .unwrap_err();
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(
             body["error_msg"],
             "Failed to verify the csrf token signature"
         );
 
         // garbage token
-        assert!(p
-            .execute(with_tokens("POST", "nonsense", "nonsense"))
-            .await
-            .is_err());
+        assert_eq!(
+            p.execute(with_tokens("POST", "nonsense", "nonsense"))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
     }
 
     #[tokio::test]
     async fn test_expiry() {
         let p = plugin(serde_json::json!({"key": "secret", "expires": 10}));
         let stale = p.token_at(now() - 60);
-        assert!(p
-            .execute(with_tokens("POST", &stale, &stale))
-            .await
-            .is_err());
+        assert_eq!(
+            p.execute(with_tokens("POST", &stale, &stale))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
 
         // expires = 0 disables the expiry check (APISIX parity)
         let no_expiry = plugin(serde_json::json!({"key": "secret", "expires": 0}));
@@ -467,7 +461,9 @@ mod tests {
         assert!(no_expiry
             .execute(with_tokens("POST", &ancient, &ancient))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         // session cookie: no Max-Age
         let out = no_expiry
             .execute(test_context("GET"))

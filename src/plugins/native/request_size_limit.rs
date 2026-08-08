@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Enforces a maximum request body size.
 ///
@@ -64,15 +64,7 @@ impl Plugin for RequestSizeLimitPlugin {
                 "content-type".to_string(),
                 vec!["application/json".to_string()],
             );
-            return Err(PluginExecutionError {
-                context: ctx,
-                error: GatewayError {
-                    node_id: String::new(),
-                    code: "PAYLOAD_TOO_LARGE".to_string(),
-                    message: format!("Body size {} exceeds limit {}", body_len, self.max_bytes),
-                    metadata: HashMap::new(),
-                },
-            });
+            return Ok(PluginOutput::on_port(ctx, "denied"));
         }
 
         Ok(PluginOutput::success(ctx))
@@ -119,30 +111,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_body_under_limit_passes() {
-        let out = plugin(10).execute(ctx(b"12345")).await;
-        assert!(out.is_ok());
+        let out = plugin(10).execute(ctx(b"12345")).await.unwrap();
+        assert!(out.port.is_none());
     }
 
     #[tokio::test]
     async fn test_body_at_limit_passes() {
         // Boundary: exactly max_bytes is allowed (only strictly greater fails).
-        let out = plugin(5).execute(ctx(b"12345")).await;
-        assert!(out.is_ok());
+        let out = plugin(5).execute(ctx(b"12345")).await.unwrap();
+        assert!(out.port.is_none());
     }
 
     #[tokio::test]
     async fn test_body_over_limit_rejected_413() {
-        let err = plugin(5)
-            .execute(ctx(b"123456"))
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "PAYLOAD_TOO_LARGE");
-        assert_eq!(err.context.response.status_code, 413);
+        let out = plugin(5).execute(ctx(b"123456")).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 413);
     }
 
     #[tokio::test]
     async fn test_empty_body_passes() {
-        assert!(plugin(0).execute(ctx(b"")).await.is_ok());
+        assert!(plugin(0).execute(ctx(b"")).await.unwrap().port.is_none());
     }
 
     #[test]

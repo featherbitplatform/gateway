@@ -39,8 +39,22 @@ The counter key is resolved by interpolating the `key` template against the requ
 On each request the key is counted against the fixed window:
 
 - **Within the limit** — the request passes through the `success` port. When `show_limit_quota_header` is set, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` (whole seconds until the window resets) are written onto `context.response`.
-- **Over the limit** — the plugin writes a rejection onto `context.response` (status `rejected_code`, JSON body `{"error_msg": ...}` using `rejected_msg` or a default, `content-type: application/json`, plus the quota headers with `X-RateLimit-Remaining: 0`) and fails with error code `RATE_LIMITED`, routing the Context through the `error` port.
+- **Over the limit** — the plugin writes a rejection onto `context.response` (status `rejected_code`, JSON body `{"error_msg": ...}` using `rejected_msg` or a default, `content-type: application/json`, plus the quota headers with `X-RateLimit-Remaining: 0`) and exits through the `limited` port.
 
-With the `local` policy, counts live in process memory: they are per gateway instance and are lost on restart. If the counter backend errors, the request is rejected with a `500` (code `RATE_LIMIT_UNAVAILABLE`) unless `allow_degradation` is set, in which case it passes through.
+With the `local` policy, counts live in process memory: they are per gateway instance and are lost on restart. If the counter backend errors — a genuine infrastructure failure — the request fails with error code `RATE_LIMIT_UNAVAILABLE` through the `error` port (a `500` response is prepared) unless `allow_degradation` is set, in which case it passes through on `success`.
 
 The quota headers are set on `context.response`; they are present when the final response is built and sent to the client.
+
+## Ports
+
+`limit-count` declares three output ports: `success`, `limited` (a quota rejection is prepared), and `error` (a genuine counter-backend failure). `success` and `limited` are mandatory — the policy compiler rejects any policy that leaves either unwired. Wire `limit-count.limited` straight to `client` so the prepared rejection reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: limit-count.success
+    to: upstream.in
+  - from: limit-count.limited
+    to: client.in
+  - from: limit-count.error
+    to: client.in
+```

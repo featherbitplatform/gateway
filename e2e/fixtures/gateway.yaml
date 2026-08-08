@@ -175,13 +175,12 @@ policies:
 
   # /secure/* -> key-auth + rate-limit in front of the echo backend.
   #
-  # key-auth's `denied` port and rate-limit's `error` port wire STRAIGHT TO
+  # key-auth's `denied` port and rate-limit's `limited` port wire STRAIGHT TO
   # client.in. Both plugins set the rejection response (401 / 429) on the
   # context; routing that exit straight to `client` is what lets the status
   # survive. Send it to an error-handler instead and the handler's
-  # status_code overwrites it — leave `denied` unwired and policy compilation
-  # fails (mandatory outcome-port wiring); leave `error` unwired and the
-  # generic 500 fallback does. E2E-DP-05 pins this.
+  # status_code overwrites it — leave either port unwired and policy
+  # compilation fails (mandatory outcome-port wiring). E2E-DP-05 pins this.
   - name: secure-policy
     nodes:
       - id: listener
@@ -224,7 +223,7 @@ policies:
         to: client.in
       - from: api-key.error
         to: client.in
-      - from: throttle.error
+      - from: throttle.limited
         to: client.in
 
   # /bearer/* -> openid-connect in bearer_only mode. Signatures are verified for

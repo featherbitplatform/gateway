@@ -41,8 +41,20 @@ Checks run in order:
 3. **Whitelist** — if `whitelist` is non-empty and the value is not listed, the request is rejected.
 4. **Method restriction** — if `allowed_by_methods` is set and the consumer was *not* already cleared by the whitelist, and an entry exists for this consumer, the request method must be one of that entry's methods or the request is rejected.
 
-Every rejection writes a JSON body (`{"message": ...}` with `content-type: application/json`) onto `context.response`, sets the status, and routes the Context through the `error` port with error code `CONSUMER_RESTRICTED`. Permitted requests pass through the `success` port unchanged.
+Every rejection writes a JSON body (`{"message": ...}` with `content-type: application/json`) onto `context.response`, sets the status, and exits through the `denied` port. Permitted requests pass through the `success` port unchanged.
 
 :::note Limitations
 `type: service_id` and `route_id` are not supported — featherbit has no service/route object on the context, so those values are rejected at config load; use `consumer_name` or `consumer_group_id`.
 :::
+
+## Ports
+
+`consumer-restriction` declares three output ports: `success`, `denied` (a rejection is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `consumer-restriction.denied` straight to `client` so the prepared `401`/`403` reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: consumer-restriction.success
+    to: upstream.in
+  - from: consumer-restriction.denied
+    to: client.in
+```

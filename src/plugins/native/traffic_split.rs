@@ -8,22 +8,21 @@
 //! concrete target set (`upstream.targets`) or carries only a `weight` (the
 //! "default" slot, meaning "use the route's normal upstream").
 //!
-//! **Split-node wiring** (featherbit design — read this before wiring the
-//! graph). This node sits **before** the route's normal `upstream` node. It
-//! exposes the usual `success` / `error` ports and the caller wires them so
-//! that the two outcomes reach the right place:
+//! **Split-node wiring**. This node sits **before** the route's normal
+//! `upstream` node. It exposes `success` / `routed` / `error` ports and the
+//! caller wires them so that the outcomes reach the right place:
 //!
-//! - **Default slot picked (or no rule matched):** the plugin returns `Ok(ctx)`
-//!   unchanged. Wire `success` → the rest of the pipeline (the normal
-//!   `upstream` node). The request is proxied by the route as usual.
+//! - **Default slot picked (or no rule matched):** the plugin returns
+//!   `Ok(PluginOutput::success(ctx))` unchanged. Wire `success` → the rest of
+//!   the pipeline (the normal `upstream` node). The request is proxied by the
+//!   route as usual.
 //! - **Target slot picked:** the plugin proxies the request itself to the
 //!   chosen target (reusing the shared outbound client), writes the backend's
-//!   reply onto `Context.response`, and **short-circuits** by returning
-//!   `Err(code TRAFFIC_SPLIT_ROUTED)` with the response already populated. Wire
-//!   `error` → `client.in` (the same convention `fault-injection` and
-//!   `mocking` use for "stop here, send this response"). If the split target
-//!   itself is unreachable the node fails with `TRAFFIC_SPLIT_UPSTREAM_ERROR`
-//!   and a prepared `502` body — also routed through `error`.
+//!   reply onto `Context.response`, and **short-circuits** through the
+//!   `routed` port. Wire `routed` → `client.in`. If the split target itself
+//!   is unreachable the node fails with `TRAFFIC_SPLIT_UPSTREAM_ERROR` — a
+//!   genuine infrastructure failure — and a prepared `502` body, routed
+//!   through `error`.
 //!
 //! This makes canary/blue-green trivial: give the default slot weight 90 and a
 //! canary target set weight 10, and 10% of matching traffic is proxied to the
@@ -371,18 +370,7 @@ impl Plugin for TrafficSplitPlugin {
         // Target slot → proxy the request ourselves and short-circuit.
         let target = slot.pick_target(targets).clone();
         match self.proxy_to_target(&mut ctx, &target).await {
-            Ok(()) => Err(PluginExecutionError {
-                context: ctx,
-                error: GatewayError {
-                    node_id: String::new(),
-                    code: "TRAFFIC_SPLIT_ROUTED".to_string(),
-                    message: format!(
-                        "traffic-split proxied request to {}:{}",
-                        target.host, target.port
-                    ),
-                    metadata: HashMap::new(),
-                },
-            }),
+            Ok(()) => Ok(PluginOutput::on_port(ctx, "routed")),
             Err((code, message)) => {
                 // Prepare a 502 so the error edge (→ client.in) has a body.
                 ctx.response.status_code = 502;
@@ -537,6 +525,7 @@ mod tests {
         }))
         .unwrap();
         let out = p.execute(test_ctx(None)).await.unwrap();
+        assert!(out.port.is_none());
         assert_eq!(out.context.response.status_code, 0);
     }
 
@@ -557,7 +546,88 @@ mod tests {
             .execute(test_ctx(Some("no")))
             .await
             .unwrap();
+        assert!(out.port.is_none());
         assert_eq!(out.context.response.status_code, 0);
+    }
+
+    /// Minimal one-shot HTTP server that answers any request with a fixed
+    /// status line and body. Returns its port.
+    async fn spawn_status_server(status_line: &'static str, body: &'static str) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status_line}\r\ncontent-length: {}\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        port
+    }
+
+    /// A target slot that successfully proxies exits on the dedicated
+    /// `routed` port with the backend's reply already on the context — not
+    /// through `error`, even though the request is fully handled here.
+    #[tokio::test]
+    async fn test_target_slot_proxies_and_exits_on_routed_port() {
+        let port = spawn_status_server("200 OK", "canary-response").await;
+        let resources = PluginResources::empty();
+        let mut config: HashMap<String, serde_json::Value> = serde_json::from_value(
+            serde_json::json!({
+                "rules": [{
+                    "weighted_upstreams": [{
+                        "upstream": { "targets": [{ "host": "127.0.0.1", "port": port }] },
+                        "weight": 1
+                    }]
+                }]
+            }),
+        )
+        .unwrap();
+        config.insert("timeout_ms".to_string(), serde_json::json!(2000));
+        let p = TrafficSplitPlugin::from_config(&config, &resources).unwrap();
+
+        let out = p.execute(test_ctx(None)).await.unwrap();
+        assert_eq!(out.port, Some("routed"));
+        assert_eq!(out.context.response.status_code, 200);
+        assert_eq!(
+            out.context.response.body,
+            Bytes::from_static(b"canary-response")
+        );
+    }
+
+    /// An unreachable split target is a genuine infrastructure failure and
+    /// stays on `error`, distinct from the deliberate `routed` outcome.
+    #[tokio::test]
+    async fn test_target_unreachable_stays_err() {
+        let resources = PluginResources::empty();
+        let mut config: HashMap<String, serde_json::Value> = serde_json::from_value(
+            serde_json::json!({
+                "rules": [{
+                    "weighted_upstreams": [{
+                        "upstream": { "targets": [{ "host": "127.0.0.1", "port": 1 }] },
+                        "weight": 1
+                    }]
+                }]
+            }),
+        )
+        .unwrap();
+        config.insert("timeout_ms".to_string(), serde_json::json!(500));
+        let p = TrafficSplitPlugin::from_config(&config, &resources).unwrap();
+
+        let err = p.execute(test_ctx(None)).await.unwrap_err();
+        assert_eq!(err.error.code, "TRAFFIC_SPLIT_UPSTREAM_ERROR");
+        assert_eq!(err.context.response.status_code, 502);
     }
 
     #[test]

@@ -22,26 +22,27 @@
 //!  listener →│ proxy-cache      │success →│ upstream │success →│ proxy-cache      │→ client
 //!            │  (phase=lookup)  │        │          │        │  (phase=store)   │
 //!            └──────────────────┘        └──────────┘        └──────────────────┘
-//!                    │ error                                    (caches responses
+//!                    │ hit                                      (caches responses
 //!                    ▼                                        whose status is cacheable)
 //!               client.in
 //!         (cached response, HIT)
 //! ```
 //!
 //! On a hit, the lookup node writes the cached response onto the context, adds
-//! `featherbit-cache-status: HIT`, and fails with `PROXY_CACHE_HIT` — its `error`
-//! port goes to `client.in`, delivering the cached response without touching
-//! the upstream. On a miss it passes through; the store node then caches the
-//! upstream response and marks it `featherbit-cache-status: MISS`.
+//! `featherbit-cache-status: HIT`, and exits through the dedicated `hit`
+//! port — wired to `client.in`, delivering the cached response without
+//! touching the upstream. On a miss it passes through `success`; the store
+//! node then caches the upstream response and marks it
+//! `featherbit-cache-status: MISS`.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Header written by both nodes to report the cache outcome.
 const CACHE_STATUS_HEADER: &str = "featherbit-cache-status";
@@ -292,7 +293,7 @@ impl Plugin for ProxyCachePlugin {
             Role::Lookup => {
                 if let Some(entry) = self.resources.traffic.cache.get(&key) {
                     // Hit: serve the cached response and short-circuit to the
-                    // client via the error port (→ client.in).
+                    // client via the `hit` port (→ client.in).
                     ctx.response.status_code = entry.status;
                     ctx.response.headers = entry.headers;
                     ctx.response.body = entry.body;
@@ -305,16 +306,7 @@ impl Plugin for ProxyCachePlugin {
                         .headers
                         .insert(CACHE_STATUS_HEADER.to_string(), vec!["HIT".to_string()]);
 
-                    let error = GatewayError {
-                        node_id: String::new(),
-                        code: "PROXY_CACHE_HIT".to_string(),
-                        message: "Served from cache".to_string(),
-                        metadata: HashMap::new(),
-                    };
-                    return Err(PluginExecutionError {
-                        context: ctx,
-                        error,
-                    });
+                    return Ok(PluginOutput::on_port(ctx, "hit"));
                 }
                 // Miss: continue to the upstream.
                 Ok(PluginOutput::success(ctx))
@@ -433,8 +425,8 @@ mod tests {
         let s = store(&r);
 
         // Cold lookup → miss (passes through).
-        let miss = l.execute(ctx("GET")).await;
-        assert!(miss.is_ok(), "cold lookup should miss and pass through");
+        let miss = l.execute(ctx("GET")).await.unwrap();
+        assert!(miss.port.is_none(), "cold lookup should miss and pass through");
 
         // Upstream produced a 200 body → store caches it.
         let mut resp = ctx("GET");
@@ -446,12 +438,12 @@ mod tests {
             Some(&vec!["MISS".to_string()])
         );
 
-        // Warm lookup → hit, short-circuits with the cached body.
+        // Warm lookup → hit, short-circuits with the cached body on the `hit` port.
         let hit = l
             .execute(ctx("GET"))
             .await
-            .expect_err("warm lookup should hit and short-circuit");
-        assert_eq!(hit.error.code, "PROXY_CACHE_HIT");
+            .expect("warm lookup should hit and short-circuit");
+        assert_eq!(hit.port, Some("hit"));
         assert_eq!(hit.context.response.status_code, 200);
         assert_eq!(
             hit.context.response.body,
@@ -475,7 +467,7 @@ mod tests {
         resp.response.body = Bytes::from_static(b"not-cached");
         s.execute(resp).await.unwrap();
 
-        let out = l.execute(ctx("POST")).await;
-        assert!(out.is_ok(), "non-cacheable method must never hit the cache");
+        let out = l.execute(ctx("POST")).await.unwrap();
+        assert!(out.port.is_none(), "non-cacheable method must never hit the cache");
     }
 }

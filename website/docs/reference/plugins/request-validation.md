@@ -44,7 +44,7 @@ Schemas are compiled once at config load with the `jsonschema` crate — malform
    - The parsed value is validated against `body_schema`.
 3. **JSON normalization** — after a successful JSON-body validation the body is re-serialized from the parsed document and the stale `content-length` header is removed, so the JSON that was validated is exactly the JSON the upstream receives (guards against [JSON interoperability](https://bishopfox.com/blog/json-interoperability-vulnerabilities) smuggling). Urlencoded bodies are passed through unchanged.
 
-On any rejection the plugin writes `rejected_code` plus the JSON body `{"error": "validation_failed", "message": <rejected_msg or validator detail>}` onto `context.response` and fails with error code `VALIDATION_FAILED`, routing the Context through the `error` port.
+On any rejection the plugin writes `rejected_code` plus the JSON body `{"error": "validation_failed", "message": <rejected_msg or validator detail>}` onto `context.response` and exits through the `denied` port.
 
 The plugin does not write to `context.message`.
 
@@ -52,3 +52,15 @@ The plugin does not write to `context.message`.
 
 - Headers validate the **first** value of multi-valued headers. Schemas that assert array-typed header values will not match.
 - Secret-reference (`$secret://`) indirection for schemas is not supported — schemas are literal objects in the node config.
+
+## Ports
+
+`request-validation` declares three output ports: `success`, `denied` (a schema-validation rejection is prepared), and `error` (never actually used — the plugin never fails; malformed schemas fail at config load, not at request time). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `request-validation.denied` straight to `client` so the prepared rejection reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: request-validation.success
+    to: upstream.in
+  - from: request-validation.denied
+    to: client.in
+```

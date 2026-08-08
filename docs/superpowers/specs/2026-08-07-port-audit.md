@@ -27,7 +27,9 @@ criterion:
 > decision.
 
 Standard port vocabulary (no synonyms invented anywhere in this ledger): `denied`,
-`redirect`, `limited`, `broken`, `preflight`, `abort`.
+`redirect`, `limited`, `broken`, `preflight`, `abort`, plus `routed` and `hit` — added
+2026-08-08 by human decision to resolve the `traffic-split`/`proxy-cache` structural
+exceptions (see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #3).
 
 The design draft's "known adopters" table (`docs/superpowers/specs/2026-08-07-named-output-ports-design.md`)
 was treated as a hypothesis to verify, not ground truth. Where the code disagreed, the
@@ -51,7 +53,7 @@ code wins — every such case is called out in the row's evidence and in
 | rate-limit | limited | 429 rate-limit rejection | `src/plugins/native/rate_limit.rs:158,175` — only alternate branch; no infra-failure path exists in this plugin. |
 | limit-conn | limited | over-ceiling connection rejection (configurable `rejected_code`) | `src/plugins/native/limit_conn.rs:227,244` — only alternate branch; no infra-failure path exists. |
 | api-breaker | broken | circuit-open short-circuit (`break_response_code`) | `src/plugins/native/api_breaker.rs:266,276`. Note: the `Role::Observe` state-update arm (282-294) never returns `Err` — after this migration `api-breaker` has **no** remaining `Err` path (discrepancy: the draft assumed one would remain — see below). |
-| proxy-cache | **default — flagged vocabulary gap** | n/a (kept on current `Err` short-circuit; no vocabulary term fits) | `src/plugins/native/proxy_cache.rs:293-318` — cache **HIT** short-circuits via `Err(PROXY_CACHE_HIT)` with the cached response already populated; there is no cache-backend-failure path anywhere in the file (`cache.get`/`cache.put` are infallible in-process calls), so this is a deliberate "skip upstream, serve this" routing decision, not an infra failure. Structurally identical to `cors`/`redirect` (bimodal: continue-to-upstream vs. terminal self-produced response) but "served from cache" matches none of `denied/redirect/limited/broken/preflight/abort`. See [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #3. |
+| proxy-cache | hit | cache **HIT** short-circuit | `src/plugins/native/proxy_cache.rs:293-318` (pre-Task-10 line numbers; migrated in Task 10) — cache HIT short-circuits, now via `Ok(PluginOutput::on_port(ctx, "hit"))` with the cached response already populated; there is no cache-backend-failure path anywhere in the file (`cache.get`/`cache.put` are infallible in-process calls), so this is a deliberate "skip upstream, serve this" routing decision, not an infra failure. **Resolved 2026-08-08** (human decision, see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #3): the vocabulary gained the `hit` term rather than staying on `default`. |
 | limit-count | limited | 429-style `rejected_code` quota rejection | `src/plugins/native/limit_count.rs:253,260`. The 500 at `:223,229` (counter-backend failure, `allow_degradation` fail-open/closed) is a genuine infra failure and stays `Err`. |
 | proxy-mirror | default | n/a | `src/plugins/native/proxy_mirror.rs:168-184` — fire-and-forget mirror; mirrored call's response/errors are dropped; always `Ok(success)`. |
 | ip-restriction | denied | 403 deny-list / allow-list-miss rejection | `src/plugins/native/ip_restriction.rs:126-144,147-165` |
@@ -109,7 +111,7 @@ code wins — every such case is called out in the row's evidence and in
 | fault-injection | abort | configured abort response (`abort.http_status`) | `src/plugins/native/fault_injection.rs:319,325` — only alternate branch besides success/delay-then-fallthrough; no infra-failure path exists. |
 | workflow | denied, limited | `return` action's configured-status response → denied (approximation, see note); `limit-count` action's quota-exceeded rejection → limited | reject(): `src/plugins/native/workflow.rs:238-260`; `return` action `:296-305`; limit-count rejection `:335-347`. The counter-backend `Err` at `:318-327` is a genuine infra failure and stays `Err`. Note: the `return` action is a generic "respond with any configured status 100-599" mechanism (`:152-161`), not specifically a deny — mapping it to `denied` is an approximation; `abort` is a plausible alternative reading (see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #2). The `limit-count` action is not mentioned in the design draft's table at all. |
 | traffic-label | default | n/a | `src/plugins/native/traffic_label.rs:204-243` — whole `execute`, single always-`Ok` path, no `status_code` writes, no `Err`. |
-| traffic-split | **default — flagged vocabulary gap** | n/a (kept on current `Err` short-circuit; no vocabulary term fits) | `src/plugins/native/traffic_split.rs:354-360,363-369` — no-rule-matched / default-slot-picked → `Ok(success)`, genuine passthrough. `:373-385` — target-slot picked, request proxied and a real reply obtained → `Err(TRAFFIC_SPLIT_ROUTED)` **by design** (doc comment `:11-26`: mirrors the `fault-injection`/`mocking` convention of "stop here, send this response" via the error port) even though the node fully succeeded — this is a deliberate routing decision per the criterion's own wording, but "steered to and served from an alternate weighted backend" matches none of `denied/redirect/limited/broken/preflight/abort` (it is not an HTTP 3xx, so `redirect` would mislead). `:386-405` (target unreachable, 502 `TRAFFIC_SPLIT_UPSTREAM_ERROR`) is a genuine infra failure and correctly stays `Err`. See [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #3 — same structural pattern and same gap as `proxy-cache`. |
+| traffic-split | routed | target-slot-picked proxy short-circuit | `src/plugins/native/traffic_split.rs:354-360,363-369` (pre-Task-10 line numbers) — no-rule-matched / default-slot-picked → `Ok(success)`, genuine passthrough. `:373-385` — target-slot picked, request proxied and a real reply obtained → now `Ok(PluginOutput::on_port(ctx, "routed"))`, replacing the prior `Err(TRAFFIC_SPLIT_ROUTED)` convention — this is a deliberate routing decision per the criterion's own wording. `:386-405` (target unreachable, 502 `TRAFFIC_SPLIT_UPSTREAM_ERROR`) is a genuine infra failure and correctly stays `Err`. **Resolved 2026-08-08** (human decision, see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #3): the vocabulary gained the `routed` term rather than staying on `default`. |
 | mocking | default | n/a | `src/plugins/native/mocking.rs:219` — the plugin's *only* path, always `Ok(success)`; per the task brief, a mock response is this plugin's success, not an alternate outcome. |
 | response-rewrite | default | n/a | `src/plugins/native/response_rewrite.rs:423-461` — unconditional config-driven status/body/header rewrite; always `Ok(success)`. (`:278` grep hit is config parsing, not a runtime write.) |
 | gzip | default | n/a | `src/plugins/native/gzip.rs:207-243` — compression failure is logged and swallowed, body left uncompressed; always `Ok(success)`. |
@@ -117,10 +119,10 @@ code wins — every such case is called out in the row's evidence and in
 | error-page | default | n/a | `src/plugins/native/error_page.rs:127-149` — never writes `status_code` itself; only rewrites body/headers for an already-set, already-gateway-generated status (`ctx.errors` non-empty gate, `:133`); always `Ok(success)`. Not in the design draft's table. |
 | exit-transformer | default | n/a | `src/plugins/native/exit_transformer.rs:116-141` — remaps an existing status via `status_map` / renders a body only when `always` or the status is already gateway-generated; always `Ok(success)`. |
 | data-mask | default | n/a | `src/plugins/native/data_mask.rs:338-386` — no runtime `Err`; a non-JSON body silently skips body rules (`:365`, `Err(_) => continue` is a soft skip, not a returned error); always `Ok(success)`. |
-| request-validation | denied *(judgment call)* | header/body schema-validation rejection (missing body, bad JSON, schema mismatch) | `src/plugins/native/request_validation.rs:183,224,230,252,258` (all via `self.reject`); no infra-failure path exists in this plugin. See [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #7 — the design draft doesn't cover this plugin; `denied` is the closest vocabulary term but is a reasoned call, not a spec-confirmed one. |
+| request-validation | denied *(judgment confirmed by human 2026-08-08)* | header/body schema-validation rejection (missing body, bad JSON, schema mismatch) | `src/plugins/native/request_validation.rs:183,224,230,252,258` (pre-Task-10 line numbers; migrated in Task 10, all via `self.reject`); no infra-failure path exists in this plugin. See [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #7 — the design draft doesn't cover this plugin; `denied` was flagged as the closest vocabulary term but a reasoned, not spec-confirmed, call. Confirmed by human decision 2026-08-08 alongside the rest of the restriction family. |
 | body-transformer | default | n/a | `src/plugins/native/body_transformer.rs:220-239` (`fail()` helper) — per its own doc comment, an error-port rejection for "an undecodable body," i.e. malformed input the node cannot process — matches the `Err` criterion literally, unlike request-validation/oas-validator (see note there). |
 | degraphql | default | n/a | `src/plugins/native/degraphql.rs:184-190` (405 unsupported method), `:218-229` (400 undecodable JSON body it must transform) — malformed input the node cannot process, stays `Err`. |
-| oas-validator | denied *(judgment call)* | missing required query/header param, missing body, invalid JSON, schema mismatch | `src/plugins/native/oas_validator.rs:358,399,406,413,430,435` (all via `self.reject`); no infra-failure path exists. Same reasoning and same caveat as `request-validation` — see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #7. |
+| oas-validator | denied *(judgment confirmed by human 2026-08-08)* | missing required query/header param, missing body, invalid JSON, schema mismatch | `src/plugins/native/oas_validator.rs:358,399,406,413,430,435` (pre-Task-10 line numbers; migrated in Task 10, all via `self.reject`); no infra-failure path exists. Same reasoning as `request-validation` — see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #7. Confirmed by human decision 2026-08-08 alongside the rest of the restriction family. |
 | serverless-pre-function | default | n/a | `src/plugins/native/serverless_pre_function.rs:111-159` — runs configured Lua via the shared `ServerlessRunner`; any Lua execution error propagates through `?` to `Err` (`LUA_EXECUTION_ERROR`) — a genuine script-execution failure. A script author can itself write `ctx.response` and return success (script content, not a Rust-level branch), so there is nothing here for the engine to route on a named port. |
 | serverless-post-function | default | n/a | `src/plugins/native/serverless_post_function.rs:55-61` — identical shape and reasoning to serverless-pre-function. |
 | script | default | n/a — kept `success`+`error` by design; dynamic ports for Lua scripts are an explicit non-goal of this migration | `src/plugins/script/mod.rs:126-146` — `Plugin` trait impl confirmed: Lua `Ok` → success, `Err` → error, no custom ports. |
@@ -142,15 +144,16 @@ code wins — every such case is called out in the row's evidence and in
    the normal upstream vs. terminate with a self-produced response), and both terminal
    branches are deliberate routing decisions per the criterion's own wording ("...or a
    routing decision"). Neither "steered to and served by an alternate weighted backend"
-   (traffic-split) nor "served from cache" (proxy-cache) matches any of `denied`,
-   `redirect`, `limited`, `broken`, `preflight`, `abort`. Per this ledger's constraint to
-   never invent a port name, both are recorded as `default` (i.e., keep today's `Err`
-   short-circuit convention) with this note flagging the criterion tension for whoever
-   picks up tasks 6-10: either the vocabulary needs a new term (e.g. something like
-   "routed"/"cached") or these two are accepted as documented exceptions to the
-   otherwise-universal sweep. This ledger does not resolve that decision — it surfaces
-   it. The draft's own framing of `traffic-split` as a "routing-decision plugin... with
-   no status write" is also factually wrong (it does write status and does proxy) —
+   (traffic-split) nor "served from cache" (proxy-cache) matched any of the original
+   six vocabulary terms (`denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`).
+   This ledger originally recorded both as `default` (keeping the pre-Task-10 `Err`
+   short-circuit convention) and surfaced the tension for whoever picked up tasks 6-10.
+   **Resolved 2026-08-08** (human decision, ahead of Task 10): the vocabulary was
+   extended with two new terms — `routed` for traffic-split's proxied-and-served
+   short-circuit and `hit` for proxy-cache's served-from-cache short-circuit. Both
+   plugins were migrated in Task 10; their rows above reflect the new verdicts. The
+   draft's own framing of `traffic-split` as a "routing-decision plugin... with no
+   status write" was also factually wrong (it does write status and does proxy) —
    corrected here.
 4. **authz-keycloak, authz-casdoor, ldap-auth, openid-connect** — each folds a genuine
    outbound-infra failure (timeout, transport error, unparseable provider response) into
@@ -176,9 +179,10 @@ code wins — every such case is called out in the row's evidence and in
    job, not failing — `denied` was chosen as the closest vocabulary term. An alternative
    reading groups them with `degraphql`/`body-transformer` ("malformed input the node
    cannot process," stays `Err`) since their rejection is a byproduct of failing to
-   validate a request rather than a policy-style deny. This ledger recorded them as
-   `denied` but flags the classification as debatable; task executors should treat this
-   as a decision point, not a given.
+   validate a request rather than a policy-style deny. This ledger originally recorded
+   them as `denied` but flagged the classification as debatable. **Resolved 2026-08-08**
+   (human decision, ahead of Task 10): both migrate to `denied` alongside the rest of
+   the restriction family. Migrated in Task 10.
 8. **api-breaker** — the draft assumed a distinct "infra failure updating breaker state"
    path would remain on `Err` alongside the new `broken` port. Reading the code, no such
    path exists: the `Role::Observe` (state-update) arm never returns `Err` at all. After
@@ -203,9 +207,10 @@ code wins — every such case is called out in the row's evidence and in
 - **Row count**: 86 rows in the ledger table, matching `KNOWN_PLUGIN_TYPES.len()` (86,
   confirmed via `awk`/`grep` count against `src/plugins/mod.rs:97-182`).
 - **Vocabulary**: every outcome-port name used in the `verdict` column is one of
-  `denied`, `redirect`, `limited`, `broken`, `preflight`, `abort` — no synonyms invented.
-  The two structural exceptions (`traffic-split`, `proxy-cache`) are recorded as
-  `default` precisely because no vocabulary term fits; they do not introduce a new name.
+  `denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`, `routed`, `hit` — no
+  further synonyms invented. `routed` and `hit` were added 2026-08-08 (human decision)
+  specifically to resolve the `traffic-split`/`proxy-cache` structural exceptions noted
+  below — see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #3.
 - **Evidence**: every row with a non-`default` verdict cites `file:line` for the
   deliberate response write(s) driving it. Default rows cite either "no status_code/Err
   writes" or the specific line(s) showing why an existing write is not a deliberate
@@ -214,12 +219,13 @@ code wins — every such case is called out in the row's evidence and in
 
 ## Verdict summary
 
+**Updated 2026-08-08** (post-Task-10) — `traffic-split` and `proxy-cache` moved out of
+`default` once the vocabulary gained `routed`/`hit`; counts below reflect the final state.
+
 - **86** total rows (one per `KNOWN_PLUGIN_TYPES` entry).
-- **51** stay `default` (includes 3 structural nodes — `listener`, `client`,
-  `error-handler`; `script`'s explicit non-goal note; and 2 flagged vocabulary-gap cases
-  — `traffic-split`, `proxy-cache` — kept on today's `Err` convention pending a
-  vocabulary/exception decision).
-- **35** gain at least one new outcome port:
+- **49** stay `default` (includes 3 structural nodes — `listener`, `client`,
+  `error-handler`; `script`'s explicit non-goal note).
+- **37** gain at least one new outcome port:
   - `denied` only — **24**: acl, authz-casbin, authz-keycloak, basic-auth,
     consumer-restriction, csrf, dingtalk-auth, feishu-auth, hmac-auth, ip-restriction,
     jwe-decrypt, jwt-auth, key-auth, ldap-auth, multi-auth, referer-restriction,
@@ -232,3 +238,5 @@ code wins — every such case is called out in the row's evidence and in
   - `preflight` only — **1**: cors
   - `redirect` only — **1**: redirect
   - `abort` only — **1**: fault-injection
+  - `routed` only — **1**: traffic-split
+  - `hit` only — **1**: proxy-cache

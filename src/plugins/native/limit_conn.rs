@@ -23,16 +23,16 @@
 //!  listener →│ limit-conn       │success →│ upstream │success →│ limit-conn       │→ client
 //!            │  (phase=acquire) │        │          │        │  (phase=release) │
 //!            └──────────────────┘        └──────────┘        └──────────────────┘
-//!                    │ error                   │ error               ▲
+//!                    │ limited                 │ error               ▲
 //!                    ▼                         └─────────────────────┘
 //!               client.in                 (release also runs on the error path
 //!             (503 rejection)              so the counter always decrements)
 //! ```
 //!
-//! The acquire node's `error` port goes to `client.in`: an over-limit request
-//! short-circuits straight to the client with the rejection response. The
-//! release node must sit on *every* path out of `upstream` (success and error)
-//! so a failed upstream call still frees the slot.
+//! The acquire node's `limited` port goes to `client.in`: an over-limit
+//! request short-circuits straight to the client with the rejection
+//! response. The release node must sit on *every* path out of `upstream`
+//! (success and error) so a failed upstream call still frees the slot.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -40,9 +40,9 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Which half of the pair this node is.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -235,16 +235,7 @@ impl Plugin for LimitConnPlugin {
                         vec!["application/json".to_string()],
                     );
 
-                    let error = GatewayError {
-                        node_id: String::new(),
-                        code: "LIMIT_CONN_EXCEEDED".to_string(),
-                        message: "Concurrent request limit exceeded".to_string(),
-                        metadata: HashMap::new(),
-                    };
-                    return Err(PluginExecutionError {
-                        context: ctx,
-                        error,
-                    });
+                    return Ok(PluginOutput::on_port(ctx, "limited"));
                 }
                 Ok(PluginOutput::success(ctx))
             }
@@ -378,19 +369,21 @@ mod tests {
 
         // conn=3, burst=0 → 3 concurrent allowed, the 4th rejected.
         for i in 0..3 {
-            let out = acquire.execute(ctx()).await;
-            assert!(out.is_ok(), "acquire #{} should be allowed", i + 1);
+            let out = acquire.execute(ctx()).await.unwrap();
+            assert!(out.port.is_none(), "acquire #{} should be allowed", i + 1);
         }
-        let rejected = acquire.execute(ctx()).await;
-        let err = rejected.expect_err("4th concurrent acquire must be rejected");
-        assert_eq!(err.error.code, "LIMIT_CONN_EXCEEDED");
-        assert_eq!(err.context.response.status_code, 503);
+        let rejected = acquire
+            .execute(ctx())
+            .await
+            .expect("4th concurrent acquire completes with a `limited` outcome");
+        assert_eq!(rejected.port, Some("limited"));
+        assert_eq!(rejected.context.response.status_code, 503);
 
         // Release one slot → the next acquire succeeds again.
         release.execute(ctx()).await.unwrap();
-        let out = acquire.execute(ctx()).await;
+        let out = acquire.execute(ctx()).await.unwrap();
         assert!(
-            out.is_ok(),
+            out.port.is_none(),
             "acquire should succeed after a release freed a slot"
         );
     }

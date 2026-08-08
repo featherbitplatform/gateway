@@ -11,7 +11,7 @@
 //! OpenAPI path templating, e.g. `/users/{id}` matches `/users/123`) against
 //! the spec. When an operation matches it validates required query/header
 //! parameters and the JSON request body against the operation's schema; on any
-//! violation the request is rejected through the `error` port. When **no**
+//! violation the request is rejected through the `denied` port. When **no**
 //! operation matches, the request passes through untouched (matching APISIX:
 //! it is not the validator's job to 404).
 //!
@@ -34,8 +34,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// One segment of a templated OpenAPI path.
 enum Segment {
@@ -351,9 +351,9 @@ impl OasValidatorPlugin {
             .max_by_key(|op| op.literal_count)
     }
 
-    /// Writes the rejection onto the response and returns the error that routes
-    /// the context through the node's `error` port.
-    fn reject(&self, mut ctx: Context, detail: String) -> PluginExecutionError {
+    /// Writes the rejection onto the response and routes the context through
+    /// the node's `denied` port.
+    fn reject(&self, mut ctx: Context, detail: String) -> PluginResult {
         let message = self.rejected_msg.clone().unwrap_or(detail);
         ctx.response.status_code = self.rejected_code;
         ctx.response.body = Bytes::from(
@@ -363,15 +363,7 @@ impl OasValidatorPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "OAS_VALIDATION_FAILED".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        }
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -396,21 +388,21 @@ impl Plugin for OasValidatorPlugin {
         // Required query parameters must be present.
         for q in &op.required_query {
             if !ctx.request.query_params.contains_key(q) {
-                return Err(self.reject(ctx, format!("missing required query parameter '{}'", q)));
+                return self.reject(ctx, format!("missing required query parameter '{}'", q));
             }
         }
 
         // Required header parameters must be present (headers are lowercased).
         for h in &op.required_headers {
             if !ctx.request.headers.contains_key(h) {
-                return Err(self.reject(ctx, format!("missing required header '{}'", h)));
+                return self.reject(ctx, format!("missing required header '{}'", h));
             }
         }
 
         // Request body validation.
         let body_empty = ctx.request.body.is_empty();
         if op.body_required && body_empty {
-            return Err(self.reject(ctx, "request body is required".to_string()));
+            return self.reject(ctx, "request body is required".to_string());
         }
 
         if let Some(validator) = &op.body_schema {
@@ -427,12 +419,12 @@ impl Plugin for OasValidatorPlugin {
                     {
                         Ok(v) => v,
                         Err(e) => {
-                            return Err(self
-                                .reject(ctx, format!("failed to decode the request body: {}", e)))
+                            return self
+                                .reject(ctx, format!("failed to decode the request body: {}", e))
                         }
                     };
                     if let Err(e) = validator.validate(&parsed) {
-                        return Err(self.reject(ctx, format!("body validation failed: {}", e)));
+                        return self.reject(ctx, format!("body validation failed: {}", e));
                     }
                 }
             }
@@ -523,7 +515,7 @@ mod tests {
         c.request
             .headers
             .insert("x-trace".to_string(), vec!["abc".to_string()]);
-        assert!(p.execute(c).await.is_ok());
+        assert!(p.execute(c).await.unwrap().port.is_none());
     }
 
     #[tokio::test]
@@ -534,10 +526,10 @@ mod tests {
             .headers
             .insert("x-trace".to_string(), vec!["abc".to_string()]);
         // no verbose query param
-        let err = p.execute(c).await.unwrap_err();
-        assert_eq!(err.error.code, "OAS_VALIDATION_FAILED");
-        assert_eq!(err.context.response.status_code, 400);
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        let out = p.execute(c).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 400);
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["error"], "oas_validation_failed");
     }
 
@@ -548,8 +540,8 @@ mod tests {
         c.request
             .query_params
             .insert("verbose".to_string(), vec!["true".to_string()]);
-        let err = p.execute(c).await.unwrap_err();
-        assert_eq!(err.error.code, "OAS_VALIDATION_FAILED");
+        let out = p.execute(c).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -561,7 +553,7 @@ mod tests {
             vec!["application/json".to_string()],
         );
         c.request.body = Bytes::from(r#"{"name":"jack"}"#);
-        assert!(p.execute(c).await.is_ok());
+        assert!(p.execute(c).await.unwrap().port.is_none());
     }
 
     #[tokio::test]
@@ -574,16 +566,16 @@ mod tests {
         );
         // missing required "name" (via $ref schema)
         c.request.body = Bytes::from(r#"{"age":3}"#);
-        let err = p.execute(c).await.unwrap_err();
-        assert_eq!(err.error.code, "OAS_VALIDATION_FAILED");
+        let out = p.execute(c).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
     async fn test_oas_required_body_missing_rejected() {
         let p = plugin();
         let c = ctx("POST", "/users/42"); // empty body, requestBody.required
-        let err = p.execute(c).await.unwrap_err();
-        assert_eq!(err.error.code, "OAS_VALIDATION_FAILED");
+        let out = p.execute(c).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -594,12 +586,15 @@ mod tests {
             .execute(ctx("GET", "/nope/here"))
             .await
             .unwrap();
+        assert!(out.port.is_none());
         assert_eq!(out.context.response.status_code, 0);
         // wrong method on a known path also passes through
         assert!(p
             .execute(ctx("DELETE", "/users/42"))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     #[test]

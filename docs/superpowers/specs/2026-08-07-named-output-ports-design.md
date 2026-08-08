@@ -74,12 +74,14 @@ shared vocabulary rather than inventing per-plugin names:
 
 | Port | Meaning | Typical status | Known adopters (from code audit) |
 | --- | --- | --- | --- |
-| `denied` | Deliberate policy rejection | 401/403/405/413 | `acl`, `authz-casbin`, `authz-casdoor`, `authz-keycloak`, `basic-auth`, `cas-auth`, `csrf`, `dingtalk-auth`, `feishu-auth`, `hmac-auth`, `ip-restriction`, `jwe-decrypt`, `jwt-auth`, `key-auth`, `ldap-auth`, `multi-auth`, `openid-connect`, `consumer-restriction`, `referer-restriction`, `request-size-limit`, `ua-restriction`, `uri-blocker`, `workflow` (respond action) |
+| `denied` | Deliberate policy rejection | 401/403/405/413 | `acl`, `authz-casbin`, `authz-casdoor`, `authz-keycloak`, `basic-auth`, `cas-auth`, `csrf`, `dingtalk-auth`, `feishu-auth`, `hmac-auth`, `ip-restriction`, `jwe-decrypt`, `jwt-auth`, `key-auth`, `ldap-auth`, `multi-auth`, `openid-connect`, `consumer-restriction`, `referer-restriction`, `request-size-limit`, `ua-restriction`, `uri-blocker`, `workflow` (respond action), `request-validation`, `oas-validator` |
 | `redirect` | Deliberate 3xx response | 301/302/307/308 | `openid-connect` (login/logout/callback), `cas-auth`, `authz-casdoor`, `redirect` |
-| `limited` | Traffic-control rejection | 429 | `rate-limit` |
+| `limited` | Traffic-control rejection | 429 | `rate-limit`, `limit-conn`, `limit-count`, `workflow` (limit-count action) |
 | `broken` | Circuit breaker open | 502/503 | `api-breaker` |
 | `preflight` | CORS preflight answered | 204 | `cors` |
 | `abort` | Injected fault response | configurable | `fault-injection` |
+| `routed` | Steered to and served by an alternate weighted target | n/a (backend-defined) | `traffic-split` |
+| `hit` | Served from cache | n/a (cached status) | `proxy-cache` |
 
 The audit table above comes from grepping deliberate `status_code` writes; the
 implementation plan must still walk all plugins in `src/plugins/` against the
