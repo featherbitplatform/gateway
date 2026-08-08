@@ -2,15 +2,15 @@
 //!
 //! Filters requests by the client's remote address against configured allow
 //! and deny lists (exact IPs or CIDR blocks); denied clients receive a 403
-//! error routed through the node's error port.
+//! response routed through the node's `denied` port.
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Restricts access based on the request's `remote_addr`.
 ///
@@ -132,15 +132,7 @@ impl Plugin for IpRestrictionPlugin {
                 "content-type".to_string(),
                 vec!["application/json".to_string()],
             );
-            return Err(PluginExecutionError {
-                context: ctx,
-                error: GatewayError {
-                    node_id: String::new(),
-                    code: "IP_DENIED".to_string(),
-                    message: "IP address denied".to_string(),
-                    metadata: HashMap::new(),
-                },
-            });
+            return Ok(PluginOutput::on_port(ctx, "denied"));
         }
 
         // If allow list is non-empty, IP must be in it
@@ -153,15 +145,7 @@ impl Plugin for IpRestrictionPlugin {
                 "content-type".to_string(),
                 vec!["application/json".to_string()],
             );
-            return Err(PluginExecutionError {
-                context: ctx,
-                error: GatewayError {
-                    node_id: String::new(),
-                    code: "IP_NOT_ALLOWED".to_string(),
-                    message: "IP address not allowed".to_string(),
-                    metadata: HashMap::new(),
-                },
-            });
+            return Ok(PluginOutput::on_port(ctx, "denied"));
         }
 
         Ok(PluginOutput::success(ctx))
@@ -211,7 +195,7 @@ mod tests {
     #[tokio::test]
     async fn test_allow_cidr_match() {
         let p = plugin(serde_json::json!({ "allow": ["127.0.0.0/24", "113.74.26.106"] }));
-        assert!(p.execute(ctx("127.0.0.1:5")).await.is_ok());
+        assert!(p.execute(ctx("127.0.0.1:5")).await.unwrap().port.is_none());
     }
 
     /// APISIX TEST 9: an exact whitelisted IP is allowed.
@@ -221,35 +205,29 @@ mod tests {
         assert!(p
             .execute(ctx("113.74.26.106:80"))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
-    /// APISIX TEST 10: an IP not on the whitelist is rejected with 403.
+    /// APISIX TEST 10: an IP not on the whitelist is rejected on `denied`.
     #[tokio::test]
     async fn test_allow_unlisted_rejected() {
         let p = plugin(serde_json::json!({ "allow": ["127.0.0.0/24"] }));
-        let err = p
-            .execute(ctx("114.114.114.114:5"))
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "IP_NOT_ALLOWED");
-        assert_eq!(err.context.response.status_code, 403);
+        let out = p.execute(ctx("114.114.114.114:5")).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
     }
 
-    /// APISIX TEST 13-14: a blacklisted IP (CIDR or exact) is rejected with 403.
+    /// APISIX TEST 13-14: a blacklisted IP (CIDR or exact) is rejected on `denied`.
     #[tokio::test]
     async fn test_deny_match_rejected() {
         let p = plugin(serde_json::json!({ "deny": ["127.0.0.0/24", "113.74.26.106"] }));
-        let by_cidr = p
-            .execute(ctx("127.0.0.1:5"))
-            .await
-            .unwrap_err();
-        assert_eq!(by_cidr.error.code, "IP_DENIED");
+        let by_cidr = p.execute(ctx("127.0.0.1:5")).await.unwrap();
+        assert_eq!(by_cidr.port, Some("denied"));
         assert_eq!(by_cidr.context.response.status_code, 403);
-        assert!(p
-            .execute(ctx("113.74.26.106:5"))
-            .await
-            .is_err());
+        let out = p.execute(ctx("113.74.26.106:5")).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     /// APISIX TEST 15: an IP not on the blacklist is allowed.
@@ -259,32 +237,34 @@ mod tests {
         assert!(p
             .execute(ctx("114.114.114.114:5"))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     /// APISIX TEST 22-23: IPv6 blacklisting, exact and by CIDR (fe80::/32).
     #[tokio::test]
     async fn test_deny_ipv6() {
         let p = plugin(serde_json::json!({ "deny": ["::1", "fe80::/32"] }));
-        assert!(p.execute(ctx("::1")).await.is_err()); // exact
-        assert!(p.execute(ctx("fe80::1:1")).await.is_err()); // in fe80::/32
+        assert_eq!(p.execute(ctx("::1")).await.unwrap().port, Some("denied")); // exact
+        assert_eq!(
+            p.execute(ctx("fe80::1:1")).await.unwrap().port,
+            Some("denied")
+        ); // in fe80::/32
     }
 
     /// APISIX TEST 21: an IPv4 client is allowed by an IPv6-only blacklist.
     #[tokio::test]
     async fn test_deny_ipv6_allows_ipv4() {
         let p = plugin(serde_json::json!({ "deny": ["::1", "fe80::/32"] }));
-        assert!(p.execute(ctx("127.0.0.1:5")).await.is_ok());
+        assert!(p.execute(ctx("127.0.0.1:5")).await.unwrap().port.is_none());
     }
 
     /// Deny takes precedence over allow when an IP is on both lists.
     #[tokio::test]
     async fn test_deny_precedes_allow() {
         let p = plugin(serde_json::json!({ "allow": ["10.0.0.1"], "deny": ["10.0.0.1"] }));
-        let err = p
-            .execute(ctx("10.0.0.1:5"))
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "IP_DENIED");
+        let out = p.execute(ctx("10.0.0.1:5")).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 }

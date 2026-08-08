@@ -3,10 +3,11 @@
 //! The featherbit port of Apache APISIX's `limit-count`: counts requests per
 //! resolved key within a fixed time window using a shared [`CounterStore`]
 //! backend (see [`crate::ratelimit`]). Requests that exceed `count` within
-//! `time_window` seconds are rejected through the node's error port with the
-//! configured status. Unlike the token-bucket `rate-limit` plugin (smooth
+//! `time_window` seconds are rejected through the node's `limited` port with
+//! the configured status. Unlike the token-bucket `rate-limit` plugin (smooth
 //! refill), this enforces a hard cap per discrete window, matching APISIX
-//! semantics.
+//! semantics. A counter-backend failure is a genuine infrastructure failure
+//! and stays on `error`.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -26,9 +27,9 @@ use crate::vars::interpolate;
 /// (currently only the in-memory `local` backend). Within the limit the
 /// request passes through the `success` port; over the limit it is rejected
 /// with `rejected_code` and a JSON `{"error_msg": ...}` body through the
-/// `error` port (code `RATE_LIMITED`). When `show_limit_quota_header` is set
-/// the `X-RateLimit-Limit`/`-Remaining`/`-Reset` headers are written onto
-/// `context.response` in both cases.
+/// `limited` port. A counter-backend failure stays on `error`. When
+/// `show_limit_quota_header` is set the `X-RateLimit-Limit`/`-Remaining`/
+/// `-Reset` headers are written onto `context.response` in both cases.
 pub struct LimitCountPlugin {
     /// Maximum number of requests allowed per window.
     count: u64,
@@ -257,15 +258,7 @@ impl Plugin for LimitCountPlugin {
             vec!["application/json".to_string()],
         );
 
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "RATE_LIMITED".to_string(),
-                message: msg,
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "limited"))
     }
 }
 
@@ -366,28 +359,27 @@ mod tests {
 
         // First `count` requests pass.
         for i in 0..count {
-            let out = p.execute(test_ctx()).await;
-            assert!(out.is_ok(), "request {i} should pass");
-            let ctx = out.unwrap().context;
+            let out = p.execute(test_ctx()).await.unwrap();
+            assert!(out.port.is_none(), "request {i} should pass");
             assert_eq!(
-                ctx.response.headers.get("x-ratelimit-limit"),
+                out.context.response.headers.get("x-ratelimit-limit"),
                 Some(&vec!["3".to_string()])
             );
             assert_eq!(
-                ctx.response.headers.get("x-ratelimit-remaining"),
+                out.context.response.headers.get("x-ratelimit-remaining"),
                 Some(&vec![(count - 1 - i).to_string()])
             );
         }
 
-        // The next one is rejected.
-        let err = p.execute(test_ctx()).await.unwrap_err();
-        assert_eq!(err.error.code, "RATE_LIMITED");
-        assert_eq!(err.context.response.status_code, 429);
+        // The next one is rejected on `limited`.
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("limited"));
+        assert_eq!(out.context.response.status_code, 429);
         assert_eq!(
-            err.context.response.headers.get("x-ratelimit-remaining"),
+            out.context.response.headers.get("x-ratelimit-remaining"),
             Some(&vec!["0".to_string()])
         );
-        let body = String::from_utf8(err.context.response.body.to_vec()).unwrap();
+        let body = String::from_utf8(out.context.response.body.to_vec()).unwrap();
         assert!(body.contains("error_msg"), "{body}");
     }
 
@@ -397,11 +389,11 @@ mod tests {
             "count": 1, "time_window": 60, "rejected_msg": "slow down"
         }))
         .unwrap();
-        assert!(p.execute(test_ctx()).await.is_ok());
-        let err = p.execute(test_ctx()).await.unwrap_err();
-        let body = String::from_utf8(err.context.response.body.to_vec()).unwrap();
+        assert!(p.execute(test_ctx()).await.unwrap().port.is_none());
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("limited"));
+        let body = String::from_utf8(out.context.response.body.to_vec()).unwrap();
         assert!(body.contains("slow down"), "{body}");
-        assert_eq!(err.error.message, "slow down");
     }
 
     #[tokio::test]

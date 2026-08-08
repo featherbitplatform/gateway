@@ -2,7 +2,7 @@
 //!
 //! Maintains one in-memory token bucket per client key (remote address or a
 //! configured header) in a concurrent `DashMap`; requests that find the
-//! bucket empty are rejected with 429 through the node's error port.
+//! bucket empty are rejected with 429 through the node's `limited` port.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Enforces a per-client request rate using the token bucket algorithm.
 ///
@@ -20,8 +20,8 @@ use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 /// `requests_per_second`; the key is the remote address by default or the
 /// value of a configured header (falling back to the remote address when the
 /// header is absent). Over-limit requests are rejected with a 429 JSON
-/// response, a `Retry-After: 1` header, and error code `RATE_LIMITED`. Does
-/// not write to `context.message`.
+/// response and a `Retry-After: 1` header, exiting through the `limited`
+/// port. Does not write to `context.message`.
 pub struct RateLimitPlugin {
     /// Sustained refill rate: tokens added per second.
     requests_per_second: u64,
@@ -166,16 +166,7 @@ impl Plugin for RateLimitPlugin {
                 .headers
                 .insert("retry-after".to_string(), vec!["1".to_string()]);
 
-            let error = GatewayError {
-                node_id: String::new(),
-                code: "RATE_LIMITED".to_string(),
-                message: "Too many requests".to_string(),
-                metadata: HashMap::new(),
-            };
-            Err(PluginExecutionError {
-                context: ctx,
-                error,
-            })
+            Ok(PluginOutput::on_port(ctx, "limited"))
         }
     }
 }
@@ -232,20 +223,21 @@ mod tests {
         assert!(p
             .execute(ctx("1.2.3.4:5", None))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         assert!(p
             .execute(ctx("1.2.3.4:5", None))
             .await
-            .is_ok());
-        // Third exhausts the bucket -> 429.
-        let err = p
-            .execute(ctx("1.2.3.4:5", None))
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "RATE_LIMITED");
-        assert_eq!(err.context.response.status_code, 429);
+            .unwrap()
+            .port
+            .is_none());
+        // Third exhausts the bucket -> 429 on `limited`.
+        let out = p.execute(ctx("1.2.3.4:5", None)).await.unwrap();
+        assert_eq!(out.port, Some("limited"));
+        assert_eq!(out.context.response.status_code, 429);
         assert_eq!(
-            err.context
+            out.context
                 .response
                 .headers
                 .get("retry-after")
@@ -263,17 +255,21 @@ mod tests {
         assert!(p
             .execute(ctx("10.0.0.1:5", None))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         // Same client is now throttled...
-        assert!(p
-            .execute(ctx("10.0.0.1:5", None))
-            .await
-            .is_err());
+        assert_eq!(
+            p.execute(ctx("10.0.0.1:5", None)).await.unwrap().port,
+            Some("limited")
+        );
         // ...but a different client still has a full bucket.
         assert!(p
             .execute(ctx("10.0.0.2:5", None))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     /// `key_from: header:<name>` keys on a request header instead of the address.
@@ -284,24 +280,25 @@ mod tests {
         }));
         // Two different remote addrs but the SAME api key share one bucket.
         assert!(p
-            .execute(
-                ctx("10.0.0.1:5", Some(("x-api-key", "k1"))),
-            )
+            .execute(ctx("10.0.0.1:5", Some(("x-api-key", "k1"))))
             .await
-            .is_ok());
-        assert!(p
-            .execute(
-                ctx("10.0.0.2:5", Some(("x-api-key", "k1"))),
-            )
-            .await
-            .is_err());
+            .unwrap()
+            .port
+            .is_none());
+        assert_eq!(
+            p.execute(ctx("10.0.0.2:5", Some(("x-api-key", "k1"))))
+                .await
+                .unwrap()
+                .port,
+            Some("limited")
+        );
         // A different key has its own bucket.
         assert!(p
-            .execute(
-                ctx("10.0.0.3:5", Some(("x-api-key", "k2"))),
-            )
+            .execute(ctx("10.0.0.3:5", Some(("x-api-key", "k2"))))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     #[test]

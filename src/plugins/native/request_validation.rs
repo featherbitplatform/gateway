@@ -13,12 +13,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Validates `context.request` headers and body against compiled JSON
-/// Schemas. On failure the request is rejected through the `error` port with
-/// error code `VALIDATION_FAILED` and a JSON response using `rejected_code`.
+/// Schemas. On failure the request is rejected through the `denied` port
+/// with a JSON response using `rejected_code`.
 ///
 /// Headers are validated as a single-value object (first value per header,
 /// names lowercased), matching the shape APISIX passes to its schema check.
@@ -176,9 +176,9 @@ impl RequestValidationPlugin {
         })
     }
 
-    /// Writes the rejection onto the response and returns the error that
-    /// routes the context through the node's `error` port.
-    fn reject(&self, mut ctx: Context, detail: String) -> PluginExecutionError {
+    /// Writes the rejection onto the response and routes the context through
+    /// the node's `denied` port.
+    fn reject(&self, mut ctx: Context, detail: String) -> PluginResult {
         let message = self.rejected_msg.clone().unwrap_or(detail);
         ctx.response.status_code = self.rejected_code;
         ctx.response.body = Bytes::from(
@@ -188,15 +188,7 @@ impl RequestValidationPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "VALIDATION_FAILED".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        }
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -221,13 +213,13 @@ impl Plugin for RequestValidationPlugin {
                 })
                 .collect();
             if let Err(e) = validator.validate(&serde_json::Value::Object(headers)) {
-                return Err(self.reject(ctx, format!("header validation failed: {}", e)));
+                return self.reject(ctx, format!("header validation failed: {}", e));
             }
         }
 
         if let Some(validator) = &self.body_schema {
             if ctx.request.body.is_empty() {
-                return Err(self.reject(ctx, "request body is required".to_string()));
+                return self.reject(ctx, "request body is required".to_string());
             }
 
             let is_urlencoded = ctx
@@ -248,15 +240,13 @@ impl Plugin for RequestValidationPlugin {
                 match serde_json::from_slice::<serde_json::Value>(&ctx.request.body) {
                     Ok(v) => (v, true),
                     Err(e) => {
-                        return Err(
-                            self.reject(ctx, format!("failed to decode the request body: {}", e))
-                        );
+                        return self.reject(ctx, format!("failed to decode the request body: {}", e));
                     }
                 }
             };
 
             if let Err(e) = validator.validate(&parsed) {
-                return Err(self.reject(ctx, format!("body validation failed: {}", e)));
+                return self.reject(ctx, format!("body validation failed: {}", e));
             }
 
             if body_is_json {
@@ -336,10 +326,10 @@ mod tests {
             "required": ["name"]
         }));
         let ctx = test_context(r#"{"age": 3}"#, Some("application/json"));
-        let err = p.execute(ctx).await.unwrap_err();
-        assert_eq!(err.error.code, "VALIDATION_FAILED");
-        assert_eq!(err.context.response.status_code, 400);
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        let out = p.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 400);
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["error"], "validation_failed");
     }
 
@@ -347,18 +337,18 @@ mod tests {
     async fn test_request_validation_non_json_body_rejected() {
         let p = body_plugin(serde_json::json!({ "type": "object" }));
         let ctx = test_context("this is not json", Some("application/json"));
-        let err = p.execute(ctx).await.unwrap_err();
-        assert_eq!(err.error.code, "VALIDATION_FAILED");
+        let out = p.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
     async fn test_request_validation_missing_body_rejected() {
         let p = body_plugin(serde_json::json!({ "type": "object" }));
-        let err = p
+        let out = p
             .execute(test_context("", Some("application/json")))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "VALIDATION_FAILED");
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -380,7 +370,7 @@ mod tests {
         );
 
         let ctx = test_context("note=only", Some("application/x-www-form-urlencoded"));
-        assert!(p.execute(ctx).await.is_err());
+        assert_eq!(p.execute(ctx).await.unwrap().port, Some("denied"));
     }
 
     #[tokio::test]
@@ -399,12 +389,14 @@ mod tests {
         assert!(p
             .execute(test_context("", None))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
 
         let mut ctx = test_context("", None);
         ctx.request.headers.remove("x-api-version");
-        let err = p.execute(ctx).await.unwrap_err();
-        assert_eq!(err.error.code, "VALIDATION_FAILED");
+        let out = p.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -419,9 +411,11 @@ mod tests {
         let p = RequestValidationPlugin::from_config(&config).unwrap();
 
         let ctx = test_context("[1,2,3]", Some("application/json"));
-        let err = p.execute(ctx).await.unwrap_err();
-        assert_eq!(err.context.response.status_code, 422);
-        assert_eq!(err.error.message, "bad payload");
+        let out = p.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 422);
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
+        assert_eq!(body["message"], "bad payload");
     }
 
     #[test]

@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Restricts access based on the host of the `Referer` request header.
 ///
@@ -154,8 +154,7 @@ impl RefererRestrictionPlugin {
         })
     }
 
-    /// Builds the 403 rejection routed through the error port with code
-    /// `REFERER_RESTRICTED`.
+    /// Builds the 403 rejection routed through the `denied` port.
     fn reject(&self, mut ctx: Context) -> PluginResult {
         ctx.response.status_code = 403;
         ctx.response.body = Bytes::from(serde_json::json!({ "message": self.message }).to_string());
@@ -163,15 +162,7 @@ impl RefererRestrictionPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "REFERER_RESTRICTED".to_string(),
-                message: self.message.clone(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -308,24 +299,30 @@ mod tests {
         assert!(plugin
             .execute(test_context(Some("http://example.com/x")))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         assert!(plugin
-            .execute(
-                test_context(Some("https://api.example.org/x")),
-            )
+            .execute(test_context(Some("https://api.example.org/x")))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         // apex does not match "*.example.org"
-        assert!(plugin
-            .execute(test_context(Some("https://example.org/")))
-            .await
-            .is_err());
-        let err = plugin
+        assert_eq!(
+            plugin
+                .execute(test_context(Some("https://example.org/")))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
+        let out = plugin
             .execute(test_context(Some("https://evil.com/")))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "REFERER_RESTRICTED");
-        assert_eq!(err.context.response.status_code, 403);
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
     }
 
     #[tokio::test]
@@ -335,23 +332,33 @@ mod tests {
         })))
         .unwrap();
 
-        assert!(plugin
-            .execute(test_context(Some("http://sub.evil.com/")))
-            .await
-            .is_err());
-        assert!(plugin
-            .execute(test_context(Some("http://bad.org/")))
-            .await
-            .is_err());
+        assert_eq!(
+            plugin
+                .execute(test_context(Some("http://sub.evil.com/")))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
+        assert_eq!(
+            plugin
+                .execute(test_context(Some("http://bad.org/")))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
         assert!(plugin
             .execute(test_context(Some("http://good.org/")))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         // blacklist mode: missing referer is still blocked by default
-        assert!(plugin
-            .execute(test_context(None))
-            .await
-            .is_err());
+        assert_eq!(
+            plugin.execute(test_context(None)).await.unwrap().port,
+            Some("denied")
+        );
     }
 
     #[tokio::test]
@@ -364,24 +371,32 @@ mod tests {
         assert!(plugin
             .execute(test_context(None))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         // malformed referer counts as missing
         assert!(plugin
             .execute(test_context(Some("not a url")))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
 
         let strict = RefererRestrictionPlugin::from_config(&config(serde_json::json!({
             "whitelist": ["example.com"]
         })))
         .unwrap();
-        assert!(strict
-            .execute(test_context(None))
-            .await
-            .is_err());
-        assert!(strict
-            .execute(test_context(Some("not a url")))
-            .await
-            .is_err());
+        assert_eq!(
+            strict.execute(test_context(None)).await.unwrap().port,
+            Some("denied")
+        );
+        assert_eq!(
+            strict
+                .execute(test_context(Some("not a url")))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
     }
 }
