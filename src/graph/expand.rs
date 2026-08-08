@@ -144,14 +144,12 @@ pub fn expand_policy(
             let (from_node, from_port) = split_endpoint(&e.from);
             if from_node == inst.id {
                 match from_port {
-                    "success" | "out" => success_to = Some(e.to.clone()),
                     "error" => error_to = Some(e.to.clone()),
-                    other => {
-                        return Err(format!(
-                            "policy '{}': unknown port '{}' on supernode node '{}'",
-                            policy.name, other, inst.id
-                        ))
-                    }
+                    // "success" | "out", or any custom outcome port name:
+                    // expansion is syntactic and doesn't know or care which
+                    // ports a supernode declares; post-expansion compile
+                    // validation (Task 3) rejects genuinely undeclared ones.
+                    _ => success_to = Some(e.to.clone()),
                 }
             }
         }
@@ -686,6 +684,133 @@ mod tests {
             out.edges
                 .iter()
                 .any(|e| e.from == "sb/process.success" && e.to == "client.in"),
+            "edges: {:?}",
+            out.edges
+                .iter()
+                .map(|e| format!("{}->{}", e.from, e.to))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Definition with a custom-named outcome port from an inner node to
+    /// the `output` boundary: input -> auth -> ...; auth.denied -> output.
+    /// (Until Task 8 lands no plugin type declares "denied"; expansion is
+    /// syntactic and must not care whether the port is declared.)
+    fn outcome_port_supernode() -> SupernodeConfig {
+        SupernodeConfig {
+            name: "outcome-def".into(),
+            description: None,
+            nodes: vec![
+                node("input", "input"),
+                node("output", "output"),
+                node("error", "error"),
+                node("auth", "key-auth"),
+            ],
+            edges: vec![
+                edge("input.out", "auth.in"),
+                edge("auth.denied", "output.in"),
+            ],
+        }
+    }
+
+    /// A named outcome port on an inner node survives expansion with the
+    /// instance prefix, targeting the node the definition wired it to.
+    #[test]
+    fn test_inner_outcome_port_is_prefixed_and_preserved() {
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("sec", "outcome-def"),
+                node("eh", "error-handler"),
+                node("client", "client"),
+            ],
+            edges: vec![
+                edge("listener.out", "sec.in"),
+                edge("sec.success", "client.in"),
+                edge("sec.error", "eh.in"),
+            ],
+        };
+        let out = expand_policy(&p, &[outcome_port_supernode()]).unwrap();
+        assert_eq!(
+            edge_set(&out),
+            vec![
+                "listener.out->sec/auth.in",
+                "sec/auth.denied->client.in", // custom port, prefixed, follows output boundary
+                "sec/auth.error->eh.in",      // black-box: auth has no error edge of its own
+            ]
+        );
+    }
+
+    /// An inner outcome port wired to the `output` boundary follows the outer
+    /// success edge, same as inner success ports do today — even when the
+    /// outer success and error targets are distinct nodes, "denied" must
+    /// land on the success target, never the error one.
+    #[test]
+    fn test_inner_outcome_port_to_output_boundary() {
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("sec", "outcome-def"),
+                node("eh", "error-handler"),
+                node("client", "client"),
+            ],
+            edges: vec![
+                edge("listener.out", "sec.in"),
+                edge("sec.success", "client.in"),
+                edge("sec.error", "eh.in"),
+            ],
+        };
+        let out = expand_policy(&p, &[outcome_port_supernode()]).unwrap();
+        assert!(
+            out.edges
+                .iter()
+                .any(|e| e.from == "sec/auth.denied" && e.to == "client.in"),
+            "edges: {:?}",
+            out.edges
+                .iter()
+                .map(|e| format!("{}->{}", e.from, e.to))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !out.edges
+                .iter()
+                .any(|e| e.from == "sec/auth.denied" && e.to == "eh.in"),
+            "custom outcome port must not be misrouted to the error target"
+        );
+    }
+
+    /// A custom-named port on the OUTER edge leaving a supernode instance
+    /// itself (`sec.denied -> ...`, as opposed to a port on an inner node)
+    /// used to be rejected outright ("unknown port ... on supernode node").
+    /// Expansion is purely syntactic, so any non-error port on the instance
+    /// is now treated like `success`/`out` for rewiring purposes; whether
+    /// the name is meaningful is left to post-expansion compile validation.
+    #[test]
+    fn test_outer_custom_port_on_instance_is_treated_like_success() {
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("sec", "secured-call"),
+                node("client", "client"),
+            ],
+            edges: vec![
+                edge("listener.out", "sec.in"),
+                edge("sec.denied", "client.in"), // custom port, not "success"/"out"/"error"
+            ],
+        };
+        let out = expand_policy(&p, &[secured_call()]).unwrap();
+        // The output boundary (up.success) must splice to the custom port's
+        // target, exactly as it would for "sec.success -> client.in".
+        assert!(
+            out.edges
+                .iter()
+                .any(|e| e.from == "sec/up.success" && e.to == "client.in"),
             "edges: {:?}",
             out.edges
                 .iter()
