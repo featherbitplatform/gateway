@@ -12,6 +12,14 @@ Render ports as **rows inside the node body** (standard node-editor pattern),
 replacing the floating external labels and the `>2 outputs` threshold
 entirely.
 
+**Amendment (2026-08-08, Francesco):** the rows are **toggle-controlled**
+rather than unconditional — a `showPortNames` preference (localStorage,
+same pattern as the theme toggle, **default: visible**) switches between
+the port-row rendering below (ON) and today's compact handles with hover
+tooltips (OFF). The toggle is exposed as a command-palette action; see
+[[2026-08-08-command-palette-design]]
+(`docs/superpowers/specs/2026-08-08-command-palette-design.md`).
+
 ## Rendering
 
 In `ui/src/components/PluginNode.tsx`:
