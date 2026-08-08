@@ -8,7 +8,7 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { Link2 } from 'lucide-react';
 import { getPluginMeta } from '../pluginMeta';
-import { DEFAULT_PORT_SPEC } from '../portSpecs';
+import { isEntryType, resolveOutputs } from '../nodeKinds';
 import type { PortDecl, PortSpec } from '../types';
 
 /**
@@ -29,8 +29,9 @@ export interface PluginNodeData {
    * Declared ports for this node's plugin type, from the `GET /api/plugins`
    * catalog (GraphCanvas looks this up by `pluginType` when building nodes).
    * Undefined for supernode boundary pseudo-nodes and any type missing from
-   * the catalog; PluginNode falls back to {@link DEFAULT_PORT_SPEC} for the
-   * latter and to a hard-coded single-port treatment for the former.
+   * the catalog; PluginNode resolves the effective outputs via
+   * {@link module:nodeKinds.resolveOutputs}, which applies the entry/terminal
+   * special cases and the default success+error fallback.
    */
   ports?: PortSpec;
   /** Called with the node id when the node is clicked; used by GraphCanvas to open the inspector. */
@@ -63,11 +64,15 @@ const handleStyle = (color: string): React.CSSProperties => ({
 /**
  * Renders one plugin node on the canvas.
  *
- * Handle layout encodes the port model:
+ * Handle layout encodes the port model (see `../nodeKinds` for the shared
+ * entry/terminal classification and output resolution):
  * - `in` (left, target) — omitted on entry-like nodes (`listener`, `input`).
  * - Outputs (right, source) — omitted on terminal-like nodes (`client`, `output`,
- *   `error`); a single centered `success` handle on entry-like nodes; otherwise
- *   one handle per port declared in `data.ports.outputs` (falling back to the
+ *   `error`, none of which get a `success` output either); a single `success`
+ *   handle on entry-like nodes (`listener` reads its own catalog spec, which
+ *   happens to be exactly one `success` port; the non-catalog `input`
+ *   pseudo-node uses a hard-coded fallback of the same shape); otherwise one
+ *   handle per port declared in `data.ports.outputs` (falling back to the
  *   default success+error pair when the type has no catalog entry), evenly
  *   spaced top to bottom and colored by {@link PortDecl.kind}. Nodes with more
  *   than two outputs get a small port-name label next to each handle, since
@@ -79,10 +84,11 @@ const handleStyle = (color: string): React.CSSProperties => ({
  * @remarks
  * Handle ids are the ports serialized as `node_id.port` edge endpoints,
  * matching the success/outcome/error routing executed in src/graph/engine.rs
- * and declared in src/plugins/ports.rs. Entry-like and terminal-like nodes
- * are part of the supernode boundary pseudo-nodes (src/graph/expand.rs)
- * alongside listener/client; they are not catalog types, so their handle
- * counts stay hard-coded rather than reading `data.ports`.
+ * and declared in src/plugins/ports.rs. `input`/`output`/`error` are the
+ * supernode boundary pseudo-nodes (src/graph/expand.rs) alongside
+ * listener/client; they are not catalog types, so their handle counts fall
+ * back to the hard-coded shapes in `../nodeKinds` rather than reading
+ * `data.ports`.
  */
 export function PluginNode({ id, data, selected }: NodeProps) {
   const nodeData = data as unknown as PluginNodeData;
@@ -91,22 +97,11 @@ export function PluginNode({ id, data, selected }: NodeProps) {
   // Entry-like nodes have no input handle; terminal-like nodes have no
   // outputs. `input`/`output`/`error` are supernode boundary pseudo-nodes
   // (see src/graph/expand.rs) and mirror listener/client on the canvas.
-  const isEntry = nodeData.pluginType === 'listener' || nodeData.pluginType === 'input';
-  const isTerminal =
-    nodeData.pluginType === 'client' ||
-    nodeData.pluginType === 'output' ||
-    nodeData.pluginType === 'error';
-
-  // Entry-like nodes always get the single fixed `success` port (matching
-  // src/plugins/ports.rs::LISTENER_SPEC) regardless of what the catalog
-  // reports for `listener`, so the boundary `input` pseudo-node — which has
-  // no catalog entry at all — renders identically. Terminal-like nodes have
-  // no outputs, matching CLIENT_SPEC, likewise regardless of catalog lookup.
-  const outputs: PortDecl[] = isTerminal
-    ? []
-    : isEntry
-      ? [{ name: 'success', kind: 'success', description: 'Entry into the policy pipeline.' }]
-      : (nodeData.ports?.outputs ?? DEFAULT_PORT_SPEC.outputs);
+  // This classification (and the output-port resolution below) is shared
+  // with GraphCanvas's unwired-port save check via ../nodeKinds, so the two
+  // can't independently drift on what counts as an output.
+  const isEntry = isEntryType(nodeData.pluginType);
+  const outputs: PortDecl[] = resolveOutputs(nodeData.pluginType, nodeData.ports);
   const showLabels = outputs.length > 2;
 
   return (

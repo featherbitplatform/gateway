@@ -37,7 +37,8 @@ import type {
   ScriptFile,
   Supernode,
 } from '../types';
-import { buildPortSpecs, getPortSpec, type PortSpecLookup } from '../portSpecs';
+import { buildPortSpecs, type PortSpecLookup } from '../portSpecs';
+import { resolveOutputs } from '../nodeKinds';
 
 /** Stroke color for each port kind, used for both edges and connection previews. */
 const PORT_STROKE: Record<PortDecl['kind'], string> = {
@@ -53,6 +54,11 @@ const PORT_STROKE: Record<PortDecl['kind'], string> = {
  * PluginNode's default-pair fallback so an unknown port never renders as an
  * error edge by mistake.
  *
+ * Resolves the node's effective outputs via `resolveOutputs` — the same
+ * helper PluginNode uses to render handles — so entry/terminal types (e.g.
+ * the supernode boundary pseudo-nodes) are classified identically here and
+ * on the canvas.
+ *
  * @param sourceType - Plugin type of the edge's source node.
  * @param port - Source port name (already normalized; `out` should be
  *   resolved to `success` by the caller).
@@ -63,8 +69,8 @@ function portKindFor(
   port: string,
   portSpecs: PortSpecLookup
 ): PortDecl['kind'] {
-  const spec = sourceType ? getPortSpec(portSpecs, sourceType) : undefined;
-  const decl = spec?.outputs.find((p) => p.name === port);
+  const outputs = sourceType ? resolveOutputs(sourceType, portSpecs[sourceType]) : undefined;
+  const decl = outputs?.find((p) => p.name === port);
   return decl?.kind ?? (port === 'error' ? 'error' : 'success');
 }
 
@@ -271,6 +277,15 @@ function splitEdge(endpoint: string): [string, string] {
  * the round-trip to the server, without duplicating or overriding that
  * server-side validation.
  *
+ * Uses `resolveOutputs` — the same entry/terminal-aware helper PluginNode
+ * uses to render handles — rather than reading the catalog spec directly.
+ * That matters for the supernode boundary pseudo-nodes: `output`/`error`
+ * are terminal (no outputs at all, and `src/graph/validation.rs::validate_supernode`
+ * forbids any outgoing edge from them), but neither has a catalog entry, so
+ * reading the catalog spec naively falls back to the default success+error
+ * pair and wrongly demands an unwired `output.success`/`error.success` edge
+ * on every supernode. `resolveOutputs` special-cases them to zero outputs.
+ *
  * @param policy - Policy already rebuilt by `nodesToPolicy` (so `edge.from`
  *   is already the exact `node_id.port` string to match against).
  * @param portSpecs - Catalog-derived lookup used to enumerate each node
@@ -281,8 +296,8 @@ function findUnwiredPorts(policy: Policy, portSpecs: PortSpecLookup): string[] {
   const wired = new Set(policy.edges.map((e) => e.from));
   const missing: string[] = [];
   for (const node of policy.nodes) {
-    const spec = getPortSpec(portSpecs, node.type);
-    for (const port of spec.outputs) {
+    const outputs = resolveOutputs(node.type, portSpecs[node.type]);
+    for (const port of outputs) {
       if (port.kind === 'error') continue;
       const key = `${node.id}.${port.name}`;
       if (!wired.has(key)) missing.push(key);
