@@ -34,8 +34,6 @@ impl PluginOutput {
     }
 
     /// Exit through a declared named `outcome` port (e.g. `"denied"`).
-    // Part of the plugin contract: consumed once plugins gain outcome ports.
-    #[allow(dead_code)]
     pub fn on_port(context: Context, port: &'static str) -> Self {
         Self { context, port: Some(port) }
     }
@@ -450,6 +448,7 @@ pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
     match plugin_type {
         "listener" => Some(&ports::LISTENER_SPEC),
         "client" => Some(&ports::CLIENT_SPEC),
+        "cors" => Some(&ports::CORS_SPEC),
         _ if KNOWN_PLUGIN_TYPES.contains(&plugin_type) => Some(&ports::DEFAULT_SPEC),
         _ => None,
     }

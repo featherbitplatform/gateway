@@ -486,7 +486,10 @@ mod tests {
             vec![
                 "listener.out->a.in",
                 "a.success->b.in",
-                "b.success->client.in"
+                "b.success->client.in",
+                // `a` (cors) has a mandatory outcome port not covered by the
+                // chain wiring above — auto-wired straight to `client`.
+                "a.preflight->client.in"
             ]
         );
         // The policy must satisfy the same validation the editor applies.

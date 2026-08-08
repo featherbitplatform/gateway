@@ -162,6 +162,8 @@ policies:
         to: cors.in
       - from: cors.success
         to: strip-prefix.in
+      - from: cors.preflight
+        to: client.in
       - from: strip-prefix.success
         to: echo-backend.in
       - from: echo-backend.success
@@ -768,6 +770,8 @@ policies:
         to: auth.in
       - from: auth.success
         to: strip-prefix.in
+      - from: auth.preflight
+        to: client.in
       - from: strip-prefix.success
         to: echo-backend.in
       - from: echo-backend.success

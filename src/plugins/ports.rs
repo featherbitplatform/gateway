@@ -76,6 +76,20 @@ pub const CLIENT_SPEC: PortSpec = PortSpec {
     outputs: &[],
 };
 
+/// `cors`: preflight answers short-circuit on their own port.
+pub const CORS_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "preflight",
+            kind: PortKind::Outcome,
+            description: "OPTIONS preflight answered with a prepared 204; wire to client.",
+        },
+        ERROR,
+    ],
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
