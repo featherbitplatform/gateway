@@ -155,10 +155,20 @@ impl LdapAuthPlugin {
     /// Builds a genuine infrastructure-failure `Err` (LDAP unreachable, or the
     /// connect+bind operation timed out) — unlike `reject`, this exits
     /// through the `error` port because the node could not do its job, not
-    /// because a presented credential was deliberately refused.
+    /// because a presented credential was deliberately refused. The response
+    /// shape mirrors `reject`'s so client-visible behavior over this path is
+    /// unchanged by the port split.
     fn infra_error(&self, ctx: Context, message: String) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 401;
+        ctx.response.body = Bytes::from(format!(
+            r#"{{"error": "unauthorized", "message": "{}"}}"#,
+            message.replace('"', "'")
+        ));
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
         ctx.response.headers.insert(
             "www-authenticate".to_string(),
             vec![format!("Basic realm=\"{}\"", self.realm)],

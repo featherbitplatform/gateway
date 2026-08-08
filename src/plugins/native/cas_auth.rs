@@ -10,7 +10,8 @@
 //!   behaves exactly as before: a request carrying a CAS service `ticket`
 //!   query parameter is validated against the CAS server's `/serviceValidate`
 //!   endpoint and, on success, the authenticated user is attached to the
-//!   request; anything else is rejected with a `401` on the `denied` port.
+//!   request; a missing ticket, or one CAS itself refuses, is rejected with a
+//!   `401` on the `denied` port.
 //! - **Interactive (opt-in)** — set `session.secret` (or `session_secret`) to
 //!   turn on the full browser login flow. The authenticated user is sealed
 //!   into an encrypted client-side cookie (no server-side session store), so
@@ -28,6 +29,15 @@
 //! denials exit on `denied` (also wired to `client.in`, or a custom denial
 //! handler); the `success` edge carries authenticated requests on to the
 //! upstream.
+//!
+//! ## The `error` port is live
+//!
+//! Ticket validation is an outbound callout, so this node has a genuine
+//! failure mode: the CAS server unreachable, timed out, or answering
+//! `/serviceValidate` with a non-200. Those exit on `error` (see
+//! [`CasError`] and [`CasAuthPlugin::infra_error`]) — the node could not
+//! reach a verdict. Only a verdict of "this ticket is not valid" (or no
+//! ticket at all) is a `denied`.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -36,13 +46,26 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::context::Context;
+use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::util::cookie_session::{
     build_set_cookie, delete_cookie, read_cookie, CookieAttrs, CookieSealer, SameSite,
 };
-use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+
+/// Why a CAS ticket validation did not yield an authenticated user.
+///
+/// Mirrors `openid-connect`'s `TokenError` split. `Infra` exits through the
+/// node's `error` port — the node could not do its job (the CAS server was
+/// unreachable, timed out, or answered with a non-200); `Denied` exits through
+/// `denied` — CAS was reached, answered, and said the ticket is not valid,
+/// which is the node doing its job and producing a deliberate rejection.
+#[derive(Debug)]
+enum CasError {
+    Infra(String),
+    Denied(String),
+}
 
 /// Session payload sealed into the CAS session cookie (interactive mode).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +217,34 @@ impl CasAuthPlugin {
         Ok(PluginOutput::on_port(ctx, "denied"))
     }
 
+    /// Builds a genuine infrastructure-failure `Err` (the CAS server was
+    /// unreachable, timed out, or answered `/serviceValidate` with a non-200).
+    /// Unlike [`CasAuthPlugin::reject`], this exits through the `error` port
+    /// because the node could not do its job, not because a presented ticket
+    /// was deliberately refused. The response shape mirrors `reject`'s so
+    /// client-visible behavior over this path is unchanged by the port split.
+    fn infra_error(&self, ctx: Context, message: String) -> PluginExecutionError {
+        let mut ctx = ctx;
+        ctx.response.status_code = 401;
+        ctx.response.body = Bytes::from(format!(
+            r#"{{"error": "unauthorized", "message": "{}"}}"#,
+            message.replace('"', "'")
+        ));
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
+        PluginExecutionError {
+            context: ctx,
+            error: GatewayError {
+                node_id: String::new(),
+                code: "CAS_AUTH_PROVIDER_ERROR".to_string(),
+                message,
+                metadata: HashMap::new(),
+            },
+        }
+    }
+
     /// Builds a `302` early-exit carrying the prepared response, and exits on
     /// the `redirect` port. Wire the node's `redirect` edge to `client.in` so
     /// this reaches the browser.
@@ -267,7 +318,11 @@ impl CasAuthPlugin {
     }
 
     /// Validates a CAS ticket against `/serviceValidate`, returning the user.
-    async fn cas_validate(&self, ctx: &Context, ticket: &str) -> Result<String, String> {
+    ///
+    /// A transport failure or a non-200 reply is a [`CasError::Infra`] (the
+    /// node could not reach a verdict); a well-formed authentication-failure
+    /// reply is a [`CasError::Denied`] (CAS gave its verdict: no).
+    async fn cas_validate(&self, ctx: &Context, ticket: &str) -> Result<String, CasError> {
         let service = self.service_url(ctx);
         let url = build_validate_url(&self.idp_uri, ticket, &service);
 
@@ -281,16 +336,11 @@ impl CasAuthPlugin {
             tls: None,
         };
 
-        let response = self
-            .client
-            .request(outbound)
-            .await
-            .map_err(|e| format!("CAS validation request failed: {}", e))?;
+        let response = self.client.request(outbound).await.map_err(|e| {
+            CasError::Infra(format!("CAS validation request failed: {}", e))
+        })?;
 
-        if response.status != 200 {
-            return Err("CAS validation returned non-200".to_string());
-        }
-        parse_service_validate(&response.body).ok_or_else(|| "invalid ticket".to_string())
+        classify_validation(response.status, &response.body)
     }
 
     /// Interactive SSO flow: session cookie → callback → begin login.
@@ -326,7 +376,8 @@ impl CasAuthPlugin {
                     let target = self.service_url(&ctx);
                     self.redirect(ctx, target, vec![set])
                 }
-                Err(reason) => self.reject(ctx, &reason),
+                Err(CasError::Denied(reason)) => self.reject(ctx, &reason),
+                Err(CasError::Infra(reason)) => Err(self.infra_error(ctx, reason)),
             };
         }
 
@@ -348,9 +399,25 @@ impl CasAuthPlugin {
                 self.attach_user(&mut ctx, &user);
                 Ok(PluginOutput::success(ctx))
             }
-            Err(reason) => self.reject(ctx, &reason),
+            Err(CasError::Denied(reason)) => self.reject(ctx, &reason),
+            Err(CasError::Infra(reason)) => Err(self.infra_error(ctx, reason)),
         }
     }
+}
+
+/// Classifies a `/serviceValidate` reply: a non-200 status is a provider
+/// failure ([`CasError::Infra`]); a 200 whose body carries no
+/// `authenticationSuccess`/user is CAS refusing the ticket
+/// ([`CasError::Denied`]).
+fn classify_validation(status: u16, body: &[u8]) -> Result<String, CasError> {
+    if status != 200 {
+        return Err(CasError::Infra(format!(
+            "CAS validation returned non-200 ({})",
+            status
+        )));
+    }
+    parse_service_validate(body)
+        .ok_or_else(|| CasError::Denied("invalid ticket".to_string()))
 }
 
 /// Reads the session secret from `session_secret` or nested `session.secret`.
@@ -674,6 +741,64 @@ mod tests {
         let out = p.execute(ctx("/", HashMap::new())).await.unwrap();
         assert_eq!(out.port, Some("denied"));
         assert_eq!(out.context.response.status_code, 401);
+    }
+
+    /// CAS answered and refused the ticket → a deliberate denial.
+    #[test]
+    fn test_classify_validation_invalid_ticket_is_denied() {
+        let failure = br#"<cas:serviceResponse><cas:authenticationFailure code='INVALID_TICKET'/></cas:serviceResponse>"#;
+        match classify_validation(200, failure) {
+            Err(CasError::Denied(m)) => assert!(m.contains("invalid ticket"), "{m}"),
+            other => panic!("expected Denied, got {other:?}"),
+        }
+        // Unparseable 200 body is likewise "CAS said no".
+        match classify_validation(200, b"garbage") {
+            Err(CasError::Denied(_)) => {}
+            other => panic!("expected Denied, got {other:?}"),
+        }
+        // A success body still yields the user.
+        let ok = b"<serviceResponse><authenticationSuccess><user>eve</user></authenticationSuccess></serviceResponse>";
+        assert_eq!(classify_validation(200, ok).unwrap(), "eve");
+    }
+
+    /// A non-200 from `/serviceValidate` means the node never got a verdict —
+    /// an infrastructure failure, not a denial.
+    #[test]
+    fn test_classify_validation_non_200_is_infra() {
+        for status in [500u16, 502, 404, 401] {
+            match classify_validation(status, b"") {
+                Err(CasError::Infra(m)) => assert!(m.contains("non-200"), "{m}"),
+                other => panic!("expected Infra for {status}, got {other:?}"),
+            }
+        }
+    }
+
+    /// Transport failure (nothing listening on 127.0.0.1:1) must exit through
+    /// the `error` port as an `Err`, NOT as a `denied` outcome.
+    #[tokio::test]
+    async fn test_transport_failure_is_error_port_not_denied() {
+        let mut cfg = HashMap::new();
+        cfg.insert("idp_uri".to_string(), serde_json::json!("http://127.0.0.1:1"));
+        cfg.insert(
+            "service".to_string(),
+            serde_json::json!("https://app.example.org/"),
+        );
+        cfg.insert("timeout_ms".to_string(), serde_json::json!(500));
+        let p = CasAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
+
+        let mut query = HashMap::new();
+        query.insert("ticket".to_string(), vec!["ST-1".to_string()]);
+        let err = p
+            .execute(ctx("/", query))
+            .await
+            .expect_err("transport failure must be an Err on the error port");
+        assert_eq!(err.error.code, "CAS_AUTH_PROVIDER_ERROR");
+        // The client-visible shape still mirrors `reject`'s 401 JSON.
+        assert_eq!(err.context.response.status_code, 401);
+        assert_eq!(
+            err.context.response.headers.get("content-type").unwrap()[0],
+            "application/json"
+        );
     }
 
     #[test]
