@@ -543,6 +543,7 @@ mod tests {
         cfg.insert("strict".to_string(), serde_json::json!(false));
         let plugin = JweDecryptPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
         let ctx = ctx_with_header("authorization", None);
-        assert!(plugin.execute(ctx).await.is_ok());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, None);
     }
 }

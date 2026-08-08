@@ -161,6 +161,8 @@ impl Plugin for MultiAuthPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
+    use crate::consumers::{ConsumerConfig, ConsumerStore};
     use crate::context::{GatewayRequest, Protocol};
 
     fn ctx_with_key(key: Option<&str>) -> Context {
@@ -208,6 +210,101 @@ mod tests {
         assert_eq!(out.port, None);
         // A prior failed attempt must not leave a 401 body behind.
         assert_eq!(out.context.response.status_code, 0);
+    }
+
+    /// Pins the short-circuit: once the first sub-plugin returns a clean
+    /// success, the loop must return immediately and never even invoke later
+    /// sub-plugins. Proven by giving the second sub-plugin a mutation the
+    /// first cannot produce (attaching a consumer identity via the consumer
+    /// store) and asserting it never lands on the context.
+    #[tokio::test]
+    async fn test_first_sub_plugin_short_circuits_the_chain() {
+        let resources = PluginResources::empty();
+        let consumers: Vec<ConsumerConfig> = serde_json::from_value(serde_json::json!([
+            {
+                "name": "eve",
+                "credentials": { "key-auth": { "key": "alpha" } }
+            }
+        ]))
+        .unwrap();
+        resources
+            .consumers
+            .store(Arc::new(ConsumerStore::from_config(&consumers).unwrap()));
+
+        let mut config = HashMap::new();
+        config.insert(
+            "auth_plugins".to_string(),
+            serde_json::json!([
+                // Matches "alpha" via its inline key list -- no consumer attach.
+                { "key-auth": { "keys": ["alpha"] } },
+                // Would ALSO match "alpha" (via the consumer store above) and
+                // attach the "eve" identity, if it ever ran.
+                { "key-auth": { "use_consumers": true } },
+            ]),
+        );
+        let plugin = MultiAuthPlugin::from_config(&config, &resources).unwrap();
+
+        let out = plugin.execute(ctx_with_key(Some("alpha"))).await.unwrap();
+        assert_eq!(out.port, None);
+        // If the second sub-plugin had run, this would be `Some("eve")`.
+        assert_eq!(out.context.message.get("consumer.name"), None);
+    }
+
+    /// A sub-plugin's genuine infrastructure failure (not a deliberate denial)
+    /// must be swallowed as a failed attempt, same as a deliberate `denied`,
+    /// so the chain continues to the next sub-plugin instead of aborting the
+    /// whole node with an `Err`. Uses a real `ldap-auth` sub-plugin pointed at
+    /// a closed port so its bind attempt genuinely errors (connection
+    /// refused) rather than being rejected up front for a missing/malformed
+    /// credential.
+    #[tokio::test]
+    async fn test_mid_chain_infra_failure_is_absorbed_not_propagated() {
+        let mut config = HashMap::new();
+        config.insert(
+            "auth_plugins".to_string(),
+            serde_json::json!([
+                {
+                    "ldap-auth": {
+                        "base_dn": "dc=example,dc=org",
+                        "ldap_uri": "ldap://127.0.0.1:1",
+                        "timeout_ms": 200,
+                    }
+                },
+                { "key-auth": { "keys": ["nomatch"] } },
+            ]),
+        );
+        let plugin = MultiAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+
+        // A well-formed Basic credential so ldap-auth gets past its own
+        // up-front validation and actually attempts the (failing) network
+        // bind, instead of rejecting before ever touching the network.
+        let mut headers = HashMap::new();
+        headers.insert(
+            "authorization".to_string(),
+            vec![format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode("alice:secret")
+            )],
+        );
+        let ctx = Context::new(GatewayRequest {
+            method: "GET".into(),
+            path: "/".into(),
+            host: "h".into(),
+            scheme: "http".into(),
+            headers,
+            query_params: HashMap::new(),
+            body: Bytes::new(),
+            remote_addr: "1.2.3.4:5".into(),
+            protocol: Protocol::Http1,
+        });
+
+        // The ldap-auth sub-plugin's connection error is absorbed as a failed
+        // attempt (not propagated as multi-auth's own `Err`); key-auth then
+        // also denies (no matching key); every sub-plugin is exhausted, so
+        // the result is multi-auth's own `denied` 401 -- not an `Err`.
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
     }
 
     #[tokio::test]

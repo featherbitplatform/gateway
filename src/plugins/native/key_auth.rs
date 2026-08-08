@@ -321,10 +321,11 @@ mod tests {
         let mut config = HashMap::new();
         config.insert("keys".to_string(), serde_json::json!(["k1"]));
         let plugin = KeyAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
-        assert!(plugin
+        let ok = plugin
             .execute(ctx_with_key(Some("k1")))
             .await
-            .is_ok());
+            .unwrap();
+        assert_eq!(ok.port, None);
         let out = plugin
             .execute(ctx_with_key(Some("k2")))
             .await
