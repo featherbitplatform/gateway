@@ -202,6 +202,19 @@ impl SharedState {
     }
 }
 
+/// Dry-run validation of a gateway config, without a live [`SharedState`].
+///
+/// Runs exactly the fallible work [`SharedState::validate_gateway`] does —
+/// consumer-store construction, supernode/policy validation, expansion, and
+/// policy compilation — against a throwaway resource set, so it can be called
+/// before any state exists. Used by the etcd seeder to reject a broken local
+/// `gateway.yaml` *before* writing it into an empty cluster prefix.
+pub fn validate_gateway_config(gw: &GatewayConfig) -> Result<(), String> {
+    crate::consumers::ConsumerStore::from_config(&gw.consumers)?;
+    SharedState::compile_routes(gw, &PluginResources::new(None))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +263,37 @@ policies:
     #[test]
     fn test_policy_with_supernode_compiles() {
         assert_eq!(state_from_yaml(SUPERNODE_GATEWAY), Ok(()));
+    }
+
+    /// I5: the etcd seeder's pre-write gate. It must reach the same verdict as
+    /// `validate_gateway` without needing a live `SharedState` — accepting a
+    /// good config and rejecting one that cannot compile (here: `key-auth`'s
+    /// mandatory `denied` port left unwired).
+    #[test]
+    fn test_validate_gateway_config_is_a_standalone_dry_run() {
+        let good: crate::config::GatewayConfig = serde_yaml::from_str(SUPERNODE_GATEWAY).unwrap();
+        assert_eq!(validate_gateway_config(&good), Ok(()));
+
+        let broken: crate::config::GatewayConfig = serde_yaml::from_str(
+            r#"
+routes:
+  - name: r
+    match: { path: "/*" }
+    policy: p
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: auth, type: key-auth, config: { use_consumers: true } }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: auth.in }
+      - { from: auth.success, to: client.in }
+"#,
+        )
+        .unwrap();
+        let err = validate_gateway_config(&broken).unwrap_err();
+        assert!(err.contains("denied") && err.contains("must be wired"), "{err}");
     }
 
     #[test]
