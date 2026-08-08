@@ -5,9 +5,11 @@
 //! request's forwarding metadata (`X-Forwarded-*`) plus any configured client
 //! headers; a 2xx reply lets the request continue (optionally copying selected
 //! auth-response headers onto the request forwarded upstream), while a non-2xx
-//! reply rejects the request, mirroring the auth service's status/body/headers
-//! back to the client. A callout failure either degrades open or rejects with
-//! a configurable status, depending on `allow_degradation`.
+//! reply denies the request (exits on the `denied` port), mirroring the auth
+//! service's status/body/headers back to the client. A callout failure either
+//! degrades open (`success`) or exits on the `error` port with a configurable
+//! status, depending on `allow_degradation` — it is a genuine infrastructure
+//! failure, not a deliberate denial.
 //!
 //! Ports the APISIX `forward-auth` plugin onto featherbit's shared outbound
 //! HTTP client.
@@ -24,8 +26,9 @@ use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 
 /// Sends each request to an external authorization endpoint and routes on its
-/// verdict: 2xx continues (success port), non-2xx or (non-degrading) callout
-/// failure rejects (error port).
+/// verdict: 2xx continues (`success` port), non-2xx denies (`denied` port),
+/// and a (non-degrading) callout failure is a genuine infra failure (`error`
+/// port).
 pub struct ForwardAuthPlugin {
     /// External authorization endpoint.
     uri: String,
@@ -262,14 +265,14 @@ impl ForwardAuthPlugin {
 
     /// On a non-2xx auth reply, mirrors the auth service's status and body onto
     /// the client-facing response, copies the configured `client_headers`, and
-    /// returns the `FORWARD_AUTH_DENIED` rejection carrying the context.
+    /// exits on the `denied` port.
     fn build_deny(
         &self,
         mut ctx: Context,
         status: u16,
         body: Bytes,
         resp_headers: &HashMap<String, Vec<String>>,
-    ) -> PluginExecutionError {
+    ) -> PluginOutput {
         ctx.response.status_code = status;
         ctx.response.body = body;
         for name in &self.client_headers {
@@ -277,15 +280,7 @@ impl ForwardAuthPlugin {
                 ctx.response.headers.insert(name.clone(), values.clone());
             }
         }
-        PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "FORWARD_AUTH_DENIED".to_string(),
-                message: format!("Authorization service denied the request ({})", status),
-                metadata: HashMap::new(),
-            },
-        }
+        PluginOutput::on_port(ctx, "denied")
     }
 
     /// Builds the `FORWARD_AUTH_ERROR` rejection used when the callout fails
@@ -343,7 +338,7 @@ impl Plugin for ForwardAuthPlugin {
         };
 
         if response.status >= 300 {
-            return Err(self.build_deny(ctx, response.status, response.body, &response.headers));
+            return Ok(self.build_deny(ctx, response.status, response.body, &response.headers));
         }
 
         self.apply_allow(&mut ctx, &response.headers);
@@ -486,17 +481,17 @@ mod tests {
         }));
         let mut resp_headers = HashMap::new();
         resp_headers.insert("www-authenticate".to_string(), vec!["Bearer".to_string()]);
-        let err = p.build_deny(
+        let out = p.build_deny(
             test_ctx(),
             401,
             Bytes::from_static(b"denied"),
             &resp_headers,
         );
-        assert_eq!(err.error.code, "FORWARD_AUTH_DENIED");
-        assert_eq!(err.context.response.status_code, 401);
-        assert_eq!(err.context.response.body, Bytes::from_static(b"denied"));
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+        assert_eq!(out.context.response.body, Bytes::from_static(b"denied"));
         assert_eq!(
-            err.context.response.headers.get("www-authenticate"),
+            out.context.response.headers.get("www-authenticate"),
             Some(&vec!["Bearer".to_string()])
         );
     }

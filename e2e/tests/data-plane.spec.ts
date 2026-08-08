@@ -51,9 +51,10 @@ test.describe('Data plane', () => {
   });
 
   /**
-   * key-auth sets 401 on the context and then returns an error; the status only
-   * reaches the client because secure-policy wires `api-key.error -> client.in`.
-   * This is the scenario that pins that graph semantic.
+   * key-auth sets 401 on the context and exits on its dedicated `denied`
+   * port; the status only reaches the client because secure-policy wires
+   * `api-key.denied -> client.in`. This is the scenario that pins that graph
+   * semantic.
    */
   test('E2E-DP-05: a missing API key is rejected with the plugin\'s own 401', async () => {
     const traffic = await dataPlane();

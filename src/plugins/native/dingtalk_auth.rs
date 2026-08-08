@@ -2,8 +2,11 @@
 //!
 //! Validates a DingTalk authorization *code* by exchanging it, through
 //! DingTalk's OAuth API, for the calling user's identity, then attaches that
-//! identity to the request for downstream nodes. A request whose code cannot
-//! be resolved to a DingTalk user is rejected with a `401`.
+//! identity to the request for downstream nodes. A request whose code is
+//! missing or that DingTalk actively rejects is denied with a `401` on the
+//! `denied` port; a DingTalk callout that fails outright (network error,
+//! non-200, unparseable body) is a genuine infrastructure failure and stays
+//! on the `error` port.
 //!
 //! # Ported subset / deviations from APISIX
 //!
@@ -39,8 +42,9 @@ const DEFAULT_TOKEN_URL: &str = "https://api.dingtalk.com/v1.0/oauth2/accessToke
 /// token that expires mid-flight (matches APISIX's cache TTL).
 const ACCESS_TOKEN_TTL: Duration = Duration::from_secs(7000);
 
-/// Outcome of resolving a DingTalk code into userinfo. Every failure maps to a
-/// `401` (`DINGTALK_AUTH_FAILED`); the variants exist to keep the reason legible.
+/// Outcome of resolving a DingTalk code into userinfo. `Unauthorized` is a
+/// deliberate denial (exits `denied`, `401`); `Upstream` is a genuine callout
+/// failure (exits `error`).
 #[derive(Debug)]
 enum DingtalkError {
     /// DingTalk rejected the code / access token (auth failure).
@@ -244,8 +248,9 @@ impl DingtalkAuthPlugin {
         parse_userinfo(&resp)
     }
 
-    /// Builds the `401` rejection carrying the context so the graph engine
-    /// routes through the error port.
+    /// Builds the `401` rejection and exits on the `denied` port. Reserved
+    /// for a deliberate denial — a missing code, or DingTalk actively
+    /// rejecting the code/token.
     fn reject(ctx: Context, message: &str) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 401;
@@ -257,11 +262,21 @@ impl DingtalkAuthPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
+        Ok(PluginOutput::on_port(ctx, "denied"))
+    }
+
+    /// Builds a genuine infrastructure-failure `Err` for a DingTalk callout
+    /// that failed outright (network error, non-200, unparseable body) —
+    /// unlike `reject`, the node could not do its job rather than DingTalk
+    /// deliberately refusing the code.
+    fn upstream_error(ctx: Context, message: &str) -> PluginResult {
+        let mut ctx = ctx;
+        ctx.response.status_code = 502;
         Err(PluginExecutionError {
             context: ctx,
             error: GatewayError {
                 node_id: String::new(),
-                code: "DINGTALK_AUTH_FAILED".to_string(),
+                code: "DINGTALK_UPSTREAM_ERROR".to_string(),
                 message: message.to_string(),
                 metadata: HashMap::new(),
             },
@@ -391,12 +406,14 @@ impl Plugin for DingtalkAuthPlugin {
 
         let access_token = match self.access_token().await {
             Ok(t) => t,
-            Err(e) => return Self::reject(ctx, e.message()),
+            Err(DingtalkError::Unauthorized(m)) => return Self::reject(ctx, &m),
+            Err(e @ DingtalkError::Upstream(_)) => return Self::upstream_error(ctx, e.message()),
         };
 
         let userinfo = match self.fetch_userinfo(&access_token, &code).await {
             Ok(u) => u,
-            Err(e) => return Self::reject(ctx, e.message()),
+            Err(DingtalkError::Unauthorized(m)) => return Self::reject(ctx, &m),
+            Err(e @ DingtalkError::Upstream(_)) => return Self::upstream_error(ctx, e.message()),
         };
 
         attach_identity(&mut ctx, &userinfo, self.set_userinfo_header);
@@ -555,9 +572,30 @@ mod tests {
     async fn test_missing_code_rejected_401() {
         let cfg = cfg(&[("app_key", "k"), ("app_secret", "s")]);
         let plugin = DingtalkAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
-        let out = plugin.execute(base_ctx()).await;
-        let err = out.unwrap_err();
-        assert_eq!(err.context.response.status_code, 401);
-        assert_eq!(err.error.code, "DINGTALK_AUTH_FAILED");
+        let out = plugin.execute(base_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+    }
+
+    #[tokio::test]
+    async fn test_upstream_callout_failure_stays_on_error_port() {
+        // A DingTalk callout that fails outright (here: nothing listening on
+        // the port) is a genuine infra failure and must stay a raw `Err`,
+        // unlike the deliberate `Unauthorized`/missing-code denials above.
+        let mut cfg = cfg(&[("app_key", "k"), ("app_secret", "s")]);
+        cfg.insert(
+            "access_token_url".to_string(),
+            serde_json::json!("http://127.0.0.1:1"),
+        );
+        cfg.insert("timeout".to_string(), serde_json::json!(200));
+        let plugin = DingtalkAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
+
+        let mut ctx = base_ctx();
+        ctx.request
+            .query_params
+            .insert("code".to_string(), vec!["some-code".to_string()]);
+        let err = plugin.execute(ctx).await.unwrap_err();
+        assert_eq!(err.error.code, "DINGTALK_UPSTREAM_ERROR");
+        assert!(err.context.response.status_code >= 500);
     }
 }

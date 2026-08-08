@@ -118,6 +118,41 @@ pub const FAULT_INJECTION_SPEC: PortSpec = PortSpec {
     ],
 };
 
+/// Credential-auth plugins: deliberate 401/403 rejections exit on `denied`.
+/// Genuine infrastructure failures (consumer store unavailable, LDAP
+/// unreachable, IdP HTTP errors) remain on `error`.
+pub const AUTH_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "denied",
+            kind: PortKind::Outcome,
+            description: "Authentication or authorization was denied; a 4xx response is prepared. Wire to client (or a custom denial handler).",
+        },
+        ERROR,
+    ],
+};
+
+/// Interactive SSO plugins: denied rejections plus browser redirects.
+pub const INTERACTIVE_AUTH_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "denied",
+            kind: PortKind::Outcome,
+            description: "Authentication was denied; a 4xx response is prepared. Wire to client.",
+        },
+        PortDecl {
+            name: "redirect",
+            kind: PortKind::Outcome,
+            description: "The browser must move (login/logout/callback 3xx); response is prepared. Wire to client.",
+        },
+        ERROR,
+    ],
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
