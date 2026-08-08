@@ -379,6 +379,14 @@ fn is_empty(gw: &GatewayConfig) -> bool {
 /// Seeds etcd from the local `gateway.yaml` (`seed_path`) when the etcd prefix
 /// is empty, then loads from etcd. Returns `config_path = None` (etcd mode does
 /// not reload from disk).
+///
+/// The seed candidate is **dry-run compiled** before anything is written (see
+/// [`crate::state::validate_gateway_config`]). A local config that does not
+/// compile is logged and skipped, leaving the prefix empty: startup then
+/// proceeds with no routes, and the next boot re-seeds once the file is fixed.
+/// Writing it anyway would publish a config the whole cluster then fails to
+/// apply — and, because the prefix would no longer be empty, no later boot
+/// would ever re-seed it.
 pub async fn build_source(
     system: &SystemConfig,
     seed_path: &std::path::Path,
@@ -397,9 +405,26 @@ pub async fn build_source(
     if is_empty(&gateway) {
         if let Ok(local) = crate::config::load_yaml_with_env::<GatewayConfig>(seed_path) {
             if !is_empty(&local) {
-                tracing::info!("etcd prefix empty — seeding from {}", seed_path.display());
-                store.write_all(&local).await?;
-                gateway = store.load_all().await?;
+                // Never publish a config the cluster cannot apply: compile it
+                // locally first and skip the seed on failure, so the prefix
+                // stays empty and a later boot can re-seed a fixed file.
+                match crate::state::validate_gateway_config(&local) {
+                    Ok(()) => {
+                        tracing::info!(
+                            "etcd prefix empty — seeding from {}",
+                            seed_path.display()
+                        );
+                        store.write_all(&local).await?;
+                        gateway = store.load_all().await?;
+                    }
+                    Err(e) => tracing::error!(
+                        "etcd prefix empty but the seed config at {} does not compile — \
+                         NOT seeding (fix it and restart; the prefix stays empty so the \
+                         next boot re-seeds): {}",
+                        seed_path.display(),
+                        e
+                    ),
+                }
             }
         }
     }
