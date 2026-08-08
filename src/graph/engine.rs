@@ -20,10 +20,8 @@ use crate::plugins::{self, Plugin};
 /// instance serves all requests matching the route that references its policy.
 pub struct CompiledGraph {
     nodes: HashMap<String, Box<dyn Plugin>>,
-    /// node_id -> next node_id on success
-    success_edges: HashMap<String, String>,
-    /// node_id -> next node_id on error
-    error_edges: HashMap<String, String>,
+    /// node_id -> (port -> target node_id). Ports normalized (`out` -> `success`).
+    edges: HashMap<String, HashMap<String, String>>,
     /// The node that starts the pipeline (first node after listener)
     entry_node_id: String,
     /// Node IDs that are terminal (client nodes) — execution stops when we reach one
@@ -35,6 +33,22 @@ pub struct CompiledGraph {
     /// Process-wide services (metrics registry, shared clients); per-node
     /// metrics recording is disabled when `resources.metrics` is `None`.
     resources: Arc<PluginResources>,
+}
+
+// Manual impl: `Box<dyn Plugin>` doesn't implement `Debug`, so `#[derive]`
+// isn't available. This exists solely so `Result<CompiledGraph, String>` can
+// be `.unwrap_err()`'d in tests; the node table is summarized by id only.
+impl std::fmt::Debug for CompiledGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledGraph")
+            .field("policy_name", &self.policy_name)
+            .field("node_ids", &self.nodes.keys().collect::<Vec<_>>())
+            .field("edges", &self.edges)
+            .field("entry_node_id", &self.entry_node_id)
+            .field("terminal_node_ids", &self.terminal_node_ids)
+            .field("catch_all_handler", &self.catch_all_handler)
+            .finish()
+    }
 }
 
 impl CompiledGraph {
@@ -105,6 +119,7 @@ impl CompiledGraph {
                             std::time::Duration::ZERO,
                             EdgeKind::NodeNotFound,
                             None,
+                            None,
                             &ctx,
                         );
                     }
@@ -128,21 +143,24 @@ impl CompiledGraph {
             match result {
                 Ok(output) => {
                     ctx = output.context;
+                    let port = output.port.unwrap_or("success");
 
                     // If this is a terminal node (client), we're done
                     let terminal = self.terminal_node_ids.contains(&current_node_id);
                     let next = if terminal {
                         None
                     } else {
-                        self.success_edges.get(&current_node_id)
+                        self.edges.get(&current_node_id).and_then(|m| m.get(port))
                     };
                     if let Some(r) = recorder.as_mut() {
                         let edge = if terminal {
                             EdgeKind::Terminal
-                        } else if next.is_some() {
+                        } else if next.is_none() {
+                            EdgeKind::EndOfChain // defensive: validation makes this unreachable
+                        } else if port == "success" {
                             EdgeKind::Success
                         } else {
-                            EdgeKind::EndOfChain
+                            EdgeKind::Outcome
                         };
                         r.record_step(
                             &current_node_id,
@@ -150,13 +168,14 @@ impl CompiledGraph {
                             StepOutcome::Success,
                             elapsed,
                             edge,
+                            (port != "success").then_some(port),
                             next.map(String::as_str),
                             &ctx,
                         );
                     }
                     match next {
                         Some(next_id) => current_node_id = next_id.clone(),
-                        // Terminal, or no success edge — end of chain.
+                        // Terminal, or no edge for this port — end of chain.
                         None => break,
                     }
                 }
@@ -182,8 +201,9 @@ impl CompiledGraph {
 
                     // Try per-node error edge first, then the policy catch-all.
                     let next_error = self
-                        .error_edges
+                        .edges
                         .get(&current_node_id)
+                        .and_then(|m| m.get("error"))
                         .map(|id| (id.clone(), EdgeKind::Error))
                         .or_else(|| {
                             self.catch_all_handler
@@ -214,6 +234,7 @@ impl CompiledGraph {
                             outcome,
                             elapsed,
                             edge,
+                            None,
                             next_id,
                             &ctx,
                         );
@@ -234,11 +255,17 @@ impl CompiledGraph {
 /// Compiles a [`PolicyConfig`] into a ready-to-execute [`CompiledGraph`].
 ///
 /// Instantiates each node's plugin via `plugins::create_plugin`, records
-/// `client` nodes as terminals, and indexes edges by source port: `success`
-/// and `out` become success edges, `error` becomes error edges. The entry
-/// node is the target of the listener's success/out edge. Fails if the
-/// policy has no `listener` node, a plugin cannot be constructed, or an edge
-/// uses an unknown source port.
+/// `client` nodes as terminals, and indexes edges per node by source port
+/// (`out` normalizes to `success`). The entry node is the target of the
+/// listener's success/out edge. Fails if the policy has no `listener` node,
+/// a plugin cannot be constructed, an edge names a port its node type does
+/// not declare, two edges leave the same `node.port` (fan-out is not
+/// supported), or a node's `success`/outcome port ([`PortKind::Success`] or
+/// [`PortKind::Outcome`]) has no outgoing edge — `error` ports are exempt
+/// (fallback chain: per-node error edge -> policy catch-all -> default 500).
+///
+/// [`PortKind::Success`]: crate::plugins::ports::PortKind::Success
+/// [`PortKind::Outcome`]: crate::plugins::ports::PortKind::Outcome
 ///
 /// Edge endpoints use the `node_id.port` form:
 ///
@@ -256,8 +283,6 @@ pub fn compile_policy(
     resources: Arc<PluginResources>,
 ) -> Result<CompiledGraph, String> {
     let mut nodes: HashMap<String, Box<dyn Plugin>> = HashMap::new();
-    let mut success_edges: HashMap<String, String> = HashMap::new();
-    let mut error_edges: HashMap<String, String> = HashMap::new();
     let mut listener_node_id = None;
     let mut terminal_node_ids = HashSet::new();
 
@@ -290,34 +315,80 @@ pub fn compile_policy(
 
     let listener_node_id = listener_node_id.ok_or("Policy must have a listener node")?;
 
-    // Parse edges
+    let node_types: HashMap<String, String> = policy
+        .nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.node_type.clone()))
+        .collect();
+
+    // Parse edges, indexed by source port. `out` normalizes to `success`.
+    let mut edges: HashMap<String, HashMap<String, String>> = HashMap::new();
     for edge in &policy.edges {
         let (from_node, from_port) = parse_edge_endpoint(&edge.from)?;
         let (to_node, _to_port) = parse_edge_endpoint(&edge.to)?;
+        let from_port = if from_port == "out" {
+            "success".to_string()
+        } else {
+            from_port
+        };
 
-        match from_port.as_str() {
-            "success" | "out" => {
-                success_edges.insert(from_node, to_node);
+        let node_type = node_types.get(&from_node).ok_or_else(|| {
+            format!(
+                "policy '{}': edge references unknown node '{}'",
+                policy.name, from_node
+            )
+        })?;
+        let spec = plugins::port_spec(node_type)
+            .ok_or_else(|| format!("Unknown plugin type: {}", node_type))?;
+        if !spec.outputs.iter().any(|p| p.name == from_port) {
+            return Err(format!(
+                "policy '{}': node '{}' (type '{}') has no output port '{}'",
+                policy.name, from_node, node_type, from_port
+            ));
+        }
+        if edges
+            .entry(from_node.clone())
+            .or_default()
+            .insert(from_port.clone(), to_node)
+            .is_some()
+        {
+            return Err(format!(
+                "policy '{}': duplicate edge from '{}.{}' — fan-out is not supported",
+                policy.name, from_node, from_port
+            ));
+        }
+    }
+
+    // Mandatory wiring: every success/outcome port of every node must have an edge.
+    for node_config in &policy.nodes {
+        let spec = plugins::port_spec(&node_config.node_type)
+            .ok_or_else(|| format!("Unknown plugin type: {}", node_config.node_type))?;
+        for p in spec.outputs {
+            if matches!(p.kind, plugins::ports::PortKind::Error) {
+                continue;
             }
-            "error" => {
-                error_edges.insert(from_node, to_node);
-            }
-            other => {
-                return Err(format!("Unknown edge port: '{}'", other));
+            let wired = edges
+                .get(&node_config.id)
+                .is_some_and(|m| m.contains_key(p.name));
+            if !wired {
+                return Err(format!(
+                    "policy '{}': output port '{}' of node '{}' (type '{}') must be wired — add an edge from '{}.{}'",
+                    policy.name, p.name, node_config.id, node_config.node_type, node_config.id, p.name
+                ));
             }
         }
     }
 
     // The entry node is the first node connected from the listener's success/out edge
-    let entry_node_id = success_edges
+    let entry_node_id = edges
         .get(&listener_node_id)
+        .and_then(|m| m.get("success"))
         .cloned()
         .unwrap_or_else(|| listener_node_id.clone());
 
     Ok(CompiledGraph {
         nodes,
-        success_edges,
-        error_edges,
+        edges,
         entry_node_id,
         terminal_node_ids,
         catch_all_handler: policy.error_handler.clone(),
@@ -590,10 +661,16 @@ mod tests {
             "client".to_string(),
             plugins::create_plugin("client", &HashMap::new(), &PluginResources::empty()).unwrap(),
         );
+        let mut edges: HashMap<String, HashMap<String, String>> = HashMap::new();
+        if let Some(target) = error_edges.get("boom") {
+            edges
+                .entry("boom".to_string())
+                .or_default()
+                .insert("error".to_string(), target.clone());
+        }
         CompiledGraph {
             nodes,
-            success_edges: HashMap::new(),
-            error_edges,
+            edges,
             entry_node_id: "boom".to_string(),
             terminal_node_ids: HashSet::from(["client".to_string()]),
             catch_all_handler: catch_all,
@@ -765,5 +842,183 @@ mod tests {
         // ...and the engine wrote its generic 500.
         assert_eq!(out.response.status_code, 500);
         assert_eq!(trace.steps[0].after.response.status_code, 500);
+    }
+
+    // ---- per-port outcome routing -----------------------------------------
+
+    /// A test-only plugin that emits on the "denied" outcome port when the
+    /// request carries `x-deny`, else the normal success port. Stands in for
+    /// a real outcome-port plugin, which doesn't exist until Task 8.
+    struct DenyOnHeader;
+
+    #[async_trait::async_trait]
+    impl Plugin for DenyOnHeader {
+        fn plugin_type(&self) -> &str {
+            "deny-on-header"
+        }
+        async fn execute(&self, ctx: Context) -> crate::plugins::PluginResult {
+            if ctx.request.headers.contains_key("x-deny") {
+                Ok(plugins::PluginOutput::on_port(ctx, "denied"))
+            } else {
+                Ok(plugins::PluginOutput::success(ctx))
+            }
+        }
+    }
+
+    /// Builds a graph by hand with a per-port edge map, so outcome-port
+    /// routing can be exercised without a real plugin type declaring one.
+    fn outcome_graph() -> CompiledGraph {
+        let mut nodes: HashMap<String, Box<dyn Plugin>> = HashMap::new();
+        nodes.insert("n".to_string(), Box::new(DenyOnHeader));
+        nodes.insert(
+            "client".to_string(),
+            plugins::create_plugin("client", &HashMap::new(), &PluginResources::empty()).unwrap(),
+        );
+        nodes.insert(
+            "deny-client".to_string(),
+            plugins::create_plugin("client", &HashMap::new(), &PluginResources::empty()).unwrap(),
+        );
+        let mut n_edges = HashMap::new();
+        n_edges.insert("denied".to_string(), "deny-client".to_string());
+        n_edges.insert("success".to_string(), "client".to_string());
+        let mut edges = HashMap::new();
+        edges.insert("n".to_string(), n_edges);
+        CompiledGraph {
+            nodes,
+            edges,
+            entry_node_id: "n".to_string(),
+            terminal_node_ids: HashSet::from(["client".to_string(), "deny-client".to_string()]),
+            catch_all_handler: None,
+            policy_name: "p".to_string(),
+            resources: PluginResources::empty(),
+        }
+    }
+
+    /// A named outcome port routes to its wired target, not to success.
+    #[tokio::test]
+    async fn test_outcome_port_routes_to_its_edge() {
+        let graph = outcome_graph();
+
+        let mut ctx = test_context("/x");
+        ctx.request
+            .headers
+            .insert("x-deny".to_string(), vec!["1".to_string()]);
+        let rec = recorder(&ctx);
+        let (out, rec) = graph.execute_traced(ctx, rec).await;
+        let trace = finish(rec, &out);
+
+        assert_eq!(trace.steps[0].node_id, "n");
+        assert_eq!(trace.steps[0].edge, EdgeKind::Outcome);
+        assert_eq!(trace.steps[0].port.as_deref(), Some("denied"));
+        assert_eq!(trace.steps[0].next_node_id.as_deref(), Some("deny-client"));
+        // The walk actually ended at deny-client, not client.
+        assert_eq!(trace.steps.len(), 2);
+        assert_eq!(trace.steps[1].node_id, "deny-client");
+    }
+
+    /// Without the header, the same node exits through `success` as usual.
+    #[tokio::test]
+    async fn test_outcome_port_falls_back_to_success() {
+        let graph = outcome_graph();
+        let ctx = test_context("/x");
+        let rec = recorder(&ctx);
+        let (out, rec) = graph.execute_traced(ctx, rec).await;
+        let trace = finish(rec, &out);
+
+        assert_eq!(trace.steps[0].edge, EdgeKind::Success);
+        assert!(trace.steps[0].port.is_none());
+        assert_eq!(trace.steps[0].next_node_id.as_deref(), Some("client"));
+    }
+
+    // ---- compile-time mandatory-wiring validation -------------------------
+
+    fn policy_missing_success_edge() -> PolicyConfig {
+        PolicyConfig {
+            name: "p".to_string(),
+            error_handler: None,
+            nodes: vec![
+                NodeConfig {
+                    id: "listener".to_string(),
+                    node_type: "listener".to_string(),
+                    config: HashMap::new(),
+                    config_ref: None,
+                    position: None,
+                },
+                NodeConfig {
+                    id: "rw".to_string(),
+                    node_type: "proxy-rewrite".to_string(),
+                    config: HashMap::new(),
+                    config_ref: None,
+                    position: None,
+                },
+                NodeConfig {
+                    id: "client".to_string(),
+                    node_type: "client".to_string(),
+                    config: HashMap::new(),
+                    config_ref: None,
+                    position: None,
+                },
+            ],
+            edges: vec![EdgeConfig {
+                from: "listener.out".to_string(),
+                to: "rw.in".to_string(),
+            }],
+        }
+    }
+
+    /// Unwired mandatory port fails compilation with the exact message.
+    #[test]
+    fn test_compile_rejects_unwired_mandatory_port() {
+        let policy = policy_missing_success_edge();
+        let err = compile_policy(&policy, PluginResources::empty()).unwrap_err();
+        assert_eq!(
+            err,
+            "policy 'p': output port 'success' of node 'rw' (type 'proxy-rewrite') must be wired — add an edge from 'rw.success'"
+        );
+    }
+
+    /// Duplicate (node, port) edge is an explicit error, not a silent overwrite.
+    #[test]
+    fn test_compile_rejects_fanout() {
+        let mut policy = policy_missing_success_edge();
+        policy.edges.push(EdgeConfig {
+            from: "rw.success".to_string(),
+            to: "client.in".to_string(),
+        });
+        policy.edges.push(EdgeConfig {
+            from: "rw.success".to_string(),
+            to: "client.in".to_string(),
+        });
+        let err = compile_policy(&policy, PluginResources::empty()).unwrap_err();
+        assert_eq!(
+            err,
+            "policy 'p': duplicate edge from 'rw.success' — fan-out is not supported"
+        );
+    }
+
+    /// Edge from a port the type does not declare.
+    #[test]
+    fn test_compile_rejects_undeclared_port() {
+        let mut policy = policy_missing_success_edge();
+        policy.edges.push(EdgeConfig {
+            from: "rw.banana".to_string(),
+            to: "client.in".to_string(),
+        });
+        let err = compile_policy(&policy, PluginResources::empty()).unwrap_err();
+        assert_eq!(
+            err,
+            "policy 'p': node 'rw' (type 'proxy-rewrite') has no output port 'banana'"
+        );
+    }
+
+    /// error port stays optional: policy with no error edges still compiles.
+    #[test]
+    fn test_error_port_wiring_is_optional() {
+        let mut policy = policy_missing_success_edge();
+        policy.edges.push(EdgeConfig {
+            from: "rw.success".to_string(),
+            to: "client.in".to_string(),
+        });
+        assert!(compile_policy(&policy, PluginResources::empty()).is_ok());
     }
 }
