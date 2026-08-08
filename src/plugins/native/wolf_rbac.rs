@@ -4,9 +4,13 @@
 //! On each request it extracts the caller's wolf RBAC token, parses it, and asks
 //! the wolf-server whether that token may perform the request's method on the
 //! request's path. On allow it copies the returned user identity into request
-//! headers and `context.message`; on deny it exits on the `denied` port. A
-//! wolf-server callout that fails outright is a genuine infrastructure
-//! failure and stays on the `error` port.
+//! headers and `context.message`; on deny it exits on the `denied` port.
+//!
+//! Only an actual authorization verdict is a denial: `200` allows, `401`/`403`
+//! denies. A wolf-server callout that fails outright — unreachable, timed out,
+//! or answering with any other status (`5xx`, or a `404` from a mistyped
+//! `server` URL) — is a genuine infrastructure failure and stays on the
+//! `error` port (see [`classify_access_check`]).
 //!
 //! Only the `_M.rewrite` authorization path is ported. The interactive
 //! `/apisix/plugin/wolf-rbac/{login,change_pwd,user_info}` admin endpoints —
@@ -133,6 +137,51 @@ impl WolfRbacPlugin {
             vec!["application/json".to_string()],
         );
         Ok(PluginOutput::on_port(ctx, "denied"))
+    }
+
+    /// Builds a genuine infrastructure-failure `Err` (wolf-server unreachable,
+    /// timed out, or answering `access_check` with a status that is not an
+    /// authorization verdict). Unlike [`WolfRbacPlugin::reject`], this exits
+    /// through the `error` port because the node never obtained a verdict.
+    fn callout_error(&self, ctx: Context, message: String) -> PluginExecutionError {
+        let mut ctx = ctx;
+        ctx.response.status_code = 500;
+        PluginExecutionError {
+            context: ctx,
+            error: GatewayError {
+                node_id: String::new(),
+                code: "WOLF_RBAC_UPSTREAM_ERROR".to_string(),
+                message,
+                metadata: HashMap::new(),
+            },
+        }
+    }
+}
+
+/// What a wolf-server `access_check` reply means.
+#[derive(Debug, PartialEq, Eq)]
+enum AccessCheck {
+    /// `200` — wolf-server allowed the request.
+    Allowed,
+    /// `401`/`403` — wolf-server evaluated the token and refused it. A
+    /// deliberate, client-facing decision → the `denied` port.
+    Denied,
+    /// Anything else — `5xx`, or a `4xx` that means the *request to
+    /// wolf-server* was wrong rather than the caller's access (`404` from a
+    /// wrong `server` base URL, `400`). No verdict → the `error` port.
+    Unexpected,
+}
+
+/// Classifies a wolf-server `access_check` status.
+///
+/// The split matters: a `502` from a wolf-server behind a dead proxy, or a
+/// `404` from a mistyped `server` URL, is not "this token may not pass" —
+/// reporting it as a 401 hides a broken deployment behind a plausible denial.
+fn classify_access_check(status: u16) -> AccessCheck {
+    match status {
+        200 => AccessCheck::Allowed,
+        401 | 403 => AccessCheck::Denied,
+        _ => AccessCheck::Unexpected,
     }
 }
 
@@ -290,17 +339,9 @@ impl Plugin for WolfRbacPlugin {
             Err(e) => {
                 // A genuine infrastructure failure (wolf-server unreachable),
                 // not a deliberate denial: stays on the `error` port.
-                let mut ctx = ctx;
-                ctx.response.status_code = 500;
-                return Err(PluginExecutionError {
-                    context: ctx,
-                    error: GatewayError {
-                        node_id: String::new(),
-                        code: "WOLF_RBAC_UPSTREAM_ERROR".to_string(),
-                        message: format!("request to wolf-server failed: {}", e),
-                        metadata: HashMap::new(),
-                    },
-                });
+                return Err(
+                    self.callout_error(ctx, format!("request to wolf-server failed: {}", e))
+                );
             }
         };
 
@@ -324,14 +365,24 @@ impl Plugin for WolfRbacPlugin {
             );
         }
 
-        if response.status == 200 {
-            Ok(PluginOutput::success(ctx))
-        } else {
-            let reason = serde_json::from_slice::<serde_json::Value>(&response.body)
-                .ok()
-                .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(String::from))
-                .unwrap_or_else(|| "access denied by wolf-server".to_string());
-            self.reject(ctx, &reason)
+        match classify_access_check(response.status) {
+            AccessCheck::Allowed => Ok(PluginOutput::success(ctx)),
+            AccessCheck::Denied => {
+                let reason = serde_json::from_slice::<serde_json::Value>(&response.body)
+                    .ok()
+                    .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(String::from))
+                    .unwrap_or_else(|| "access denied by wolf-server".to_string());
+                self.reject(ctx, &reason)
+            }
+            // No verdict was obtained — a broken wolf-server or a wrong
+            // `server` URL, not a decision about this caller.
+            AccessCheck::Unexpected => Err(self.callout_error(
+                ctx,
+                format!(
+                    "unexpected status {} from wolf-server access_check (expected 200/401/403)",
+                    response.status
+                ),
+            )),
         }
     }
 }
@@ -507,6 +558,106 @@ mod tests {
             protocol: crate::context::Protocol::Http1,
         });
         let err = plugin.execute(ctx).await.unwrap_err();
+        assert_eq!(err.error.code, "WOLF_RBAC_UPSTREAM_ERROR");
+    }
+
+    /// Only a status wolf-server uses to express an authorization verdict is a
+    /// verdict; everything else means no verdict was obtained.
+    #[test]
+    fn test_classify_access_check_splits_verdicts_from_failures() {
+        assert_eq!(classify_access_check(200), AccessCheck::Allowed);
+        assert_eq!(classify_access_check(401), AccessCheck::Denied);
+        assert_eq!(classify_access_check(403), AccessCheck::Denied);
+        for status in [400u16, 404, 500, 502, 503] {
+            assert_eq!(
+                classify_access_check(status),
+                AccessCheck::Unexpected,
+                "status {status}"
+            );
+        }
+    }
+
+    /// Minimal one-shot HTTP server answering any request with a fixed status
+    /// line and no body. Returns its port.
+    async fn spawn_status_server(status_line: &'static str) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(
+                        format!("HTTP/1.1 {status_line}\r\ncontent-length: 0\r\n\r\n").as_bytes(),
+                    )
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        port
+    }
+
+    fn tokened_ctx() -> Context {
+        let mut headers = HashMap::new();
+        headers.insert("x-rbac-token".to_string(), vec!["V1#app#tok".to_string()]);
+        crate::context::Context::new(crate::context::GatewayRequest {
+            method: "GET".into(),
+            path: "/pet".into(),
+            host: "h".into(),
+            scheme: "http".into(),
+            headers,
+            query_params: HashMap::new(),
+            body: Bytes::new(),
+            remote_addr: "1.2.3.4:5".into(),
+            protocol: crate::context::Protocol::Http1,
+        })
+    }
+
+    fn plugin_against(port: u16) -> WolfRbacPlugin {
+        let mut cfg = HashMap::new();
+        cfg.insert(
+            "server".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{port}")),
+        );
+        cfg.insert("timeout_ms".to_string(), serde_json::json!(2000));
+        WolfRbacPlugin::from_config(&cfg, &PluginResources::empty()).unwrap()
+    }
+
+    /// wolf-server evaluated the token and refused it → the `denied` port.
+    #[tokio::test]
+    async fn test_wolf_401_decision_is_denied() {
+        let port = spawn_status_server("401 Unauthorized").await;
+        let out = plugin_against(port).execute(tokened_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+    }
+
+    /// Regression: a `500` from wolf-server used to be laundered into the same
+    /// 401 denial as a real refusal. It must exit on `error`.
+    #[tokio::test]
+    async fn test_wolf_5xx_is_error_port_not_denied() {
+        let port = spawn_status_server("500 Internal Server Error").await;
+        let err = plugin_against(port)
+            .execute(tokened_ctx())
+            .await
+            .unwrap_err();
+        assert_eq!(err.error.code, "WOLF_RBAC_UPSTREAM_ERROR");
+        assert!(
+            err.error.message.contains("unexpected status 500"),
+            "{}",
+            err.error.message
+        );
+    }
+
+    /// A `404` from a mistyped `server` base URL is the same class of problem.
+    #[tokio::test]
+    async fn test_wolf_404_is_error_port_not_denied() {
+        let port = spawn_status_server("404 Not Found").await;
+        let err = plugin_against(port)
+            .execute(tokened_ctx())
+            .await
+            .unwrap_err();
         assert_eq!(err.error.code, "WOLF_RBAC_UPSTREAM_ERROR");
     }
 }
