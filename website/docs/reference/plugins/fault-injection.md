@@ -44,26 +44,30 @@ config:
 The delay (if it triggers) is applied first via a non-blocking async sleep, then the abort check runs.
 
 - **Delay triggers** — when `delay` is configured, its `percentage` sample hits, and its `vars` match: the request is held for `duration` seconds, then continues.
-- **Abort triggers** — when `abort` is configured, its sample hits, and its `vars` match: the plugin writes the configured status, interpolated body, and headers onto `context.response` and fails with error code `FAULT_INJECTED`, routing the Context through the **`error` port**.
-- **Nothing triggers** — the request passes through the **`success` port** untouched.
+- **Abort triggers** — when `abort` is configured, its sample hits, and its `vars` match: the plugin writes the configured status, interpolated body, and headers onto `context.response` and exits through the dedicated **`abort`** output port.
+- **Nothing triggers** (including delay-only faults, once the sleep completes) — the request passes through the **`success` port** untouched.
 
 ### Wiring the abort early-exit
 
-In a featherbit graph the two outcomes need distinct ports, so an abort does not end the request directly — it exits via `error` with the response **already prepared**. Wire the `error` port on a pass-through path so the injected response reaches the client:
+In a featherbit graph the two outcomes need distinct ports, so an abort does not end the request directly — it exits via `abort` with the response **already prepared**. Wire the `abort` port on a pass-through path so the injected response reaches the client:
 
 ```yaml
 edges:
   - { from: fault.success, to: upstream.in }   # normal traffic continues
-  - { from: fault.error,   to: client.in }     # aborted: prepared response goes out as-is
+  - { from: fault.abort,   to: client.in }     # aborted: prepared response goes out as-is
 ```
 
-Routing `error` through an `error-handler` instead will *replace* the injected body with the handler's template; wire directly to `client.in` to preserve the configured abort response.
+Routing `abort` through an `error-handler` instead will *replace* the injected body with the handler's template; wire directly to `client.in` to preserve the configured abort response.
 
 ### Sampling
 
 `percentage` uses a cheap hash-based pseudo-random draw (no rand crate, freshly seeded per call). It is statistically casual — fine for chaos testing, but not a deterministic sequence and not cryptographic.
 
+## Ports
+
+`fault-injection` declares three output ports: `success` (nothing triggered, or a delay-only fault after sleeping), `abort` (an injected fault response is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `abort` is a mandatory port: the policy compiler rejects any policy that leaves it unwired.
+
 ## Behavior notes
 
-- Abort exits through the `error` port with code `FAULT_INJECTED` rather than ending the request directly (graph-wiring mechanics; the injected response reaches the client when wired as above).
+- Abort exits through the dedicated `abort` output port with the response already prepared, rather than ending the request directly (graph-wiring mechanics; the injected response reaches the client when wired as above).
 - `vars` additionally accepts the flat single-expression shape as a convenience.
