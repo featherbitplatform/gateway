@@ -9,11 +9,22 @@
 //!   the node config and placing the node in the graph is the enable switch.
 //! - APISIX only intercepts responses whose source is not the upstream
 //!   (`get_response_source(ctx) ~= "upstream"`). featherbit's equivalent
-//!   heuristic is `Context.errors` being non-empty — a response produced by
-//!   the gateway (error-handler, auth rejection, ...) always carries the
-//!   error record that routed it there, while a clean upstream response does
-//!   not. An upstream's own 502 therefore passes through untouched, exactly
-//!   as in APISIX.
+//!   heuristic is `Context.errors` being non-empty — a response produced by a
+//!   node that **failed** (upstream connection error, a failed IdP callout,
+//!   the error-handler that rendered it) always carries the error record that
+//!   routed it there, while a clean upstream response does not. An upstream's
+//!   own 502 therefore passes through untouched, exactly as in APISIX.
+//!
+//! ## Outcome exits are not replaced
+//!
+//! `gateway_generated` keys on the presence of an **error record**, so this
+//! node does not touch responses that arrived on an *outcome* port — a
+//! `denied` 403, a `limited` 429, a `broken` 503, an `abort`. Those are
+//! deliberate, already-formed responses and carry no error record. They also
+//! do not normally pass through here at all: an outcome port is wired straight
+//! to `client`. To style them, wire that port through a response-shaping node
+//! (`response-rewrite`, or `exit-transformer` with `always: true`) on its way
+//! to `client` instead of expecting `error-page` to catch them.
 
 use async_trait::async_trait;
 use bytes::Bytes;
