@@ -787,7 +787,8 @@ mod tests {
         ctx.request
             .headers
             .insert("authorization".to_string(), vec![auth]);
-        assert!(plugin.execute(ctx).await.is_ok());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, None);
     }
 
     fn resources_with_consumers() -> Arc<PluginResources> {

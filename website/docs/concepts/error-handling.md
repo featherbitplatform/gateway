@@ -9,8 +9,8 @@ Every plugin node has two output ports: **success** and **error**. Failures are 
 
 <UiShot
   name="policy-graph"
-  alt="A policy graph with red dashed error edges from key-auth, rate-limit and upstream all converging on a single error-handler node."
-  caption="Error routing is visible in the graph itself: the red dashed edges are error ports. Three different failures — a rejected key, a throttled client, a dead upstream — converge on one handler, and each carries its Context with it."
+  alt="A policy graph where key-auth's denied port routes straight to client, while red dashed error edges from rate-limit and upstream converge on a single error-handler node."
+  caption="Error routing is visible in the graph itself: the red dashed edges are error ports. A throttled client and a dead upstream converge on one handler, each carrying its Context with it. A rejected API key is a deliberate outcome, not a failure — it exits key-auth's own dedicated denied port straight to client, since the 401 is already fully prepared."
 />
 
 ## What happens when a node fails

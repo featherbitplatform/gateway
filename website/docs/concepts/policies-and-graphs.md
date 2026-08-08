@@ -9,8 +9,8 @@ A **routing policy** is a directed node graph that defines how requests matched 
 
 <UiShot
   name="policy-graph"
-  alt="A policy graph: listener, cors, key-auth, rate-limit, proxy-rewrite, upstream and logging chained by green success edges, with red dashed error edges from key-auth, rate-limit and upstream converging on a shared error-handler."
-  caption={<>A policy as the editor draws it. Solid green edges are the <code>success</code> path: <code>listener</code> → CORS → auth → rate limit → rewrite → upstream → access log → <code>client</code>. The dashed red edges leave each node's <code>error</code> port — a rejected API key, a throttled client, and a failing upstream all land on the same <code>error-handler</code> rather than a raw 500.</>}
+  alt="A policy graph: listener, cors, key-auth, rate-limit, proxy-rewrite, upstream and logging chained by green success edges; key-auth's denied port routes straight to client, while red dashed error edges from rate-limit and upstream converge on a shared error-handler."
+  caption={<>A policy as the editor draws it. Solid green edges are the <code>success</code> path: <code>listener</code> → CORS → auth → rate limit → rewrite → upstream → access log → <code>client</code>. A rejected API key is a deliberate outcome, not a failure: it leaves key-auth's own dedicated <code>denied</code> port straight to <code>client</code>, its 401 already prepared. The dashed red edges leave rate-limit's and upstream's <code>error</code> ports — a throttled client and a failing upstream land on the same <code>error-handler</code> rather than a raw 500.</>}
 />
 
 ## Nodes
