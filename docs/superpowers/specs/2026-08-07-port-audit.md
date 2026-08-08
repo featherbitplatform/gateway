@@ -201,6 +201,22 @@ code wins — every such case is called out in the row's evidence and in
     design draft's known-adopters table. All three were independently confirmed as
     `default` (zero deliberate-response writes) — their absence from the draft's table
     was correct, not an oversight.
+12. **The unemittable-port wart (closeout note, Task 14).** `limit-conn`, `api-breaker`,
+    and `proxy-cache` are each two plugin *nodes* (acquire/release, check/observe,
+    lookup/store) sharing one node **type**, and therefore one static `PortSpec`
+    (`src/plugins/ports.rs`) resolved by type name, not by role. Because the mandatory-
+    wiring check in `src/graph/engine.rs` walks every `success`/`outcome` port declared
+    for a node's *type*, the role that never actually emits the outcome port — `limit-
+    conn`'s release node, `api-breaker`'s observe node, `proxy-cache`'s store node —
+    still has to have `limited`/`broken`/`hit` wired, or the policy won't compile. This
+    is documented as expected behavior on all three plugin pages (each has a sentence to
+    the effect of "the release/observe/store node's port is unused but still requires
+    wiring") and on the concepts page's port-model section, so no user-facing bug exists
+    today. It is recorded here for whoever
+    eventually gives `PortSpec` a per-role variant (e.g. a `role: Role` parameter on
+    `port_spec()`, or a second spec constant per role) — that refactor should also drop
+    the now-unreachable wiring requirement on the never-emitting role's port, and this
+    entry is the pointer back to why the requirement exists today.
 
 ## Sanity checks
 

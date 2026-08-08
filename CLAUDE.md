@@ -60,7 +60,7 @@ tool configs at the repo root are the shared source of truth):
 A high-performance API gateway delivered as a single Rust binary. (The original `REQUIREMENTS.md` specification no longer exists in the repo; the closest current equivalents are the docs site under `website/docs/` and the honest-state ledger at `website/docs/reference/roadmap.md`.)
 
 Core features:
-- **Node-graph routing policies** — request/response pipelines declared in YAML with success/error port routing
+- **Node-graph routing policies** — request/response pipelines declared in YAML with declared-port routing (success/outcome/error); 37 node types exit deliberate rejections, redirects, throttles, and cache/split short-circuits on dedicated outcome ports (`denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`, `routed`, `hit`) instead of the `error` port, and the compiler rejects any policy that leaves a `success`/outcome port unwired
 - **Two-tier plugin system** — 80+ native Rust node types (structural nodes, proxy/transform, security, auth & authz incl. interactive SSO, traffic control, 17 loggers, tracing, metrics, serverless/FaaS — most ported from Apache APISIX 3.17) + scripted plugins in Lua (mlua, Luau runtime)
 - **Context object** — `request`, `response`, `message`, `errors` flowing through every node
 - **Admin API** — axum-based REST API on separate port with Basic Auth, CRUD for routes/policies, health/ready/metrics endpoints
@@ -72,19 +72,19 @@ Core features:
 
 ## Architecture
 
-**Request flow**: HTTP request → `server::listener` matches route → builds `Context` → `CompiledGraph::execute()` walks nodes following success/error edges → final `Context.response` sent to client.
+**Request flow**: HTTP request → `server::listener` matches route → builds `Context` → `CompiledGraph::execute()` walks nodes following declared-port edges (success/outcome/error) → final `Context.response` sent to client.
 
 **Key modules**:
-- `src/graph/engine.rs` — compiles PolicyConfig into CompiledGraph, executes node graph with success/error port routing
+- `src/graph/engine.rs` — compiles PolicyConfig into CompiledGraph, executes node graph with declared-port routing (success/outcome/error)
 - `src/state.rs` — SharedState with RwLock-protected routes, used by both data-plane and admin API
 - `src/plugins/mod.rs` — Plugin trait + `create_plugin()` factory for all 80+ node types
 - `src/plugins/script/lua_runtime.rs` — Context↔Lua table marshalling, script execution
 - `src/admin/` — axum Router with basic auth middleware, CRUD endpoints, /healthz, /readyz, /metrics
 - `src/debug/` — debug mode: per-request policy-execution traces (context snapshot + derived diff per node, redacted at capture time, bounded ring buffer) and the plugin sandbox; served from `/api/debug/*` and the UI's Debug panel. Off unless `debug.enabled` is set in `system.yaml` (restart-gated by design)
 
-**Plugin contract**: `async fn execute(ctx, named_inputs) -> Result<PluginOutput, PluginExecutionError>`. Errors include the context so the graph engine can route through error ports.
+**Plugin contract**: `async fn execute(&self, ctx: Context) -> Result<PluginOutput, PluginExecutionError>` (no `named_inputs` — removed as dead plumbing when named output ports landed). `PluginOutput.port: Option<&'static str>` names the declared output port the result leaves on (`None` = `success`); it must match a port of kind `outcome` in the node type's static `PortSpec` (`src/plugins/ports.rs`). Errors include the context so the graph engine can route through the node's error edge (or the policy catch-all).
 
-**Edge format in YAML**: `from: node_id.port` / `to: node_id.port`. Ports: `out`, `success`, `error`, `in`.
+**Edge format in YAML**: `from: node_id.port` / `to: node_id.port`. Ports: `out` (alias for `success`), `success`, plugin-declared `outcome` ports (e.g. `denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`, `routed`, `hit`), `error`, `in`. Every `success`/`outcome` port must be wired or policy compilation fails; `error` alone keeps its fallback chain.
 
 ## Configuration
 
