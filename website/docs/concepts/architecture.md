@@ -12,7 +12,7 @@ HTTP request
   → server::listener matches a route (first match wins, in config order)
   → builds a Context from the request
   → CompiledGraph::execute() walks the policy's nodes
-      following success/error edges
+      following declared output-port edges (success/outcome/error)
   → the final Context.response is sent to the client
 ```
 
@@ -20,7 +20,7 @@ In detail:
 
 1. The data-plane server buffers the request body and scans the route table for the first route whose match rule (path, method, headers, host) accepts the request. Unmatched requests get a JSON 404.
 2. A fresh [Context](context-object.md) is built: `request` populated from the incoming request, `response` empty (`status_code` 0), `message` and `errors` empty.
-3. The route's compiled graph executes: starting at the entry node, each plugin runs and the walk follows its success edge on `Ok` or its error edge (or the catch-all handler) on failure, until a terminal `client` node is reached. See [Policies and graphs](policies-and-graphs.md) and [Error handling](error-handling.md).
+3. The route's compiled graph executes: starting at the entry node, each plugin runs and the walk follows the output port its result names — `success` on a normal `Ok`, the plugin's own declared outcome port (e.g. `denied`, `redirect`) on a deliberate alternate result, or its error edge (or the catch-all handler) on failure — until a terminal `client` node is reached. See [Policies and graphs](policies-and-graphs.md) and [Error handling](error-handling.md).
 4. The resulting `Context.response` is converted to an HTTP response. A `status_code` of `0` (never set by any node) is treated as `200`.
 
 ## Shared state and locking

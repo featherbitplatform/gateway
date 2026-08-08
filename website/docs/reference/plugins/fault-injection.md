@@ -65,7 +65,7 @@ Routing `abort` through an `error-handler` instead will *replace* the injected b
 
 ## Ports
 
-`fault-injection` declares three output ports: `success` (nothing triggered, or a delay-only fault after sleeping), `abort` (an injected fault response is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `abort` is a mandatory port: the policy compiler rejects any policy that leaves it unwired.
+`fault-injection` declares three output ports: `success` (nothing triggered, or a delay-only fault after sleeping), `abort` (an injected fault response is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `abort` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. See [Wiring the abort early-exit](#wiring-the-abort-early-exit) above.
 
 ## Behavior notes
 
