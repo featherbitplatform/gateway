@@ -8,6 +8,19 @@
 //! ships it to a remote TCP sink **only when the request accumulated errors**
 //! (`context.errors` is non-empty). Requests that succeed produce nothing.
 //!
+//! ## What counts as an error (and what does not)
+//!
+//! `context.errors` holds **error records** — one per node that could not do
+//! its job (upstream unreachable, IdP callout failed, counter store down,
+//! unparseable input). It does **not** hold deliberate responses. A request
+//! that exits on an *outcome* port — an auth denial (`denied`), a throttle
+//! (`limited`), an open circuit breaker (`broken`), an injected abort
+//! (`abort`), a redirect (`redirect`) — carries **no** error record, so this
+//! node emits nothing for it. That is by design: those are the gateway working
+//! as configured, not failing. To ship a record of denials or throttles, put a
+//! regular access logger (`logging`, `http-logger`, ...) on the path those
+//! outcome ports take.
+//!
 //! Entries are buffered in a [`BatchSink`] and delivered by a background task
 //! that opens a fresh [`tokio::net::TcpStream`] per flush and writes each entry
 //! as one newline-delimited JSON object. Delivery is fire-and-forget on the

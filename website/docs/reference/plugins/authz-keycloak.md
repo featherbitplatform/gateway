@@ -35,11 +35,13 @@ Authorizes requests against a [Keycloak](https://www.keycloak.org/) authorizatio
 
 The bearer token is read from the `Authorization` header (a missing `Bearer ` prefix is added). The plugin POSTs `application/x-www-form-urlencoded` body `grant_type=urn:ietf:params:oauth:grant-type:uma-ticket&audience=<client_id>&response_mode=decision&permission=<...>` to `token_endpoint`, forwarding the caller's token as the `Authorization` header.
 
-- `200` from Keycloak → **success** port, request continues.
-- A missing bearer token, an empty `permissions` list under `ENFORCING`, or any other decision status from Keycloak → deliberate rejection, exits on the **`denied`** port:
+Only a status Keycloak uses to express an access verdict is treated as a verdict:
+
+- `200` (permissions granted) → **success** port, request continues.
+- `401` or `403` (Keycloak evaluated the request and refused it), a missing bearer token, or an empty `permissions` list under `ENFORCING` → deliberate rejection, exits on the **`denied`** port:
   - `context.response.status_code` = `403`
   - Body: `{"error":"access_denied","error_description":"not_authorized"}`
-- A genuine callout failure (the token endpoint unreachable, timed out, or otherwise untransportable) → the node could not do its job, so it exits on the ordinary **error** port instead (same response shape, error code `AUTHZ_KEYCLOAK_ERROR` appended to `context.errors`).
+- **Any other status** — `5xx`, or a `4xx` that means the request *to Keycloak* was wrong (`400 invalid_grant`, a `404` from a misconfigured `token_endpoint` path) — and any genuine callout failure (endpoint unreachable, timed out, untransportable) → the node never obtained a decision, so it exits on the ordinary **error** port instead (same response shape, error code `AUTHZ_KEYCLOAK_ERROR` appended to `context.errors`). Reporting a broken deployment as a `403` would hide it behind a plausible-looking denial.
 
 With an empty `permissions` list, `ENFORCING` denies and `PERMISSIVE` allows (no callout).
 
@@ -51,11 +53,11 @@ The plugin covers the static-permission UMA check. The following features are in
 - **`lazy_load_paths` / resource resolution.** No dynamic URI→resource lookups against the resource-registration endpoint, and no service-account (`client_credentials`) token acquisition. Only statically configured `permissions` are checked.
 - **Password grant.** `password_grant_token_generation_incoming_uri` token minting is not supported.
 - **Caching & redirects.** No discovery/token caching and no `access_denied_redirect_uri` (307) redirect — denials are always `403`.
-- **Error status normalization.** Every non-`200` decision status from Keycloak — including its own `401`/`403`/`4xx` responses — maps to `403` on the `denied` port.
+- **Error status normalization.** Keycloak's own `401`/`403` decision statuses are normalized to `403` on the `denied` port; the plugin does not relay Keycloak's status verbatim.
 
 ## Ports
 
-`authz-keycloak` declares three output ports: `success`, `denied` (a `403` rejection is prepared — missing bearer token, no permission configured under `ENFORCING`, or Keycloak refusing the UMA decision), and `error` (a genuine callout failure talking to the token endpoint). `denied` is a mandatory port, same as `success`: the policy compiler rejects any policy that leaves it unwired.
+`authz-keycloak` declares three output ports: `success`, `denied` (a `403` rejection is prepared — missing bearer token, no permission configured under `ENFORCING`, or Keycloak refusing the UMA decision with a `401`/`403`), and `error` (the callout failed, or the token endpoint answered with a status that is not a decision — see Behavior above). `denied` is a mandatory port, same as `success`: the policy compiler rejects any policy that leaves it unwired.
 
 ```yaml
 edges:

@@ -9,8 +9,8 @@ A **routing policy** is a directed node graph that defines how requests matched 
 
 <UiShot
   name="policy-graph"
-  alt="A policy graph: listener, cors, key-auth, rate-limit, proxy-rewrite, upstream and logging chained by green success edges; key-auth's denied port routes straight to client, while red dashed error edges from rate-limit and upstream converge on a shared error-handler."
-  caption={<>A policy as the editor draws it. Solid green edges are the <code>success</code> path: <code>listener</code> → CORS → auth → rate limit → rewrite → upstream → access log → <code>client</code>. A rejected API key is a deliberate outcome, not a failure: it leaves key-auth's own dedicated <code>denied</code> port straight to <code>client</code>, its 401 already prepared. The dashed red edges leave rate-limit's and upstream's <code>error</code> ports — a throttled client and a failing upstream land on the same <code>error-handler</code> rather than a raw 500.</>}
+  alt="A policy graph: listener, cors, key-auth, rate-limit, proxy-rewrite, upstream and logging chained by green success edges, with red dashed error edges from several of those nodes converging on one shared error-handler whose success edge returns to client."
+  caption={<>A policy as the editor draws it. Solid green edges are the <code>success</code> path: <code>listener</code> → CORS → auth → rate limit → rewrite → upstream → access log → <code>client</code>. The dashed red edges are <code>error</code> ports, all landing on one <code>error-handler</code> rather than a raw 500. Note what an error edge means here: rate-limit's fires when the limiter <em>store</em> is unreachable — not when a client is throttled. A throttled client is a deliberate outcome, so it leaves on rate-limit's own <code>limited</code> port straight to <code>client</code> with its 429 already prepared, exactly as a rejected API key leaves key-auth on <code>denied</code>. (This capture predates the outcome ports, so those two edges are not drawn.)</>}
 />
 
 ## Nodes
@@ -55,8 +55,10 @@ invalid API key, `cors` exits on `preflight` for an answered `OPTIONS`
 request, `rate-limit` exits on `limited` for a 429, and so on. Every plugin's
 full port declaration (name, kind, and a description) is inspectable from the
 plugin catalog at `GET /api/plugins` — the same catalog the web UI's
-node-graph editor reads to render each node's handles, colored by port kind,
-with a warning badge on anything required but unconnected.
+node-graph editor reads to render each node's handles, colored by port kind.
+The editor does not pre-flag an unconnected handle; a policy that leaves a
+mandatory port unwired is rejected when you save it, and the compiler's
+message appears as an error toast.
 
 Every port of kind `success` or `outcome` is **mandatory**: the policy
 compiler rejects any policy that leaves one unwired. For example, a policy
@@ -67,9 +69,13 @@ compilation (at startup, on hot-reload, or on an Admin API write) with:
 policy 'my-policy': output port 'denied' of node 'auth' (type 'key-auth') must be wired — add an edge from 'auth.denied'
 ```
 
-The message names the policy, the port, the node, and the node's type, and
-validation collects **all** such violations at once rather than stopping at
-the first. Only `error` stays optional — its fallback chain (per-node error
+The message names the policy, the port, the node, and the node's type. The
+port checks report the **first** violation and stop — fix it and recompile to
+see the next one. (This differs from the structural rules in [Error
+handling](error-handling.md#validation-rules), which collect all violations at
+once, and from saving a [supernode](supernodes.md) definition, whose port
+violations are all reported together.) Only `error` stays optional — its
+fallback chain (per-node error
 edge → policy catch-all → a generic 500, see [Error
 handling](error-handling.md)) is unchanged, because it's fine for "the node
 might fail someday" to have no dedicated handler; it is never fine for "the
@@ -101,6 +107,23 @@ For any specific plugin's exact ports, when each one fires, and a wiring
 example, see that plugin's own page in the [plugin
 reference](../reference/plugins/index.md) — every plugin with outcome ports
 carries a **Ports** section.
+
+### Behavior changes in this release
+
+Splitting deliberate outcomes off the `error` port changed three
+externally-visible behaviors. None of them needs a config change, but they do
+change what you see in metrics, logs, and a few status codes.
+
+| What changed | Before | Now |
+|---|---|---|
+| **`gateway_request_errors_total` / `gateway_node_errors_total`** | Every rejection incremented them: a 401 from `key-auth`, a 429 from `rate-limit`, an open breaker, a redirect. | Only genuine node failures do. Denials, throttles, breaker opens, aborts, and redirects carry no error record and increment nothing. Count them from `gateway_requests_total`'s `status` label. See [Observability](../guides/observability.md#prometheus-metrics). |
+| **`error-log-logger`** | Captured deliberate rejections along with real failures, since both landed in `context.errors`. | Captures failures only. To log denials and throttles, put a regular access logger on the branch the outcome port takes. See [error-log-logger](../reference/plugins/error-log-logger.md). |
+| **`dingtalk-auth` / `feishu-auth` provider failures** | A failed callout to DingTalk/Feishu (unreachable, timeout, unparseable reply) surfaced to the client as `401`, indistinguishable from a refused login. | Surfaces as `502` on the node's `error` port. A `401` on `denied` now means only "the provider refused this code". |
+
+Two related notes:
+
+- **`error-handler` no longer touches an errorless context.** A response that arrives with no error record — every outcome exit — passes through untouched instead of being overwritten by the handler's status and template. Wire outcome ports straight to `client`; to reshape one, route it through `response-rewrite`, or [`exit-transformer`](../reference/plugins/exit-transformer.md) with `always: true`.
+- **Mandatory wiring is new.** Existing policies that omit an outcome edge now fail to compile with the message shown above. That is a compile-time error surfaced at startup, on hot-reload, or on an Admin API write — never at request time.
 
 ## Full YAML example
 

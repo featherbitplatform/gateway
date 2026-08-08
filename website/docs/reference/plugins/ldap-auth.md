@@ -46,7 +46,7 @@ On a missing header, malformed credentials, empty username/password, or a bind r
 - `WWW-Authenticate: Basic realm="<realm>"` challenge header
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
 
-A connection error or a connect+bind timeout is a genuine **infrastructure failure**, not a credential decision — it stays on the **error** port instead, with the same `WWW-Authenticate` challenge and error code `LDAP_AUTH_FAILED`.
+A connection error or a connect+bind timeout is a genuine **infrastructure failure**, not a credential decision — it stays on the **error** port instead, with error code `LDAP_AUTH_FAILED`. The prepared response mirrors the `denied` shape exactly (same `401`, same `WWW-Authenticate` challenge, same JSON body and `content-type`), so what the client sees is unchanged if the error edge leads to `client`.
 
 ## Ports
 

@@ -15,12 +15,18 @@ Six metric families are recorded — per-route metrics by the data plane, per-no
 |---|---|---|---|
 | `gateway_requests_total` | counter | `route`, `method`, `status` | Total number of requests |
 | `gateway_request_duration_seconds` | histogram | `route` | End-to-end request latency (buckets 1 ms to 5 s) |
-| `gateway_request_errors_total` | counter | `route`, `error_code` | Failed requests by error code |
+| `gateway_request_errors_total` | counter | `route`, `error_code` | **Genuine node failures** by error code — one increment per error record left in `context.errors` |
 | `gateway_node_executions_total` | counter | `policy`, `node_id`, `node_type` | Graph node executions |
 | `gateway_node_duration_seconds` | histogram | `policy`, `node_id` | Per-node execution latency (buckets 0.1 ms to 500 ms) |
 | `gateway_node_errors_total` | counter | `policy`, `node_id`, `error_code` | Node failures by error code |
 
 The per-node families let you pinpoint which node inside a routing policy is slow or failing, not just which route.
+
+:::info Errors are failures, not rejections
+`gateway_request_errors_total` and `gateway_node_errors_total` count only cases where a node **could not do its job** — an unreachable upstream, a failed IdP callout, a counter store that is down, input the node cannot parse. A deliberate rejection leaves its node through an [outcome port](../concepts/policies-and-graphs.md#outcome-ports-and-the-mandatory-wiring-rule) (`denied`, `limited`, `broken`, `abort`, `redirect`, `preflight`, `routed`, `hit`) and appends **no** error record, so it does not increment either counter.
+
+Alert on genuine faults with the error counters; measure denials and throttles from `gateway_requests_total`'s `status` label (`status="401"`, `status="429"`, ...) instead.
+:::
 
 ```bash
 curl -u admin:admin http://localhost:9090/metrics

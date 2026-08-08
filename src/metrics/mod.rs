@@ -20,8 +20,13 @@ pub struct GatewayMetrics {
     /// `gateway_request_duration_seconds` — end-to-end request latency
     /// histogram per `route` (buckets 1ms to 5s).
     pub request_duration: HistogramVec,
-    /// `gateway_request_errors_total` — failed requests by `route` and
-    /// `error_code`.
+    /// `gateway_request_errors_total` — one increment per **error record** in
+    /// `Context.errors` at the end of the request, by `route` and `error_code`.
+    ///
+    /// This counts genuine node failures only. Deliberate outcome exits
+    /// (`denied`, `limited`, `broken`, `abort`, `redirect`, `preflight`,
+    /// `routed`, `hit`) append no error record and therefore never increment
+    /// it — track those through `gateway_requests_total`'s `status` label.
     pub request_errors: IntCounterVec,
     /// `gateway_node_executions_total` — graph node executions by `policy`,
     /// `node_id`, `node_type`.

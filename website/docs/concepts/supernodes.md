@@ -49,6 +49,16 @@ Inside a policy, an instance is a plain node with `type: supernode`, referencing
 
 From the policy's point of view `sec` behaves like any other node — it has one input port and `success`/`error` output ports — regardless of how many nodes the definition contains internally.
 
+### An instance exposes exactly two exits
+
+`success` (alias `out`, the `output` boundary) and `error` (the `error` boundary) — nothing else. An instance never exposes an [outcome port](policies-and-graphs.md#outcome-ports-and-the-mandatory-wiring-rule): those belong to *inner* nodes, and the definition must route them to a boundary itself. An edge leaving the instance on any other port name is rejected, as is a second edge from either exit:
+
+```
+policy 'p': unknown port 'denied' on supernode instance 'sec' — instances expose success (alias out) and error
+```
+
+Correspondingly, **every `success`/outcome port of every inner node must be wired inside the definition** — to another inner node, or to the `output`/`error` boundary. This is checked when you save the definition, so the error names the definition rather than surfacing later as a puzzling compile failure on whichever policy happens to instantiate it. All such violations are reported together. Inner `error` ports stay exempt — the black-box rule below covers them.
+
 ## Black-box error routing
 
 A supernode instance exposes a single `error` port. `auth.error -> error.in` above is an explicit edge the definition itself wires — nothing implicit about it. The implicit case is `up`: its `error` port is left unwired inside the definition entirely. At expansion time, any inner node with no error edge of its own gets an implicit edge straight to wherever the policy connected the instance's `error` port — but only if the policy wired that port. If it didn't, those unhandled inner errors aren't silently swallowed; they fall through to the policy's `error_handler`, or a 500 if there isn't one. Either way, the policy wiring the instance only ever sees one error exit, no matter how many inner nodes could fail.

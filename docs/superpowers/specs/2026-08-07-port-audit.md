@@ -46,7 +46,7 @@ code wins — every such case is called out in the row's evidence and in
 | azure-functions | default | n/a | `src/plugins/native/azure_functions.rs:141-177` — same shape: relay-as-success, `Err` only on outbound infra failure via `faas::classify_error`. |
 | openwhisk | default | n/a | `src/plugins/native/openwhisk.rs:193-272` — success maps the OpenWhisk JSON envelope's own `statusCode`/`body`; `Err` (250-256) on transport failure, and (265, 503) on an unparseable envelope — "malformed input the node cannot process," stays Err. |
 | openfunction | default | n/a | `src/plugins/native/openfunction.rs:122-158` — identical relay-as-success pattern; `Err` only for outbound Timeout/InvalidRequest/Transport. |
-| error-handler | default (structural) | n/a | `src/plugins/native/error_handler.rs:63-85` — always `Ok(success)`; consumes `ctx.errors` to render the catch-all body, never produces an outcome itself. |
+| error-handler | default (structural) | n/a | `src/plugins/native/error_handler.rs` — always `Ok(success)`; consumes `ctx.errors` to render the catch-all body, never produces an outcome itself. **Amended in the final fix wave (2026-08-08, finding C1)**: it now passes an **errorless** context through untouched. Before, a context arriving with an empty `ctx.errors` — which is exactly what every outcome exit looks like — had its already-prepared response overwritten with the configured status and the *unrendered* `{{error.code}}` template. |
 | listener | default (structural) | n/a | `src/plugins/native/listener.rs:22-27` — unconditional `Ok(success)`, graph entry point, no `in` port. |
 | client | default (structural) | n/a | `src/plugins/native/client.rs:22-27` — unconditional `Ok(success)`, graph terminal, no outputs. |
 | cors | preflight | 204 OPTIONS short-circuit, currently on `success` (this plugin has no `Err` path at all) | `src/plugins/native/cors.rs:172` |
@@ -78,10 +78,10 @@ code wins — every such case is called out in the row's evidence and in
 | skywalking | default | n/a | `src/plugins/native/skywalking.rs:322-327` — always `Ok(success)`; `status_code` (`:293`) read-only; fire-and-forget export. |
 | prometheus | default | n/a | `src/plugins/native/prometheus.rs:104-121` — always `Ok(success)`; no `status_code` writes, no `Err`; pure counter bump. |
 | ldap-auth | denied | 401 missing/malformed header, empty creds, bind rejected | `src/plugins/native/ldap_auth.rs:133-157,224,229,236,250`. Note: `:251-267` (connection error) correctly stays a raw `Err`, but `:268` (bind **timeout**) is currently routed through the same `reject()`/401 helper as the deliberate denials — see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #4. |
-| wolf-rbac | denied | 401 missing/invalid token or wolf-server deny decision | `src/plugins/native/wolf_rbac.rs:121-142,253,258,338`. `:294-309` (outbound `Err`, 500) correctly stays on a raw `Err`, not through `reject()`. Draft flagged this plugin as unverified — confirmed clean, only `denied` needed. |
-| cas-auth | denied, redirect | 401 invalid/missing ticket → denied; 302 login/callback/logout → redirect | reject(): `src/plugins/native/cas_auth.rs:181-202` used at `:343,357`; redirect(): `:206-231` used at `:321,341,350` |
+| wolf-rbac | denied, **error (live)** | 401 missing/invalid token or wolf-server `401`/`403` deny decision → denied; any other status, plus outbound failure → `Err` | `src/plugins/native/wolf_rbac.rs` `reject()` / `callout_error()` + `classify_access_check()`. **Resolved in the final fix wave (2026-08-08, finding I2)**: the outbound-failure branch was already a raw `Err`, but every non-200 `access_check` status went out on `denied` — a `5xx` from wolf-server, or a `404` from a mistyped `server` base URL, looked like an access denial. Only `401`/`403` are denials now; the rest go through the extracted `callout_error()` helper (`WOLF_RBAC_UPSTREAM_ERROR`, 500). |
+| cas-auth | denied, redirect, **error (live)** | 401 missing ticket / CAS-refused ticket → denied; 302 login/callback/logout → redirect; transport failure or non-200 from `/serviceValidate` → `Err` | reject(): `src/plugins/native/cas_auth.rs` `reject()` used from both execute paths; redirect(): `redirect()`; infra split: `CasError::{Infra,Denied}` + `classify_validation()` + `infra_error()`. **Resolved in the final fix wave (2026-08-08, finding I1)**: previously *every* validation failure — including CAS being unreachable or answering non-200 — went out on `denied`, so a dead CAS server looked like a wave of bad tickets. Now only a verdict of "invalid ticket" is a denial; the callout failing is an `Err` (`CAS_AUTH_PROVIDER_ERROR`) whose prepared response mirrors `reject()`'s shape. Copied from openid-connect's `TokenError::{Infra,Denied}` pattern. |
 | authz-casbin | denied | 403 when `enforce()` returns false | `src/plugins/native/authz_casbin.rs:175-192,253`. `:254-273` (enforcer evaluation `Err`, doc'd "should not happen with a valid model") is currently folded into the same deny path — flagged as a judgment call, see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #5. |
-| authz-keycloak | denied | 403 no-permissions / missing-bearer / Keycloak-denied decision | `src/plugins/native/authz_keycloak.rs:164-182,276,284,313`. `:317-323` (outbound timeout/transport) is folded into the same `deny()` path today — should split to `Err` post-migration, see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #4. |
+| authz-keycloak | denied, **error (live)** | 403 no-permissions / missing-bearer / Keycloak `401`-`403` decision → denied; any other status, plus outbound timeout/transport → `Err` | `src/plugins/native/authz_keycloak.rs` `deny()` / `callout_error()` + `classify_decision()`. **Resolved in the final fix wave (2026-08-08, finding I2)**: the outbound timeout/transport split had already landed, but *any* non-200 status still went out on `denied` — so a `404` from a misconfigured `token_endpoint` or a `502` from a failing Keycloak masqueraded as a legitimate 403. Only `401`/`403` (statuses Keycloak uses to express a verdict) are denials now; everything else routes through the existing `callout_error()`. |
 | authz-casdoor | denied, redirect | 403 stateless-token rejection → denied; 302 login/callback/logout → redirect | deny(): `src/plugins/native/authz_casdoor.rs:250-267` used at `:413,417,421,479,500`; redirect(): `:271-291` used at `:379,443,472`. `:426` and `:507-514` mix callout-failure handling into the same deny/redirect helpers — see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #4. |
 | openid-connect | denied, redirect | 401 (missing/invalid bearer, CSRF/nonce/session failure) → denied; 302 (login/callback/logout) → redirect | reject(): `src/plugins/native/openid_connect.rs:548-572` used at ~12 call sites incl. `:641,658,697,700,706,718,723,734,737,747`; redirect(): `:1032-1054` used at `:585,683,766`. Several `reject()` call sites also cover genuine JWKS/discovery/token-endpoint/JSON-parse infra failures folded into the same 401 path — see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #4. |
 | dingtalk-auth | denied | 401 missing code / DingTalk-rejected code | `src/plugins/native/dingtalk_auth.rs:249-269,389,394,399`. The plugin already distinguishes `DingtalkError::Unauthorized` vs `::Upstream` internally, but `execute()` routes both through the same `reject()`/401 call — `Upstream` (callout failure) should split to `Err` post-migration, see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #6. |
@@ -155,7 +155,8 @@ code wins — every such case is called out in the row's evidence and in
    draft's own framing of `traffic-split` as a "routing-decision plugin... with no
    status write" was also factually wrong (it does write status and does proxy) —
    corrected here.
-4. **authz-keycloak, authz-casdoor, ldap-auth, openid-connect** — each folds a genuine
+4. **authz-keycloak, authz-casdoor, ldap-auth, openid-connect** — *(all resolved; see
+   the closeout note at the end of this section)* each folds a genuine
    outbound-infra failure (timeout, transport error, unparseable provider response) into
    the same helper/status as its deliberate denial or redirect (authz-keycloak
    `:317-323`; authz-casdoor `:426`,`:507-514`; ldap-auth `:268` bind timeout, notably
@@ -218,15 +219,39 @@ code wins — every such case is called out in the row's evidence and in
     the now-unreachable wiring requirement on the never-emitting role's port, and this
     entry is the pointer back to why the requirement exists today.
 
+13. **Infra/denial laundering closeout (final fix wave, 2026-08-08).** Discrepancy #4
+    (authz-keycloak, authz-casdoor, ldap-auth, openid-connect) and #6 (dingtalk-auth,
+    feishu-auth) called for case-by-case Infra/Denied splits during migration. Tasks 6-10
+    landed the transport/timeout half of those splits; the whole-branch review then found
+    three plugins where a *status-based* verdict was still laundered into a denial, plus
+    one where the split had not been done at all. All are now closed:
+
+    | plugin | what was still wrong | fix |
+    |---|---|---|
+    | cas-auth | no split at all: transport failure *and* non-200 both went out on `denied` | `CasError::{Infra,Denied}` + `classify_validation()` + `infra_error()` (finding I1) |
+    | authz-keycloak | transport split done, but any non-200 status was a `denied` | `classify_decision()`: only `401`/`403` are verdicts (finding I2) |
+    | wolf-rbac | transport split done, but any non-200 `access_check` status was a `denied` | `classify_access_check()`: only `401`/`403` are verdicts (finding I2) |
+    | ldap-auth | split done, but `infra_error()` omitted the JSON body/content-type that `reject()` sets, so the error path was client-visibly different | body + `content-type` added (final-wave minor) |
+
+    The shared rule these three classifiers encode: **a status is a verdict only if the
+    provider uses it to express one.** Anything else (`5xx`, `400`, a `404` from a
+    misconfigured endpoint) means the node never obtained a decision, so it belongs on
+    `error` — laundering it into a `denied` hides a broken deployment behind a
+    plausible-looking 403.
+
 ## Sanity checks
 
 - **Row count**: 86 rows in the ledger table, matching `KNOWN_PLUGIN_TYPES.len()` (86,
   confirmed via `awk`/`grep` count against `src/plugins/mod.rs:97-182`).
-- **Vocabulary**: every outcome-port name used in the `verdict` column is one of
+- **Vocabulary**: every *outcome*-port name used in the `verdict` column is one of
   `denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`, `routed`, `hit` — no
   further synonyms invented. `routed` and `hit` were added 2026-08-08 (human decision)
   specifically to resolve the `traffic-split`/`proxy-cache` structural exceptions noted
-  below — see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #3.
+  below — see [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #3. Three
+  rows (cas-auth, authz-keycloak, wolf-rbac) additionally annotate `error (live)` in that
+  column — not a new vocabulary term, just a marker that the final fix wave gave those
+  plugins a genuine `Err` path where they previously had none (or a too-narrow one); see
+  [Discrepancies](#discrepancies-vs-the-design-drafts-expectations) #13.
 - **Evidence**: every row with a non-`default` verdict cites `file:line` for the
   deliberate response write(s) driving it. Default rows cite either "no status_code/Err
   writes" or the specific line(s) showing why an existing write is not a deliberate
