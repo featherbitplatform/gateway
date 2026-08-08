@@ -174,7 +174,18 @@ pub fn validate_policy(policy: &PolicyConfig) -> Result<(), Vec<String>> {
 /// - one incoming edge per input port, except `output`/`error` boundaries
 ///   and `error-handler`-typed inner nodes (fan-in allowed);
 /// - no orphan inner nodes (unconnected `output`/`error` boundaries are
-///   fine — not every subgraph uses both exits).
+///   fine — not every subgraph uses both exits);
+/// - every inner edge leaves a port its source node's type actually declares
+///   (`out` normalizes to `success`; boundary pseudo-nodes are exempt — they
+///   have no plugin type and therefore no `PortSpec`);
+/// - every `success`/outcome port of every inner node is wired **inside** the
+///   definition, to another inner node or to a boundary. Definitions are
+///   compiled as part of each policy that instantiates them, so an unwired
+///   outcome port would otherwise surface as a confusing compile error on an
+///   unrelated policy rather than at save time on the definition itself.
+///   `error` ports stay exempt: the black-box rule in
+///   [`expand_policy`](crate::graph::expand_policy) wires every unhandled
+///   inner error port to the instance's error exit.
 pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
 
@@ -282,6 +293,65 @@ pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
                 "Supernode '{}': node '{}' input '{}' has multiple incoming edges",
                 sn.name, to_node, edge.to
             ));
+        }
+    }
+
+    // Port hygiene on inner nodes. Boundary pseudo-nodes have no plugin type
+    // (and no PortSpec), so they are exempt; an unknown inner type is left to
+    // the forbidden-type/factory checks rather than reported twice here.
+    let inner_specs: std::collections::HashMap<&str, &'static crate::plugins::ports::PortSpec> = sn
+        .nodes
+        .iter()
+        .filter(|n| !BOUNDARY_TYPES.contains(&n.node_type.as_str()))
+        .filter_map(|n| crate::plugins::port_spec(&n.node_type).map(|s| (n.id.as_str(), s)))
+        .collect();
+
+    // (a) Every inner edge must leave a port its source type declares.
+    let mut wired_ports: HashSet<(&str, &str)> = HashSet::new();
+    for edge in &sn.edges {
+        let (from_node, from_port) = split_endpoint(&edge.from);
+        let from_port = if from_port == "out" {
+            "success"
+        } else {
+            from_port
+        };
+        let Some(spec) = inner_specs.get(from_node) else {
+            continue; // boundary node, or a type reported elsewhere
+        };
+        if spec.outputs.iter().any(|p| p.name == from_port) {
+            wired_ports.insert((from_node, from_port));
+        } else {
+            let node_type = sn
+                .nodes
+                .iter()
+                .find(|n| n.id == from_node)
+                .map(|n| n.node_type.as_str())
+                .unwrap_or("");
+            errors.push(format!(
+                "Supernode '{}': node '{}' (type '{}') has no output port '{}'",
+                sn.name, from_node, node_type, from_port
+            ));
+        }
+    }
+
+    // (b) Every success/outcome port of every inner node must be wired inside
+    // the definition. `error` is exempt (the black-box rule covers it).
+    for n in &sn.nodes {
+        let Some(spec) = inner_specs.get(n.id.as_str()) else {
+            continue;
+        };
+        for p in spec.outputs {
+            if matches!(p.kind, crate::plugins::ports::PortKind::Error) {
+                continue;
+            }
+            if !wired_ports.contains(&(n.id.as_str(), p.name)) {
+                errors.push(format!(
+                    "Supernode '{}': output port '{}' of node '{}' (type '{}') must be wired \
+                     inside the definition — add an edge from '{}.{}' to another inner node or \
+                     to the 'output'/'error' boundary",
+                    sn.name, p.name, n.id, n.node_type, n.id, p.name
+                ));
+            }
         }
     }
 
@@ -582,6 +652,7 @@ mod tests {
             edges: vec![
                 sn_edge("input.out", "a.in"),
                 sn_edge("a.success", "b.in"),
+                sn_edge("a.preflight", "output.in"), // cors' outcome port
                 sn_edge("a.error", "output.in"),
                 sn_edge("b.success", "output.in"),
             ],
@@ -590,6 +661,120 @@ mod tests {
             validate_supernode(&sn).is_ok(),
             "{:?}",
             validate_supernode(&sn)
+        );
+    }
+
+    /// I4(b): an inner node whose outcome port is left unwired inside the
+    /// definition must be rejected at save time. Otherwise the failure only
+    /// surfaces later, as a compile error on whichever unrelated policy
+    /// happens to instantiate the supernode.
+    #[test]
+    fn test_supernode_unwired_inner_outcome_port_rejected() {
+        let mut nodes = boundary_nodes();
+        nodes.push(inner("auth", "key-auth"));
+        let sn = SupernodeConfig {
+            name: "unwired".to_string(),
+            description: None,
+            nodes,
+            edges: vec![
+                sn_edge("input.out", "auth.in"),
+                sn_edge("auth.success", "output.in"),
+                // auth.denied deliberately left unwired
+            ],
+        };
+        let errors = validate_supernode(&sn).unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("output port 'denied'")
+                && e.contains("'auth'")
+                && e.contains("must be wired inside the definition")),
+            "{errors:?}"
+        );
+    }
+
+    /// The same definition with `denied` wired to a boundary is accepted.
+    #[test]
+    fn test_supernode_fully_wired_outcome_port_accepted() {
+        let mut nodes = boundary_nodes();
+        nodes.push(inner("auth", "key-auth"));
+        let sn = SupernodeConfig {
+            name: "wired".to_string(),
+            description: None,
+            nodes,
+            edges: vec![
+                sn_edge("input.out", "auth.in"),
+                sn_edge("auth.success", "output.in"),
+                sn_edge("auth.denied", "output.in"),
+            ],
+        };
+        assert_eq!(validate_supernode(&sn), Ok(()));
+    }
+
+    /// I4(a): an inner edge naming a port the node's type does not declare is
+    /// rejected — the same rule `compile_policy` applies to policy edges.
+    #[test]
+    fn test_supernode_undeclared_inner_port_rejected() {
+        let mut nodes = boundary_nodes();
+        nodes.push(inner("up", "upstream"));
+        let sn = SupernodeConfig {
+            name: "bogus-port".to_string(),
+            description: None,
+            nodes,
+            edges: vec![
+                sn_edge("input.out", "up.in"),
+                sn_edge("up.success", "output.in"),
+                sn_edge("up.banana", "error.in"),
+            ],
+        };
+        let errors = validate_supernode(&sn).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("has no output port 'banana'") && e.contains("'up'")),
+            "{errors:?}"
+        );
+    }
+
+    /// `out` is the YAML alias for `success` on an inner edge too, and must
+    /// satisfy the mandatory-wiring check rather than trip the port-name one.
+    #[test]
+    fn test_supernode_out_alias_satisfies_inner_wiring() {
+        let mut nodes = boundary_nodes();
+        nodes.push(inner("up", "upstream"));
+        let sn = SupernodeConfig {
+            name: "alias".to_string(),
+            description: None,
+            nodes,
+            edges: vec![sn_edge("input.out", "up.in"), sn_edge("up.out", "output.in")],
+        };
+        assert_eq!(validate_supernode(&sn), Ok(()));
+    }
+
+    /// All violations are collected, not just the first: two inner nodes each
+    /// missing a mandatory port report two errors.
+    #[test]
+    fn test_supernode_collects_all_port_violations() {
+        let mut nodes = boundary_nodes();
+        nodes.push(inner("auth", "key-auth"));
+        nodes.push(inner("rl", "rate-limit"));
+        let sn = SupernodeConfig {
+            name: "many".to_string(),
+            description: None,
+            nodes,
+            edges: vec![
+                sn_edge("input.out", "auth.in"),
+                sn_edge("auth.success", "rl.in"),
+                sn_edge("rl.success", "output.in"),
+                // auth.denied and rl.limited both unwired
+            ],
+        };
+        let errors = validate_supernode(&sn).unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("'denied'")),
+            "{errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("'limited'")),
+            "{errors:?}"
         );
     }
 
