@@ -454,7 +454,8 @@ pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
         "key-auth" | "basic-auth" | "jwt-auth" | "hmac-auth" | "jwe-decrypt" | "multi-auth"
         | "ldap-auth" | "dingtalk-auth" | "feishu-auth" | "forward-auth" | "opa"
         | "wolf-rbac" => Some(&ports::AUTH_SPEC),
-        "cas-auth" => Some(&ports::INTERACTIVE_AUTH_SPEC),
+        "cas-auth" | "openid-connect" | "authz-casdoor" => Some(&ports::INTERACTIVE_AUTH_SPEC),
+        "authz-casbin" | "authz-keycloak" => Some(&ports::AUTH_SPEC),
         _ if KNOWN_PLUGIN_TYPES.contains(&plugin_type) => Some(&ports::DEFAULT_SPEC),
         _ => None,
     }

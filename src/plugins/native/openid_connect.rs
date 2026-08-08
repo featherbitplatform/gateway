@@ -22,13 +22,18 @@
 //!
 //! # Flow wiring (interactive mode)
 //!
-//! In interactive mode the node exits through its **error port** whenever it
-//! needs the browser to move (the 302 to the IdP, the post-callback 302 back to
-//! the original URL, or a `401`); the prepared response already sits on the
-//! context. Wire the node's `error` edge to `client.in`. Only a request that
-//! arrives with a valid session cookie continues out the `success` port toward
-//! the upstream. The node must be on a route whose match rule also covers the
-//! `redirect_uri` path so the callback reaches it.
+//! In interactive mode the node exits through the dedicated **`redirect`**
+//! port whenever the browser must move (the 302 to the IdP, the post-callback
+//! 302 back to the original URL, or a logout redirect) — wire `redirect` to
+//! `client.in`. Deliberate rejections (missing/invalid flow cookie, CSRF
+//! `state` mismatch, an invalid `id_token`, or a nonce mismatch) exit through
+//! **`denied`** — wire it to `client.in` too, or a custom denial handler.
+//! Genuine provider failures (discovery, JWKS, or token-endpoint callouts that
+//! transport-fail, return a non-2xx status, or hand back unparseable data)
+//! exit through the ordinary **`error`** port, since the node could not do its
+//! job. Only a request that arrives with a valid session cookie continues out
+//! **`success`** toward the upstream. The node must be on a route whose match
+//! rule also covers the `redirect_uri` path so the callback reaches it.
 //!
 //! # Deviations from APISIX
 //!
@@ -134,6 +139,18 @@ struct JwkSet {
 struct CachedJwks {
     keys: Vec<Jwk>,
     fetched_at: Instant,
+}
+
+/// Distinguishes a genuine provider/infrastructure failure (discovery, JWKS,
+/// or introspection endpoint unreachable, non-2xx, or unparseable) from the
+/// presented token being deliberately invalid (bad signature, unknown `kid`,
+/// wrong issuer/audience, expired, or inactive). `Infra` exits through the
+/// node's `error` port — the node could not do its job; `Denied` exits
+/// through `denied` — the node did its job and the token was rejected.
+#[derive(Debug)]
+enum TokenError {
+    Infra(String),
+    Denied(String),
 }
 
 /// Authenticates requests by validating a bearer access token via JWKS
@@ -334,7 +351,9 @@ impl OpenidConnectPlugin {
     }
 
     /// Resolves the JWKS URI, fetching the discovery document once if needed.
-    async fn jwks_uri(&self) -> Result<String, String> {
+    /// Every failure here is a genuine provider/infra problem, not the
+    /// caller's token being bad, so it always classifies as [`TokenError::Infra`].
+    async fn jwks_uri(&self) -> Result<String, TokenError> {
         if let Some(uri) = &self.jwks_uri_cfg {
             return Ok(uri.clone());
         }
@@ -347,28 +366,33 @@ impl OpenidConnectPlugin {
         let discovery = self
             .discovery
             .as_ref()
-            .ok_or_else(|| "no discovery URL configured".to_string())?;
+            .ok_or_else(|| TokenError::Infra("no discovery URL configured".to_string()))?;
         let resp = self
             .get(discovery)
             .await
-            .map_err(|e| format!("discovery fetch failed: {}", e))?;
+            .map_err(|e| TokenError::Infra(format!("discovery fetch failed: {}", e)))?;
         if resp.status != 200 {
-            return Err(format!("discovery returned status {}", resp.status));
+            return Err(TokenError::Infra(format!(
+                "discovery returned status {}",
+                resp.status
+            )));
         }
         let doc: serde_json::Value = serde_json::from_slice(&resp.body)
-            .map_err(|e| format!("failed to parse discovery doc: {}", e))?;
+            .map_err(|e| TokenError::Infra(format!("failed to parse discovery doc: {}", e)))?;
         let uri = doc
             .get("jwks_uri")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "discovery doc missing jwks_uri".to_string())?
+            .ok_or_else(|| TokenError::Infra("discovery doc missing jwks_uri".to_string()))?
             .to_string();
         *self.jwks_uri_resolved.lock().await = Some(uri.clone());
         Ok(uri)
     }
 
     /// Returns the current JWKS, fetching/refreshing when stale or when
-    /// `force` is set (used on an unknown `kid`).
-    async fn get_jwks(&self, force: bool) -> Result<Vec<Jwk>, String> {
+    /// `force` is set (used on an unknown `kid`). Every failure here is a
+    /// genuine provider/infra problem, so it always classifies as
+    /// [`TokenError::Infra`].
+    async fn get_jwks(&self, force: bool) -> Result<Vec<Jwk>, TokenError> {
         let mut cache = self.jwks_cache.lock().await;
         if !force {
             if let Some(c) = cache.as_ref() {
@@ -381,12 +405,15 @@ impl OpenidConnectPlugin {
         let resp = self
             .get(&uri)
             .await
-            .map_err(|e| format!("JWKS fetch failed: {}", e))?;
+            .map_err(|e| TokenError::Infra(format!("JWKS fetch failed: {}", e)))?;
         if resp.status != 200 {
-            return Err(format!("JWKS endpoint returned status {}", resp.status));
+            return Err(TokenError::Infra(format!(
+                "JWKS endpoint returned status {}",
+                resp.status
+            )));
         }
         let set: JwkSet = serde_json::from_slice(&resp.body)
-            .map_err(|e| format!("failed to parse JWKS: {}", e))?;
+            .map_err(|e| TokenError::Infra(format!("failed to parse JWKS: {}", e)))?;
         *cache = Some(CachedJwks {
             keys: set.keys.clone(),
             fetched_at: Instant::now(),
@@ -409,11 +436,15 @@ impl OpenidConnectPlugin {
     }
 
     /// Validates the token via JWKS signature verification plus claim checks.
+    /// Provider/JWKS callout trouble classifies as [`TokenError::Infra`]; the
+    /// token itself being malformed, unsigned by a known key, unverifiable, or
+    /// failing an issuer/audience check classifies as [`TokenError::Denied`].
     async fn validate_via_jwks(
         &self,
         token: &str,
-    ) -> Result<HashMap<String, serde_json::Value>, String> {
-        let header = decode_header(token).map_err(|e| format!("invalid JWT header: {}", e))?;
+    ) -> Result<HashMap<String, serde_json::Value>, TokenError> {
+        let header = decode_header(token)
+            .map_err(|e| TokenError::Denied(format!("invalid JWT header: {}", e)))?;
         let kid = header.kid.clone();
 
         let keys = self.get_jwks(false).await?;
@@ -422,33 +453,37 @@ impl OpenidConnectPlugin {
             None => {
                 // Unknown kid: refetch once to pick up rotated keys.
                 let keys = self.get_jwks(true).await?;
-                select_jwk(&keys, kid.as_deref())
-                    .cloned()
-                    .ok_or_else(|| "no matching JWK for token kid".to_string())?
+                select_jwk(&keys, kid.as_deref()).cloned().ok_or_else(|| {
+                    TokenError::Denied("no matching JWK for token kid".to_string())
+                })?
             }
         };
 
-        let key = jwk_to_decoding_key(&jwk)?;
+        // A malformed JWK or an allowed-algorithm list that cannot verify this
+        // key's family is a provider/config problem, not the caller's fault.
+        let key = jwk_to_decoding_key(&jwk).map_err(TokenError::Infra)?;
         // Narrow the permitted algorithms to the ones this key could possibly have
         // signed with. jsonwebtoken rejects the whole Validation if *any* listed
         // algorithm belongs to a different family than the key, so passing the
         // default list (RSA + EC) against an RSA key fails every token. See
         // `algs_for_key`.
-        let algs = algs_for_key(&self.allowed_algs, &jwk.kty)?;
-        let claims = decode_and_validate(token, &key, &algs)?;
-        self.validate_claims(&claims)?;
+        let algs = algs_for_key(&self.allowed_algs, &jwk.kty).map_err(TokenError::Infra)?;
+        let claims = decode_and_validate(token, &key, &algs).map_err(TokenError::Denied)?;
+        self.validate_claims(&claims).map_err(TokenError::Denied)?;
         Ok(claims)
     }
 
-    /// Validates the token via the introspection endpoint.
+    /// Validates the token via the introspection endpoint. Provider callout
+    /// trouble classifies as [`TokenError::Infra`]; the introspection response
+    /// itself declaring the token inactive, or failing claim checks,
+    /// classifies as [`TokenError::Denied`].
     async fn validate_via_introspection(
         &self,
         token: &str,
-    ) -> Result<HashMap<String, serde_json::Value>, String> {
-        let endpoint = self
-            .introspection_endpoint
-            .as_ref()
-            .ok_or_else(|| "no introspection endpoint configured".to_string())?;
+    ) -> Result<HashMap<String, serde_json::Value>, TokenError> {
+        let endpoint = self.introspection_endpoint.as_ref().ok_or_else(|| {
+            TokenError::Infra("no introspection endpoint configured".to_string())
+        })?;
         let client_id = self.client_id.as_deref().unwrap_or("");
         let client_secret = self.client_secret.as_deref().unwrap_or("");
         let basic = BASE64_STANDARD.encode(format!("{}:{}", client_id, client_secret));
@@ -475,12 +510,15 @@ impl OpenidConnectPlugin {
             .outbound
             .request(req)
             .await
-            .map_err(|e| format!("introspection callout failed: {}", e))?;
+            .map_err(|e| TokenError::Infra(format!("introspection callout failed: {}", e)))?;
         if resp.status != 200 {
-            return Err(format!("introspection returned status {}", resp.status));
+            return Err(TokenError::Infra(format!(
+                "introspection returned status {}",
+                resp.status
+            )));
         }
         let claims = parse_introspection(&resp.body)?;
-        self.validate_claims(&claims)?;
+        self.validate_claims(&claims).map_err(TokenError::Denied)?;
         Ok(claims)
     }
 
@@ -545,6 +583,9 @@ impl OpenidConnectPlugin {
         }
     }
 
+    /// Builds a 401 rejection for a deliberate authentication failure (missing
+    /// bearer token, invalid/unverifiable token, CSRF/nonce/session-flow
+    /// failure) and exits on the `denied` port.
     fn reject(ctx: Context, message: &str) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 401;
@@ -560,15 +601,40 @@ impl OpenidConnectPlugin {
             "www-authenticate".to_string(),
             vec!["Bearer error=\"invalid_token\"".to_string()],
         );
-        Err(PluginExecutionError {
+        Ok(PluginOutput::on_port(ctx, "denied"))
+    }
+
+    /// Builds a genuine infrastructure-failure `Err` (discovery, JWKS,
+    /// introspection, or token-endpoint callout that transport-failed,
+    /// returned a non-2xx status, or handed back unparseable data). Unlike
+    /// `reject`, this exits through the `error` port because the node could
+    /// not do its job, not because a presented credential was deliberately
+    /// refused. The response shape mirrors `reject`'s so client-visible
+    /// behavior over this path is unchanged by the port split.
+    fn infra_error(ctx: Context, message: String) -> PluginExecutionError {
+        let mut ctx = ctx;
+        ctx.response.status_code = 401;
+        ctx.response.body = Bytes::from(format!(
+            r#"{{"error": "unauthorized", "message": "{}"}}"#,
+            message.replace('"', "'")
+        ));
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
+        ctx.response.headers.insert(
+            "www-authenticate".to_string(),
+            vec!["Bearer error=\"invalid_token\"".to_string()],
+        );
+        PluginExecutionError {
             context: ctx,
             error: GatewayError {
                 node_id: String::new(),
-                code: "OIDC_UNAUTHORIZED".to_string(),
-                message: message.to_string(),
+                code: "OIDC_PROVIDER_ERROR".to_string(),
+                message,
                 metadata: HashMap::new(),
             },
-        })
+        }
     }
 
     // ---- Interactive Authorization Code flow ------------------------------
@@ -638,7 +704,7 @@ impl OpenidConnectPlugin {
         let flow = self.interactive.as_ref().expect("interactive mode");
         let authz = match self.authorization_endpoint().await {
             Ok(u) => u,
-            Err(e) => return Self::reject(ctx, &e),
+            Err(e) => return Err(Self::infra_error(ctx, e)),
         };
 
         let state = random_token();
@@ -655,7 +721,12 @@ impl OpenidConnectPlugin {
         };
         let sealed = match serde_json::to_vec(&flow_state) {
             Ok(b) => flow.sealer.seal(&b, Duration::from_secs(300)),
-            Err(e) => return Self::reject(ctx, &format!("flow cookie seal failed: {}", e)),
+            Err(e) => {
+                return Err(Self::infra_error(
+                    ctx,
+                    format!("flow cookie seal failed: {}", e),
+                ))
+            }
         };
         let set_flow = build_set_cookie(
             &flow.flow_cookie,
@@ -700,10 +771,13 @@ impl OpenidConnectPlugin {
             return Self::reject(ctx, "state mismatch (possible CSRF)");
         }
 
-        // Exchange the authorization code for tokens.
+        // Exchange the authorization code for tokens. A token-endpoint
+        // callout that transport-fails, returns non-2xx, or hands back
+        // unparseable JSON is a genuine provider failure, not a deliberate
+        // rejection of the caller.
         let token_endpoint = match self.token_endpoint().await {
             Ok(u) => u,
-            Err(e) => return Self::reject(ctx, &e),
+            Err(e) => return Err(Self::infra_error(ctx, e)),
         };
         let tokens = match self
             .exchange_code(
@@ -715,12 +789,17 @@ impl OpenidConnectPlugin {
             .await
         {
             Ok(t) => t,
-            Err(e) => return Self::reject(ctx, &e),
+            Err(e) => return Err(Self::infra_error(ctx, e)),
         };
 
         let id_token = match tokens.get("id_token").and_then(|v| v.as_str()) {
             Some(t) => t.to_string(),
-            None => return Self::reject(ctx, "token response missing id_token"),
+            None => {
+                return Err(Self::infra_error(
+                    ctx,
+                    "token response missing id_token".to_string(),
+                ))
+            }
         };
         let access_token = tokens
             .get("access_token")
@@ -728,10 +807,20 @@ impl OpenidConnectPlugin {
             .map(String::from);
 
         // Validate the id_token signature/claims via the JWKS path and check
-        // the nonce binds it to this login attempt.
+        // the nonce binds it to this login attempt. A JWKS callout failure is
+        // a genuine provider failure; an invalid/unverifiable id_token is a
+        // deliberate rejection.
         let claims = match self.validate_via_jwks(&id_token).await {
             Ok(c) => c,
-            Err(e) => return Self::reject(ctx, &format!("id_token validation failed: {}", e)),
+            Err(TokenError::Infra(e)) => {
+                return Err(Self::infra_error(
+                    ctx,
+                    format!("id_token validation failed: {}", e),
+                ))
+            }
+            Err(TokenError::Denied(e)) => {
+                return Self::reject(ctx, &format!("id_token validation failed: {}", e))
+            }
         };
         if claims.get("nonce").and_then(|v| v.as_str()) != Some(flow_state.nonce.as_str()) {
             return Self::reject(ctx, "id_token nonce mismatch");
@@ -744,7 +833,12 @@ impl OpenidConnectPlugin {
         };
         let sealed = match serde_json::to_vec(&session) {
             Ok(b) => flow.sealer.seal(&b, flow.session_lifetime),
-            Err(e) => return Self::reject(ctx, &format!("session seal failed: {}", e)),
+            Err(e) => {
+                return Err(Self::infra_error(
+                    ctx,
+                    format!("session seal failed: {}", e),
+                ))
+            }
         };
         let set_session = build_set_cookie(
             &flow.session_cookie,
@@ -1029,8 +1123,8 @@ fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(digest(&SHA256, verifier.as_bytes()).as_ref())
 }
 
-/// Prepares a 302 redirect on the context and exits through the error port
-/// (the node's error edge should be wired to `client.in`).
+/// Prepares a 302 redirect on the context and exits through the dedicated
+/// `redirect` port (wire the node's `redirect` edge to `client.in`).
 fn redirect(mut ctx: Context, location: &str, set_cookies: Vec<String>) -> PluginResult {
     ctx.response.status_code = 302;
     ctx.response.body = Bytes::new();
@@ -1042,15 +1136,7 @@ fn redirect(mut ctx: Context, location: &str, set_cookies: Vec<String>) -> Plugi
             .headers
             .insert("set-cookie".to_string(), set_cookies);
     }
-    Err(PluginExecutionError {
-        context: ctx,
-        error: GatewayError {
-            node_id: String::new(),
-            code: "OIDC_REDIRECT".to_string(),
-            message: "redirecting for interactive login".to_string(),
-            metadata: HashMap::new(),
-        },
-    })
+    Ok(PluginOutput::on_port(ctx, "redirect"))
 }
 
 /// Reads an optional non-empty string config value.
@@ -1261,16 +1347,18 @@ fn decode_and_validate(
         .map_err(|e| format!("token verification failed: {}", e))
 }
 
-/// Parses an RFC 7662 introspection response, requiring `active: true`.
-fn parse_introspection(body: &[u8]) -> Result<HashMap<String, serde_json::Value>, String> {
+/// Parses an RFC 7662 introspection response, requiring `active: true`. An
+/// unparseable response is a genuine provider failure ([`TokenError::Infra`]);
+/// an inactive token is a deliberate rejection ([`TokenError::Denied`]).
+fn parse_introspection(body: &[u8]) -> Result<HashMap<String, serde_json::Value>, TokenError> {
     let value: serde_json::Value = serde_json::from_slice(body)
-        .map_err(|e| format!("invalid introspection response: {}", e))?;
+        .map_err(|e| TokenError::Infra(format!("invalid introspection response: {}", e)))?;
     let active = value
         .get("active")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     if !active {
-        return Err("token is not active".to_string());
+        return Err(TokenError::Denied("token is not active".to_string()));
     }
     let map = value
         .as_object()
@@ -1356,7 +1444,8 @@ impl Plugin for OpenidConnectPlugin {
                 self.attach(&mut ctx, claims, &token);
                 Ok(PluginOutput::success(ctx))
             }
-            Err(e) => Self::reject(ctx, &e),
+            Err(TokenError::Denied(e)) => Self::reject(ctx, &e),
+            Err(TokenError::Infra(e)) => Err(Self::infra_error(ctx, e)),
         }
     }
 }
@@ -1822,5 +1911,270 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         assert_eq!(parse_bearer("Basic abc"), None);
         assert_eq!(parse_bearer("Bearer "), None);
         assert_eq!(parse_bearer("token"), None);
+    }
+
+    // ---- Port-split coverage: denied / redirect (Ok) vs error (Err) --------
+
+    fn req_ctx(path: &str, query: HashMap<String, Vec<String>>) -> crate::context::Context {
+        crate::context::Context::new(crate::context::GatewayRequest {
+            method: "GET".into(),
+            path: path.into(),
+            host: "app.example.com".into(),
+            scheme: "https".into(),
+            headers: HashMap::new(),
+            query_params: query,
+            body: Bytes::new(),
+            remote_addr: "1.2.3.4:5".into(),
+            protocol: crate::context::Protocol::Http1,
+        })
+    }
+
+    fn with_bearer(mut ctx: crate::context::Context, token: &str) -> crate::context::Context {
+        ctx.request
+            .headers
+            .insert("authorization".to_string(), vec![format!("Bearer {token}")]);
+        ctx
+    }
+
+    #[tokio::test]
+    async fn test_bearer_missing_token_denied() {
+        let c = cfg(&[("jwks_uri", serde_json::json!("https://idp/jwks"))]);
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+
+        let out = plugin
+            .execute(req_ctx("/", HashMap::new()))
+            .await
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+        assert!(out.context.response.headers.contains_key("www-authenticate"));
+    }
+
+    /// Regression: before the port split, every failure (deliberate or
+    /// infra) flowed through the same `Err`. A JWKS endpoint that is
+    /// unreachable (nothing listening) is a genuine provider failure and
+    /// must stay on `Err`, not be folded into `denied`.
+    #[tokio::test]
+    async fn test_bearer_jwks_unreachable_stays_on_error_port() {
+        let c = cfg(&[
+            ("jwks_uri", serde_json::json!("http://127.0.0.1:1/jwks")),
+            ("timeout", serde_json::json!(1)),
+        ]);
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+
+        // A structurally valid JWT so `decode_header` succeeds and the
+        // failure comes from the (unreachable) JWKS callout, not header parsing.
+        let token = sign(serde_json::json!({ "sub": "user-1" }), "k1");
+        let err = plugin
+            .execute(with_bearer(req_ctx("/", HashMap::new()), &token))
+            .await
+            .unwrap_err();
+        assert_eq!(err.error.code, "OIDC_PROVIDER_ERROR");
+        assert_eq!(err.context.response.status_code, 401);
+    }
+
+    /// Same regression, via the discovery path: an unreachable discovery
+    /// document is also a genuine provider failure.
+    #[tokio::test]
+    async fn test_bearer_discovery_unreachable_stays_on_error_port() {
+        let c = cfg(&[
+            (
+                "discovery",
+                serde_json::json!("http://127.0.0.1:1/.well-known/openid-configuration"),
+            ),
+            ("timeout", serde_json::json!(1)),
+        ]);
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+
+        let token = sign(serde_json::json!({ "sub": "user-1" }), "k1");
+        let err = plugin
+            .execute(with_bearer(req_ctx("/", HashMap::new()), &token))
+            .await
+            .unwrap_err();
+        assert_eq!(err.context.response.status_code, 401);
+    }
+
+    /// Same regression, via introspection: an unreachable introspection
+    /// endpoint is a genuine provider failure, not a token denial.
+    #[tokio::test]
+    async fn test_bearer_introspection_unreachable_stays_on_error_port() {
+        let c = cfg(&[
+            (
+                "introspection_endpoint",
+                serde_json::json!("http://127.0.0.1:1/introspect"),
+            ),
+            ("client_id", serde_json::json!("id")),
+            ("client_secret", serde_json::json!("secret")),
+            ("timeout", serde_json::json!(1)),
+        ]);
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+
+        let err = plugin
+            .execute(with_bearer(req_ctx("/", HashMap::new()), "opaque-token"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.context.response.status_code, 401);
+    }
+
+    /// An introspection response that reports the token inactive is a
+    /// deliberate rejection and must stay `denied`, distinct from the
+    /// callout-unreachable case above.
+    #[test]
+    fn test_parse_introspection_inactive_is_denied_not_infra() {
+        let inactive = serde_json::to_vec(&serde_json::json!({ "active": false })).unwrap();
+        match parse_introspection(&inactive) {
+            Err(TokenError::Denied(_)) => {}
+            other => panic!("expected Denied, got {other:?}"),
+        }
+        let bad_json = b"not json";
+        match parse_introspection(bad_json) {
+            Err(TokenError::Infra(_)) => {}
+            other => panic!("expected Infra, got {other:?}"),
+        }
+    }
+
+    fn interactive_explicit_cfg() -> HashMap<String, serde_json::Value> {
+        cfg(&[
+            (
+                "authorization_endpoint",
+                serde_json::json!("https://idp.example.com/authorize"),
+            ),
+            (
+                "token_endpoint",
+                serde_json::json!("http://127.0.0.1:1/token"),
+            ),
+            ("jwks_uri", serde_json::json!("https://idp.example.com/jwks")),
+            ("bearer_only", serde_json::json!(false)),
+            ("client_id", serde_json::json!("app")),
+            ("client_secret", serde_json::json!("s")),
+            (
+                "redirect_uri",
+                serde_json::json!("https://app.example.com/oidc/callback"),
+            ),
+            (
+                "session",
+                serde_json::json!({ "secret": "cookie-signing-secret" }),
+            ),
+        ])
+    }
+
+    #[tokio::test]
+    async fn test_interactive_begin_login_redirects() {
+        let plugin =
+            OpenidConnectPlugin::from_config(&interactive_explicit_cfg(), &PluginResources::empty())
+                .unwrap();
+
+        let out = plugin
+            .execute(req_ctx("/dashboard", HashMap::new()))
+            .await
+            .unwrap();
+        assert_eq!(out.port, Some("redirect"));
+        assert_eq!(out.context.response.status_code, 302);
+        let location = &out.context.response.headers.get("location").unwrap()[0];
+        assert!(
+            location.starts_with("https://idp.example.com/authorize?"),
+            "{location}"
+        );
+        let set = &out.context.response.headers.get("set-cookie").unwrap()[0];
+        assert!(set.starts_with("oidc_session_flow="), "{set}");
+    }
+
+    #[tokio::test]
+    async fn test_interactive_logout_redirects() {
+        let mut c = interactive_explicit_cfg();
+        c.insert("logout_path".to_string(), serde_json::json!("/logout"));
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+
+        let out = plugin
+            .execute(req_ctx("/logout", HashMap::new()))
+            .await
+            .unwrap();
+        assert_eq!(out.port, Some("redirect"));
+        assert_eq!(out.context.response.status_code, 302);
+        assert_eq!(
+            out.context.response.headers.get("location").unwrap()[0],
+            "/"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_interactive_callback_missing_flow_cookie_denied() {
+        let plugin =
+            OpenidConnectPlugin::from_config(&interactive_explicit_cfg(), &PluginResources::empty())
+                .unwrap();
+
+        let mut query = HashMap::new();
+        query.insert("code".to_string(), vec!["c".to_string()]);
+        query.insert("state".to_string(), vec!["st".to_string()]);
+        let out = plugin
+            .execute(req_ctx("/oidc/callback", query))
+            .await
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+    }
+
+    #[tokio::test]
+    async fn test_interactive_callback_state_mismatch_denied() {
+        let plugin =
+            OpenidConnectPlugin::from_config(&interactive_explicit_cfg(), &PluginResources::empty())
+                .unwrap();
+        let flow = FlowState {
+            state: "expected".into(),
+            nonce: "nonce".into(),
+            verifier: "verifier".into(),
+            original_uri: "/dashboard".into(),
+        };
+        let sealer = CookieSealer::new("cookie-signing-secret");
+        let sealed = sealer.seal(
+            &serde_json::to_vec(&flow).unwrap(),
+            Duration::from_secs(300),
+        );
+
+        let mut query = HashMap::new();
+        query.insert("code".to_string(), vec!["c".to_string()]);
+        query.insert("state".to_string(), vec!["WRONG".to_string()]);
+        let mut c = req_ctx("/oidc/callback", query);
+        c.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("oidc_session_flow={sealed}")],
+        );
+
+        let out = plugin.execute(c).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+    }
+
+    /// The callback's code-exchange call to the token endpoint is a genuine
+    /// provider callout; when it is unreachable that must stay `Err`, not be
+    /// folded into `denied` alongside the CSRF/state checks above.
+    #[tokio::test]
+    async fn test_interactive_callback_token_endpoint_unreachable_stays_on_error_port() {
+        let plugin =
+            OpenidConnectPlugin::from_config(&interactive_explicit_cfg(), &PluginResources::empty())
+                .unwrap();
+        let flow = FlowState {
+            state: "matching".into(),
+            nonce: "nonce".into(),
+            verifier: "verifier".into(),
+            original_uri: "/dashboard".into(),
+        };
+        let sealer = CookieSealer::new("cookie-signing-secret");
+        let sealed = sealer.seal(
+            &serde_json::to_vec(&flow).unwrap(),
+            Duration::from_secs(300),
+        );
+
+        let mut query = HashMap::new();
+        query.insert("code".to_string(), vec!["c".to_string()]);
+        query.insert("state".to_string(), vec!["matching".to_string()]);
+        let mut c = req_ctx("/oidc/callback", query);
+        c.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("oidc_session_flow={sealed}")],
+        );
+
+        let err = plugin.execute(c).await.unwrap_err();
+        assert_eq!(err.context.response.status_code, 401);
     }
 }

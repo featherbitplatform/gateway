@@ -69,13 +69,14 @@ Setting a session secret enables the interactive login flow.
 The token is read from the `Authorization` header (a `Bearer ` prefix is stripped if present). The plugin POSTs `token=<token>&token_type_hint=access_token` to `{endpoint_addr}/api/login/oauth/introspect`, authenticated with `Authorization: Basic base64(client_id:client_secret)`.
 
 - HTTP `200` **and** `active: true` → **success** port, request continues.
-- An inactive token, a non-`200` status, a missing token, or a callout error → **error** port with `context.response.status_code = 403`, body `{"error":"access_denied"}`, error code `AUTHZ_CASDOOR_DENIED`.
+- An inactive token, a non-`200` status, or a missing token → deliberate rejection, exits on the **`denied`** port with `context.response.status_code = 403`, body `{"error":"access_denied"}`.
+- A genuine introspection-callout failure (unreachable, timed out, or otherwise untransportable) → the node could not do its job, so it exits on the ordinary **error** port instead (same response shape, error code `AUTHZ_CASDOOR_ERROR`).
 
 ### Interactive mode (session secret set)
 
 Each request is resolved through three branches:
 
-1. **Callback.** When the request path matches the `callback_url` path **and** carries `code` + `state`, the plugin opens the short-lived flow cookie, checks the `state` matches, then exchanges the `code` at `{endpoint_addr}/api/login/oauth/access_token` (`grant_type=authorization_code`, with `client_id`/`client_secret`). The returned access token is sealed into a session cookie (its JWT claims, if any, are decoded and stored for identity), the flow cookie is deleted, and the browser is **302-redirected to the original URI** recovered from the flow cookie. A missing/invalid flow cookie, a `state` mismatch, or a failed exchange denies with `403` (`AUTHZ_CASDOOR_DENIED`).
+1. **Callback.** When the request path matches the `callback_url` path **and** carries `code` + `state`, the plugin opens the short-lived flow cookie, checks the `state` matches, then exchanges the `code` at `{endpoint_addr}/api/login/oauth/access_token` (`grant_type=authorization_code`, with `client_id`/`client_secret`). The returned access token is sealed into a session cookie (its JWT claims, if any, are decoded and stored for identity), the flow cookie is deleted, and the browser is **302-redirected to the original URI** recovered from the flow cookie. A missing/invalid flow cookie or a `state` mismatch is a deliberate rejection and exits on `denied` with `403`. A failed code exchange (the token endpoint unreachable, timed out, returning non-`200`, or handing back unparseable data) is a genuine callout failure and exits on the ordinary **error** port instead (error code `AUTHZ_CASDOOR_ERROR`).
 2. **Valid session cookie.** If the `<session.cookie.name>` cookie opens and its `client_id` matches, the access token is placed back on the upstream request as `Authorization: Bearer <token>`, the decoded claims are exposed as `context.message["user_id"]` (from `sub`) and `context.message["jwt_claims"]`, and the request continues through the **success** port.
 3. **No session, not a callback.** A random `state` is generated and, together with the original request URI, sealed into a short-lived (300s) **flow cookie**; the browser is **302-redirected to Casdoor's authorize URL** (`{endpoint_addr}/login/oauth/authorize?response_type=code&client_id=…&redirect_uri=<callback_url>&state=…&scope=<scope>`) with the flow cookie set.
 
@@ -83,11 +84,25 @@ If `logout_path` is configured and the request path matches, the session cookie 
 
 #### Redirect wiring (important)
 
-Every `302` in interactive mode (login redirect, post-callback redirect, logout) is emitted as an **error-port** exit with error code `CASDOOR_REDIRECT`, carrying the prepared `302` response. This follows the same early-exit convention as the `fault-injection` and `mocking` nodes. **Wire the node's `error` edge to `client.in`** so the redirect (and its `Set-Cookie`) reaches the browser; wire the `success` edge onward to the upstream for authenticated requests.
+Every `302` in interactive mode (login redirect, post-callback redirect, logout) exits through the dedicated **`redirect`** output port, carrying the prepared `302` response. This follows the same convention as the standalone `redirect` node. **Wire the node's `redirect` edge to `client.in`** so the redirect (and its `Set-Cookie`) reaches the browser; wire `denied` to `client.in` too (or a custom denial handler) for deliberate rejections; wire the `success` edge onward to the upstream for authenticated requests.
 
 #### Session cookie attributes
 
 Both the session cookie and the transient flow cookie are set with `Path=<session.cookie.path>` (default `/`), `HttpOnly`, `SameSite=Lax`, and a `Max-Age` (the session lifetime, and 300s for the flow cookie). `Secure` is added **only when the request scheme is `https`**, so plain-HTTP local development works; run behind HTTPS in production so the cookies are marked `Secure`.
+
+## Ports
+
+`authz-casdoor` declares four output ports: `success`, `denied` (a deliberate `403` rejection is prepared — missing/inactive/invalid token, or an OAuth state mismatch), `redirect` (a `302` browser move is prepared — login, callback, or logout; interactive mode only, but the port is always declared), and `error` (a genuine Casdoor callout failure — introspection or token exchange unreachable). `denied` and `redirect` are both mandatory ports, same as `success`: the policy compiler rejects any policy that leaves either unwired, **even in stateless mode where `redirect` is never actually taken**. Wire both straight to `client`:
+
+```yaml
+edges:
+  - from: authz-casdoor.success
+    to: upstream.in
+  - from: authz-casdoor.denied
+    to: client.in
+  - from: authz-casdoor.redirect
+    to: client.in
+```
 
 ## Deviations / Limitations
 
