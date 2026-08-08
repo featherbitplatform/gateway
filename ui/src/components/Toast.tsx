@@ -6,12 +6,12 @@
  * @module components/Toast
  */
 import { useEffect } from 'react';
-import { CircleCheck, CircleX, X } from 'lucide-react';
+import { CircleCheck, CircleX, TriangleAlert, X } from 'lucide-react';
 
 /** Payload describing one notification. */
 export interface ToastData {
-  /** Visual tone: `success` (green check) or `error` (red cross). */
-  tone: 'success' | 'error';
+  /** Visual tone: `success` (green check), `error` (red cross), or `warning` (amber triangle, non-blocking heads-up). */
+  tone: 'success' | 'error' | 'warning';
   /** Bold headline, e.g. the action that succeeded or failed. */
   title: string;
   /** Optional monospace detail line, typically the admin API error message. */
@@ -40,8 +40,9 @@ export function Toast({ toast, onDismiss }: ToastProps) {
 
   if (!toast) return null;
 
-  const color = toast.tone === 'success' ? 'var(--success)' : 'var(--error)';
-  const Icon = toast.tone === 'success' ? CircleCheck : CircleX;
+  const color =
+    toast.tone === 'success' ? 'var(--success)' : toast.tone === 'warning' ? 'var(--warning)' : 'var(--error)';
+  const Icon = toast.tone === 'success' ? CircleCheck : toast.tone === 'warning' ? TriangleAlert : CircleX;
 
   return (
     <div
