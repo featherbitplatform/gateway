@@ -3,7 +3,10 @@
 //! Validates a Feishu authorization *code* by exchanging it, through Feishu's
 //! OAuth v2 token endpoint, for a user access token, then calls Feishu's
 //! userinfo endpoint to resolve the calling user's identity and attaches it to
-//! the request. A code that cannot be resolved is rejected with a `401`.
+//! the request. A missing code, or a code/token Feishu actively rejects, is
+//! denied with a `401` on the `denied` port; a Feishu callout that fails
+//! outright (network error, non-200, unparseable body) is a genuine
+//! infrastructure failure and stays on the `error` port.
 //!
 //! # Ported subset / deviations from APISIX
 //!
@@ -34,8 +37,9 @@ use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 const DEFAULT_TOKEN_URL: &str = "https://open.feishu.cn/open-apis/authen/v2/oauth/token";
 const DEFAULT_USERINFO_URL: &str = "https://open.feishu.cn/open-apis/authen/v1/user_info";
 
-/// Outcome of resolving a Feishu code. Every failure maps to a `401`
-/// (`FEISHU_AUTH_FAILED`); variants exist to keep the reason legible.
+/// Outcome of resolving a Feishu code. `Unauthorized` is a deliberate denial
+/// (exits `denied`, `401`); `Upstream` is a genuine callout failure (exits
+/// `error`).
 #[derive(Debug)]
 enum FeishuError {
     Unauthorized(String),
@@ -230,6 +234,9 @@ impl FeishuAuthPlugin {
         parse_userinfo(&resp)
     }
 
+    /// Builds the `401` rejection and exits on the `denied` port. Reserved
+    /// for a deliberate denial — a missing code, or Feishu actively
+    /// rejecting the code/token.
     fn reject(ctx: Context, message: &str) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 401;
@@ -241,11 +248,21 @@ impl FeishuAuthPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
+        Ok(PluginOutput::on_port(ctx, "denied"))
+    }
+
+    /// Builds a genuine infrastructure-failure `Err` for a Feishu callout
+    /// that failed outright (network error, non-200, unparseable body) —
+    /// unlike `reject`, the node could not do its job rather than Feishu
+    /// deliberately refusing the code.
+    fn upstream_error(ctx: Context, message: &str) -> PluginResult {
+        let mut ctx = ctx;
+        ctx.response.status_code = 502;
         Err(PluginExecutionError {
             context: ctx,
             error: GatewayError {
                 node_id: String::new(),
-                code: "FEISHU_AUTH_FAILED".to_string(),
+                code: "FEISHU_UPSTREAM_ERROR".to_string(),
                 message: message.to_string(),
                 metadata: HashMap::new(),
             },
@@ -366,12 +383,14 @@ impl Plugin for FeishuAuthPlugin {
 
         let access_token = match self.fetch_access_token(&code).await {
             Ok(t) => t,
-            Err(e) => return Self::reject(ctx, e.message()),
+            Err(FeishuError::Unauthorized(m)) => return Self::reject(ctx, &m),
+            Err(e @ FeishuError::Upstream(_)) => return Self::upstream_error(ctx, e.message()),
         };
 
         let userinfo = match self.fetch_userinfo(&access_token).await {
             Ok(u) => u,
-            Err(e) => return Self::reject(ctx, e.message()),
+            Err(FeishuError::Unauthorized(m)) => return Self::reject(ctx, &m),
+            Err(e @ FeishuError::Upstream(_)) => return Self::upstream_error(ctx, e.message()),
         };
 
         attach_identity(&mut ctx, &userinfo, self.set_userinfo_header);
@@ -504,11 +523,30 @@ mod tests {
     #[tokio::test]
     async fn test_missing_code_rejected_401() {
         let plugin = FeishuAuthPlugin::from_config(&full_cfg(), &PluginResources::empty()).unwrap();
-        let err = plugin
-            .execute(base_ctx())
-            .await
-            .unwrap_err();
-        assert_eq!(err.context.response.status_code, 401);
-        assert_eq!(err.error.code, "FEISHU_AUTH_FAILED");
+        let out = plugin.execute(base_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+    }
+
+    #[tokio::test]
+    async fn test_upstream_callout_failure_stays_on_error_port() {
+        // A Feishu callout that fails outright (here: nothing listening on
+        // the port) is a genuine infra failure and must stay a raw `Err`,
+        // unlike the deliberate `Unauthorized`/missing-code denials above.
+        let mut cfg = full_cfg();
+        cfg.insert(
+            "access_token_url".to_string(),
+            serde_json::json!("http://127.0.0.1:1"),
+        );
+        cfg.insert("timeout".to_string(), serde_json::json!(200));
+        let plugin = FeishuAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
+
+        let mut ctx = base_ctx();
+        ctx.request
+            .query_params
+            .insert("code".to_string(), vec!["some-code".to_string()]);
+        let err = plugin.execute(ctx).await.unwrap_err();
+        assert_eq!(err.error.code, "FEISHU_UPSTREAM_ERROR");
+        assert!(err.context.response.status_code >= 500);
     }
 }

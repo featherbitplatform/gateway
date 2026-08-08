@@ -50,9 +50,20 @@ The plugin base64-decodes the `Authorization: Basic` header into a `username:pas
 
 On success the context passes through the **success** port. For back-compat the authenticated username is always written to `context.message["user"]`.
 
-On a missing header, malformed credentials, unknown user, or wrong password (and no anonymous fallback), the plugin sets a rejection on the response and routes through the **error** port:
+On a missing header, malformed credentials, unknown user, or wrong password (and no anonymous fallback), the plugin sets a rejection on the response and exits through the **`denied`** port:
 
 - `context.response.status_code` = `401`
 - Body: `{"error": "unauthorized", "message": "Invalid credentials"}` with `content-type: application/json`
 - `WWW-Authenticate: Basic realm="<realm>"` challenge header
-- Error code appended to `context.errors`: `UNAUTHORIZED`
+
+## Ports
+
+`basic-auth` declares three output ports: `success`, `denied` (a rejection is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `basic-auth.denied` straight to `client` so the prepared `401` (with its `WWW-Authenticate` challenge) reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: basic-auth.success
+    to: upstream.in
+  - from: basic-auth.denied
+    to: client.in
+```

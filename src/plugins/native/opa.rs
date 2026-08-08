@@ -5,9 +5,10 @@
 //! optionally, the matched consumer), POSTs it to
 //! `<host>/v1/data/<policy>`, and interprets the decision under `result`:
 //! `allow: true` continues (optionally copying selected OPA-provided headers
-//! onto the request forwarded upstream), while `allow: false`/missing rejects,
-//! honoring OPA-supplied status, headers, and reason. A callout or
-//! response-parse failure blocks the request by default.
+//! onto the request forwarded upstream), while `allow: false`/missing denies
+//! (exits on the `denied` port), honoring OPA-supplied status, headers, and
+//! reason. A callout or response-parse failure is a genuine infrastructure
+//! failure — it exits on the `error` port and blocks the request by default.
 //!
 //! Ports the APISIX `opa` plugin (and its `opa/helper.lua` input builder) onto
 //! featherbit's shared outbound HTTP client.
@@ -32,8 +33,8 @@ use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 
 /// Sends an OPA input document to an external policy server and routes on the
-/// returned decision: `allow: true` continues (success port), otherwise
-/// rejects (error port).
+/// returned decision: `allow: true` continues (`success` port), `allow: false`
+/// denies (`denied` port), and a callout/parse failure exits on `error`.
 pub struct OpaPlugin {
     /// OPA base URL (e.g. `http://opa:8181`).
     host: String,
@@ -219,9 +220,10 @@ impl OpaPlugin {
         }
     }
 
-    /// Builds the `OPA_DENIED` rejection from a deny decision, honoring
-    /// OPA-supplied status (default `403`), headers, and reason (as the body).
-    fn build_deny(&self, mut ctx: Context, decision: &OpaDecision) -> PluginExecutionError {
+    /// Builds the deny response from a deny decision, honoring OPA-supplied
+    /// status (default `403`), headers, and reason (as the body), and exits
+    /// on the `denied` port.
+    fn build_deny(&self, mut ctx: Context, decision: &OpaDecision) -> PluginOutput {
         let status = decision.status.unwrap_or(403);
         ctx.response.status_code = status;
         if let Some(reason) = &decision.reason {
@@ -232,15 +234,7 @@ impl OpaPlugin {
                 .headers
                 .insert(name.clone(), vec![value.clone()]);
         }
-        PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "OPA_DENIED".to_string(),
-                message: format!("OPA denied the request ({})", status),
-                metadata: HashMap::new(),
-            },
-        }
+        PluginOutput::on_port(ctx, "denied")
     }
 
     /// Builds the `OPA_ERROR` rejection used when the callout fails or the
@@ -441,7 +435,7 @@ impl Plugin for OpaPlugin {
         };
 
         if !decision.allow {
-            return Err(self.build_deny(ctx, &decision));
+            return Ok(self.build_deny(ctx, &decision));
         }
 
         self.apply_allow(&mut ctx, &decision);
@@ -610,12 +604,12 @@ mod tests {
             reason: Some("denied".to_string()),
             headers: HashMap::from([("x-why".to_string(), "policy".to_string())]),
         };
-        let err = p.build_deny(test_ctx(), &decision);
-        assert_eq!(err.error.code, "OPA_DENIED");
-        assert_eq!(err.context.response.status_code, 401);
-        assert_eq!(err.context.response.body, Bytes::from_static(b"denied"));
+        let out = p.build_deny(test_ctx(), &decision);
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+        assert_eq!(out.context.response.body, Bytes::from_static(b"denied"));
         assert_eq!(
-            err.context.response.headers.get("x-why"),
+            out.context.response.headers.get("x-why"),
             Some(&vec!["policy".to_string()])
         );
     }

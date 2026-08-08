@@ -9,8 +9,10 @@
 //! 2. Assemble the bind DN as `<uid>=<username>,<base_dn>`.
 //! 3. Connect to `ldap_uri` and attempt a simple bind with that DN + password.
 //! 4. Bind success → continue (`context.message["user"] = username`); a missing
-//!    header, malformed credentials, or a bind failure → 401 `LDAP_AUTH_FAILED`
-//!    with a `WWW-Authenticate: Basic` challenge.
+//!    header, malformed credentials, or a bind rejection → 401, exiting on the
+//!    `denied` port with a `WWW-Authenticate: Basic` challenge. A connection
+//!    error or a connect+bind timeout is a genuine infrastructure failure and
+//!    stays on the `error` port instead.
 //!
 //! This is **bind-auth**, not search-then-bind: the DN is built directly from
 //! `uid`/`base_dn` and no directory search is performed. See the Deviations in
@@ -128,8 +130,10 @@ impl LdapAuthPlugin {
         })
     }
 
-    /// Builds the 401 rejection carrying the `WWW-Authenticate: Basic` challenge
-    /// and routes the context through the node's error port.
+    /// Builds the 401 rejection carrying the `WWW-Authenticate: Basic`
+    /// challenge and exits on the node's `denied` port. Reserved for
+    /// deliberate credential rejections — a missing/malformed header, empty
+    /// credentials, or a bind the server actively refused.
     fn reject(&self, ctx: Context, message: &str) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 401;
@@ -145,12 +149,26 @@ impl LdapAuthPlugin {
             "www-authenticate".to_string(),
             vec![format!("Basic realm=\"{}\"", self.realm)],
         );
+        Ok(PluginOutput::on_port(ctx, "denied"))
+    }
+
+    /// Builds a genuine infrastructure-failure `Err` (LDAP unreachable, or the
+    /// connect+bind operation timed out) — unlike `reject`, this exits
+    /// through the `error` port because the node could not do its job, not
+    /// because a presented credential was deliberately refused.
+    fn infra_error(&self, ctx: Context, message: String) -> PluginResult {
+        let mut ctx = ctx;
+        ctx.response.status_code = 401;
+        ctx.response.headers.insert(
+            "www-authenticate".to_string(),
+            vec![format!("Basic realm=\"{}\"", self.realm)],
+        );
         Err(PluginExecutionError {
             context: ctx,
             error: GatewayError {
                 node_id: String::new(),
                 code: "LDAP_AUTH_FAILED".to_string(),
-                message: message.to_string(),
+                message,
                 metadata: HashMap::new(),
             },
         })
@@ -248,24 +266,12 @@ impl Plugin for LdapAuthPlugin {
                 Ok(PluginOutput::success(ctx))
             }
             Ok(Ok(false)) => self.reject(ctx, "Invalid user authorization"),
-            Ok(Err(e)) => {
-                let mut ctx = ctx;
-                ctx.response.status_code = 401;
-                ctx.response.headers.insert(
-                    "www-authenticate".to_string(),
-                    vec![format!("Basic realm=\"{}\"", self.realm)],
-                );
-                Err(PluginExecutionError {
-                    context: ctx,
-                    error: GatewayError {
-                        node_id: String::new(),
-                        code: "LDAP_AUTH_FAILED".to_string(),
-                        message: format!("LDAP connection error: {}", e),
-                        metadata: HashMap::new(),
-                    },
-                })
-            }
-            Err(_) => self.reject(ctx, "LDAP authentication timed out"),
+            // Connection/transport error: the node could not reach the LDAP
+            // server at all, a genuine infra failure, not a credential denial.
+            Ok(Err(e)) => self.infra_error(ctx, format!("LDAP connection error: {}", e)),
+            // The connect+bind deadline elapsed: also an infra failure (the
+            // server may be slow/unreachable), not a deliberate rejection.
+            Err(_) => self.infra_error(ctx, "LDAP authentication timed out".to_string()),
         }
     }
 }
@@ -359,11 +365,11 @@ mod tests {
             remote_addr: "1.2.3.4:5".into(),
             protocol: crate::context::Protocol::Http1,
         });
-        let err = plugin.execute(ctx).await.unwrap_err();
-        assert_eq!(err.error.code, "LDAP_AUTH_FAILED");
-        assert_eq!(err.context.response.status_code, 401);
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
         assert_eq!(
-            err.context.response.headers.get("www-authenticate"),
+            out.context.response.headers.get("www-authenticate"),
             Some(&vec!["Basic realm=\"ldap\"".to_string()])
         );
     }
@@ -395,6 +401,38 @@ mod tests {
             protocol: crate::context::Protocol::Http1,
         });
         // Never reaches the network: empty password is rejected before binding.
-        assert!(plugin.execute(ctx).await.is_err());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+    }
+
+    #[tokio::test]
+    async fn test_connection_failure_stays_on_error_port() {
+        // A genuine infrastructure failure (server unreachable) must stay a
+        // raw `Err`, unlike the deliberate-denial paths above which now exit
+        // `Ok` on the `denied` port.
+        let mut cfg = HashMap::new();
+        cfg.insert(
+            "base_dn".to_string(),
+            serde_json::json!("dc=example,dc=org"),
+        );
+        cfg.insert("ldap_uri".to_string(), serde_json::json!("ldap://127.0.0.1:1"));
+        cfg.insert("timeout_ms".to_string(), serde_json::json!(500));
+        let plugin = LdapAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
+
+        let mut headers = HashMap::new();
+        headers.insert("authorization".to_string(), vec![basic("alice", "secret")]);
+        let ctx = crate::context::Context::new(crate::context::GatewayRequest {
+            method: "GET".into(),
+            path: "/".into(),
+            host: "h".into(),
+            scheme: "http".into(),
+            headers,
+            query_params: HashMap::new(),
+            body: Bytes::new(),
+            remote_addr: "1.2.3.4:5".into(),
+            protocol: crate::context::Protocol::Http1,
+        });
+        let err = plugin.execute(ctx).await.unwrap_err();
+        assert_eq!(err.error.code, "LDAP_AUTH_FAILED");
     }
 }
