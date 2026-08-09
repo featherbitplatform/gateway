@@ -9,8 +9,8 @@ A **routing policy** is a directed node graph that defines how requests matched 
 
 <UiShot
   name="policy-graph"
-  alt="A policy graph: listener, cors, key-auth, rate-limit, proxy-rewrite, upstream and logging chained by green success edges, with red dashed error edges from several of those nodes converging on one shared error-handler whose success edge returns to client."
-  caption={<>A policy as the editor draws it. Solid green edges are the <code>success</code> path: <code>listener</code> → CORS → auth → rate limit → rewrite → upstream → access log → <code>client</code>. The dashed red edges are <code>error</code> ports, all landing on one <code>error-handler</code> rather than a raw 500. Note what an error edge means here: rate-limit's fires when the limiter <em>store</em> is unreachable — not when a client is throttled. A throttled client is a deliberate outcome, so it leaves on rate-limit's own <code>limited</code> port straight to <code>client</code> with its 429 already prepared, exactly as a rejected API key leaves key-auth on <code>denied</code>. (This capture predates the outcome ports, so those two edges are not drawn.)</>}
+  alt="A policy graph with each node's ports drawn as labeled rows: a green success chain runs listener, cors, key-auth, rate-limit, proxy-rewrite, upstream, logging, client; a single red dashed error edge runs from upstream to error-handler, whose success edge returns to client; violet edges carry cors's preflight, key-auth's denied, and rate-limit's limited outcomes straight to client."
+  caption={<>A policy as the editor draws it, with every node's ports rendered as labeled rows. Solid green edges are the <code>success</code> path: <code>listener</code> → cors → key-auth → rate-limit → proxy-rewrite → upstream → logging → <code>client</code>. The single dashed red edge is an <code>error</code> port: upstream's fires only when the backend itself is unreachable, landing on <code>error-handler</code> rather than a raw 500. The violet edges are a different thing entirely — deliberate outcomes, not failures — so each one exits straight to <code>client</code> with its response already prepared: cors's <code>preflight</code> for an answered OPTIONS request, key-auth's <code>denied</code> for a rejected API key, and rate-limit's <code>limited</code> for a throttled one.</>}
 />
 
 ## Nodes
@@ -182,6 +182,26 @@ policies:
 ```
 
 This same YAML is what the web UI reads and writes — designing the graph on the canvas and editing the file by hand are interchangeable.
+
+## Command palette
+
+The editor has a command palette: `Ctrl+K`, or the command-icon button in the canvas toolbar next to the theme toggle, opens a searchable modal listing every action available in the current context, each row showing its keyboard shortcut as a small chip. Type to filter, arrow keys to move the selection, Enter to run, Escape to close.
+
+One entry — **Toggle port names** — is the switch behind the labeled port rows in the screenshot above. It's on by default; turning it off falls back to bare handle dots with the port name available only as a hover tooltip. The preference is stored in the browser's `localStorage` (key `portNames`) and persists across sessions, independent of whatever policy happens to be open.
+
+The v1 shortcut list:
+
+| Key | Action | Available |
+|---|---|---|
+| `P` | Toggle port names | Always |
+| `R` | New route | Always |
+| `S` | New supernode | Always |
+| `C` | New shared plugin config | Always |
+| `A` | Add plugin to canvas | Editor open on a route or supernode |
+| `Ctrl+S` | Save policy | Editor open on a route or supernode |
+| `Y` | View YAML | A route, supernode, or plugin config selected |
+
+Two actions are palette-only, with no bound key: **Reload gateway config** and **Toggle theme**. Single-letter shortcuts are inert while a text field has focus (so typing "rate" into a filter box doesn't fire **New route**), and an action unavailable in the current context — `A` and `Ctrl+S` before any editor is open, `Y` before anything is selected — is hidden from the palette and its key does nothing.
 
 ## Compilation rules
 
