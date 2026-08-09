@@ -197,4 +197,31 @@ test.describe('Editor round-trip', () => {
     await api.dispose();
     await traffic.dispose();
   });
+
+  /**
+   * E2E-UI-16: port names are rendered as labeled rows inside the node by
+   * default (previously discoverable only via hover tooltip).
+   */
+  test('E2E-UI-16: node shows labeled port rows by default', async ({ page }) => {
+    // Navigate to the echo policy in the editor (same idiom as E2E-UI-13).
+    await page.goto('/');
+    await page.getByText('echo-api', { exact: true }).click();
+    await page.waitForSelector('.react-flow__node');
+    const corsNode = page.locator('.react-flow__node', { hasText: 'cors' }).first();
+    await expect(corsNode).toBeVisible();
+
+    // Three declared outputs, each rendered as a visible text label.
+    await expect(corsNode.getByText('success', { exact: true })).toBeVisible();
+    await expect(corsNode.getByText('preflight', { exact: true })).toBeVisible();
+    await expect(corsNode.getByText('error', { exact: true })).toBeVisible();
+    // The input port is labeled too.
+    await expect(corsNode.getByText('in', { exact: true })).toBeVisible();
+
+    // Handles still carry their ids and tooltips (unchanged contract).
+    await expect(corsNode.locator('[data-handleid="preflight"]')).toHaveCount(1);
+    await expect(corsNode.locator('[data-handleid="preflight"]')).toHaveAttribute(
+      'title',
+      /preflight —/
+    );
+  });
 });
