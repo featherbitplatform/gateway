@@ -640,8 +640,11 @@ export function GraphCanvas({
   }, [policy, nodes, edges, portSpecs, onSaveWarning, onSavePolicy]);
 
   // Exposes canvas-owned actions to the App-level command palette (see
-  // editorActions.tsx) for as long as this canvas is mounted — registering
-  // and unregistering doubles as the palette's "is the editor open?" signal.
+  // editorActions.tsx) for as long as this canvas is mounted. These hook
+  // calls must stay ABOVE the `if (!policy)` early return below, or hook
+  // order would vary between the empty state and the editor — which means
+  // registration alone does not imply a graph is open. The palette's
+  // `when()` pairs it with `CommandContext.editorOpen` for that.
   useRegisterEditorAction(
     'add-plugin',
     useCallback(() => {
