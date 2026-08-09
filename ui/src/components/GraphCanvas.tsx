@@ -6,7 +6,7 @@
  *
  * @module components/GraphCanvas
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -39,6 +39,7 @@ import type {
 } from '../types';
 import { buildPortSpecs, type PortSpecLookup } from '../portSpecs';
 import { resolveOutputs } from '../nodeKinds';
+import { usePortNames } from '../usePortNames';
 
 /** Stroke color for each port kind, used for both edges and connection previews. */
 const PORT_STROKE: Record<PortDecl['kind'], string> = {
@@ -139,12 +140,15 @@ const nodeTypes = { pluginNode: PluginNode };
  *   {@link PluginNodeData.ports} so PluginNode can render the declared
  *   handles; a type missing from the lookup leaves `ports` undefined and
  *   PluginNode synthesizes the default success+error pair.
+ * @param showPortNames - Current value of the persisted port-names
+ *   preference, threaded into every node's {@link PluginNodeData.showPortNames}.
  * @returns ReactFlow nodes of type `pluginNode` carrying {@link PluginNodeData}.
  */
 function policyToNodes(
   policy: Policy,
   onSelect: (id: string) => void,
-  portSpecs: PortSpecLookup
+  portSpecs: PortSpecLookup,
+  showPortNames: boolean
 ): Node[] {
   const positions = new Map<string, { x: number; y: number }>();
 
@@ -200,6 +204,7 @@ function policyToNodes(
       configRef: node.config_ref,
       ports: portSpecs[node.type],
       onSelect: onSelect,
+      showPortNames,
     } satisfies PluginNodeData,
   }));
 }
@@ -390,6 +395,7 @@ export function GraphCanvas({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [showPortNames] = usePortNames();
 
   const handleSelect = useCallback((id: string) => {
     setSelectedNodeId(id);
@@ -418,8 +424,8 @@ export function GraphCanvas({
   // remounts the canvas and nodes/edges/selection all start fresh from the
   // prop. Refetches of the same policy keep the local (unsaved) graph state.
   const initialNodes = useMemo(
-    () => (policy ? policyToNodes(policy, handleSelect, portSpecs) : []),
-    [policy, handleSelect, portSpecs]
+    () => (policy ? policyToNodes(policy, handleSelect, portSpecs, showPortNames) : []),
+    [policy, handleSelect, portSpecs, showPortNames]
   );
   const initialEdges = useMemo(
     () => (policy ? policyToEdges(policy, portSpecs) : []),
@@ -428,6 +434,12 @@ export function GraphCanvas({
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+
+  // Node `data` is captured at conversion time, so flipping the preference
+  // after the initial render needs an explicit rewrite of every existing node.
+  useEffect(() => {
+    setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, showPortNames } })));
+  }, [showPortNames, setNodes]);
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -518,6 +530,7 @@ export function GraphCanvas({
         config: {},
         ports: portSpecs[type],
         onSelect: handleSelect,
+        showPortNames,
       } satisfies PluginNodeData,
     };
     setNodes((nds) => [...nds, newNode]);
@@ -540,6 +553,7 @@ export function GraphCanvas({
         },
         ports: portSpecs['script'],
         onSelect: handleSelect,
+        showPortNames,
       } satisfies PluginNodeData,
     };
     setNodes((nds) => [...nds, newNode]);
@@ -563,6 +577,7 @@ export function GraphCanvas({
         // output/error boundary exits (src/graph/expand.rs).
         ports: portSpecs['supernode'],
         onSelect: handleSelect,
+        showPortNames,
       } satisfies PluginNodeData,
     };
     setNodes((nds) => [...nds, newNode]);

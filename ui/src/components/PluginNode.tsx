@@ -36,6 +36,8 @@ export interface PluginNodeData {
   ports?: PortSpec;
   /** Called with the node id when the node is clicked; used by GraphCanvas to open the inspector. */
   onSelect?: (nodeId: string) => void;
+  /** When false, ports render as bare handles with hover tooltips; default true renders labeled rows. */
+  showPortNames?: boolean;
   /** Index signature required by ReactFlow's node data constraint. */
   [key: string]: unknown;
 }
@@ -61,6 +63,19 @@ const handleStyle = (color: string): React.CSSProperties => ({
   boxShadow: `0 0 6px ${color}`,
 });
 
+/** One port row: relative so its Handle anchors to the row, not the node. */
+const portRowStyle = (align: 'left' | 'right'): React.CSSProperties => ({
+  position: 'relative',
+  height: 18,
+  lineHeight: '18px',
+  padding: '0 10px',
+  textAlign: align,
+  fontFamily: 'var(--font-mono)',
+  fontSize: 'var(--text-2xs)',
+  color: 'var(--text-muted)',
+  whiteSpace: 'nowrap',
+});
+
 /**
  * Renders one plugin node on the canvas.
  *
@@ -73,10 +88,11 @@ const handleStyle = (color: string): React.CSSProperties => ({
  *   happens to be exactly one `success` port; the non-catalog `input`
  *   pseudo-node uses a hard-coded fallback of the same shape); otherwise one
  *   handle per port declared in `data.ports.outputs` (falling back to the
- *   default success+error pair when the type has no catalog entry), evenly
- *   spaced top to bottom and colored by {@link PortDecl.kind}. Nodes with more
- *   than two outputs get a small port-name label next to each handle, since
- *   three-plus unlabeled dots aren't distinguishable.
+ *   default success+error pair when the type has no catalog entry), colored
+ *   by {@link PortDecl.kind}. When `data.showPortNames` is not `false`
+ *   (the default), each port renders as a labeled row inside the node body,
+ *   with its handle centered on the row; otherwise handles fall back to the
+ *   previous evenly-spaced absolute placement with only a hover tooltip.
  *
  * Clicking the node invokes `data.onSelect(id)`; selection is shown with an
  * accent border and ring.
@@ -102,7 +118,7 @@ export function PluginNode({ id, data, selected }: NodeProps) {
   // can't independently drift on what counts as an output.
   const isEntry = isEntryType(nodeData.pluginType);
   const outputs: PortDecl[] = resolveOutputs(nodeData.pluginType, nodeData.ports);
-  const showLabels = outputs.length > 2;
+  const showNames = nodeData.showPortNames !== false;
 
   return (
     <div
@@ -173,52 +189,64 @@ export function PluginNode({ id, data, selected }: NodeProps) {
         </div>
       )}
 
-      {/* Input handle — not on entry-like nodes (listener, input) */}
-      {!isEntry && (
-        <Handle
-          type="target"
-          position={Position.Left}
-          id="in"
-          title={nodeData.ports?.input ?? undefined}
-          style={handleStyle('var(--accent)')}
-        />
-      )}
-
-      {/* Declared outputs — one handle per catalog port, colored by kind and
-          evenly spaced; empty on terminal-like nodes (client, output, error). */}
-      {outputs.map((p, i) => {
-        const top = outputs.length === 1 ? 50 : 25 + (i * 50) / (outputs.length - 1);
-        return (
-          <div key={p.name}>
+      {/* Ports. With names shown, each port is a labeled row and its handle
+          sits at the row's vertical centre — @xyflow anchors edges off DOM
+          layout, so rows and handles stay aligned however tall the header
+          and body grow. With names hidden, handles keep the previous
+          evenly-spaced absolute placement. */}
+      {showNames ? (
+        <div style={{ borderTop: '1px solid var(--border)', padding: '4px 0' }}>
+          {!isEntry && (
+            <div style={portRowStyle('left')}>
+              <Handle
+                type="target"
+                position={Position.Left}
+                id="in"
+                title={nodeData.ports?.input ?? undefined}
+                style={{ ...handleStyle('var(--accent)'), top: '50%' }}
+              />
+              in
+            </div>
+          )}
+          {outputs.map((p) => (
+            <div key={p.name} style={portRowStyle('right')}>
+              {p.name}
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={p.name}
+                title={`${p.name} — ${p.description}`}
+                style={{ ...handleStyle(PORT_COLOR[p.kind]), top: '50%' }}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          {!isEntry && (
             <Handle
+              type="target"
+              position={Position.Left}
+              id="in"
+              title={nodeData.ports?.input ?? undefined}
+              style={handleStyle('var(--accent)')}
+            />
+          )}
+          {outputs.map((p, i) => (
+            <Handle
+              key={p.name}
               type="source"
               position={Position.Right}
               id={p.name}
               title={`${p.name} — ${p.description}`}
               style={{
                 ...handleStyle(PORT_COLOR[p.kind]),
-                top: `${top}%`,
+                top: `${outputs.length === 1 ? 50 : 25 + (i * 50) / (outputs.length - 1)}%`,
               }}
             />
-            {showLabels && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: `${top}%`,
-                  right: -8,
-                  transform: 'translate(100%, -50%)',
-                  fontSize: 'var(--text-2xs)',
-                  color: 'var(--text-muted)',
-                  whiteSpace: 'nowrap',
-                  pointerEvents: 'none',
-                }}
-              >
-                {p.name}
-              </div>
-            )}
-          </div>
-        );
-      })}
+          ))}
+        </>
+      )}
     </div>
   );
 }

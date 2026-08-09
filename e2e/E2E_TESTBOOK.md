@@ -236,6 +236,7 @@ admin API.
 | E2E-UI-12 | Save an unchanged graph | Nodes and edges round-trip identically (see the port-normalization note below) |
 | E2E-UI-13 | Add a user to a basic-auth node **via the editor form**, save | The credential lands in the policy as the UI's array shape **and authenticates real traffic** (`alice:secret` → 200, wrong password → 401) — the end-to-end proof of the users-shape fix, driven from the actual UI |
 | E2E-UI-14 | Expand/collapse an Add-Node drawer category | Plugins are hidden while the category is collapsed and revealed on expand (docs-mirrored grouping) |
+| E2E-UI-16 | Node shows labeled port rows by default | Three labeled output rows + labeled input, handle ids/tooltips unchanged |
 
 Two things this surfaced, both benign but worth recording:
 
