@@ -265,14 +265,16 @@ dragging is left to manual QA.
 
 The searchable action list (Ctrl+K) built from `ui/src/commands.ts`, and the
 bare-letter shortcuts it documents (e.g. `P` for port names, `R` for a new
-route). The registry also backs `save-graph`/`add-plugin`, which stay hidden
-until a later task wires the canvas bridge (`hasEditorAction`) they depend on.
+route). The registry also backs `save-graph`/`add-plugin`, bridged to the
+canvas via `ui/src/editorActions.tsx` (`hasEditorAction`/`invokeEditorAction`):
+both stay hidden and inert unless a policy/supernode is open in the editor.
 
 | ID | Scenario | Expected |
 |---|---|---|
 | E2E-UI-17 | Press Ctrl+K, type "route" | The palette lists every action with its shortcut chip (`Toggle port names` shows `P`); filtering narrows to matches only; Escape closes it |
 | E2E-UI-18 | Toggle port names from the palette | Port-name labels disappear from every node (handles stay, only the label hides) and the preference survives a page reload |
 | E2E-UI-19 | Press the bare `R` shortcut, then type into the opened dialog's field | The New route dialog opens; typing `r` while the field has focus does not re-open or duplicate the dialog (single-letter shortcuts are inert while an input has focus) |
+| E2E-UI-20 | With a policy open in the editor, press the bare `A` shortcut, then open the palette | The plugin drawer opens (search field visible); the palette lists both `Add plugin to canvas` and `Save policy`, now that the canvas has registered them |
 
 ## The loop — `tests/editor.spec.ts`
 

@@ -80,4 +80,19 @@ test.describe('Command palette', () => {
 
     await page.keyboard.press('Escape');
   });
+
+  /** E2E-UI-20: canvas-owned actions appear only with the editor open. */
+  test('E2E-UI-20: "A" opens the plugin drawer from the canvas', async ({ page }) => {
+    // With a policy open in the editor:
+    await openRoute(page, 'echo-api');
+
+    await page.keyboard.press('a');
+    await expect(page.getByPlaceholder('Search plugins')).toBeVisible();
+    await page.keyboard.press('Escape');
+
+    await page.keyboard.press('Control+k');
+    const palette = page.getByRole('dialog', { name: 'Command palette' });
+    await expect(palette.getByText('Add plugin to canvas')).toBeVisible();
+    await expect(palette.getByText('Save policy')).toBeVisible();
+  });
 });
