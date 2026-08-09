@@ -214,11 +214,15 @@ test.describe('Web UI', () => {
     });
 
     // Delete cors's preflight edge (cors -> client; its success edge goes to
-    // strip-prefix instead, so this aria-label is unambiguous). The edge here
-    // renders as a perfectly horizontal path, so ReactFlow's SVG <g> reports a
-    // zero-height bounding box -- Playwright's actionability check treats that
-    // as "not visible" and a plain .click() times out. Read the geometry
-    // directly and click the midpoint with the mouse instead.
+    // strip-prefix instead, so this aria-label is unambiguous). ReactFlow
+    // renders an edge as a thin SVG path inside a <g>; Playwright's
+    // actionability check hit-tests the element's box centre, which for a
+    // curved bezier is empty space beside the stroke rather than the stroke
+    // itself, so a plain .click() times out waiting for it to be "visible and
+    // stable". (Before port rows made the two endpoints sit at different
+    // heights, this path was perfectly horizontal and the <g> reported a
+    // literally zero-height box -- same outcome, different geometry.) Read the
+    // bounding box directly and click its midpoint with the raw mouse instead.
     const preflightEdge = page.locator('[aria-label="Edge from cors to client"]');
     const edgeBox = await preflightEdge.boundingBox();
     if (!edgeBox) throw new Error('preflight edge (cors -> client) not found on canvas');
