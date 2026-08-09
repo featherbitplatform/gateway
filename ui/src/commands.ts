@@ -49,14 +49,20 @@ export function buildCommands(): Command[] {
       id: 'add-plugin',
       title: 'Add plugin to canvas',
       shortcut: 'A',
-      when: (c) => c.hasEditorAction('add-plugin'),
+      // `editorOpen` is the authority on "is a graph being edited?".
+      // GraphCanvas registers its actions above its own `if (!policy)` early
+      // return (moving the hook calls below it would change hook ordering
+      // across renders), so `hasEditorAction` alone is true even when the
+      // canvas is mounted with `policy={null}` and renders its empty state.
+      when: (c) => c.editorOpen && c.hasEditorAction('add-plugin'),
       run: (c) => c.invokeEditorAction('add-plugin'),
     },
     {
       id: 'save-graph',
       title: 'Save policy',
       shortcut: 'Ctrl+S',
-      when: (c) => c.hasEditorAction('save-graph'),
+      // Same guard as add-plugin above.
+      when: (c) => c.editorOpen && c.hasEditorAction('save-graph'),
       run: (c) => c.invokeEditorAction('save-graph'),
     },
     { id: 'view-yaml', title: 'View YAML', shortcut: 'Y', when: (c) => c.hasSelection, run: (c) => c.viewYaml() },
