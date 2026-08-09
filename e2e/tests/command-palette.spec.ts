@@ -50,10 +50,6 @@ test.describe('Command palette', () => {
     const afterReload = page.locator('.react-flow__node', { hasText: 'cors' }).first();
     await expect(afterReload).toBeVisible();
     await expect(afterReload.getByText('preflight', { exact: true })).toHaveCount(0);
-
-    // Restore the default for later tests/specs that assume port names are visible.
-    await page.keyboard.press('Control+k');
-    await page.getByRole('dialog', { name: 'Command palette' }).getByText('Toggle port names').click();
   });
 
   /** E2E-UI-19: a bare shortcut runs its action; typing in a field does not. */
@@ -70,6 +66,16 @@ test.describe('Command palette', () => {
     const nameField = page.getByPlaceholder('echo-api');
     await nameField.click();
     await nameField.press('r');
+    // Discriminating assertion: `dialog.toHaveCount(1)` alone would pass even
+    // if the input-exemption guard were removed, because App's
+    // handleCreateRoute is idempotent (re-opening an already-open dialog just
+    // resets its fields) — a broken guard would still leave exactly one
+    // dialog on screen. Asserting the keystroke actually landed in the field
+    // is what a broken guard changes: with the guard removed, the global
+    // handler's preventDefault() would suppress the character and
+    // handleCreateRoute's setNewName('') would clear the field, so the value
+    // would be '' instead of 'r'.
+    await expect(nameField).toHaveValue('r');
     await expect(dialog).toHaveCount(1);
 
     await page.keyboard.press('Escape');
