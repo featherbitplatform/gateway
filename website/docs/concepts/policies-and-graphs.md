@@ -201,7 +201,9 @@ The v1 shortcut list:
 | `Ctrl+S` | Save policy | Editor open on a route or supernode |
 | `Y` | View YAML | A route, supernode, or plugin config selected |
 
-Two actions are palette-only, with no bound key: **Reload gateway config** and **Toggle theme**. Single-letter shortcuts are inert while a text field has focus (so typing "rate" into a filter box doesn't fire **New route**), and an action unavailable in the current context — `A` and `Ctrl+S` before any editor is open, `Y` before anything is selected — is hidden from the palette and its key does nothing.
+Two actions are palette-only, with no bound key: **Reload gateway config** and **Toggle theme**. An action unavailable in the current context — `A` and `Ctrl+S` before any editor is open on a route or supernode, `Y` before anything is selected — is hidden from the palette and does not run.
+
+Single-letter shortcuts are typing, not commands, wherever text is being entered: they are inert while an `<input>`, `<textarea>`, `<select>`, or contenteditable element has focus (so typing "rate" into a filter box doesn't fire **New route**, and typing a letter in a dropdown still jumps to the matching option), and inert while a modal dialog is open, so a stray keystroke can't stack a second dialog on top of the first. `Ctrl+S` is the exception in the other direction: it always suppresses the browser's own Save Page dialog, from a text field as much as from the canvas, and whether or not a policy is open to save.
 
 ## Compilation rules
 
