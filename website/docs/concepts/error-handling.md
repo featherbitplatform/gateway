@@ -11,8 +11,8 @@ Failures are not exceptions that abort the pipeline — they are routed through 
 
 <UiShot
   name="policy-graph"
-  alt="A policy graph where red dashed error edges from several nodes converge on a single error-handler node, whose success edge returns to client."
-  caption="Error routing is visible in the graph itself: the red dashed edges are error ports, each carrying its Context to one shared handler. What reaches that handler is a failure, not a rejection — rate-limit's error edge fires when the limiter store is unreachable, not when a client is throttled. A throttled client is a deliberate outcome and exits rate-limit's own limited port straight to client, its 429 already prepared, just as a rejected API key exits key-auth on denied. (This capture predates the outcome ports, so those two edges are not drawn.)"
+  alt="A policy graph with a green success chain from listener through cors, key-auth, rate-limit, proxy-rewrite, upstream, and logging to client; a single red dashed error edge runs from upstream to error-handler, whose own success edge returns to client; violet edges carry cors's preflight, key-auth's denied, and rate-limit's limited outcomes straight to client."
+  caption="Error routing is visible in the graph itself: the one red dashed edge is an error port — it fires only when upstream itself can't be reached, carrying its Context to the shared error-handler, whose success edge returns to client. The violet edges are a different thing entirely: cors's preflight, key-auth's denied, and rate-limit's limited are deliberate outcomes, not failures, so each exits straight to client with its response — a 204, 401, or 429 — already prepared, never touching error-handler."
 />
 
 ## What happens when a node fails
