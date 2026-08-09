@@ -2,7 +2,13 @@
  * Registry letting the canvas expose actions to the App-level command
  * palette without lifting its internal state (drawer visibility, save
  * handler) into App. GraphCanvas registers on mount and unregisters on
- * unmount, so `has()` doubles as "is the editor open?".
+ * unmount.
+ *
+ * `has()` is *not* "is the editor open?": the registration hooks sit above
+ * GraphCanvas's `if (!policy)` early return (hook order must not vary across
+ * renders), so a canvas mounted with `policy={null}` — App's state whenever
+ * nothing is selected — still registers. Commands that require a real graph
+ * pair `has()` with `CommandContext.editorOpen` (see commands.ts).
  *
  * This registry is intentionally *not* reactive: `register`/its returned
  * cleanup are side-effectful mutations of a plain `Map` ref, and `invoke`/
@@ -61,8 +67,17 @@ export function useRegisterEditorAction(id: string, fn: () => void): void {
   useEffect(() => ctx?.register(id, fn), [ctx, id, fn]);
 }
 
-/** Palette-side accessor. */
+/**
+ * Palette-side accessor.
+ *
+ * Memoized on `ctx` (itself stable, see the Provider) so the returned object
+ * and its two functions keep their identity across renders — App feeds them
+ * into a memoized CommandContext that keys the global keydown effect.
+ */
 export function useEditorActions(): { invoke: (id: string) => void; has: (id: string) => boolean } {
   const ctx = useContext(Ctx);
-  return { invoke: (id) => ctx?.invoke(id), has: (id) => ctx?.has(id) ?? false };
+  return useMemo(
+    () => ({ invoke: (id: string) => ctx?.invoke(id), has: (id: string) => ctx?.has(id) ?? false }),
+    [ctx]
+  );
 }

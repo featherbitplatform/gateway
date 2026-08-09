@@ -7,7 +7,7 @@
  *
  * @module usePortNames
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 /** localStorage key holding `'true'` | `'false'`. */
 const STORAGE_KEY = 'portNames';
@@ -24,5 +24,10 @@ export function usePortNames(): [boolean, () => void] {
     localStorage.setItem(STORAGE_KEY, show ? 'true' : 'false');
   }, [show]);
 
-  return [show, () => setShow((v) => !v)];
+  // Stable identity: this toggle is a dependency of App's memoized
+  // CommandContext, which in turn keys the global keydown effect. A fresh
+  // arrow every render would resubscribe that listener on every render.
+  const toggle = useCallback(() => setShow((v) => !v), []);
+
+  return [show, toggle];
 }
