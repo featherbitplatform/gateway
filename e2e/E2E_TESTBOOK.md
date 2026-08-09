@@ -268,14 +268,20 @@ bare-letter shortcuts it documents (e.g. `P` for port names, `R` for a new
 route). The registry also backs `save-graph`/`add-plugin`, bridged to the
 canvas via `ui/src/editorActions.tsx` (`hasEditorAction`/`invokeEditorAction`):
 both stay hidden and inert unless a policy/supernode is open in the editor.
+Registration alone is *not* that signal — GraphCanvas registers even when
+mounted with `policy={null}` — so the palette pairs it with
+`CommandContext.editorOpen`, which E2E-UI-17 pins from the nothing-selected
+state and E2E-UI-21 pins from the no-canvas-at-all state.
 
 | ID | Scenario | Expected |
 |---|---|---|
-| E2E-UI-17 | Press Ctrl+K, type "route" | The palette lists every action with its shortcut chip (`Toggle port names` shows `P`); filtering narrows to matches only; Escape closes it |
+| E2E-UI-17 | With nothing selected, press Ctrl+K, then type "route" | The palette lists every action with its shortcut chip (`Toggle port names` shows `P`); the two canvas-owned actions (`Add plugin to canvas`, `Save policy`) are absent because no graph is open; filtering narrows to matches only; Escape closes it |
 | E2E-UI-18 | Toggle port names from the palette | Port-name labels disappear from every node (handles stay, only the label hides) and the preference survives a page reload |
-| E2E-UI-19 | Press the bare `R` shortcut, then type into the opened dialog's field | The New route dialog opens; typing `r` while the field has focus does not re-open or duplicate the dialog (single-letter shortcuts are inert while an input has focus) |
-| E2E-UI-20 | With a policy open in the editor, press the bare `A` shortcut, then open the palette | The plugin drawer opens (search field visible); the palette lists both `Add plugin to canvas` and `Save policy`, now that the canvas has registered them |
+| E2E-UI-19 | Press the bare `R` shortcut; type into the opened dialog's field; click the dialog's header to blur it and press `S`; then focus the inspector's shared-config `<select>` and press `S` | The New route dialog opens; `r` typed in the focused field lands in the field and does not duplicate the dialog; `s` with the dialog open but unfocused opens **no** second dialog (bare shortcuts are inert behind a modal); `s` on the focused `<select>` type-aheads to the `s-…` option instead of firing New supernode |
+| E2E-UI-20 | With a policy open in the editor, press the bare `A` shortcut, press Escape, then open the palette | The plugin drawer opens (search field visible) and Escape closes it again; the palette lists both `Add plugin to canvas` and `Save policy`, now that a graph is open |
 | E2E-UI-21 | Select a shared plugin config (no canvas mounted), press the bare `A` shortcut, then open the palette | Nothing happens on `A` (no drawer); the palette hides both `Add plugin to canvas` and `Save policy` |
+| E2E-UI-22 | With `rt-api` open, focus the inspector's read-only Node ID `<input>` and press `Ctrl+S`; then, with nothing selected, press `Ctrl+S` again | The first press saves ("Policy saved" toast) — modifier shortcuts are not subject to the text-field exemption; the second press produces no save but still reports `defaultPrevented`, so the browser's own Save Page dialog never opens |
+| E2E-UI-23 | Open the palette, filter to no matches, click the "No matching command" row, then press Escape | Clicking the row blurs the search input to `<body>` without closing the palette; Escape still closes it (the global handler answers Escape while the palette is open, not just the input) |
 
 ## The loop — `tests/editor.spec.ts`
 
