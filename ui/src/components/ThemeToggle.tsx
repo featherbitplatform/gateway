@@ -7,39 +7,33 @@
  */
 import { useState, useEffect } from 'react';
 import { Moon, Sun } from 'lucide-react';
+import { isDarkTheme, toggleTheme, THEME_CHANGE_EVENT } from '../theme';
 
 /**
  * Icon button that toggles between dark and light mode.
  *
- * Initial state comes from localStorage 'theme' if set, otherwise from the OS
- * preference (dark-first: dark unless the OS explicitly prefers light). Each
- * change writes 'theme' back to localStorage and updates `data-theme` on the
- * root element: the attribute is removed for dark (the stylesheet's default)
- * and set to "light" for light mode.
+ * The flip itself (DOM attribute + localStorage) lives in `theme.ts`, shared
+ * with the command palette's `toggle-theme` action, so the two can't drift.
+ * This component only tracks the current value for its icon, seeded from
+ * the DOM on mount and resynced whenever `theme.ts` reports a change —
+ * including one triggered elsewhere, such as from the palette.
  *
- * @remarks The same bootstrap logic runs in main.tsx before React mounts, so
- * the page paints in the persisted theme without a flash; keep the two in sync.
+ * @remarks main.tsx runs the same dark-first bootstrap logic before React
+ * mounts, so the page paints in the persisted theme without a flash; keep
+ * the two in sync.
  */
 export function ThemeToggle() {
-  const [dark, setDark] = useState(() => {
-    const saved = localStorage.getItem('theme');
-    if (saved) return saved === 'dark';
-    // Dark-first: default to dark unless the OS prefers light
-    return !window.matchMedia('(prefers-color-scheme: light)').matches;
-  });
+  const [dark, setDark] = useState(isDarkTheme);
 
   useEffect(() => {
-    if (dark) {
-      document.documentElement.removeAttribute('data-theme');
-    } else {
-      document.documentElement.setAttribute('data-theme', 'light');
-    }
-    localStorage.setItem('theme', dark ? 'dark' : 'light');
-  }, [dark]);
+    const onThemeChange = () => setDark(isDarkTheme());
+    window.addEventListener(THEME_CHANGE_EVENT, onThemeChange);
+    return () => window.removeEventListener(THEME_CHANGE_EVENT, onThemeChange);
+  }, []);
 
   return (
     <button
-      onClick={() => setDark(!dark)}
+      onClick={toggleTheme}
       className="flex items-center justify-center transition-colors"
       style={{
         width: 28,

@@ -12,6 +12,10 @@ import { PluginConfigPanel } from './components/PluginConfigPanel';
 import { Dialog, DialogButton, DialogField } from './components/Dialog';
 import { DebugPanel } from './components/DebugPanel';
 import { Toast, type ToastData } from './components/Toast';
+import { CommandPalette } from './components/CommandPalette';
+import { buildCommands, matchesShortcut, type CommandContext } from './commands';
+import { usePortNames } from './usePortNames';
+import { toggleTheme } from './theme';
 import { api } from './api/client';
 import type {
   Route,
@@ -90,6 +94,12 @@ export default function App() {
   // panel can explain why it is unavailable rather than appearing broken.
   const [debugOpen, setDebugOpen] = useState(false);
   const [debugConfig, setDebugConfig] = useState<DebugConfig | null>(null);
+
+  // Port-name visibility (P) and the command palette (Ctrl+K). Owned here —
+  // a single usePortNames() call — so the palette's toggle and the canvas
+  // it re-renders can never see two different copies of the preference.
+  const [showPortNames, togglePortNames] = usePortNames();
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
@@ -393,6 +403,50 @@ export default function App() {
     await handleSavePolicy(graph);
   };
 
+  // Selection across routes/supernodes/plugin configs is mutually exclusive
+  // (see handleSelect* above), so any one of them being set means "something
+  // is selected" for the view-yaml command's `when`.
+  const hasSelection = selectedRoute !== null || selectedSupernode !== null || selectedPluginConfig !== null;
+
+  const commandCtx: CommandContext = {
+    editorOpen: canvasPolicy !== null,
+    hasSelection,
+    togglePortNames,
+    createRoute: handleCreateRoute,
+    createSupernode: handleCreateSupernode,
+    createPluginConfig: handleCreatePluginConfig,
+    viewYaml: handleViewYaml,
+    reloadConfig: handleReload,
+    toggleTheme,
+    // The canvas doesn't register editor-owned actions yet (add-plugin,
+    // save-graph) — until that bridge lands, both commands are correctly
+    // hidden from the palette and their shortcuts stay inert.
+    invokeEditorAction: () => {},
+    hasEditorAction: () => false,
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+        return;
+      }
+      if (paletteOpen) return; // the palette owns keys while it is open
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      for (const cmd of buildCommands()) {
+        if (!cmd.shortcut || !matchesShortcut(e, cmd.shortcut)) continue;
+        if (cmd.when && !cmd.when(commandCtx)) continue;
+        e.preventDefault();
+        cmd.run(commandCtx);
+        return;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [paletteOpen, commandCtx]);
+
   if (error) {
     return (
       <div className="h-screen flex items-center justify-center" style={{ background: 'var(--bg-app)' }}>
@@ -490,8 +544,11 @@ export default function App() {
           supernodes={supernodes}
           pluginConfigs={pluginConfigs}
           debugConfig={debugConfig}
+          showPortNames={showPortNames}
         />
       )}
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} ctx={commandCtx} />
 
       <Dialog
         open={createOpen}

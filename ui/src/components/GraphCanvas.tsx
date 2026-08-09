@@ -39,7 +39,6 @@ import type {
 } from '../types';
 import { buildPortSpecs, type PortSpecLookup } from '../portSpecs';
 import { resolveOutputs } from '../nodeKinds';
-import { usePortNames } from '../usePortNames';
 
 /** Stroke color for each port kind, used for both edges and connection previews. */
 const PORT_STROKE: Record<PortDecl['kind'], string> = {
@@ -119,6 +118,12 @@ interface GraphCanvasProps {
   pluginConfigs: PluginConfigDef[];
   /** Debug settings (enabled/capture_bodies/...), threaded to the inspector's var-suggestion hook. */
   debugConfig: DebugConfig | null;
+  /**
+   * Current value of the persisted port-names preference. Owned by App (a
+   * single `usePortNames()` call) so the command palette's toggle and this
+   * canvas always agree — see the `showPortNames` doc on {@link policyToNodes}.
+   */
+  showPortNames: boolean;
 }
 
 /** ReactFlow custom node-type registry; every policy node renders as a {@link PluginNode}. */
@@ -391,11 +396,11 @@ export function GraphCanvas({
   supernodes,
   pluginConfigs,
   debugConfig,
+  showPortNames,
 }: GraphCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [showPortNames] = usePortNames();
 
   const handleSelect = useCallback((id: string) => {
     setSelectedNodeId(id);
