@@ -14,6 +14,7 @@ import { DebugPanel } from './components/DebugPanel';
 import { Toast, type ToastData } from './components/Toast';
 import { CommandPalette } from './components/CommandPalette';
 import { buildCommands, matchesShortcut, type CommandContext } from './commands';
+import { useEditorActions } from './editorActions';
 import { usePortNames } from './usePortNames';
 import { toggleTheme } from './theme';
 import { api } from './api/client';
@@ -100,6 +101,7 @@ export default function App() {
   // it re-renders can never see two different copies of the preference.
   const [showPortNames, togglePortNames] = usePortNames();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const editorActions = useEditorActions();
 
   const loadData = useCallback(async () => {
     try {
@@ -418,11 +420,11 @@ export default function App() {
     viewYaml: handleViewYaml,
     reloadConfig: handleReload,
     toggleTheme,
-    // The canvas doesn't register editor-owned actions yet (add-plugin,
-    // save-graph) — until that bridge lands, both commands are correctly
-    // hidden from the palette and their shortcuts stay inert.
-    invokeEditorAction: () => {},
-    hasEditorAction: () => false,
+    // Bridged to whatever GraphCanvas has registered (see editorActions.tsx):
+    // both commands stay hidden and their shortcuts inert whenever no canvas
+    // is mounted (e.g. a plugin config is selected instead of a policy).
+    invokeEditorAction: editorActions.invoke,
+    hasEditorAction: editorActions.has,
   };
 
   useEffect(() => {
@@ -545,6 +547,7 @@ export default function App() {
           pluginConfigs={pluginConfigs}
           debugConfig={debugConfig}
           showPortNames={showPortNames}
+          onOpenPalette={() => setPaletteOpen(true)}
         />
       )}
 

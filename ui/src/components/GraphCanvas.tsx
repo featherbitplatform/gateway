@@ -23,11 +23,12 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { GitFork, Plus, Save, Trash2 } from 'lucide-react';
+import { Command, GitFork, Plus, Save, Trash2 } from 'lucide-react';
 import { PluginNode, type PluginNodeData } from './PluginNode';
 import { PluginDrawer } from './PluginDrawer';
 import { NodeInspector } from './NodeInspector';
 import { ThemeToggle } from './ThemeToggle';
+import { useRegisterEditorAction } from '../editorActions';
 import type {
   DebugConfig,
   Policy,
@@ -124,6 +125,8 @@ interface GraphCanvasProps {
    * canvas always agree — see the `showPortNames` doc on {@link policyToNodes}.
    */
   showPortNames: boolean;
+  /** Opens the App-level command palette; omitted renders no toolbar button. */
+  onOpenPalette?: () => void;
 }
 
 /** ReactFlow custom node-type registry; every policy node renders as a {@link PluginNode}. */
@@ -381,6 +384,9 @@ function nodesToPolicy(
  * - Selecting a node opens the inspector (unless the drawer is open);
  *   clicking an edge selects it and reveals a Delete Edge button; clicking
  *   the pane clears both selections. Deleting a node also removes its edges.
+ * - While mounted, registers `add-plugin`/`save-graph` with the App-level
+ *   command palette (see {@link useRegisterEditorAction}), so the palette's
+ *   corresponding entries and shortcuts are live only when a canvas is open.
  *
  * @remarks
  * Success/error handles correspond to the port routing model executed by
@@ -397,6 +403,7 @@ export function GraphCanvas({
   pluginConfigs,
   debugConfig,
   showPortNames,
+  onOpenPalette,
 }: GraphCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -612,7 +619,7 @@ export function GraphCanvas({
     setSelectedNodeId(null);
   };
 
-  const handleSave = () => {
+  const handleSave = useCallback(() => {
     if (!policy) return;
     const updated = nodesToPolicy(policy.name, nodes, edges, policy.error_handler);
 
@@ -630,7 +637,19 @@ export function GraphCanvas({
 
     console.log('Saving policy:', JSON.stringify(updated, null, 2));
     onSavePolicy(updated);
-  };
+  }, [policy, nodes, edges, portSpecs, onSaveWarning, onSavePolicy]);
+
+  // Exposes canvas-owned actions to the App-level command palette (see
+  // editorActions.tsx) for as long as this canvas is mounted — registering
+  // and unregistering doubles as the palette's "is the editor open?" signal.
+  useRegisterEditorAction(
+    'add-plugin',
+    useCallback(() => {
+      setSelectedNodeId(null);
+      setDrawerOpen(true);
+    }, [])
+  );
+  useRegisterEditorAction('save-graph', handleSave);
 
   if (!policy) {
     return (
@@ -709,6 +728,23 @@ export function GraphCanvas({
             }}
           >
             <ThemeToggle />
+            <button
+              onClick={onOpenPalette}
+              className="flex items-center justify-center transition-colors"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 'var(--radius-sm)',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              title="Command palette (Ctrl+K)"
+              aria-label="Open command palette"
+            >
+              <Command size={15} />
+            </button>
             <span
               style={{ width: 1, height: 18, background: 'var(--border)', margin: '0 2px' }}
             />
