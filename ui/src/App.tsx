@@ -5,7 +5,7 @@
  *
  * @module App
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { GraphCanvas } from './components/GraphCanvas';
 import { PluginConfigPanel } from './components/PluginConfigPanel';
@@ -187,11 +187,14 @@ export default function App() {
     setSelectedPluginConfig(name);
   };
 
-  const handleCreateRoute = () => {
+  // The create/view/reload handlers below are useCallback'd because they are
+  // fields of the memoized `commandCtx`, which keys the global keydown effect
+  // (an unstable field there would resubscribe the listener every render).
+  const handleCreateRoute = useCallback(() => {
     setNewName('');
     setNewPath('/*');
     setCreateOpen(true);
-  };
+  }, []);
 
   const submitCreateRoute = async () => {
     const name = newName.trim();
@@ -239,10 +242,10 @@ export default function App() {
     }
   };
 
-  const handleCreateSupernode = () => {
+  const handleCreateSupernode = useCallback(() => {
     setNewSupernodeName('');
     setCreateSupernodeOpen(true);
-  };
+  }, []);
 
   const submitCreateSupernode = async () => {
     const name = newSupernodeName.trim();
@@ -286,11 +289,11 @@ export default function App() {
     }
   };
 
-  const handleCreatePluginConfig = () => {
+  const handleCreatePluginConfig = useCallback(() => {
     setNewPcName('');
     setNewPcType('');
     setCreatePluginConfigOpen(true);
-  };
+  }, []);
 
   const submitCreatePluginConfig = async () => {
     const name = newPcName.trim();
@@ -332,14 +335,14 @@ export default function App() {
     }
   };
 
-  const handleViewYaml = async () => {
+  const handleViewYaml = useCallback(async () => {
     try {
       const yaml = await api.exportConfig();
       setYamlView(yaml);
     } catch (e) {
       setToast({ tone: 'error', title: 'Failed to export config', message: `${e}` });
     }
-  };
+  }, []);
 
   const copyYaml = async () => {
     if (yamlView == null) return;
@@ -362,7 +365,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const handleReload = async () => {
+  const handleReload = useCallback(async () => {
     try {
       await api.reload();
       await loadData();
@@ -370,7 +373,7 @@ export default function App() {
     } catch (e) {
       setToast({ tone: 'error', title: 'Reload failed', message: `${e}` });
     }
-  };
+  }, [loadData]);
 
   // Wrapped in useCallback (rather than a plain function, as most handlers
   // in this file are) because it's registered as the canvas's `save-graph`
@@ -437,22 +440,42 @@ export default function App() {
   // is selected" for the view-yaml command's `when`.
   const hasSelection = selectedRoute !== null || selectedSupernode !== null || selectedPluginConfig !== null;
 
-  const commandCtx: CommandContext = {
-    editorOpen: canvasPolicy !== null,
-    hasSelection,
-    togglePortNames,
-    createRoute: handleCreateRoute,
-    createSupernode: handleCreateSupernode,
-    createPluginConfig: handleCreatePluginConfig,
-    viewYaml: handleViewYaml,
-    reloadConfig: handleReload,
-    toggleTheme,
-    // Bridged to whatever GraphCanvas has registered (see editorActions.tsx):
-    // both commands stay hidden and their shortcuts inert whenever no canvas
-    // is mounted (e.g. a plugin config is selected instead of a policy).
-    invokeEditorAction: editorActions.invoke,
-    hasEditorAction: editorActions.has,
-  };
+  // Memoized: this object is the only non-primitive dependency of the global
+  // keydown effect below, so a fresh literal every render would tear down and
+  // re-add the window listener on every render. It is also CommandPalette's
+  // `ctx` prop, and the palette memoizes its filtered list on it — that memo
+  // only ever hits because this identity is stable.
+  const editorOpen = canvasPolicy !== null;
+  const commandCtx: CommandContext = useMemo(
+    () => ({
+      editorOpen,
+      hasSelection,
+      togglePortNames,
+      createRoute: handleCreateRoute,
+      createSupernode: handleCreateSupernode,
+      createPluginConfig: handleCreatePluginConfig,
+      viewYaml: handleViewYaml,
+      reloadConfig: handleReload,
+      toggleTheme,
+      // Bridged to whatever GraphCanvas has registered (see editorActions.tsx).
+      // Registration alone is not "a graph is open" — GraphCanvas registers
+      // even when mounted with `policy={null}` — so the canvas commands' when()
+      // pairs `hasEditorAction` with `editorOpen` (see commands.ts).
+      invokeEditorAction: editorActions.invoke,
+      hasEditorAction: editorActions.has,
+    }),
+    [
+      editorOpen,
+      hasSelection,
+      togglePortNames,
+      handleCreateRoute,
+      handleCreateSupernode,
+      handleCreatePluginConfig,
+      handleViewYaml,
+      handleReload,
+      editorActions,
+    ]
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -461,11 +484,56 @@ export default function App() {
         setPaletteOpen((v) => !v);
         return;
       }
-      if (paletteOpen) return; // the palette owns keys while it is open
+      if (paletteOpen) {
+        // The palette owns keys while it is open — but its own Escape binding
+        // lives on the search input, and a click on the list padding or the
+        // "No matching command" row blurs focus to <body>. Handling Escape
+        // here keeps "Escape closes it" true regardless of where focus is,
+        // without touching the input's autoFocus.
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setPaletteOpen(false);
+        }
+        return;
+      }
+
+      const commands = buildCommands();
+
+      // Modifier shortcuts run ABOVE the text-field guard. Ctrl+S must never
+      // reach the browser's Save Page dialog — not from the inspector's
+      // raw-config textarea, and not when `save-graph` happens to be
+      // unavailable either. So preventDefault() fires for any registered
+      // Ctrl+* binding; only run() is gated on when().
+      for (const cmd of commands) {
+        if (!cmd.shortcut?.startsWith('Ctrl+') || !matchesShortcut(e, cmd.shortcut)) continue;
+        e.preventDefault();
+        if (cmd.when && !cmd.when(commandCtx)) return;
+        cmd.run(commandCtx);
+        return;
+      }
+
+      // Bare single letters are typing, not commands, wherever text is being
+      // entered. SELECT counts: a native <select> uses letters for type-ahead,
+      // and preventDefault() here would kill it (see NodeInspector's shared-
+      // config picker and SchemaForm's enum fields).
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      for (const cmd of buildCommands()) {
-        if (!cmd.shortcut || !matchesShortcut(e, cmd.shortcut)) continue;
+      if (
+        t &&
+        (t.tagName === 'INPUT' ||
+          t.tagName === 'TEXTAREA' ||
+          t.tagName === 'SELECT' ||
+          t.isContentEditable)
+      )
+        return;
+      // Nor are they commands behind a modal dialog: Dialog has no focus trap,
+      // so clicking its body blurs the autofocused field and any bare letter
+      // would stack a second dialog at the same z-index. (The palette itself
+      // never reaches here — it returns above.)
+      if (document.querySelector('[role="dialog"]')) return;
+
+      for (const cmd of commands) {
+        if (!cmd.shortcut || cmd.shortcut.startsWith('Ctrl+')) continue;
+        if (!matchesShortcut(e, cmd.shortcut)) continue;
         if (cmd.when && !cmd.when(commandCtx)) continue;
         e.preventDefault();
         cmd.run(commandCtx);
