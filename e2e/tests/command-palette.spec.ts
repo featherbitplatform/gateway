@@ -3,6 +3,7 @@
  * documents. See E2E_TESTBOOK.md ("Command palette").
  */
 import { test, expect, type Page } from '@playwright/test';
+import { adminApi } from '../helpers/admin';
 
 /** Opens a route's policy on the canvas and waits for the graph to render. */
 async function openRoute(page: Page, route: string) {
@@ -94,5 +95,36 @@ test.describe('Command palette', () => {
     const palette = page.getByRole('dialog', { name: 'Command palette' });
     await expect(palette.getByText('Add plugin to canvas')).toBeVisible();
     await expect(palette.getByText('Save policy')).toBeVisible();
+  });
+
+  /** E2E-UI-21: canvas-owned actions stay hidden with no canvas mounted. */
+  test('E2E-UI-21: a selected plugin config (no canvas) hides the canvas-owned actions', async ({ page }) => {
+    const api = await adminApi();
+    await api.delete('/api/plugin-configs/e2e-cp-no-canvas');
+    expect(
+      (
+        await api.put('/api/plugin-configs/e2e-cp-no-canvas', {
+          data: { name: 'e2e-cp-no-canvas', type: 'mocking', config: { response_status: 200 } },
+        })
+      ).ok()
+    ).toBeTruthy();
+
+    await page.goto('/');
+    // Selecting a shared plugin config renders PluginConfigPanel instead of
+    // GraphCanvas — no canvas is mounted, so no editor action is registered.
+    await page.getByText('e2e-cp-no-canvas', { exact: true }).click();
+    await expect(page.getByText('e2e-cp-no-canvas').first()).toBeVisible();
+
+    await page.keyboard.press('a');
+    await expect(page.getByPlaceholder('Search plugins')).toHaveCount(0);
+
+    await page.keyboard.press('Control+k');
+    const palette = page.getByRole('dialog', { name: 'Command palette' });
+    await expect(palette).toBeVisible();
+    await expect(palette.getByText('Add plugin to canvas')).toHaveCount(0);
+    await expect(palette.getByText('Save policy')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+
+    await api.delete('/api/plugin-configs/e2e-cp-no-canvas');
   });
 });

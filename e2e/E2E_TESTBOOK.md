@@ -275,6 +275,7 @@ both stay hidden and inert unless a policy/supernode is open in the editor.
 | E2E-UI-18 | Toggle port names from the palette | Port-name labels disappear from every node (handles stay, only the label hides) and the preference survives a page reload |
 | E2E-UI-19 | Press the bare `R` shortcut, then type into the opened dialog's field | The New route dialog opens; typing `r` while the field has focus does not re-open or duplicate the dialog (single-letter shortcuts are inert while an input has focus) |
 | E2E-UI-20 | With a policy open in the editor, press the bare `A` shortcut, then open the palette | The plugin drawer opens (search field visible); the palette lists both `Add plugin to canvas` and `Save policy`, now that the canvas has registered them |
+| E2E-UI-21 | Select a shared plugin config (no canvas mounted), press the bare `A` shortcut, then open the palette | Nothing happens on `A` (no drawer); the palette hides both `Add plugin to canvas` and `Save policy` |
 
 ## The loop — `tests/editor.spec.ts`
 

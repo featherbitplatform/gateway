@@ -4,9 +4,25 @@
  * handler) into App. GraphCanvas registers on mount and unregisters on
  * unmount, so `has()` doubles as "is the editor open?".
  *
+ * This registry is intentionally *not* reactive: `register`/its returned
+ * cleanup are side-effectful mutations of a plain `Map` ref, and `invoke`/
+ * `has` are live reads of that ref — none of them trigger a re-render, and
+ * none of them need to. `has(id)` reflects whatever is registered at the
+ * moment some *other* render calls it (e.g. CommandPalette re-evaluating
+ * `when()` on every keystroke, or App re-rendering for any of its own
+ * reasons); nothing here re-renders App or the palette just because a
+ * registration changed. An earlier version bumped a `useState` counter on
+ * every register/unregister specifically to force such a re-render, but
+ * paired with a memoized context value (needed to stop the registration
+ * effect in `useRegisterEditorAction` from re-firing on every provider
+ * render — see git history) that counter became a state update with no
+ * observer: the memoized value and `children` are both referentially
+ * stable, so React bails out of re-rendering anything below the Provider
+ * on a bump. It was dead weight, not a bug fix, so it's gone.
+ *
  * @module editorActions
  */
-import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 
 interface EditorActionsValue {
   invoke: (id: string) => void;
@@ -19,26 +35,21 @@ const Ctx = createContext<EditorActionsValue | null>(null);
 /** Wraps the app so canvas actions are reachable from the palette. */
 export function EditorActionsProvider({ children }: { children: ReactNode }) {
   const actions = useRef(new Map<string, () => void>());
-  // Bumped on register/unregister so consumers re-evaluate `has()`.
-  const [, bump] = useState(0);
 
   const register = useCallback((id: string, fn: () => void) => {
     actions.current.set(id, fn);
-    bump((n) => n + 1);
     return () => {
       actions.current.delete(id);
-      bump((n) => n + 1);
     };
   }, []);
 
   const invoke = useCallback((id: string) => actions.current.get(id)?.(), []);
   const has = useCallback((id: string) => actions.current.has(id), []);
 
-  // Memoized so the value's identity is stable across bump-triggered
-  // re-renders: invoke/has/register never change, and without this the
-  // context value would be a fresh object every render, which would make
-  // useRegisterEditorAction's effect (keyed on `ctx`) re-run on every
-  // provider render, re-bumping forever.
+  // Memoized so the value's identity is stable across renders: invoke/has/
+  // register never change, and without this the context value would be a
+  // fresh object every render, which would make useRegisterEditorAction's
+  // effect (keyed on `ctx`) re-run on every provider render.
   const value = useMemo(() => ({ invoke, has, register }), [invoke, has, register]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
