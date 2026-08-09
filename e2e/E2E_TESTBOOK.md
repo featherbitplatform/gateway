@@ -261,6 +261,19 @@ UI→policy edge serialization in the reliable direction — deleting a node rem
 its edges from the saved policy — so edge *removal* is covered; edge *creation* by
 dragging is left to manual QA.
 
+## Command palette — `tests/command-palette.spec.ts`
+
+The searchable action list (Ctrl+K) built from `ui/src/commands.ts`, and the
+bare-letter shortcuts it documents (e.g. `P` for port names, `R` for a new
+route). The registry also backs `save-graph`/`add-plugin`, which stay hidden
+until a later task wires the canvas bridge (`hasEditorAction`) they depend on.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-UI-17 | Press Ctrl+K, type "route" | The palette lists every action with its shortcut chip (`Toggle port names` shows `P`); filtering narrows to matches only; Escape closes it |
+| E2E-UI-18 | Toggle port names from the palette | Port-name labels disappear from every node (handles stay, only the label hides) and the preference survives a page reload |
+| E2E-UI-19 | Press the bare `R` shortcut, then type into the opened dialog's field | The New route dialog opens; typing `r` while the field has focus does not re-open or duplicate the dialog (single-letter shortcuts are inert while an input has focus) |
+
 ## The loop — `tests/editor.spec.ts`
 
 The scenarios that justify the suite. Each starts in the browser and ends with an
