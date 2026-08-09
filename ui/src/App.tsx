@@ -372,38 +372,65 @@ export default function App() {
     }
   };
 
-  const handleSavePolicy = async (policy: Policy) => {
-    try {
-      await api.updatePolicy(policy.name, policy);
-      await loadData();
-      setToast({
-        tone: 'success',
-        title: 'Policy saved',
-        message: `${policy.name} · ${policy.nodes.length} nodes persisted`,
-      });
-    } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to save policy', message: `${e}` });
-    }
-  };
-
-  const handleSaveGraph = async (graph: Policy) => {
-    if (selectedSupernodeDef) {
+  // Wrapped in useCallback (rather than a plain function, as most handlers
+  // in this file are) because it's registered as the canvas's `save-graph`
+  // editor action (see GraphCanvas's `useRegisterEditorAction('save-graph',
+  // handleSave)`, where `handleSave` closes over `onSavePolicy` — this
+  // function). An unstable identity here would flow through and destabilize
+  // `handleSave` too, churning that registration on every unrelated App
+  // re-render. Deps are exactly the free variables read below; `loadData`
+  // and `setToast` are already stable (see their own definitions).
+  const handleSavePolicy = useCallback(
+    async (policy: Policy) => {
       try {
-        await api.updateSupernode(graph.name, {
-          name: graph.name,
-          description: selectedSupernodeDef.description,
-          nodes: graph.nodes,
-          edges: graph.edges,
-        });
+        await api.updatePolicy(policy.name, policy);
         await loadData();
-        setToast({ tone: 'success', title: 'Supernode saved', message: graph.name });
+        setToast({
+          tone: 'success',
+          title: 'Policy saved',
+          message: `${policy.name} · ${policy.nodes.length} nodes persisted`,
+        });
       } catch (e) {
-        setToast({ tone: 'error', title: 'Failed to save supernode', message: `${e}` });
+        setToast({ tone: 'error', title: 'Failed to save policy', message: `${e}` });
       }
-      return;
-    }
-    await handleSavePolicy(graph);
-  };
+    },
+    [loadData]
+  );
+
+  // Same stability requirement as handleSavePolicy above — this is the
+  // function actually passed as GraphCanvas's `onSavePolicy`.
+  // `selectedSupernodeDef` is a `.find()` result over `supernodes`, so its
+  // identity only changes when the underlying list or selection changes,
+  // not on every render.
+  const handleSaveGraph = useCallback(
+    async (graph: Policy) => {
+      if (selectedSupernodeDef) {
+        try {
+          await api.updateSupernode(graph.name, {
+            name: graph.name,
+            description: selectedSupernodeDef.description,
+            nodes: graph.nodes,
+            edges: graph.edges,
+          });
+          await loadData();
+          setToast({ tone: 'success', title: 'Supernode saved', message: graph.name });
+        } catch (e) {
+          setToast({ tone: 'error', title: 'Failed to save supernode', message: `${e}` });
+        }
+        return;
+      }
+      await handleSavePolicy(graph);
+    },
+    [selectedSupernodeDef, loadData, handleSavePolicy]
+  );
+
+  // Hoisted out of the GraphCanvas JSX (where an inline arrow would be a
+  // fresh function every render) for the same reason: it's a dependency of
+  // GraphCanvas's `handleSave`, which is registered as an editor action.
+  // `setToast` is a stable setState setter, so this has no real deps.
+  const handleSaveWarning = useCallback((title: string, message: string) => {
+    setToast({ tone: 'warning', title, message });
+  }, []);
 
   // Selection across routes/supernodes/plugin configs is mutually exclusive
   // (see handleSelect* above), so any one of them being set means "something
@@ -541,7 +568,7 @@ export default function App() {
           plugins={plugins}
           scripts={scripts}
           onSavePolicy={handleSaveGraph}
-          onSaveWarning={(title, message) => setToast({ tone: 'warning', title, message })}
+          onSaveWarning={handleSaveWarning}
           kind={selectedSupernodeDef ? 'supernode' : 'policy'}
           supernodes={supernodes}
           pluginConfigs={pluginConfigs}
