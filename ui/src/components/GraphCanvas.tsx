@@ -38,6 +38,7 @@ import type {
   ScriptFile,
   Supernode,
 } from '../types';
+import { edgesAfterConnect } from '../connectionRules';
 import { buildPortSpecs, type PortSpecLookup } from '../portSpecs';
 import { resolveOutputs } from '../nodeKinds';
 
@@ -456,22 +457,14 @@ export function GraphCanvas({
   const onConnect = useCallback(
     (connection: Connection) => {
       setEdges((eds) => {
-        // Check if the target input already has an edge.
-        // Exceptions: listener.in (multiple paths return response) and
-        // error-handler nodes (receive errors from multiple nodes).
+        // Cardinality rules (connectionRules.ts): an occupied single-input
+        // target rejects the edge; an occupied source port is rewired so a
+        // port never fans out — the compiler would reject the save anyway.
         const targetNode = nodes.find((n) => n.id === connection.target);
         const targetType = (targetNode?.data as unknown as PluginNodeData)?.pluginType;
-        const isClient = targetType === 'client';
-        const isErrorHandler = targetType === 'error-handler';
-        const isBoundaryExit = targetType === 'output' || targetType === 'error';
-
-        if (!isClient && !isErrorHandler && !isBoundaryExit) {
-          const alreadyConnected = eds.some(
-            (e) => e.target === connection.target && e.targetHandle === (connection.targetHandle || 'in')
-          );
-          if (alreadyConnected) {
-            return eds;
-          }
+        const base = edgesAfterConnect(eds, connection, targetType);
+        if (base === null) {
+          return eds;
         }
 
         const sourceNode = nodes.find((n) => n.id === connection.source);
@@ -488,7 +481,7 @@ export function GraphCanvas({
               color,
             },
           },
-          eds
+          base
         );
       });
     },
