@@ -27,7 +27,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Serializes each entry as one line of JSON, newline-terminated. Pure and
@@ -79,7 +79,7 @@ impl BatchFlusher for FileFlusher {
 /// The `file-logger` plugin node.
 pub struct FileLoggerPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
 }
@@ -90,7 +90,7 @@ impl FileLoggerPlugin {
     /// Config keys:
     /// - `path` (string, **required**): target file path. Opened in append mode;
     ///   created if absent, but its parent directory must already exist.
-    /// - `log_format` (object): custom `name -> "$var"` entry.
+    /// - `log_format` (object): custom `name -> "template"` entry (`{{namespace.path}}` references plus legacy `$var` interpolation).
     /// - `include_req_body` / `include_resp_body` (bool, default `false`).
     /// - batch keys (optional) — see [`BatchConfig::from_config`]. Use
     ///   `batch_max_size: 1` for immediate per-request writes.
