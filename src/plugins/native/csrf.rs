@@ -4,7 +4,7 @@
 //! safe methods (`GET`/`HEAD`/`OPTIONS`) pass through and receive a signed
 //! token cookie; unsafe methods must send the same token in both the cookie
 //! and a request header, with a valid HMAC signature and unexpired timestamp.
-//! Failures are routed through the error port as 401 with code `CSRF_INVALID`.
+//! Failures are routed through the node's `denied` port as a prepared 401.
 //!
 //! Token layout mirrors APISIX (`base64(json{random, expires, sign})`) but the
 //! signature is `hex(HMAC-SHA256(key, random || expires))` via `ring` instead
@@ -28,6 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 const SAFE_METHODS: [&str; 3] = ["GET", "HEAD", "OPTIONS"];
 
@@ -43,8 +44,11 @@ pub struct CsrfPlugin {
     key: hmac::Key,
     /// Token lifetime in seconds; `0` disables the expiry check.
     expires: u64,
-    /// Cookie and header name carrying the token (lowercased for lookup).
-    name: String,
+    /// Cookie and header name carrying the token. Supports
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// `name` never supported it, so this sweep must not start); rendered
+    /// then lowercased for lookup at each use.
+    name: Template,
     /// Which side of the exchange this node handles.
     phase: CsrfPhase,
 }
@@ -95,7 +99,8 @@ impl CsrfPlugin {
     /// - `expires` (integer seconds, default `7200`): token lifetime; `0`
     ///   disables the expiry check and makes the cookie a session cookie.
     /// - `name` (string, default `"featherbit-csrf-token"`): cookie **and**
-    ///   request-header name carrying the token.
+    ///   request-header name carrying the token; supports
+    ///   `{{namespace.path}}` references (rendered then lowercased).
     /// - `phase` (string, default `request`): `request` validates unsafe
     ///   methods; `response` only issues the token cookie (place it after the
     ///   upstream node).
@@ -126,7 +131,13 @@ impl CsrfPlugin {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("featherbit-csrf-token")
-            .to_lowercase();
+            .to_string();
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        // Not lowercased here (a literal value's lowercasing is deferred to
+        // render time, `rendered_name`, so a `{{...}}` reference's syntax is
+        // never mangled before parsing).
+        let name = Template::parse(&name).0;
 
         let phase = match config.get("phase").and_then(|v| v.as_str()) {
             Some("response") => CsrfPhase::Response,
@@ -199,6 +210,13 @@ impl CsrfPlugin {
         .is_ok()
     }
 
+    /// Renders and lowercases `name` for the current request (shared by the
+    /// cookie name and the request-header lookup — see the module docs on
+    /// the double-submit pattern using the same field for both).
+    fn rendered_name(&self, ctx: &Context) -> String {
+        self.name.render(ctx).into_owned().to_lowercase()
+    }
+
     /// Appends the token `Set-Cookie` header to the response.
     ///
     /// Deviation: uses `Max-Age` instead of APISIX's `Expires` date (omitted
@@ -209,9 +227,10 @@ impl CsrfPlugin {
         } else {
             String::new()
         };
+        let name = self.rendered_name(ctx);
         let cookie = format!(
             "{}={};path=/;SameSite=Lax{}",
-            self.name,
+            name,
             self.gen_token(),
             max_age
         );
@@ -255,10 +274,11 @@ impl Plugin for CsrfPlugin {
             return Ok(PluginOutput::success(ctx));
         }
 
+        let name = self.rendered_name(&ctx);
         let header_token = ctx
             .request
             .headers
-            .get(&self.name)
+            .get(&name)
             .and_then(|v| v.first())
             .cloned()
             .unwrap_or_default();
@@ -267,7 +287,7 @@ impl Plugin for CsrfPlugin {
         }
 
         let cookie_token =
-            crate::vars::resolve(&ctx, &format!("cookie_{}", self.name)).map(|v| v.into_owned());
+            crate::vars::resolve(&ctx, &format!("cookie_{}", name)).map(|v| v.into_owned());
         let Some(cookie_token) = cookie_token else {
             return self.reject(ctx, "no csrf cookie");
         };
@@ -361,6 +381,43 @@ mod tests {
         assert!(cookies[0].starts_with(&format!("{}=", NAME)));
         assert!(cookies[0].contains("SameSite=Lax"));
         assert!(cookies[0].contains("Max-Age=7200"));
+    }
+
+    #[tokio::test]
+    async fn test_name_renders_template() {
+        // `name` (cookie/header name) must render `{{...}}` references per
+        // request, and the rendered name is used consistently for the
+        // Set-Cookie name, the header lookup, and the cookie lookup.
+        let p = plugin(serde_json::json!({
+            "key": "secret",
+            "name": "csrf-{{request.headers.x-tenant}}"
+        }));
+
+        let mut ctx = test_context("GET");
+        ctx.request
+            .headers
+            .insert("x-tenant".to_string(), vec!["acme".to_string()]);
+        let out = p.execute(ctx).await.unwrap();
+        let cookies = out.context.response.headers.get("set-cookie").unwrap();
+        assert!(cookies[0].starts_with("csrf-acme="));
+
+        // Round-trip: validating an unsafe request must look up the same
+        // tenant-scoped header/cookie name.
+        let token = p.gen_token();
+        let mut ctx = test_context("POST");
+        ctx.request
+            .headers
+            .insert("x-tenant".to_string(), vec!["acme".to_string()]);
+        ctx.request
+            .headers
+            .insert("csrf-acme".to_string(), vec![token.clone()]);
+        ctx.request
+            .headers
+            .insert("cookie".to_string(), vec![format!("csrf-acme={}", token)]);
+        let out = p.execute(ctx).await.unwrap();
+        assert!(
+            out.context.response.headers.get("set-cookie").unwrap()[0].starts_with("csrf-acme=")
+        );
     }
 
     #[tokio::test]

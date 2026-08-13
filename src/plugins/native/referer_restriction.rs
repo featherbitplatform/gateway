@@ -3,7 +3,7 @@
 //! Port of APISIX's `referer-restriction`: parses the host out of the
 //! `Referer` request header and matches it against a whitelist or blacklist
 //! of host patterns (exact hosts or leading-`*` wildcards). Rejections are
-//! routed through the node's error port with error code `REFERER_RESTRICTED`.
+//! routed through the node's `denied` port.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Restricts access based on the host of the `Referer` request header.
 ///
@@ -24,8 +25,10 @@ pub struct RefererRestrictionPlugin {
     blacklist: HostMatcher,
     /// Pass requests whose Referer is missing or malformed (default `false`).
     bypass_missing: bool,
-    /// Body message for rejections.
-    message: String,
+    /// Body message for rejections. Supports `{{namespace.path}}` references
+    /// (no legacy `$var` interpolation — this field never supported it, so
+    /// this sweep must not start).
+    message: Template,
 }
 
 /// Pre-split host patterns: exact hosts and `*`-prefix wildcard suffixes
@@ -115,7 +118,8 @@ impl RefererRestrictionPlugin {
     /// - `bypass_missing` (bool, default `false`): pass requests whose
     ///   Referer header is missing or not a parseable http(s) URL.
     /// - `message` (string, default `"Your referer host is not allowed"`):
-    ///   rejection message, returned as `{"message": ...}`.
+    ///   rejection message, returned as `{"message": ...}`. Supports
+    ///   `{{namespace.path}}` references.
     ///
     /// ```yaml
     /// type: referer-restriction
@@ -146,18 +150,24 @@ impl RefererRestrictionPlugin {
                 .get("bypass_missing")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
-            message: config
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Your referer host is not allowed")
-                .to_string(),
+            message: {
+                let message = config
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Your referer host is not allowed");
+                // Discard warnings here — the compile-time walk (a later
+                // task) reports well-formed-but-unknown references;
+                // execution must not.
+                Template::parse(message).0
+            },
         })
     }
 
     /// Builds the 403 rejection routed through the `denied` port.
     fn reject(&self, mut ctx: Context) -> PluginResult {
+        let message = self.message.render(&ctx).into_owned();
         ctx.response.status_code = 403;
-        ctx.response.body = Bytes::from(serde_json::json!({ "message": self.message }).to_string());
+        ctx.response.body = Bytes::from(serde_json::json!({ "message": message }).to_string());
         ctx.response.headers.insert(
             "content-type".to_string(),
             vec!["application/json".to_string()],
@@ -359,6 +369,21 @@ mod tests {
             plugin.execute(test_context(None)).await.unwrap().port,
             Some("denied")
         );
+    }
+
+    #[tokio::test]
+    async fn test_message_renders_template() {
+        let plugin = RefererRestrictionPlugin::from_config(&config(serde_json::json!({
+            "whitelist": ["example.com"], "message": "blocked referer for {{request.path}}"
+        })))
+        .unwrap();
+
+        let mut ctx = test_context(Some("https://evil.com/"));
+        ctx.request.path = "/secret".to_string();
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
+        assert_eq!(body["message"], "blocked referer for /secret");
     }
 
     #[tokio::test]

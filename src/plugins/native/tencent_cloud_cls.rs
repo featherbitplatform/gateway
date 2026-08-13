@@ -41,7 +41,7 @@ use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 const CLS_API_PATH: &str = "/structuredlog";
@@ -50,7 +50,7 @@ const AUTH_EXPIRE_SECS: u64 = 60;
 /// Node that batches access-log entries and ships them to Tencent Cloud CLS.
 pub struct TencentCloudClsPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
     /// Static tags merged into every entry before batching (`global_tag`).
