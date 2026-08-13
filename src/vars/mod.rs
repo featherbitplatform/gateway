@@ -26,6 +26,7 @@ use regex::Regex;
 use crate::context::Context;
 
 pub mod catalog;
+pub mod template;
 
 /// Resolves a variable name against the context.
 ///
@@ -376,7 +377,7 @@ fn eval_op(op: &Op, value: Option<&str>) -> bool {
 // ---- helpers ---------------------------------------------------------------
 
 /// Splits `ip:port`, tolerating bare IPs and bracketed IPv6.
-fn split_remote_addr(addr: &str) -> (&str, Option<&str>) {
+pub(crate) fn split_remote_addr(addr: &str) -> (&str, Option<&str>) {
     if let Some(stripped) = addr.strip_prefix('[') {
         // [v6]:port
         if let Some((ip, rest)) = stripped.split_once(']') {
@@ -390,7 +391,7 @@ fn split_remote_addr(addr: &str) -> (&str, Option<&str>) {
     }
 }
 
-fn query_string(ctx: &Context) -> String {
+pub(crate) fn query_string(ctx: &Context) -> String {
     let mut pairs: Vec<String> = Vec::new();
     for (k, values) in &ctx.request.query_params {
         for v in values {
@@ -401,7 +402,7 @@ fn query_string(ctx: &Context) -> String {
     pairs.join("&")
 }
 
-fn cookie_value(ctx: &Context, name: &str) -> Option<String> {
+pub(crate) fn cookie_value(ctx: &Context, name: &str) -> Option<String> {
     let header = ctx.request.headers.get("cookie")?.first()?;
     for pair in header.split(';') {
         let (k, v) = pair.trim().split_once('=')?;
@@ -458,7 +459,7 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-fn message_str<'a>(ctx: &'a Context, key: &str) -> Option<Cow<'a, str>> {
+pub(crate) fn message_str<'a>(ctx: &'a Context, key: &str) -> Option<Cow<'a, str>> {
     match ctx.message.get(key)? {
         serde_json::Value::String(s) => Some(Cow::Borrowed(s.as_str())),
         other => Some(Cow::Owned(other.to_string())),

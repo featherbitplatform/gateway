@@ -115,9 +115,13 @@ test.describe('Var suggestions', () => {
     await page.locator('button[aria-label="Context vars reference"]').click();
     const legend = page.getByTestId('var-legend');
     await expect(legend).toBeVisible();
-    await expect(legend.getByText('Families', {exact: true})).toBeVisible();
-    // The dotted-keys rule: names with a dot (e.g. message keys) need the ${...} brace form.
-    await expect(legend.locator('p', {hasText: 'need the brace form'}).first()).toBeVisible();
+    // Legend v2 (Task 8+) reorganized around namespace sections (Request/
+    // Response/Message & consumer/Client/Environment) with a flat Legacy
+    // mapping table at the bottom, replacing the old "Families" heading.
+    await expect(legend.getByText('Legacy $var mapping', {exact: true})).toBeVisible();
+    // The dotted-keys rule survives (now in the intro paragraph): names with
+    // a dot (e.g. message keys) need the ${...} brace form.
+    await expect(legend.locator('p', {hasText: 'containing a dot'}).first()).toBeVisible();
     // The node inspector's own header also has a "Close" (X) button, so scope
     // to the legend dialog's footer Close button specifically.
     await page.getByRole('dialog').getByRole('button', {name: 'Close', exact: true}).click();

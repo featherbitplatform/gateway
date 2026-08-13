@@ -69,6 +69,7 @@ Core features:
 - **Supernodes** — reusable named subgraphs inlined into policies at compile time
 - **Shared plugin configs** — named, typed config profiles referenced by nodes via config_ref, resolved at compile time
 - **Context var autocomplete** — $var suggestions with live value preview from debug traces, plus GET /api/vars catalog
+- **Universal config templates** — {{namespace.path}} rendering in all traffic-bound plugin config, with env vars and live-preview suggestions everywhere
 
 ## Architecture
 

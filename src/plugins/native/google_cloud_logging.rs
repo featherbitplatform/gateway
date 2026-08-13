@@ -43,7 +43,7 @@ use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 const DEFAULT_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
@@ -56,7 +56,7 @@ const DEFAULT_SCOPES: &[&str] = &[
 /// Ships log entries to Google Cloud Logging in batches.
 pub struct GoogleCloudLoggingPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
 }
@@ -110,7 +110,7 @@ impl GoogleCloudLoggingPlugin {
     /// | `log_id` | string | `featherbit%2Flogs` | Log id; the `logName` becomes `projects/<project_id>/logs/<log_id>`. |
     /// | `ssl_verify` | bool | `true` | Verify Google TLS certificates. |
     /// | `timeout` | int (seconds) | `10` | Per-call HTTP timeout (token fetch and write). |
-    /// | `log_format` | object | — | Custom `name -> "$var template"` entry used as the `jsonPayload`. |
+    /// | `log_format` | object | — | Custom `name -> "template"` entry (`{{namespace.path}}` references plus legacy `$var` interpolation) used as the `jsonPayload`. |
     /// | `include_req_body` / `include_resp_body` | bool | `false` | Include bodies in the default entry. |
     ///
     /// Either `auth_config` (with `client_email` + `private_key` + `project_id`)

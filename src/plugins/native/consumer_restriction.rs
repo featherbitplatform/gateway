@@ -13,6 +13,7 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// What consumer attribute the lists match against.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,8 +38,8 @@ struct AllowedByMethod {
 /// rejects), then the whitelist (a non-match rejects), then — only for
 /// consumers not already cleared by the whitelist — `allowed_by_methods`. When
 /// no consumer is attached the request is rejected `401`; list rejections use
-/// `rejected_code` (default `403`). All rejections carry error code
-/// `CONSUMER_RESTRICTED`.
+/// `rejected_code` (default `403`). All rejections are routed through the
+/// node's `denied` port.
 pub struct ConsumerRestrictionPlugin {
     /// Which consumer attribute the lists match (`consumer_name` / `consumer_group_id`).
     restriction_type: RestrictionType,
@@ -50,8 +51,10 @@ pub struct ConsumerRestrictionPlugin {
     allowed_by_methods: Vec<AllowedByMethod>,
     /// HTTP status used for list rejections.
     rejected_code: u16,
-    /// Optional custom rejection message.
-    rejected_msg: Option<String>,
+    /// Optional custom rejection message. Supports `{{namespace.path}}`
+    /// references (no legacy `$var` interpolation — this field never
+    /// supported it, so this sweep must not start).
+    rejected_msg: Option<Template>,
 }
 
 impl ConsumerRestrictionPlugin {
@@ -72,6 +75,7 @@ impl ConsumerRestrictionPlugin {
     ///   required.
     /// - `rejected_code` (integer, default `403`): status for list rejections.
     /// - `rejected_msg` (string, optional): custom rejection message.
+    ///   Supports `{{namespace.path}}` references.
     ///
     /// ```yaml
     /// type: consumer-restriction
@@ -163,7 +167,9 @@ impl ConsumerRestrictionPlugin {
         let rejected_msg = config
             .get("rejected_msg")
             .and_then(|v| v.as_str())
-            .map(String::from);
+            // Discard warnings here — the compile-time walk (a later task)
+            // reports well-formed-but-unknown references; execution must not.
+            .map(|s| Template::parse(s).0);
 
         Ok(Self {
             restriction_type,
@@ -231,15 +237,17 @@ impl Plugin for ConsumerRestrictionPlugin {
             }
         };
 
-        let default_reject_msg = || {
+        let default_reject_msg = |ctx: &Context| {
             self.rejected_msg
-                .clone()
+                .as_ref()
+                .map(|t| t.render(ctx).into_owned())
                 .unwrap_or_else(|| format!("The {} is forbidden.", self.type_label()))
         };
 
         // Blacklist first.
         if !self.blacklist.is_empty() && self.blacklist.contains(&value) {
-            return self.reject(ctx, self.rejected_code, default_reject_msg());
+            let msg = default_reject_msg(&ctx);
+            return self.reject(ctx, self.rejected_code, msg);
         }
 
         // Whitelist.
@@ -247,7 +255,8 @@ impl Plugin for ConsumerRestrictionPlugin {
         if !self.whitelist.is_empty() {
             whitelisted = self.whitelist.contains(&value);
             if !whitelisted {
-                return self.reject(ctx, self.rejected_code, default_reject_msg());
+                let msg = default_reject_msg(&ctx);
+                return self.reject(ctx, self.rejected_code, msg);
             }
         }
 
@@ -257,7 +266,8 @@ impl Plugin for ConsumerRestrictionPlugin {
             let entry = self.allowed_by_methods.iter().find(|e| e.user == value);
             if let Some(entry) = entry {
                 if !entry.methods.contains(&method) {
-                    return self.reject(ctx, self.rejected_code, default_reject_msg());
+                    let msg = default_reject_msg(&ctx);
+                    return self.reject(ctx, self.rejected_code, msg);
                 }
             }
         }
@@ -406,6 +416,21 @@ mod tests {
             .unwrap()
             .port
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_rejected_msg_renders_template() {
+        let p = plugin(serde_json::json!({
+            "whitelist": ["alice"],
+            "rejected_msg": "denied for {{request.method}}"
+        }));
+        let out = p
+            .execute(ctx("POST", Some("mallory"), None))
+            .await
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
+        assert_eq!(body["message"], "denied for POST");
     }
 
     #[test]

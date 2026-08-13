@@ -164,6 +164,16 @@ impl SharedState {
         let gateway = resolve_plugin_configs(gateway)?;
         let gateway = &gateway;
 
+        // Surface likely template typos (e.g. `{{request.headres.x}}`) at
+        // load time rather than letting them render as silent literals on
+        // every request. Runs on the *resolved* copy so a config_ref'd node's
+        // merged-in shared config is covered via the policy/supernode walk;
+        // plugin_configs are walked directly too, so an unreferenced shared
+        // config is still flagged. Advisory only — never fails compilation.
+        for warning in crate::config::collect_template_warnings(gateway) {
+            tracing::warn!("{warning}");
+        }
+
         // Supernode definitions are validated first: policies expand against
         // them, so a broken definition must fail before any policy does.
         let mut seen = std::collections::HashSet::new();
