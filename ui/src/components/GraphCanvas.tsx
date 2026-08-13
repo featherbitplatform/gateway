@@ -228,6 +228,19 @@ export function GraphCanvas({
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  // Ids of supernode instances currently expanded to their inline preview.
+  // Canvas-session-only by design: held here (not in anything nodesToPolicy
+  // serializes), so expansion can never leak into the saved policy.
+  const [expandedSupernodes, setExpandedSupernodes] = useState<Set<string>>(new Set());
+  const handleToggleExpand = useCallback((nodeId: string) => {
+    setExpandedSupernodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  }, []);
+
   const handleSelect = useCallback((id: string) => {
     setSelectedNodeId(id);
     setDrawerOpen(false);
@@ -271,6 +284,33 @@ export function GraphCanvas({
   useEffect(() => {
     setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, showPortNames } })));
   }, [showPortNames, setNodes]);
+
+  // Supernode instances carry extra render-time data: the resolved
+  // definition (kept fresh when the library refetches — same rewrite
+  // pattern as showPortNames above), the port-spec lookup for the preview's
+  // inner nodes, and the expand/fold state. zIndex floats an expanded card
+  // above its neighbors.
+  useEffect(() => {
+    setNodes((nds) =>
+      nds.map((n) => {
+        const data = n.data as unknown as PluginNodeData;
+        if (data.pluginType !== 'supernode') return n;
+        const refName = typeof data.config?.name === 'string' ? data.config.name : undefined;
+        const expanded = expandedSupernodes.has(n.id);
+        return {
+          ...n,
+          zIndex: expanded ? 1000 : 0,
+          data: {
+            ...data,
+            supernodeDef: refName ? supernodes.find((s) => s.name === refName) : undefined,
+            portSpecs,
+            expanded,
+            onToggleExpand: handleToggleExpand,
+          },
+        };
+      })
+    );
+  }, [supernodes, portSpecs, expandedSupernodes, handleToggleExpand, setNodes]);
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -401,6 +441,10 @@ export function GraphCanvas({
         ports: portSpecs['supernode'],
         onSelect: handleSelect,
         showPortNames,
+        supernodeDef: sn,
+        portSpecs,
+        expanded: false,
+        onToggleExpand: handleToggleExpand,
       } satisfies PluginNodeData,
     };
     setNodes((nds) => [...nds, newNode]);
@@ -427,6 +471,12 @@ export function GraphCanvas({
   const handleDeleteNode = (nodeId: string) => {
     setNodes((nds) => nds.filter((n) => n.id !== nodeId));
     setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    setExpandedSupernodes((prev) => {
+      if (!prev.has(nodeId)) return prev;
+      const next = new Set(prev);
+      next.delete(nodeId);
+      return next;
+    });
     setSelectedNodeId(null);
   };
 
