@@ -197,6 +197,9 @@ test.describe('Universal templates', () => {
         edges: [
           {from: 'listener.out', to: 'blocker.in'},
           {from: 'blocker.success', to: 'echo-backend.in'},
+          // The compiler requires every outcome port wired; the blocker's
+          // prepared rejection exits straight to the client.
+          {from: 'blocker.denied', to: 'client.in'},
           {from: 'echo-backend.success', to: 'client.in'},
         ],
       },
