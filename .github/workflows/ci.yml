@@ -64,10 +64,10 @@ jobs:
       # Clippy must stay clean on the headless combo too (-D warnings).
       - run: cargo clippy --all-targets --no-default-features --locked -- -D warnings
 
-  # ESLint over the admin UI. The tree is eslint-clean (errors and warnings);
-  # keep it that way.
+  # ESLint + vitest over the admin UI. The tree is eslint-clean (errors and
+  # warnings); keep it that way.
   ui-lint:
-    name: eslint (ui)
+    name: eslint + vitest (ui)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -78,7 +78,7 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      - run: npm ci && npm run lint
+      - run: npm ci && npm run lint && npm test
         working-directory: ui
 
   # The Playwright suite: admin API + data plane + web UI. See E2E_TESTBOOK.md.

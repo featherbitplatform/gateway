@@ -4,6 +4,7 @@
 //! maps node-type strings from YAML config to plugin instances.
 
 pub mod native;
+pub mod ports;
 pub mod resources;
 pub mod script;
 pub mod util;
@@ -13,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::context::{Context, GatewayError};
+use ports::PortSpec;
 use resources::PluginResources;
 
 /// The result of a successful plugin execution.
@@ -20,12 +22,27 @@ use resources::PluginResources;
 pub struct PluginOutput {
     /// The (possibly mutated) context, passed on to the next node in the graph.
     pub context: Context,
-    /// Values published under names that downstream nodes can consume as
-    /// `named_inputs`; most plugins leave this empty.
-    // Part of the plugin contract: every plugin populates it, but the engine
-    // does not yet wire named inputs between nodes.
-    #[allow(dead_code)]
-    pub named_outputs: HashMap<String, serde_json::Value>,
+    /// Declared output port this result leaves on. `None` = `success`.
+    /// Must name a port of kind `outcome` in the node type's [`PortSpec`].
+    pub port: Option<&'static str>,
+}
+
+impl PluginOutput {
+    /// The normal exit: continue through the `success` port.
+    pub fn success(context: Context) -> Self {
+        Self {
+            context,
+            port: None,
+        }
+    }
+
+    /// Exit through a declared named `outcome` port (e.g. `"denied"`).
+    pub fn on_port(context: Context, port: &'static str) -> Self {
+        Self {
+            context,
+            port: Some(port),
+        }
+    }
 }
 
 /// The result of a plugin execution: either success or an error with the context preserved.
@@ -45,11 +62,18 @@ pub struct PluginExecutionError {
 /// Every plugin (native or scripted) implements this trait.
 ///
 /// A plugin is a node in a compiled policy graph. The engine drives each node
-/// through [`execute`](Plugin::execute) and follows the node's `success` or
-/// `error` port depending on the result.
+/// through [`execute`](Plugin::execute) and follows the output port the result
+/// names.
+///
+/// A node type's ports are **not** declared on this trait: they live in the
+/// static registry ([`port_spec`] over [`ports`]), the single source of truth
+/// shared by the graph compiler, the admin catalog, and the UI editor. A
+/// plugin therefore cannot drift from its own declaration.
 #[async_trait]
 pub trait Plugin: Send + Sync {
     /// Unique identifier for the plugin type (e.g., "proxy-rewrite", "upstream").
+    /// This is also the key its [`PortSpec`] is registered under in
+    /// [`port_spec`].
     fn plugin_type(&self) -> &str;
 
     /// Executes the plugin logic against the request/response context.
@@ -59,18 +83,22 @@ pub trait Plugin: Send + Sync {
     ///   duration of the call and must hand it back in either outcome — inside
     ///   [`PluginOutput`] on success, or inside [`PluginExecutionError`] on
     ///   failure. The context is never lost.
-    /// - `named_inputs` carries values that upstream nodes published as
-    ///   `named_outputs`, keyed by name; most plugins ignore it.
-    /// - On `Ok`, the graph engine routes the returned context through the
-    ///   node's `success` port. On `Err`, the [`PluginExecutionError`] carries
-    ///   both the context and a [`GatewayError`], letting the engine record
-    ///   the error and continue through the node's `error` port (typically
-    ///   toward an `error-handler` node) instead of aborting the request.
-    async fn execute(
-        &self,
-        ctx: Context,
-        named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult;
+    /// - On `Ok`, the engine routes the returned context through the port the
+    ///   [`PluginOutput`] names: [`PluginOutput::success`] takes the node's
+    ///   `success` port, and [`PluginOutput::on_port`] takes a named
+    ///   **outcome** port — the node did its job and chose a deliberate
+    ///   alternate route (`denied`, `redirect`, `limited`, `broken`,
+    ///   `preflight`, `abort`, `routed`, `hit`), normally with the
+    ///   client-facing response already prepared. The named port must be one
+    ///   this type declares in its `PortSpec`, or the policy would not have
+    ///   compiled; nothing is appended to `ctx.errors`.
+    /// - On `Err`, the [`PluginExecutionError`] carries both the context and a
+    ///   [`GatewayError`], which the engine appends to `ctx.errors` before
+    ///   continuing through the node's `error` port (or the policy catch-all,
+    ///   or a generic 500) instead of aborting the request. `Err` is reserved
+    ///   for *the node could not do its job* — configuration, parse, or
+    ///   infrastructure failure. A plugin must never name `error` from `Ok`.
+    async fn execute(&self, ctx: Context) -> PluginResult;
 }
 
 /// Every plugin type [`create_plugin`] can build, for save-time validation of
@@ -421,6 +449,44 @@ pub fn create_plugin(
         )),
         "script" => Ok(Box::new(script::ScriptPlugin::from_config(config)?)),
         _ => Err(format!("Unknown plugin type: {}", node_type)),
+    }
+}
+
+/// Static port declaration for a node type. `None` for unknown types.
+///
+/// This match is the port registry: sweep tasks add arms here as plugins
+/// gain outcome ports. Keep in sync with `KNOWN_PLUGIN_TYPES`
+/// (enforced by `test_every_known_type_has_a_valid_spec`).
+pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
+    match plugin_type {
+        "listener" => Some(&ports::LISTENER_SPEC),
+        "client" => Some(&ports::CLIENT_SPEC),
+        "cors" => Some(&ports::CORS_SPEC),
+        "redirect" => Some(&ports::REDIRECT_SPEC),
+        "fault-injection" => Some(&ports::FAULT_INJECTION_SPEC),
+        "key-auth" | "basic-auth" | "jwt-auth" | "hmac-auth" | "jwe-decrypt" | "multi-auth"
+        | "ldap-auth" | "dingtalk-auth" | "feishu-auth" | "forward-auth" | "opa" | "wolf-rbac" => {
+            Some(&ports::AUTH_SPEC)
+        }
+        "cas-auth" | "openid-connect" | "authz-casdoor" => Some(&ports::INTERACTIVE_AUTH_SPEC),
+        "authz-casbin" | "authz-keycloak" => Some(&ports::AUTH_SPEC),
+        "acl"
+        | "ip-restriction"
+        | "ua-restriction"
+        | "referer-restriction"
+        | "consumer-restriction"
+        | "uri-blocker"
+        | "csrf"
+        | "request-size-limit"
+        | "request-validation"
+        | "oas-validator" => Some(&ports::DENY_SPEC),
+        "rate-limit" | "limit-conn" | "limit-count" => Some(&ports::LIMIT_SPEC),
+        "api-breaker" => Some(&ports::BREAKER_SPEC),
+        "workflow" => Some(&ports::WORKFLOW_SPEC),
+        "traffic-split" => Some(&ports::TRAFFIC_SPLIT_SPEC),
+        "proxy-cache" => Some(&ports::PROXY_CACHE_SPEC),
+        _ if KNOWN_PLUGIN_TYPES.contains(&plugin_type) => Some(&ports::DEFAULT_SPEC),
+        _ => None,
     }
 }
 

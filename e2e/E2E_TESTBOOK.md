@@ -109,17 +109,18 @@ wrong-key, wrong-audience) for the negative cases. The mock is reusable for the
 other SSO plugins (`authz-keycloak`, `authz-casdoor`, `cas-auth`) when they get
 e2e coverage.
 
-Both OIDC policies wire `oidc.error → client.in`: the plugin prepares its response
-(a `401`, or the `302` to the IdP) and then returns an *error*, so the error edge
-to `client` is what carries it to the caller — the same graph semantic as
-`key-auth`, and just as easy to get wrong.
+Both OIDC policies wire `oidc.denied → client.in` and `oidc.redirect → client.in`:
+the plugin prepares its response (a `401`, or the `302` to the IdP) and exits
+through its own dedicated outcome port, so that edge is what carries it to the
+caller — the same graph semantic as `key-auth`, and just as easy to get wrong.
 
-`secure-policy` wires `key-auth.error` and `rate-limit.error` **straight to
+`secure-policy` wires `key-auth.denied` and `rate-limit.limited` **straight to
 `client.in`**. That is deliberate and worth stating, because it is the one piece
 of graph semantics people get wrong: a rejecting plugin sets the 401/429 on the
-context and *then* returns an error. The status only survives if the error edge
-reaches `client`. Wire it to an `error-handler` instead and the handler's own
-status code overwrites it; leave it unwired and the generic 500 fallback does.
+context and *then* exits through its dedicated outcome port. The status only
+survives if that edge reaches `client`. Wire it to an `error-handler` instead
+and the handler's own status code overwrites it; leave it unwired and policy
+compilation fails (every non-error output port is mandatory).
 
 ## Admin API — `tests/admin-api.spec.ts`
 
@@ -137,6 +138,7 @@ status code overwrites it; leave it unwired and the generic 500 fallback does.
 | E2E-API-10 | `/healthz`, `/readyz`, `/metrics` | `200`; metrics render Prometheus text |
 | E2E-API-11 | UI static assets | Served **without** auth, unlike `/api/*` |
 | E2E-API-12 | `GET /api/config/export` | `200` `text/yaml`; contains the live routes/policies; behind auth |
+| E2E-API-13 | `PUT` a policy with a `cors` node missing its `preflight` edge | Rejected; body contains `must be wired — add an edge from` naming `cors.preflight` — the mandatory-outcome-port validation added for named output ports |
 
 ## Data plane — `tests/data-plane.spec.ts`
 
@@ -165,6 +167,7 @@ status code overwrites it; leave it unwired and the generic 500 fallback does.
 | E2E-UI-06 | Create a route via the **New** dialog | Route appears in the sidebar **and** in `GET /api/routes` |
 | E2E-UI-07 | Delete a route | Gone from the sidebar and the API |
 | E2E-UI-08 | Toggle the theme | Theme flips and survives a reload (persisted) |
+| E2E-UI-15 | Open `echo-api`'s `cors` node, then delete its `preflight` edge and save | The node renders exactly three source handles (`success`/`preflight`/`error`, `[data-handleid]`) with distinct colors and a title mentioning `preflight`; after deleting that edge, Save Policy shows the client's "Unwired ports" warning **and** the server's `must be wired` rejection — the warning does not block the save attempt, it only precedes it |
 
 ## openid-connect — `tests/openid-connect.spec.ts`
 
@@ -184,6 +187,7 @@ against a fetched JWKS, and a browser actually bounced through the IdP.
 | E2E-OIDC-08 | A browser completes login | Bounced IdP → callback → token exchange → lands on the upstream; `oidc_session` cookie set (sealed, not plaintext); claims in `x-userinfo` |
 | E2E-OIDC-09 | Second request with the session cookie | Served **without** another trip to the IdP |
 | E2E-OIDC-10 | A forged session cookie | Not accepted — redirected to log in |
+| E2E-OIDC-11 | Trigger the interactive login redirect, then `GET /metrics` | `gateway_node_errors_total{policy="app-policy",node_id="oidc"}` does **not** increment — the redirect exits on its own outcome port as a successful result, not an `Err`. No dead-discovery-endpoint fixture exists for this plugin in the suite, so only the non-increment side is asserted here |
 
 ## External auth — `tests/external-auth.spec.ts`
 
@@ -232,6 +236,7 @@ admin API.
 | E2E-UI-12 | Save an unchanged graph | Nodes and edges round-trip identically (see the port-normalization note below) |
 | E2E-UI-13 | Add a user to a basic-auth node **via the editor form**, save | The credential lands in the policy as the UI's array shape **and authenticates real traffic** (`alice:secret` → 200, wrong password → 401) — the end-to-end proof of the users-shape fix, driven from the actual UI |
 | E2E-UI-14 | Expand/collapse an Add-Node drawer category | Plugins are hidden while the category is collapsed and revealed on expand (docs-mirrored grouping) |
+| E2E-UI-16 | Node shows labeled port rows by default | Three labeled output rows + labeled input, handle ids/tooltips unchanged |
 
 Two things this surfaced, both benign but worth recording:
 
@@ -255,6 +260,28 @@ outside the fitted viewport). Node deletion (E2E-UI-11) exercises the same
 UI→policy edge serialization in the reliable direction — deleting a node removes
 its edges from the saved policy — so edge *removal* is covered; edge *creation* by
 dragging is left to manual QA.
+
+## Command palette — `tests/command-palette.spec.ts`
+
+The searchable action list (Ctrl+K) built from `ui/src/commands.ts`, and the
+bare-letter shortcuts it documents (e.g. `P` for port names, `R` for a new
+route). The registry also backs `save-graph`/`add-plugin`, bridged to the
+canvas via `ui/src/editorActions.tsx` (`hasEditorAction`/`invokeEditorAction`):
+both stay hidden and inert unless a policy/supernode is open in the editor.
+Registration alone is *not* that signal — GraphCanvas registers even when
+mounted with `policy={null}` — so the palette pairs it with
+`CommandContext.editorOpen`, which E2E-UI-17 pins from the nothing-selected
+state and E2E-UI-21 pins from the no-canvas-at-all state.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-UI-17 | With nothing selected, press Ctrl+K, then type "route" | The palette lists every action with its shortcut chip (`Toggle port names` shows `P`); the two canvas-owned actions (`Add plugin to canvas`, `Save policy`) are absent because no graph is open; filtering narrows to matches only; Escape closes it |
+| E2E-UI-18 | Toggle port names from the palette | Port-name labels disappear from every node (handles stay, only the label hides) and the preference survives a page reload |
+| E2E-UI-19 | Press the bare `R` shortcut; type into the opened dialog's field; click the dialog's header to blur it and press `S`; then focus the inspector's shared-config `<select>` and press `S` | The New route dialog opens; `r` typed in the focused field lands in the field and does not duplicate the dialog; `s` with the dialog open but unfocused opens **no** second dialog (bare shortcuts are inert behind a modal); `s` on the focused `<select>` type-aheads to the `s-…` option instead of firing New supernode |
+| E2E-UI-20 | With a policy open in the editor, press the bare `A` shortcut, press Escape, then open the palette | The plugin drawer opens (search field visible) and Escape closes it again; the palette lists both `Add plugin to canvas` and `Save policy`, now that a graph is open |
+| E2E-UI-21 | Select a shared plugin config (no canvas mounted), press the bare `A` shortcut, then open the palette | Nothing happens on `A` (no drawer); the palette hides both `Add plugin to canvas` and `Save policy` |
+| E2E-UI-22 | With `rt-api` open, focus the inspector's read-only Node ID `<input>` and press `Ctrl+S`; then, with nothing selected, press `Ctrl+S` again | The first press saves ("Policy saved" toast) — modifier shortcuts are not subject to the text-field exemption; the second press produces no save but still reports `defaultPrevented`, so the browser's own Save Page dialog never opens |
+| E2E-UI-23 | Open the palette, filter to no matches, click the "No matching command" row, then press Escape | Clicking the row blurs the search input to `<body>` without closing the palette; Escape still closes it (the global handler answers Escape while the palette is open, not just the input) |
 
 ## The loop — `tests/editor.spec.ts`
 
@@ -307,6 +334,7 @@ namespacing is what a trace's `node_id`s reveal.
 | ID | Scenario | Expected |
 |---|---|---|
 | E2E-SN-01 | Create a supernode wrapping the seeded echo upstream, reference it from a policy (`type: supernode`) attached to a route, then request through it | `200` from the expanded pipeline; a traced request (`x-featherbit-debug`) reports a step whose `node_id` starts with `sec/` — proving compile-time expansion, not a live indirection; `GET /api/config/export` contains `supernodes:`, the definition's name and `type: supernode`, but never the expanded `sec/up` id (expansion is never persisted); deleting the supernode while referenced is `400`; deleting it once the route and policy are removed succeeds |
+| E2E-SN-02 | Open a freshly saved supernode in the editor **(regression guard)** and click Save Supernode | `Supernode saved` toast; **no** "Unwired ports" warning — guards against `output`/`error` (the boundary pseudo-nodes, no catalog entry) being wrongly treated as needing a `success` edge they can never have |
 
 ## Plugin configs — `tests/plugin-configs.spec.ts`
 

@@ -1,10 +1,13 @@
 # gateway.yaml for documentation screenshots only -- not a deployment config.
 #
 # The policy is posed for the canvas: a realistic request chain (CORS -> auth ->
-# rate limit -> rewrite -> upstream -> access log) with three error edges
-# converging on one error-handler. Nodes carry no `position`, so the UI's
-# auto-layout runs: the success chain marches left-to-right and the error branch
-# drops below it -- which is exactly the shape the error-routing screenshot needs.
+# rate limit -> rewrite -> upstream -> access log). api-key's rejection and
+# rate-limit's throttling each exit straight to client.in through their own
+# dedicated outcome port (`denied` / `limited`); only the failing-upstream
+# error edge converges on the shared error-handler. Nodes carry no `position`,
+# so the UI's auto-layout runs: the success chain marches left-to-right and
+# the error branch drops below it -- which is exactly the shape the
+# error-routing screenshot needs.
 routes:
   - name: orders-api
     match:
@@ -78,6 +81,8 @@ policies:
         to: cors.in
       - from: cors.success
         to: api-key.in
+      - from: cors.preflight
+        to: client.in
       - from: api-key.success
         to: rate-limit.in
       - from: rate-limit.success
@@ -89,12 +94,16 @@ policies:
       - from: access-log.success
         to: client.in
 
-      # Error ports: a rejected key, a throttled client, and a failing upstream
-      # all route to the same handler instead of a raw 500.
-      - from: api-key.error
-        to: error-handler.in
-      - from: rate-limit.error
-        to: error-handler.in
+      # api-key's rejection and rate-limit's throttling each exit on their own
+      # dedicated outcome port (`denied` / `limited`) with the 401/429 already
+      # fully prepared, so both go STRAIGHT to client.in -- through
+      # error-handler its status_code/body_template would overwrite the
+      # prepared response. A failing upstream is a genuine error-port exit and
+      # still routes to the shared handler.
+      - from: api-key.denied
+        to: client.in
+      - from: rate-limit.limited
+        to: client.in
       - from: orders-backend.error
         to: error-handler.in
       - from: error-handler.success
