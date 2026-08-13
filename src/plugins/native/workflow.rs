@@ -308,10 +308,7 @@ impl Plugin for WorkflowPlugin {
         "workflow"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         for rule in &self.rules {
             let matched = rule.case.as_ref().is_none_or(|e| e.eval(&ctx));
             if !matched {
@@ -426,10 +423,7 @@ mod tests {
         );
 
         // Non-matching request passes through untouched.
-        let out = p
-            .execute(test_ctx("/public"))
-            .await
-            .unwrap();
+        let out = p.execute(test_ctx("/public")).await.unwrap();
         assert!(out.port.is_none());
         assert_eq!(out.context.response.status_code, 0);
     }

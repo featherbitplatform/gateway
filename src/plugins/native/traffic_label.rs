@@ -211,10 +211,7 @@ impl Plugin for TrafficLabelPlugin {
         "traffic-label"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         for rule in &self.rules {
             let matched = rule.matcher.as_ref().is_none_or(|e| e.eval(&ctx));
             if !matched {
@@ -303,10 +300,7 @@ mod tests {
         }))
         .unwrap();
 
-        let out = p
-            .execute(test_ctx(Some("beta")))
-            .await
-            .unwrap();
+        let out = p.execute(test_ctx(Some("beta"))).await.unwrap();
         let ctx = out.context;
         assert_eq!(
             ctx.request.headers.get("x-server-id"),
@@ -318,10 +312,7 @@ mod tests {
         );
 
         // Non-matching request passes through untouched.
-        let out = p
-            .execute(test_ctx(Some("stable")))
-            .await
-            .unwrap();
+        let out = p.execute(test_ctx(Some("stable"))).await.unwrap();
         assert!(out.context.request.headers.is_empty());
     }
 

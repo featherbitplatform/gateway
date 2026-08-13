@@ -287,10 +287,7 @@ impl Plugin for WolfRbacPlugin {
         "wolf-rbac"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let token = match extract_rbac_token(&ctx.request.headers, &ctx.request.query_params) {
             Some(t) => t,
             None => return self.reject(ctx, "Missing rbac token in request"),
@@ -537,15 +534,15 @@ mod tests {
         // A genuine infra failure (nothing listening on the wolf-server port)
         // must stay a raw `Err`, unlike the deliberate denials above.
         let mut cfg = HashMap::new();
-        cfg.insert("server".to_string(), serde_json::json!("http://127.0.0.1:1"));
+        cfg.insert(
+            "server".to_string(),
+            serde_json::json!("http://127.0.0.1:1"),
+        );
         cfg.insert("timeout_ms".to_string(), serde_json::json!(200));
         let plugin = WolfRbacPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
 
         let mut headers = HashMap::new();
-        headers.insert(
-            "x-rbac-token".to_string(),
-            vec!["V1#app#tok".to_string()],
-        );
+        headers.insert("x-rbac-token".to_string(), vec!["V1#app#tok".to_string()]);
         let ctx = crate::context::Context::new(crate::context::GatewayRequest {
             method: "GET".into(),
             path: "/pet".into(),

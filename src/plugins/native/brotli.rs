@@ -134,10 +134,7 @@ impl Plugin for BrotliPlugin {
         "brotli"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let skip = !accepts_encoding(&ctx, "br")
             || response_already_encoded(&ctx)
             || !self.types.matches(&ctx)

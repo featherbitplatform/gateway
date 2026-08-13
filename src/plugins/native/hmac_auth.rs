@@ -516,10 +516,7 @@ impl Plugin for HmacAuthPlugin {
         "hmac-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let params = match Self::retrieve_params(&ctx) {
             Some(p) => p,
             None => {

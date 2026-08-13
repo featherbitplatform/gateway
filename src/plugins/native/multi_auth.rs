@@ -125,10 +125,7 @@ impl Plugin for MultiAuthPlugin {
         "multi-auth"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         // Snapshot the pristine response so a failed attempt's rejection body
         // never leaks onto the request if a later attempt succeeds.
         let original_response = ctx.response.clone();
@@ -161,9 +158,9 @@ impl Plugin for MultiAuthPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine;
     use crate::consumers::{ConsumerConfig, ConsumerStore};
     use crate::context::{GatewayRequest, Protocol};
+    use base64::Engine;
 
     fn ctx_with_key(key: Option<&str>) -> Context {
         let mut headers = HashMap::new();
@@ -203,10 +200,7 @@ mod tests {
                 .unwrap();
         // "beta" fails the first key-auth (which now exits Ok on the `denied`
         // port, not Err) but passes the second -> a clean success.
-        let out = plugin
-            .execute(ctx_with_key(Some("beta")))
-            .await
-            .unwrap();
+        let out = plugin.execute(ctx_with_key(Some("beta"))).await.unwrap();
         assert_eq!(out.port, None);
         // A prior failed attempt must not leave a 401 body behind.
         assert_eq!(out.context.response.status_code, 0);
@@ -312,10 +306,7 @@ mod tests {
         let plugin =
             MultiAuthPlugin::from_config(&two_key_auth_config(), &PluginResources::empty())
                 .unwrap();
-        let out = plugin
-            .execute(ctx_with_key(Some("gamma")))
-            .await
-            .unwrap();
+        let out = plugin.execute(ctx_with_key(Some("gamma"))).await.unwrap();
         assert_eq!(out.port, Some("denied"));
         assert_eq!(out.context.response.status_code, 401);
     }

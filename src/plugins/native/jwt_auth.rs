@@ -191,10 +191,7 @@ impl Plugin for JwtAuthPlugin {
         "jwt-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let token = ctx
             .request
             .headers
@@ -214,9 +211,7 @@ impl Plugin for JwtAuthPlugin {
         // Inline secret mode first.
         if let Some(ref secret) = self.secret {
             match Self::verify(&token, secret, self.algorithm, &mut ctx) {
-                Ok(_) => {
-                    return Ok(PluginOutput::success(ctx))
-                }
+                Ok(_) => return Ok(PluginOutput::success(ctx)),
                 // With consumers also enabled, fall through and try them;
                 // otherwise reject now.
                 Err(e) if !self.use_consumers => return Self::reject(ctx, &e),
@@ -349,10 +344,7 @@ mod tests {
             "s3cret",
             Algorithm::HS256,
         );
-        let out = plugin
-            .execute(ctx_with_token(Some(&token)))
-            .await
-            .unwrap();
+        let out = plugin.execute(ctx_with_token(Some(&token))).await.unwrap();
         assert_eq!(
             out.context.message.get("user_id"),
             Some(&serde_json::json!("u1"))
@@ -364,10 +356,7 @@ mod tests {
             "other",
             Algorithm::HS256,
         );
-        let out = plugin
-            .execute(ctx_with_token(Some(&forged)))
-            .await
-            .unwrap();
+        let out = plugin.execute(ctx_with_token(Some(&forged))).await.unwrap();
         assert_eq!(out.port, Some("denied"));
         assert_eq!(out.context.response.status_code, 401);
     }
@@ -401,10 +390,7 @@ mod tests {
             "alice-secret",
             Algorithm::HS256,
         );
-        let out = plugin
-            .execute(ctx_with_token(Some(&token)))
-            .await
-            .unwrap();
+        let out = plugin.execute(ctx_with_token(Some(&token))).await.unwrap();
         assert_eq!(
             out.context.message.get("consumer.name"),
             Some(&serde_json::json!("alice"))
@@ -416,10 +402,7 @@ mod tests {
             "wrong-secret",
             Algorithm::HS256,
         );
-        let out = plugin
-            .execute(ctx_with_token(Some(&forged)))
-            .await
-            .unwrap();
+        let out = plugin.execute(ctx_with_token(Some(&forged))).await.unwrap();
         assert_eq!(out.port, Some("denied"));
 
         // unknown key claim is rejected

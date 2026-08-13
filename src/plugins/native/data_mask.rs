@@ -374,10 +374,7 @@ impl Plugin for DataMaskPlugin {
         "data-mask"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Body rules share one lazily-parsed JSON document.
         let mut json_body: Option<serde_json::Value> = None;
         let mut body_masked = false;
@@ -505,10 +502,7 @@ mod tests {
               "action": "replace", "value": "MASKED" },
             { "type": "body", "body_format": "json", "name": "user.missing", "action": "remove" }
         ]));
-        let out = p
-            .execute(test_context(body))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(body)).await.unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert!(parsed.get("password").is_none());
         assert_eq!(parsed["user"]["cards"][0]["number"], "4111********1111");
@@ -523,10 +517,7 @@ mod tests {
         let p = plugin(serde_json::json!([
             { "type": "body", "body_format": "json", "name": "items.1", "action": "remove" }
         ]));
-        let out = p
-            .execute(test_context(body))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(body)).await.unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(parsed["items"], serde_json::json!(["a", "c"]));
     }
@@ -554,10 +545,7 @@ mod tests {
         );
         config.insert("max_body_size".to_string(), serde_json::json!(4));
         let p = DataMaskPlugin::from_config(&config).unwrap();
-        let out = p
-            .execute(test_context(r#"{"a":1}"#))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(r#"{"a":1}"#)).await.unwrap();
         assert_eq!(out.context.request.body, Bytes::from(r#"{"a":1}"#));
     }
 
@@ -568,10 +556,7 @@ mod tests {
             { "type": "body", "body_format": "json", "name": "note",
               "action": "regex", "regex": r"id=\d+", "value": "id=***" }
         ]));
-        let out = p
-            .execute(test_context(body))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(body)).await.unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         // mirrors ngx.re.sub: only the first occurrence is rewritten
         assert_eq!(parsed["note"], "id=*** id=456");
@@ -589,10 +574,7 @@ mod tests {
               "action": "regex", "regex": r"id=(\d+)",
               "value": "{{request.path}}:$1" }
         ]));
-        let out = p
-            .execute(test_context(body))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(body)).await.unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         // {{request.path}} renders; $1 is preserved and resolved by the regex
         // engine's own backreference handling, not by the template engine.

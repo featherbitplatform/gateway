@@ -336,9 +336,11 @@ impl CasAuthPlugin {
             tls: None,
         };
 
-        let response = self.client.request(outbound).await.map_err(|e| {
-            CasError::Infra(format!("CAS validation request failed: {}", e))
-        })?;
+        let response = self
+            .client
+            .request(outbound)
+            .await
+            .map_err(|e| CasError::Infra(format!("CAS validation request failed: {}", e)))?;
 
         classify_validation(response.status, &response.body)
     }
@@ -416,8 +418,7 @@ fn classify_validation(status: u16, body: &[u8]) -> Result<String, CasError> {
             status
         )));
     }
-    parse_service_validate(body)
-        .ok_or_else(|| CasError::Denied("invalid ticket".to_string()))
+    parse_service_validate(body).ok_or_else(|| CasError::Denied("invalid ticket".to_string()))
 }
 
 /// Reads the session secret from `session_secret` or nested `session.secret`.
@@ -545,10 +546,7 @@ impl Plugin for CasAuthPlugin {
         "cas-auth"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         if self.sealer.is_some() {
             self.execute_interactive(ctx).await
         } else {
@@ -778,7 +776,10 @@ mod tests {
     #[tokio::test]
     async fn test_transport_failure_is_error_port_not_denied() {
         let mut cfg = HashMap::new();
-        cfg.insert("idp_uri".to_string(), serde_json::json!("http://127.0.0.1:1"));
+        cfg.insert(
+            "idp_uri".to_string(),
+            serde_json::json!("http://127.0.0.1:1"),
+        );
         cfg.insert(
             "service".to_string(),
             serde_json::json!("https://app.example.org/"),
@@ -823,10 +824,7 @@ mod tests {
         cfg.insert("session_secret".to_string(), serde_json::json!("s3cr3t"));
         let p = CasAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
 
-        let out = p
-            .execute(ctx("/dashboard", HashMap::new()))
-            .await
-            .unwrap();
+        let out = p.execute(ctx("/dashboard", HashMap::new())).await.unwrap();
         assert_eq!(out.port, Some("redirect"));
         assert_eq!(out.context.response.status_code, 302);
         let location = &out.context.response.headers.get("location").unwrap()[0];
@@ -881,10 +879,7 @@ mod tests {
         cfg.insert("logout_path".to_string(), serde_json::json!("/logout"));
         let p = CasAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
 
-        let out = p
-            .execute(ctx("/logout", HashMap::new()))
-            .await
-            .unwrap();
+        let out = p.execute(ctx("/logout", HashMap::new())).await.unwrap();
         assert_eq!(out.port, Some("redirect"));
         assert_eq!(out.context.response.status_code, 302);
         assert_eq!(

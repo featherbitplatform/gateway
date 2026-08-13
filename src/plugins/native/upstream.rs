@@ -210,10 +210,7 @@ impl Plugin for UpstreamPlugin {
         "upstream"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let target_idx = self.balancer.select(&ctx.request.remote_addr);
         let target = self.balancer.target(target_idx);
 

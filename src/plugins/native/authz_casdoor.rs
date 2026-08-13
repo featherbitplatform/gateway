@@ -516,7 +516,9 @@ impl AuthzCasdoorPlugin {
         };
 
         match self.outbound.request(request).await {
-            Ok(resp) if resp.status == 200 && token_is_active(&resp.body) => Ok(PluginOutput::success(ctx)),
+            Ok(resp) if resp.status == 200 && token_is_active(&resp.body) => {
+                Ok(PluginOutput::success(ctx))
+            }
             // Per RFC 7662, a `200` with `active: false` is the introspection
             // endpoint doing its job and saying "no" — a deliberate denial.
             Ok(resp) if resp.status == 200 => Self::deny(ctx, "Casdoor token inactive"),
@@ -764,10 +766,7 @@ impl Plugin for AuthzCasdoorPlugin {
         "authz-casdoor"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         if self.sealer.is_some() {
             self.execute_interactive(ctx).await
         } else {
@@ -1118,10 +1117,7 @@ mod tests {
     async fn test_interactive_begin_login_redirects() {
         let p =
             AuthzCasdoorPlugin::from_config(&interactive_cfg(), &PluginResources::empty()).unwrap();
-        let out = p
-            .execute(ctx("/protected", HashMap::new()))
-            .await
-            .unwrap();
+        let out = p.execute(ctx("/protected", HashMap::new())).await.unwrap();
         assert_eq!(out.port, Some("redirect"));
         assert_eq!(out.context.response.status_code, 302);
         let location = &out.context.response.headers.get("location").unwrap()[0];

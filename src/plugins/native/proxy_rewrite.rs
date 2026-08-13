@@ -176,10 +176,7 @@ impl Plugin for ProxyRewritePlugin {
         "proxy-rewrite"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         match self.phase {
             RewritePhase::Request => {
                 // Strip path prefix

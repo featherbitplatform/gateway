@@ -129,10 +129,7 @@ impl Plugin for ScriptPlugin {
         "script"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         match &self.runtime {
             ScriptRuntime::Lua(rt) => match rt.execute(ctx) {
                 Ok(new_ctx) => Ok(PluginOutput::success(new_ctx)),

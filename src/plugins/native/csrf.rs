@@ -259,10 +259,7 @@ impl Plugin for CsrfPlugin {
         "csrf"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         if self.phase == CsrfPhase::Response {
             // Cookie issuance only (APISIX header_filter).
             self.set_cookie(&mut ctx);
@@ -372,10 +369,7 @@ mod tests {
     #[tokio::test]
     async fn test_safe_method_passes_and_sets_cookie() {
         let p = plugin(serde_json::json!({"key": "secret"}));
-        let out = p
-            .execute(test_context("GET"))
-            .await
-            .unwrap();
+        let out = p.execute(test_context("GET")).await.unwrap();
         let cookies = out.context.response.headers.get("set-cookie").unwrap();
         assert_eq!(cookies.len(), 1);
         assert!(cookies[0].starts_with(&format!("{}=", NAME)));
@@ -424,10 +418,7 @@ mod tests {
     async fn test_response_phase_only_sets_cookie() {
         let p = plugin(serde_json::json!({"key": "secret", "phase": "response"}));
         // even for an unsafe method, response phase never validates
-        let out = p
-            .execute(test_context("POST"))
-            .await
-            .unwrap();
+        let out = p.execute(test_context("POST")).await.unwrap();
         assert!(out.context.response.headers.contains_key("set-cookie"));
     }
 
@@ -471,7 +462,10 @@ mod tests {
         let other = p.gen_token();
 
         // header != cookie
-        let out = p.execute(with_tokens("POST", &token, &other)).await.unwrap();
+        let out = p
+            .execute(with_tokens("POST", &token, &other))
+            .await
+            .unwrap();
         assert_eq!(out.port, Some("denied"));
         let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["error_msg"], "csrf token mismatch");
@@ -522,10 +516,7 @@ mod tests {
             .port
             .is_none());
         // session cookie: no Max-Age
-        let out = no_expiry
-            .execute(test_context("GET"))
-            .await
-            .unwrap();
+        let out = no_expiry.execute(test_context("GET")).await.unwrap();
         assert!(!out.context.response.headers.get("set-cookie").unwrap()[0].contains("Max-Age"));
     }
 

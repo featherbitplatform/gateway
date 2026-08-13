@@ -257,10 +257,7 @@ impl Plugin for ApiBreakerPlugin {
         "api-breaker"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let breaker = self.resources.traffic.breakers.breaker(&self.id);
 
         match self.role {

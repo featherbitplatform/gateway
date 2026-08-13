@@ -392,10 +392,7 @@ impl Plugin for DingtalkAuthPlugin {
         "dingtalk-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Never let a client-supplied X-Userinfo bleed through to the upstream.
         ctx.request.headers.remove("x-userinfo");
 

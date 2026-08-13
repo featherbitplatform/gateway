@@ -331,10 +331,7 @@ impl Plugin for ForwardAuthPlugin {
         "forward-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let headers = self.build_callout_headers(&ctx);
         let body = if self.is_post {
             ctx.request.body.clone()

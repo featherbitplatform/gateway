@@ -225,10 +225,7 @@ impl Plugin for LimitConnPlugin {
         "limit-conn"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let key = self.resolve_key(&ctx);
         let counter = self.resources.traffic.conn.counter(&key);
 

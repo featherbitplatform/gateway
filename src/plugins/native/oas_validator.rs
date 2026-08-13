@@ -383,16 +383,11 @@ impl Plugin for OasValidatorPlugin {
         "oas-validator"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         // Find the matching operation; no match → pass through (not our job to 404).
         let op = match self.match_operation(&ctx.request.method, &ctx.request.path) {
             Some(op) => op,
-            None => {
-                return Ok(PluginOutput::success(ctx))
-            }
+            None => return Ok(PluginOutput::success(ctx)),
         };
 
         // Required query parameters must be present.
@@ -592,10 +587,7 @@ mod tests {
     async fn test_oas_non_matching_path_passes_through() {
         let p = plugin();
         // No operation for this path → pass through untouched.
-        let out = p
-            .execute(ctx("GET", "/nope/here"))
-            .await
-            .unwrap();
+        let out = p.execute(ctx("GET", "/nope/here")).await.unwrap();
         assert!(out.port.is_none());
         assert_eq!(out.context.response.status_code, 0);
         // wrong method on a known path also passes through

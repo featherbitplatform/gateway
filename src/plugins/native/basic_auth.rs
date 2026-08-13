@@ -147,10 +147,7 @@ impl Plugin for BasicAuthPlugin {
         "basic-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let auth_header = ctx
             .request
             .headers
@@ -393,9 +390,7 @@ mod tests {
         let plugin = BasicAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
 
         let ok = plugin
-            .execute(
-                ctx_with_auth(Some(&basic("alice", "s3cret"))),
-            )
+            .execute(ctx_with_auth(Some(&basic("alice", "s3cret"))))
             .await
             .unwrap();
         assert_eq!(
@@ -416,9 +411,7 @@ mod tests {
             BasicAuthPlugin::from_config(&inline_config(), &PluginResources::empty()).unwrap();
 
         let ok = plugin
-            .execute(
-                ctx_with_auth(Some(&basic("alice", "s3cret"))),
-            )
+            .execute(ctx_with_auth(Some(&basic("alice", "s3cret"))))
             .await
             .unwrap();
         assert_eq!(
@@ -517,10 +510,7 @@ mod tests {
         config.insert("anonymous_consumer".to_string(), serde_json::json!("guest"));
         let plugin = BasicAuthPlugin::from_config(&config, &resources).unwrap();
 
-        let out = plugin
-            .execute(ctx_with_auth(None))
-            .await
-            .unwrap();
+        let out = plugin.execute(ctx_with_auth(None)).await.unwrap();
         assert_eq!(
             out.context.message.get("consumer.name"),
             Some(&serde_json::json!("guest"))
