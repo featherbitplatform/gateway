@@ -52,10 +52,7 @@ impl Plugin for ServerlessPostFunctionPlugin {
         "serverless-post-function"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let ctx = self.runner.run(ctx)?;
         Ok(PluginOutput::success(ctx))
     }

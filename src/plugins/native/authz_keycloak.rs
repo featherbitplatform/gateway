@@ -320,10 +320,7 @@ impl Plugin for AuthzKeycloakPlugin {
         "authz-keycloak"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         // Empty permissions: deny under ENFORCING, allow under PERMISSIVE.
         if self.permissions.is_empty() {
             return if self.enforcing {
@@ -626,7 +623,11 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "AUTHZ_KEYCLOAK_ERROR");
-        assert!(err.error.message.contains("unexpected status 500"), "{}", err.error.message);
+        assert!(
+            err.error.message.contains("unexpected status 500"),
+            "{}",
+            err.error.message
+        );
         assert_eq!(err.context.response.status_code, 403);
     }
 

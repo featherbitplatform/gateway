@@ -49,10 +49,7 @@ impl Plugin for RequestSizeLimitPlugin {
         "request-size-limit"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let body_len = ctx.request.body.len();
         if body_len > self.max_bytes {
             let mut ctx = ctx;

@@ -60,10 +60,7 @@ impl Plugin for AttachConsumerLabelPlugin {
         "attach-consumer-label"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Only act when a consumer with labels is attached; otherwise passthrough.
         if let Some(labels) = ctx
             .message
@@ -127,9 +124,9 @@ mod tests {
     async fn test_attaches_labels_with_default_prefix() {
         let p = plugin(serde_json::json!({}));
         let out = p
-            .execute(
-                ctx(Some(serde_json::json!({ "tier": "gold", "region": "eu" }))),
-            )
+            .execute(ctx(Some(
+                serde_json::json!({ "tier": "gold", "region": "eu" }),
+            )))
             .await
             .unwrap();
         let headers = &out.context.request.headers;
@@ -147,9 +144,7 @@ mod tests {
     async fn test_custom_prefix() {
         let p = plugin(serde_json::json!({ "header_prefix": "X-Label-" }));
         let out = p
-            .execute(
-                ctx(Some(serde_json::json!({ "tier": "gold" }))),
-            )
+            .execute(ctx(Some(serde_json::json!({ "tier": "gold" }))))
             .await
             .unwrap();
         assert_eq!(

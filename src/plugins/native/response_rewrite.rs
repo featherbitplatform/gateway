@@ -468,10 +468,7 @@ impl Plugin for ResponseRewritePlugin {
         "response-rewrite"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // `vars` gate: when configured and false, the node is a no-op.
         if let Some(expr) = &self.vars {
             if !expr.eval(&ctx) {
@@ -869,19 +866,13 @@ mod tests {
 
         // Gate matches → rewrite applies.
         let p = plugin(config.clone());
-        let out = p
-            .execute(test_context(200, b"orig"))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(200, b"orig")).await.unwrap();
         assert_eq!(out.context.response.status_code, 500);
         assert_eq!(out.context.response.body.as_ref(), b"rewritten");
 
         // Gate does not match → complete passthrough.
         let p = plugin(config);
-        let out = p
-            .execute(test_context(404, b"orig"))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(404, b"orig")).await.unwrap();
         assert_eq!(out.context.response.status_code, 404);
         assert_eq!(out.context.response.body.as_ref(), b"orig");
         assert!(!out.context.response.headers.contains_key("x-hit"));

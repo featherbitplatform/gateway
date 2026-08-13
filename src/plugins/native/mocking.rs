@@ -229,10 +229,7 @@ impl Plugin for MockingPlugin {
         "mocking"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
         }

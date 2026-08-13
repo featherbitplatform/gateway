@@ -410,10 +410,7 @@ pub async fn build_source(
                 // stays empty and a later boot can re-seed a fixed file.
                 match crate::state::validate_gateway_config(&local) {
                     Ok(()) => {
-                        tracing::info!(
-                            "etcd prefix empty — seeding from {}",
-                            seed_path.display()
-                        );
+                        tracing::info!("etcd prefix empty — seeding from {}", seed_path.display());
                         store.write_all(&local).await?;
                         gateway = store.load_all().await?;
                     }

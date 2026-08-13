@@ -121,10 +121,7 @@ impl Plugin for AclPlugin {
         "acl"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         // No consumer attached at all -> authentication is missing.
         if ctx
             .message

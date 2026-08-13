@@ -204,10 +204,7 @@ impl Plugin for GzipPlugin {
         "gzip"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let skip = !accepts_encoding(&ctx, "gzip")
             || response_already_encoded(&ctx)
             || !self.types.matches(&ctx)

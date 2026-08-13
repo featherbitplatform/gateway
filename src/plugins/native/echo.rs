@@ -161,10 +161,7 @@ impl Plugin for EchoPlugin {
         "echo"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Body mutation (always: from_config requires at least one body key).
         let current: Bytes = match &self.body {
             // Full replacement ignores the upstream body entirely.
@@ -313,10 +310,7 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("upstream"))
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("upstream")).await.unwrap();
         assert_eq!(
             result.context.response.body,
             Bytes::from("pre|upstream|post")
@@ -332,10 +326,7 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("ignored"))
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("ignored")).await.unwrap();
         assert_eq!(result.context.response.body, Bytes::from("a|mid|z"));
     }
 
@@ -395,10 +386,7 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("upstream"))
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("upstream")).await.unwrap();
         let headers = &result.context.response.headers;
         assert_eq!(
             headers.get("x-served-by"),

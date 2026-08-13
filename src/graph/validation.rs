@@ -744,7 +744,10 @@ mod tests {
             name: "alias".to_string(),
             description: None,
             nodes,
-            edges: vec![sn_edge("input.out", "up.in"), sn_edge("up.out", "output.in")],
+            edges: vec![
+                sn_edge("input.out", "up.in"),
+                sn_edge("up.out", "output.in"),
+            ],
         };
         assert_eq!(validate_supernode(&sn), Ok(()));
     }
@@ -768,14 +771,8 @@ mod tests {
             ],
         };
         let errors = validate_supernode(&sn).unwrap_err();
-        assert!(
-            errors.iter().any(|e| e.contains("'denied'")),
-            "{errors:?}"
-        );
-        assert!(
-            errors.iter().any(|e| e.contains("'limited'")),
-            "{errors:?}"
-        );
+        assert!(errors.iter().any(|e| e.contains("'denied'")), "{errors:?}");
+        assert!(errors.iter().any(|e| e.contains("'limited'")), "{errors:?}");
     }
 
     #[test]

@@ -370,10 +370,7 @@ impl Plugin for FeishuAuthPlugin {
         "feishu-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         ctx.request.headers.remove("x-userinfo");
 
         let code = match self.extract_code(&ctx) {

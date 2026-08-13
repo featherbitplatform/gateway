@@ -73,10 +73,7 @@ impl Plugin for ErrorHandlerPlugin {
         "error-handler"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // No error to report — an outcome exit (denied/limited/broken/abort/
         // redirect/preflight/routed/hit) or a plain success path. The response
         // it carries is already prepared; leave it exactly as it is rather
@@ -156,9 +153,11 @@ mod tests {
             "body_template": "{\"code\":\"{{error.code}}\",\"msg\":\"{{error.message}}\",\"node\":\"{{error.node_id}}\"}"
         }));
         let out = p
-            .execute(
-                ctx_with_error(Some(err("UPSTREAM_ERROR", "connection refused", "backend"))),
-            )
+            .execute(ctx_with_error(Some(err(
+                "UPSTREAM_ERROR",
+                "connection refused",
+                "backend",
+            ))))
             .await
             .unwrap();
 
@@ -220,7 +219,11 @@ mod tests {
             r#"{"error":"unauthorized"}"#
         );
         assert_eq!(
-            out.context.response.headers.get("www-authenticate").unwrap()[0],
+            out.context
+                .response
+                .headers
+                .get("www-authenticate")
+                .unwrap()[0],
             "Basic realm=\"api\""
         );
     }

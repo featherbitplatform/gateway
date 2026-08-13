@@ -116,10 +116,7 @@ impl Plugin for IpRestrictionPlugin {
         "ip-restriction"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let addr = &ctx.request.remote_addr;
 
         // Deny list takes precedence

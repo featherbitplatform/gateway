@@ -56,10 +56,7 @@ impl Plugin for LoggingPlugin {
         "logging"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let mut fields = serde_json::json!({
             "method": ctx.request.method,
             "path": ctx.request.path,

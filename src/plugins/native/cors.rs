@@ -146,10 +146,7 @@ impl Plugin for CorsPlugin {
         "cors"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let origin = ctx
             .request
             .headers
@@ -348,7 +345,10 @@ mod tests {
         .unwrap();
         assert_eq!(out.port, Some("preflight"));
         assert_eq!(out.context.response.status_code, 204);
-        assert_eq!(hdr(&out.context, "access-control-allow-methods"), Some("GET, POST"));
+        assert_eq!(
+            hdr(&out.context, "access-control-allow-methods"),
+            Some("GET, POST")
+        );
         assert_eq!(hdr(&out.context, "access-control-max-age"), Some("50"));
         assert!(out.context.response.body.is_empty());
     }

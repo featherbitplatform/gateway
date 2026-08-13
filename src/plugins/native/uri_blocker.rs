@@ -121,10 +121,7 @@ impl Plugin for UriBlockerPlugin {
         "uri-blocker"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let request_uri = crate::vars::resolve(&ctx, "request_uri")
             .map(|v| v.into_owned())
             .unwrap_or_else(|| ctx.request.path.clone());
@@ -313,10 +310,7 @@ mod tests {
         })))
         .unwrap();
 
-        let out = plugin
-            .execute(test_context("/admin/x", &[]))
-            .await
-            .unwrap();
+        let out = plugin.execute(test_context("/admin/x", &[])).await.unwrap();
         assert_eq!(out.port, Some("denied"));
         let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["error_msg"], "blocked /admin/x");
