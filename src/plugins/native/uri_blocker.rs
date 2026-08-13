@@ -2,16 +2,16 @@
 //!
 //! Port of APISIX's `uri-blocker`: matches the request URI (path plus query
 //! string) against a list of regexes and rejects matching requests with a
-//! configurable status code. Rejections are routed through the node's error
-//! port with error code `URI_BLOCKED`.
+//! configurable status code. Rejections are routed through the node's
+//! `denied` port.
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use regex::Regex;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 use crate::vars::template::Template;
 
 /// Blocks requests whose URI matches any configured `block_rules` regex.
@@ -121,11 +121,7 @@ impl Plugin for UriBlockerPlugin {
         "uri-blocker"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let request_uri = crate::vars::resolve(&ctx, "request_uri")
             .map(|v| v.into_owned())
             .unwrap_or_else(|| ctx.request.path.clone());
@@ -147,21 +143,10 @@ impl Plugin for UriBlockerPlugin {
             } else {
                 ctx.response.body = Bytes::new();
             }
-            return Err(PluginExecutionError {
-                context: ctx,
-                error: GatewayError {
-                    node_id: String::new(),
-                    code: "URI_BLOCKED".to_string(),
-                    message: rendered_msg.unwrap_or_else(|| "request URI is blocked".to_string()),
-                    metadata: HashMap::new(),
-                },
-            });
+            return Ok(PluginOutput::on_port(ctx, "denied"));
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -236,19 +221,21 @@ mod tests {
         })))
         .unwrap();
 
-        let err = plugin
-            .execute(test_context("/admin/users", &[]), &HashMap::new())
+        let out = plugin
+            .execute(test_context("/admin/users", &[]))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "URI_BLOCKED");
-        assert_eq!(err.context.response.status_code, 403);
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
         // no rejected_msg -> empty body (APISIX parity)
-        assert!(err.context.response.body.is_empty());
+        assert!(out.context.response.body.is_empty());
 
         assert!(plugin
-            .execute(test_context("/public", &[]), &HashMap::new())
+            .execute(test_context("/public", &[]))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     #[tokio::test]
@@ -259,20 +246,20 @@ mod tests {
         .unwrap();
 
         // rule matches inside the query string, like APISIX's request_uri
+        assert_eq!(
+            plugin
+                .execute(test_context("/download", &[("file", "root.exe")]))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
         assert!(plugin
-            .execute(
-                test_context("/download", &[("file", "root.exe")]),
-                &HashMap::new()
-            )
+            .execute(test_context("/download", &[("file", "notes.txt")]))
             .await
-            .is_err());
-        assert!(plugin
-            .execute(
-                test_context("/download", &[("file", "notes.txt")]),
-                &HashMap::new()
-            )
-            .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     #[tokio::test]
@@ -282,18 +269,24 @@ mod tests {
         })))
         .unwrap();
         assert!(sensitive
-            .execute(test_context("/ADMIN/panel", &[]), &HashMap::new())
+            .execute(test_context("/ADMIN/panel", &[]))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
 
         let insensitive = UriBlockerPlugin::from_config(&config(serde_json::json!({
             "block_rules": ["/admin"], "case_insensitive": true
         })))
         .unwrap();
-        assert!(insensitive
-            .execute(test_context("/ADMIN/panel", &[]), &HashMap::new())
-            .await
-            .is_err());
+        assert_eq!(
+            insensitive
+                .execute(test_context("/ADMIN/panel", &[]))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
     }
 
     #[tokio::test]
@@ -303,12 +296,10 @@ mod tests {
         })))
         .unwrap();
 
-        let err = plugin
-            .execute(test_context("/admin", &[]), &HashMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.context.response.status_code, 404);
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        let out = plugin.execute(test_context("/admin", &[])).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 404);
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["error_msg"], "not found");
     }
 
@@ -319,12 +310,9 @@ mod tests {
         })))
         .unwrap();
 
-        let err = plugin
-            .execute(test_context("/admin/x", &[]), &HashMap::new())
-            .await
-            .unwrap_err();
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        let out = plugin.execute(test_context("/admin/x", &[])).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["error_msg"], "blocked /admin/x");
-        assert_eq!(err.error.message, "blocked /admin/x");
     }
 }

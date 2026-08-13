@@ -79,6 +79,7 @@ impl TraceRecorder {
         outcome: StepOutcome,
         duration: Duration,
         edge: EdgeKind,
+        port: Option<&str>,
         next_node_id: Option<&str>,
         ctx: &Context,
     ) {
@@ -112,6 +113,7 @@ impl TraceRecorder {
             outcome,
             duration_us: duration.as_micros() as u64,
             edge,
+            port: port.map(String::from),
             next_node_id: next_node_id.map(str::to_string),
             after,
         });
@@ -201,6 +203,7 @@ mod tests {
                 StepOutcome::Success,
                 Duration::from_micros(5),
                 EdgeKind::Success,
+                None,
                 None,
                 c,
             );

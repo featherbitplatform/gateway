@@ -32,7 +32,7 @@ and the request, and share one namespace via `id`, so they always agree.
 
 ## Wiring
 
-The lookup node goes **before** `upstream`; its `error` port routes to
+The lookup node goes **before** `upstream`; its `hit` port routes to
 `client.in`, so a hit delivers the cached response without ever calling the
 upstream. On a miss it passes through. The store node goes **after** `upstream`
 and caches the fresh response.
@@ -52,9 +52,10 @@ nodes:
 edges:
   - { from: listener.out,         to: cache-lookup.in }
   - { from: cache-lookup.success, to: upstream.in }
-  - { from: cache-lookup.error,   to: client.in }       # cache HIT → client
+  - { from: cache-lookup.hit,     to: client.in }       # cache HIT → client
   - { from: upstream.success,     to: cache-store.in }
   - { from: cache-store.success,  to: client.in }
+  - { from: cache-store.hit,      to: client.in }       # store never hits, but the port is still mandatory wiring
 ```
 
 ## Behavior
@@ -65,9 +66,8 @@ Requests whose method is not in `cache_method` bypass the cache in both phases
 The **lookup** node derives the key and queries the cache. On a **hit** it
 replaces `context.response` with the cached status, headers, and body, adds
 `featherbit-cache-status: HIT` (and strips `cache-control`/`expires` when
-`hide_cache_headers` is set), then fails with error code `PROXY_CACHE_HIT` —
-routing the Context through the `error` port to `client.in`. On a **miss** it
-passes through to the upstream.
+`hide_cache_headers` is set), then exits through the `hit` port. On a **miss**
+it passes through to the upstream on `success`.
 
 The **store** node caches the response when its status is in
 `cache_http_statuses`, using `cache_ttl` as the freshness lifetime, and marks the
@@ -75,3 +75,7 @@ outgoing response `featherbit-cache-status: MISS` (it came from the upstream, no
 cache).
 
 The cache is in-memory and per gateway instance; entries expire lazily on read.
+
+## Ports
+
+`proxy-cache` declares three output ports: `success` (a cache miss, or a non-cacheable method — the request continues), `hit` (the response was served from cache; wire straight to `client`), and `error` (never actually used — cache reads/writes are infallible in-process calls). `success` and `hit` are mandatory on both the lookup and store nodes — the policy compiler rejects any policy that leaves either unwired, even on the store node where `hit` is never actually emitted. See [Wiring](#wiring) above.

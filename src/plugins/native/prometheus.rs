@@ -101,11 +101,7 @@ impl Plugin for PrometheusPlugin {
         "prometheus"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         if let Some(ref metrics) = self.metrics {
             let consumer = Self::consumer_label(&ctx);
             let route = Self::route_label(&ctx);
@@ -119,10 +115,7 @@ impl Plugin for PrometheusPlugin {
         // is never flagged as dead while documenting its parity purpose.
         let _ = self.prefer_name;
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -180,10 +173,7 @@ mod tests {
         let metrics = Arc::new(GatewayMetrics::new());
         let p = plugin_with_metrics(metrics.clone());
 
-        let out = p
-            .execute(test_ctx(Some("alice")), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_ctx(Some("alice"))).await.unwrap();
         // context passes through unchanged
         assert_eq!(out.context.request.path, "/api/users");
 
@@ -196,9 +186,7 @@ mod tests {
         );
 
         // a second request for the same consumer increments again
-        p.execute(test_ctx(Some("alice")), &HashMap::new())
-            .await
-            .unwrap();
+        p.execute(test_ctx(Some("alice"))).await.unwrap();
         assert_eq!(
             metrics
                 .consumer_requests
@@ -213,7 +201,7 @@ mod tests {
         let metrics = Arc::new(GatewayMetrics::new());
         let p = plugin_with_metrics(metrics.clone());
 
-        p.execute(test_ctx(None), &HashMap::new()).await.unwrap();
+        p.execute(test_ctx(None)).await.unwrap();
         assert_eq!(
             metrics
                 .consumer_requests
@@ -227,10 +215,7 @@ mod tests {
     async fn execute_is_noop_without_metrics() {
         // resources.metrics == None must not panic and must pass ctx through.
         let p = PrometheusPlugin::from_config(&HashMap::new(), &PluginResources::empty()).unwrap();
-        let out = p
-            .execute(test_ctx(Some("bob")), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_ctx(Some("bob"))).await.unwrap();
         assert_eq!(out.context.response.status_code, 200);
     }
 }

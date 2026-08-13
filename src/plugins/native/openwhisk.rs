@@ -322,11 +322,7 @@ impl Plugin for OpenWhiskPlugin {
         "openwhisk"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let request = self.build_request(&ctx);
 
         let response: OutboundResponse = match self.client.request(request).await {
@@ -342,10 +338,7 @@ impl Plugin for OpenWhiskPlugin {
                 ctx.response.status_code = mapped.status;
                 ctx.response.headers = mapped.headers;
                 ctx.response.body = mapped.body;
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             Err(message) => Err(reject(ctx, 503, message)),
         }
@@ -602,7 +595,7 @@ mod tests {
         cfg["api_host"] = serde_json::json!("http://127.0.0.1:1");
         cfg["timeout"] = serde_json::json!(200);
         let p = plugin(cfg);
-        let err = p.execute(ctx(), &HashMap::new()).await.unwrap_err();
+        let err = p.execute(ctx()).await.unwrap_err();
         assert_eq!(err.error.code, "OPENWHISK_CALLOUT_ERROR");
         assert!(err.context.response.status_code >= 502);
     }

@@ -1,8 +1,38 @@
 //! The `exit-transformer` node — reshapes gateway-generated responses
-//! ("exits": auth rejections, rate-limit denials, upstream failures, ...)
-//! with a status-code remap and a body template. Reinterpreted subset of
-//! APISIX's `exit-transformer` plugin (response-phase: place after
+//! ("exits") with a status-code remap and a body template. Reinterpreted
+//! subset of APISIX's `exit-transformer` plugin (response-phase: place after
 //! `upstream`, before `client`).
+//!
+//! ## Which exits it applies to
+//!
+//! By default the node acts only on responses whose context carries an
+//! **error record** (`Context.errors` non-empty) — a failed upstream, a failed
+//! auth callout, an `error-handler`-rendered body. A deliberate rejection that
+//! left its node on an *outcome* port (`denied`, `limited`, `broken`, `abort`,
+//! `redirect`, ...) carries **no** error record and is therefore **not**
+//! transformed unless `always: true` is set.
+//!
+//! So to reshape denials and throttles, set `always: true` and put the node on
+//! the path the outcome port takes:
+//!
+//! ```yaml
+//! nodes:
+//!   - id: shape-exits
+//!     type: exit-transformer
+//!     config:
+//!       always: true                 # required: a denial carries no error record
+//!       status_map: { "401": 403 }
+//!       body: '{"status": $status, "path": "$uri"}'
+//! edges:
+//!   - from: auth.denied
+//!     to: shape-exits.in             # not straight to client
+//!   - from: shape-exits.success
+//!     to: client.in
+//! ```
+//!
+//! With `always: true` the node transforms *every* response reaching it,
+//! clean upstream replies included — so give it its own branch as above
+//! rather than putting it on the main success path.
 //!
 //! **This is a deliberate reinterpretation, not a faithful port.** APISIX's
 //! plugin registers user-supplied *Lua functions* that receive
@@ -120,11 +150,7 @@ impl Plugin for ExitTransformerPlugin {
         "exit-transformer"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Gate: gateway-generated exits only, unless `always`.
         let applies = self.always || !ctx.errors.is_empty();
 
@@ -145,10 +171,7 @@ impl Plugin for ExitTransformerPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -204,10 +227,7 @@ mod tests {
             "status_map": { "502": 503 },
             "body": "{\"status\": $status, \"path\": \"$uri\"}"
         }));
-        let out = p
-            .execute(test_context(502, true), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, true)).await.unwrap();
         assert_eq!(out.context.response.status_code, 503);
         // $status reflects the remapped status.
         assert_eq!(
@@ -224,10 +244,7 @@ mod tests {
             "body": "transformed"
         }));
         // 502 from the upstream itself: no gateway errors → passthrough.
-        let out = p
-            .execute(test_context(502, false), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, false)).await.unwrap();
         assert_eq!(out.context.response.status_code, 502);
         assert_eq!(out.context.response.body.as_ref(), b"original");
         assert!(out.context.response.headers.contains_key("content-length"));
@@ -239,10 +256,7 @@ mod tests {
             "status_map": { "502": 503 },
             "always": true
         }));
-        let out = p
-            .execute(test_context(502, false), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, false)).await.unwrap();
         assert_eq!(out.context.response.status_code, 503);
         // No body template configured → body untouched.
         assert_eq!(out.context.response.body.as_ref(), b"original");
@@ -254,10 +268,7 @@ mod tests {
         let p = plugin(serde_json::json!({
             "status_map": { "502": 503 }
         }));
-        let out = p
-            .execute(test_context(401, true), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(401, true)).await.unwrap();
         assert_eq!(out.context.response.status_code, 401);
     }
 

@@ -161,11 +161,7 @@ impl Plugin for EchoPlugin {
         "echo"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Body mutation (always: from_config requires at least one body key).
         let current: Bytes = match &self.body {
             // Full replacement ignores the upstream body entirely.
@@ -214,10 +210,7 @@ impl Plugin for EchoPlugin {
             ctx.response.headers.insert(name, vec![value]);
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -299,7 +292,7 @@ mod tests {
             .headers
             .insert("content-length".to_string(), vec!["13".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.response.body, Bytes::from("replaced"));
         // Stale content-length dropped per the body-mutation convention.
         assert!(!result
@@ -317,10 +310,7 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("upstream"), &HashMap::new())
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("upstream")).await.unwrap();
         assert_eq!(
             result.context.response.body,
             Bytes::from("pre|upstream|post")
@@ -336,10 +326,7 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("ignored"), &HashMap::new())
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("ignored")).await.unwrap();
         assert_eq!(result.context.response.body, Bytes::from("a|mid|z"));
     }
 
@@ -359,7 +346,7 @@ mod tests {
             .headers
             .insert("content-length".to_string(), vec!["28".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         let ctx = result.context;
         assert_eq!(ctx.response.body, Bytes::from("pre|upstream"));
         assert!(!ctx.response.headers.contains_key("content-encoding"));
@@ -380,7 +367,7 @@ mod tests {
         let mut ctx = test_context("upstream body");
         ctx.request.path = "/api/orders".to_string();
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.response.body,
             Bytes::from("path=/api/orders price=$19.99")
@@ -399,10 +386,7 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("upstream"), &HashMap::new())
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("upstream")).await.unwrap();
         let headers = &result.context.response.headers;
         assert_eq!(
             headers.get("x-served-by"),
@@ -428,7 +412,7 @@ mod tests {
         let mut ctx = test_context("upstream");
         ctx.request.path = "/api/orders".to_string();
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.response.headers.get("x-path"),
             Some(&vec!["path=/api/orders price=$19.99".to_string()])
@@ -448,7 +432,7 @@ mod tests {
             .headers
             .insert("x-served-by".to_string(), vec!["upstream-host".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         let headers = &result.context.response.headers;
         // Name lowercased, existing value replaced (not appended).
         assert_eq!(

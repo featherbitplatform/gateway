@@ -52,5 +52,17 @@ On each request the plugin builds a callout to `uri` carrying:
 The callout's reply determines routing:
 
 - **2xx** → the request passes through the **success** port. Each configured `upstream_headers` is copied from the auth response onto the request forwarded upstream; a configured header absent from the auth response is removed.
-- **Non-2xx** (status ≥ 300) → the request is rejected through the **error** port. The auth service's status and body are mirrored onto `context.response`, the configured `client_headers` are copied from the auth response, and the error `FORWARD_AUTH_DENIED` is appended to `context.errors`.
-- **Callout failure** (timeout / transport error) → if `allow_degradation` is true the request continues unchanged (fail-open); otherwise the request is rejected with `context.response.status_code = status_on_error` and the error `FORWARD_AUTH_ERROR`.
+- **Non-2xx** (status ≥ 300) → the request is denied, exiting through the **`denied`** port. The auth service's status and body are mirrored onto `context.response`, and the configured `client_headers` are copied from the auth response.
+- **Callout failure** (timeout / transport error) → if `allow_degradation` is true the request continues unchanged (fail-open, **success** port); otherwise this is a genuine infrastructure failure — the request exits through the **error** port with `context.response.status_code = status_on_error` and error code `FORWARD_AUTH_ERROR`.
+
+## Ports
+
+`forward-auth` declares three output ports: `success`, `denied` (the auth service's non-2xx verdict is mirrored), and `error` (the callout itself failed, and `allow_degradation` is false). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `forward-auth.denied` straight to `client` so the mirrored response reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: forward-auth.success
+    to: upstream.in
+  - from: forward-auth.denied
+    to: client.in
+```

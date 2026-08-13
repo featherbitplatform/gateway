@@ -31,14 +31,26 @@ Each entry's inner object is the exact config you would give that plugin as a st
 
 The sub-plugins run in the listed order, threading the context from one attempt to the next:
 
-- The **first** sub-plugin that returns success ends the chain; its output is returned verbatim, so any consumer identity it attached (`consumer.*` message keys, `X-Consumer-*` headers) flows downstream unchanged. The request passes through the **success** port.
-- If **all** sub-plugins fail, the request is rejected and routed through the **error** port:
+- The **first** sub-plugin that returns a clean **success** (no named exit port) ends the chain; its output is returned verbatim, so any consumer identity it attached (`consumer.*` message keys, `X-Consumer-*` headers) flows downstream unchanged. `multi-auth` itself then passes through its own **success** port.
+- Anything else a sub-plugin returns — a raw failure, or an alternate outcome port such as a credential-auth sub-plugin's own `denied` — is treated as a **failed attempt**, not a match: `multi-auth` has no way to fan a single request out to more than one downstream route, so only a plain success can end the chain early.
+- If **all** sub-plugins fail, the request is rejected and exits through `multi-auth`'s own **`denied`** port:
   - `context.response.status_code` = `401`
   - Body: `{"error": "unauthorized", "message": "Authorization Failed"}` with `content-type: application/json`
-  - Error code appended to `context.errors`: `MULTI_AUTH_FAILED`
 
 A later sub-plugin sees the context as left by prior *failed* attempts. Auth plugins generally mutate the context only on success (leaving `request`/`message` untouched when they reject), so ordering is safe. As an extra safeguard, the `response` is reset between attempts, so a losing sub-plugin's rejection body never leaks onto the request when a later attempt succeeds.
 
 :::note Any plugin type is accepted
 Only auth-type plugins are meaningful here, but the set is not hard-restricted — any registered node type may be listed. A non-auth plugin simply runs as an ordinary node, and its success ends the chain.
 :::
+
+## Ports
+
+`multi-auth` declares three output ports: `success`, `denied` (every sub-plugin failed; a rejection is prepared), and `error` (never actually used — the plugin never fails itself; a sub-plugin's own genuine infra failure is absorbed as a failed attempt, not propagated). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `multi-auth.denied` straight to `client` so the prepared `401` reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: multi-auth.success
+    to: upstream.in
+  - from: multi-auth.denied
+    to: client.in
+```

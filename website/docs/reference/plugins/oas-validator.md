@@ -52,10 +52,22 @@ At config load the plugin walks `paths`; for every operation it compiles the `ap
 3. **Required parameters.** For a matched operation, every `required: true` query and header parameter must be present (header names compared case-insensitively). A missing one is rejected. Path parameters are inherently present once the path matches; cookie parameters are out of scope.
 4. **Request body.** If the operation's `requestBody` is `required: true` and the body is empty, the request is rejected. When an `application/json` schema exists and the body is non-empty and JSON (content-type `application/json`, or absent), the body is parsed and validated against the schema; a non-JSON body or a schema violation is rejected.
 
-On any rejection the plugin writes `rejected_code` plus the JSON body `{"error": "oas_validation_failed", "message": <rejected_msg or violation detail>}` onto `context.response` and fails with error code `OAS_VALIDATION_FAILED`, routing the Context through the `error` port. On success the Context passes through unchanged; the plugin does not write to `context.message`.
+On any rejection the plugin writes `rejected_code` plus the JSON body `{"error": "oas_validation_failed", "message": <rejected_msg or violation detail>}` onto `context.response` and exits through the `denied` port. On success the Context passes through unchanged on `success`; the plugin does not write to `context.message`.
 
 ## Limitations
 
 - **Inline-JSON spec only.** `spec` is an inline OpenAPI JSON object. A JSON-*string* form, a remote `spec_url` fetch, a YAML/file loader, and secret-reference indirection are **out of scope**.
 - **Validation scope.** Validated: presence of `required` query/header parameters and the `application/json` `requestBody` schema (with local `#/components/...` `$ref` resolution). Not covered: response validation, parameter *type/format* schema validation and coercion, `oneOf`/`anyOf` operation selection, cookie parameters, and external-document `$ref`s.
 - `skip_*` toggles, `verbose_errors`, and `reject_if_not_match` are not modelled: a matched operation is always validated and violations are always rejected with `rejected_code`. A request that matches no operation is never rejected.
+
+## Ports
+
+`oas-validator` declares three output ports: `success`, `denied` (a schema-validation rejection is prepared), and `error` (never actually used — the plugin never fails; malformed specs fail at config load, not at request time). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `oas-validator.denied` straight to `client` so the prepared rejection reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: oas-validator.success
+    to: upstream.in
+  - from: oas-validator.denied
+    to: client.in
+```

@@ -3,15 +3,15 @@
 //! Port of APISIX's `ua-restriction`: matches the request's `User-Agent`
 //! header against a list of regexes — either an allowlist (only matching
 //! agents pass) or a denylist (matching agents are rejected). Rejections are
-//! routed through the node's error port with error code `UA_RESTRICTED`.
+//! routed through the node's `denied` port.
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use regex::Regex;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 use crate::vars::template::Template;
 
 /// Restricts access based on the `User-Agent` request header.
@@ -131,8 +131,8 @@ impl UaRestrictionPlugin {
         })
     }
 
-    /// Builds the 403-style rejection: JSON body on the response, error routed
-    /// through the error port with code `UA_RESTRICTED`.
+    /// Builds the 403-style rejection: JSON body on the response, routed
+    /// through the `denied` port.
     fn reject(&self, mut ctx: Context) -> PluginResult {
         let message = self.rejected_msg.render(&ctx).into_owned();
         ctx.response.status_code = self.rejected_code;
@@ -141,15 +141,7 @@ impl UaRestrictionPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "UA_RESTRICTED".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -159,11 +151,7 @@ impl Plugin for UaRestrictionPlugin {
         "ua-restriction"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let user_agents: Vec<&str> = ctx
             .request
             .headers
@@ -173,10 +161,7 @@ impl Plugin for UaRestrictionPlugin {
 
         if user_agents.is_empty() {
             if self.bypass_missing {
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
             return self.reject(ctx);
         }
@@ -197,10 +182,7 @@ impl Plugin for UaRestrictionPlugin {
             return self.reject(ctx);
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -283,18 +265,20 @@ mod tests {
         })))
         .unwrap();
 
-        let err = plugin
-            .execute(test_context(Some("curl/8.1.2")), &HashMap::new())
+        let out = plugin
+            .execute(test_context(Some("curl/8.1.2")))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "UA_RESTRICTED");
-        assert_eq!(err.context.response.status_code, 403);
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
 
         // non-matching UA passes
         assert!(plugin
-            .execute(test_context(Some("Mozilla/5.0")), &HashMap::new())
+            .execute(test_context(Some("Mozilla/5.0")))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     #[tokio::test]
@@ -305,18 +289,26 @@ mod tests {
         .unwrap();
 
         assert!(plugin
-            .execute(test_context(Some("Mozilla/5.0")), &HashMap::new())
+            .execute(test_context(Some("Mozilla/5.0")))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         // trimmed before matching (APISIX str_strip parity)
         assert!(plugin
-            .execute(test_context(Some("  Mozilla/5.0  ")), &HashMap::new())
+            .execute(test_context(Some("  Mozilla/5.0  ")))
             .await
-            .is_ok());
-        assert!(plugin
-            .execute(test_context(Some("curl/8.1.2")), &HashMap::new())
-            .await
-            .is_err());
+            .unwrap()
+            .port
+            .is_none());
+        assert_eq!(
+            plugin
+                .execute(test_context(Some("curl/8.1.2")))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
     }
 
     #[tokio::test]
@@ -326,19 +318,21 @@ mod tests {
         })))
         .unwrap();
         // default: missing UA is rejected
-        assert!(deny
-            .execute(test_context(None), &HashMap::new())
-            .await
-            .is_err());
+        assert_eq!(
+            deny.execute(test_context(None)).await.unwrap().port,
+            Some("denied")
+        );
 
         let bypass = UaRestrictionPlugin::from_config(&config(serde_json::json!({
             "denylist": ["curl"], "bypass_missing": true
         })))
         .unwrap();
         assert!(bypass
-            .execute(test_context(None), &HashMap::new())
+            .execute(test_context(None))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     #[tokio::test]
@@ -347,12 +341,13 @@ mod tests {
             "denylist": ["curl"], "rejected_code": 405, "rejected_msg": "go away"
         })))
         .unwrap();
-        let err = plugin
-            .execute(test_context(Some("curl/8.1.2")), &HashMap::new())
+        let out = plugin
+            .execute(test_context(Some("curl/8.1.2")))
             .await
-            .unwrap_err();
-        assert_eq!(err.context.response.status_code, 405);
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 405);
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["message"], "go away");
     }
 
@@ -362,12 +357,12 @@ mod tests {
             "denylist": ["curl"], "rejected_msg": "blocked {{request.method}}"
         })))
         .unwrap();
-        let err = plugin
-            .execute(test_context(Some("curl/8.1.2")), &HashMap::new())
+        let out = plugin
+            .execute(test_context(Some("curl/8.1.2")))
             .await
-            .unwrap_err();
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["message"], "blocked GET");
-        assert_eq!(err.error.message, "blocked GET");
     }
 }
