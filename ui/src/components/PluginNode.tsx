@@ -6,10 +6,12 @@
  * @module components/PluginNode
  */
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { Link2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Link2 } from 'lucide-react';
 import { getPluginMeta } from '../pluginMeta';
 import { isEntryType, resolveOutputs } from '../nodeKinds';
-import type { PortDecl, PortSpec } from '../types';
+import { SupernodePreview } from './SupernodePreview';
+import type { PortSpecLookup } from '../portSpecs';
+import type { PortDecl, PortSpec, Supernode } from '../types';
 
 /**
  * Data payload stored on every `pluginNode` ReactFlow node. GraphCanvas
@@ -38,6 +40,14 @@ export interface PluginNodeData {
   onSelect?: (nodeId: string) => void;
   /** When false, ports render as bare handles with hover tooltips; default true renders labeled rows. */
   showPortNames?: boolean;
+  /** Resolved supernode definition for `supernode` nodes; undefined = unresolved (stale/missing reference). */
+  supernodeDef?: Supernode;
+  /** Catalog port-spec lookup, threaded to the expanded preview's inner nodes (supernode nodes only). */
+  portSpecs?: PortSpecLookup;
+  /** Whether this supernode instance is expanded to its inline preview. */
+  expanded?: boolean;
+  /** Called with the node id when the expand/fold chevron is clicked (supernode nodes only). */
+  onToggleExpand?: (nodeId: string) => void;
   /** Index signature required by ReactFlow's node data constraint. */
   [key: string]: unknown;
 }
@@ -119,6 +129,7 @@ export function PluginNode({ id, data, selected }: NodeProps) {
   const isEntry = isEntryType(nodeData.pluginType);
   const outputs: PortDecl[] = resolveOutputs(nodeData.pluginType, nodeData.ports);
   const showNames = nodeData.showPortNames !== false;
+  const isSupernode = nodeData.pluginType === 'supernode';
 
   return (
     <div
@@ -158,6 +169,20 @@ export function PluginNode({ id, data, selected }: NodeProps) {
         >
           {nodeData.pluginType}
         </span>
+        {isSupernode && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              nodeData.onToggleExpand?.(id);
+            }}
+            aria-label={nodeData.expanded ? 'Collapse supernode preview' : 'Expand supernode preview'}
+            title={nodeData.expanded ? 'Fold preview' : 'Preview contents'}
+            className="flex items-center justify-center"
+            style={{ marginLeft: 'auto', width: 18, height: 18, color: '#fff', opacity: 0.9, background: 'transparent' }}
+          >
+            {nodeData.expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </button>
+        )}
       </div>
 
       {/* Body */}
@@ -246,6 +271,33 @@ export function PluginNode({ id, data, selected }: NodeProps) {
             />
           ))}
         </>
+      )}
+
+      {/* Expanded supernode preview. Sits BELOW the port rows so the
+          in/success/error handles barely move on expand — @xyflow re-anchors
+          edges off DOM layout either way. nowheel/nopan/nodrag isolate
+          preview events from the outer canvas; stopPropagation keeps a
+          preview click from opening the inspector. */}
+      {isSupernode && nodeData.expanded && (
+        <div
+          data-testid="supernode-preview"
+          className="nowheel nopan nodrag"
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            width: 480,
+            height: 320,
+            borderTop: '1px solid var(--border)',
+            borderRadius: '0 0 6px 6px',
+            overflow: 'hidden',
+            background: 'var(--bg-canvas)',
+          }}
+        >
+          <SupernodePreview
+            name={typeof nodeData.config?.name === 'string' ? nodeData.config.name : undefined}
+            supernode={nodeData.supernodeDef}
+            portSpecs={nodeData.portSpecs ?? {}}
+          />
+        </div>
       )}
     </div>
   );
