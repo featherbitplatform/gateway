@@ -128,8 +128,15 @@ export function PluginNode({ id, data, selected }: NodeProps) {
   // can't independently drift on what counts as an output.
   const isEntry = isEntryType(nodeData.pluginType);
   const outputs: PortDecl[] = resolveOutputs(nodeData.pluginType, nodeData.ports);
-  const showNames = nodeData.showPortNames !== false;
   const isSupernode = nodeData.pluginType === 'supernode';
+  const isExpanded = isSupernode && nodeData.expanded;
+  // The absolute/evenly-spaced handle layout (showNames === false) assumes a
+  // fixed card height; expanding adds 320px of preview below the ports, which
+  // would slide those handles down into the preview area. Force the
+  // labeled-rows layout whenever expanded so handles stay anchored to their
+  // rows regardless of the show-port-names preference. Collapsed nodes and
+  // non-supernodes are unaffected.
+  const showNames = nodeData.showPortNames !== false || isExpanded;
 
   return (
     <div
@@ -142,7 +149,9 @@ export function PluginNode({ id, data, selected }: NodeProps) {
         borderRadius: 'var(--radius-md)',
         boxShadow: selected
           ? '0 0 0 3px var(--accent-soft), var(--shadow-md)'
-          : 'var(--shadow-sm)',
+          : isExpanded
+            ? 'var(--shadow-md)'
+            : 'var(--shadow-sm)',
         transition:
           'border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out)',
       }}
