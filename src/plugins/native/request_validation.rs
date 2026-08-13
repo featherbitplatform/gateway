@@ -210,10 +210,7 @@ impl Plugin for RequestValidationPlugin {
         "request-validation"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         if let Some(validator) = &self.header_schema {
             let headers: serde_json::Map<String, serde_json::Value> = ctx
                 .request
@@ -252,7 +249,8 @@ impl Plugin for RequestValidationPlugin {
                 match serde_json::from_slice::<serde_json::Value>(&ctx.request.body) {
                     Ok(v) => (v, true),
                     Err(e) => {
-                        return self.reject(ctx, format!("failed to decode the request body: {}", e));
+                        return self
+                            .reject(ctx, format!("failed to decode the request body: {}", e));
                     }
                 }
             };

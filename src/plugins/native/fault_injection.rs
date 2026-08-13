@@ -306,10 +306,7 @@ impl Plugin for FaultInjectionPlugin {
         "fault-injection"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         if let Some(delay) = &self.delay {
             if sample_hit(delay.percentage) && vars_match(&delay.vars, &ctx) {
                 tokio::time::sleep(delay.duration).await;

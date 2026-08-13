@@ -263,10 +263,7 @@ impl Plugin for JweDecryptPlugin {
         "jwe-decrypt"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Fetch the token, stripping a Bearer prefix (case-insensitive).
         let raw = ctx
             .request

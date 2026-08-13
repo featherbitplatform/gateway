@@ -131,10 +131,7 @@ impl Plugin for RedirectPlugin {
         "redirect"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let (new_uri, ret_code) = if self.http_to_https {
             // Honor x-forwarded-proto from an outer proxy, like APISIX.
             let scheme = ctx
@@ -264,10 +261,7 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("/old/path"))
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("/old/path")).await.unwrap();
         assert_eq!(result.port, Some("redirect"));
         let ctx = result.context;
         assert_eq!(ctx.response.status_code, 302); // default ret_code
@@ -301,10 +295,7 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("/p"))
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("/p")).await.unwrap();
         assert_eq!(
             result.context.response.headers.get("location"),
             Some(&vec!["http://x/p".to_string()])
@@ -319,10 +310,7 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("/old"))
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("/old")).await.unwrap();
         assert_eq!(result.port, Some("redirect"));
         assert_eq!(result.context.response.status_code, 301);
     }
@@ -364,10 +352,7 @@ mod tests {
         );
 
         // No query params: nothing appended.
-        let result = plugin
-            .execute(test_context("/old"))
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("/old")).await.unwrap();
         assert_eq!(result.port, Some("redirect"));
         assert_eq!(
             result.context.response.headers.get("location"),

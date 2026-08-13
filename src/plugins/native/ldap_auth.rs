@@ -245,10 +245,7 @@ impl Plugin for LdapAuthPlugin {
         "ldap-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let auth_header = ctx
             .request
             .headers
@@ -473,7 +470,10 @@ mod tests {
             "base_dn".to_string(),
             serde_json::json!("dc=example,dc=org"),
         );
-        cfg.insert("ldap_uri".to_string(), serde_json::json!("ldap://127.0.0.1:1"));
+        cfg.insert(
+            "ldap_uri".to_string(),
+            serde_json::json!("ldap://127.0.0.1:1"),
+        );
         cfg.insert("timeout_ms".to_string(), serde_json::json!(500));
         let plugin = LdapAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
 

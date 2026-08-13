@@ -156,10 +156,7 @@ impl Plugin for AzureFunctionsPlugin {
         "azure-functions"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let request = match self.build_request(&ctx) {
             Ok(req) => req,
             Err(message) => return Err(reject(ctx, 502, message)),

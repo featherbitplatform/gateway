@@ -182,10 +182,7 @@ impl Plugin for RefererRestrictionPlugin {
         "referer-restriction"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let host = ctx
             .request
             .headers

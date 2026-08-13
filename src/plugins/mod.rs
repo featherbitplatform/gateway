@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::context::{Context, GatewayError};
-use resources::PluginResources;
 use ports::PortSpec;
+use resources::PluginResources;
 
 /// The result of a successful plugin execution.
 #[derive(Debug)]
@@ -30,12 +30,18 @@ pub struct PluginOutput {
 impl PluginOutput {
     /// The normal exit: continue through the `success` port.
     pub fn success(context: Context) -> Self {
-        Self { context, port: None }
+        Self {
+            context,
+            port: None,
+        }
     }
 
     /// Exit through a declared named `outcome` port (e.g. `"denied"`).
     pub fn on_port(context: Context, port: &'static str) -> Self {
-        Self { context, port: Some(port) }
+        Self {
+            context,
+            port: Some(port),
+        }
     }
 }
 
@@ -459,13 +465,21 @@ pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
         "redirect" => Some(&ports::REDIRECT_SPEC),
         "fault-injection" => Some(&ports::FAULT_INJECTION_SPEC),
         "key-auth" | "basic-auth" | "jwt-auth" | "hmac-auth" | "jwe-decrypt" | "multi-auth"
-        | "ldap-auth" | "dingtalk-auth" | "feishu-auth" | "forward-auth" | "opa"
-        | "wolf-rbac" => Some(&ports::AUTH_SPEC),
+        | "ldap-auth" | "dingtalk-auth" | "feishu-auth" | "forward-auth" | "opa" | "wolf-rbac" => {
+            Some(&ports::AUTH_SPEC)
+        }
         "cas-auth" | "openid-connect" | "authz-casdoor" => Some(&ports::INTERACTIVE_AUTH_SPEC),
         "authz-casbin" | "authz-keycloak" => Some(&ports::AUTH_SPEC),
-        "acl" | "ip-restriction" | "ua-restriction" | "referer-restriction"
-        | "consumer-restriction" | "uri-blocker" | "csrf" | "request-size-limit"
-        | "request-validation" | "oas-validator" => Some(&ports::DENY_SPEC),
+        "acl"
+        | "ip-restriction"
+        | "ua-restriction"
+        | "referer-restriction"
+        | "consumer-restriction"
+        | "uri-blocker"
+        | "csrf"
+        | "request-size-limit"
+        | "request-validation"
+        | "oas-validator" => Some(&ports::DENY_SPEC),
         "rate-limit" | "limit-conn" | "limit-count" => Some(&ports::LIMIT_SPEC),
         "api-breaker" => Some(&ports::BREAKER_SPEC),
         "workflow" => Some(&ports::WORKFLOW_SPEC),

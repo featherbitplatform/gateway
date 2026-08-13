@@ -303,7 +303,10 @@ policies:
         )
         .unwrap();
         let err = validate_gateway_config(&broken).unwrap_err();
-        assert!(err.contains("denied") && err.contains("must be wired"), "{err}");
+        assert!(
+            err.contains("denied") && err.contains("must be wired"),
+            "{err}"
+        );
     }
 
     #[test]

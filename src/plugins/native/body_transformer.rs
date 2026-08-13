@@ -245,10 +245,7 @@ impl Plugin for BodyTransformerPlugin {
         "body-transformer"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         if let Some(template) = &self.request {
             let parsed = match parse_body(&ctx.request.body) {
                 Ok(v) => v,

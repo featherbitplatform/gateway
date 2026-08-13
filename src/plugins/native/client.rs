@@ -19,10 +19,7 @@ impl Plugin for ClientPlugin {
         "client"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         Ok(PluginOutput::success(ctx))
     }
 }

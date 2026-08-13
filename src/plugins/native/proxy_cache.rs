@@ -288,10 +288,7 @@ impl Plugin for ProxyCachePlugin {
         "proxy-cache"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Non-cacheable methods bypass the cache entirely in both phases.
         if !self.method_cacheable(&ctx) {
             return Ok(PluginOutput::success(ctx));
@@ -436,7 +433,10 @@ mod tests {
 
         // Cold lookup → miss (passes through).
         let miss = l.execute(ctx("GET")).await.unwrap();
-        assert!(miss.port.is_none(), "cold lookup should miss and pass through");
+        assert!(
+            miss.port.is_none(),
+            "cold lookup should miss and pass through"
+        );
 
         // Upstream produced a 200 body → store caches it.
         let mut resp = ctx("GET");
@@ -478,6 +478,9 @@ mod tests {
         s.execute(resp).await.unwrap();
 
         let out = l.execute(ctx("POST")).await.unwrap();
-        assert!(out.port.is_none(), "non-cacheable method must never hit the cache");
+        assert!(
+            out.port.is_none(),
+            "non-cacheable method must never hit the cache"
+        );
     }
 }

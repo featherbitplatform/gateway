@@ -481,9 +481,10 @@ impl OpenidConnectPlugin {
         &self,
         token: &str,
     ) -> Result<HashMap<String, serde_json::Value>, TokenError> {
-        let endpoint = self.introspection_endpoint.as_ref().ok_or_else(|| {
-            TokenError::Infra("no introspection endpoint configured".to_string())
-        })?;
+        let endpoint = self
+            .introspection_endpoint
+            .as_ref()
+            .ok_or_else(|| TokenError::Infra("no introspection endpoint configured".to_string()))?;
         let client_id = self.client_id.as_deref().unwrap_or("");
         let client_secret = self.client_secret.as_deref().unwrap_or("");
         let basic = BASE64_STANDARD.encode(format!("{}:{}", client_id, client_secret));
@@ -1408,10 +1409,7 @@ impl Plugin for OpenidConnectPlugin {
         "openid-connect"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Strip any client-supplied userinfo header before authentication.
         ctx.request.headers.remove("x-userinfo");
 
@@ -1941,13 +1939,14 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         let c = cfg(&[("jwks_uri", serde_json::json!("https://idp/jwks"))]);
         let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
 
-        let out = plugin
-            .execute(req_ctx("/", HashMap::new()))
-            .await
-            .unwrap();
+        let out = plugin.execute(req_ctx("/", HashMap::new())).await.unwrap();
         assert_eq!(out.port, Some("denied"));
         assert_eq!(out.context.response.status_code, 401);
-        assert!(out.context.response.headers.contains_key("www-authenticate"));
+        assert!(out
+            .context
+            .response
+            .headers
+            .contains_key("www-authenticate"));
     }
 
     /// Regression: before the port split, every failure (deliberate or
@@ -2045,7 +2044,10 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
                 "token_endpoint",
                 serde_json::json!("http://127.0.0.1:1/token"),
             ),
-            ("jwks_uri", serde_json::json!("https://idp.example.com/jwks")),
+            (
+                "jwks_uri",
+                serde_json::json!("https://idp.example.com/jwks"),
+            ),
             ("bearer_only", serde_json::json!(false)),
             ("client_id", serde_json::json!("app")),
             ("client_secret", serde_json::json!("s")),
@@ -2062,9 +2064,11 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
 
     #[tokio::test]
     async fn test_interactive_begin_login_redirects() {
-        let plugin =
-            OpenidConnectPlugin::from_config(&interactive_explicit_cfg(), &PluginResources::empty())
-                .unwrap();
+        let plugin = OpenidConnectPlugin::from_config(
+            &interactive_explicit_cfg(),
+            &PluginResources::empty(),
+        )
+        .unwrap();
 
         let out = plugin
             .execute(req_ctx("/dashboard", HashMap::new()))
@@ -2101,9 +2105,11 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
 
     #[tokio::test]
     async fn test_interactive_callback_missing_flow_cookie_denied() {
-        let plugin =
-            OpenidConnectPlugin::from_config(&interactive_explicit_cfg(), &PluginResources::empty())
-                .unwrap();
+        let plugin = OpenidConnectPlugin::from_config(
+            &interactive_explicit_cfg(),
+            &PluginResources::empty(),
+        )
+        .unwrap();
 
         let mut query = HashMap::new();
         query.insert("code".to_string(), vec!["c".to_string()]);
@@ -2118,9 +2124,11 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
 
     #[tokio::test]
     async fn test_interactive_callback_state_mismatch_denied() {
-        let plugin =
-            OpenidConnectPlugin::from_config(&interactive_explicit_cfg(), &PluginResources::empty())
-                .unwrap();
+        let plugin = OpenidConnectPlugin::from_config(
+            &interactive_explicit_cfg(),
+            &PluginResources::empty(),
+        )
+        .unwrap();
         let flow = FlowState {
             state: "expected".into(),
             nonce: "nonce".into(),
@@ -2152,9 +2160,11 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
     /// folded into `denied` alongside the CSRF/state checks above.
     #[tokio::test]
     async fn test_interactive_callback_token_endpoint_unreachable_stays_on_error_port() {
-        let plugin =
-            OpenidConnectPlugin::from_config(&interactive_explicit_cfg(), &PluginResources::empty())
-                .unwrap();
+        let plugin = OpenidConnectPlugin::from_config(
+            &interactive_explicit_cfg(),
+            &PluginResources::empty(),
+        )
+        .unwrap();
         let flow = FlowState {
             state: "matching".into(),
             nonce: "nonce".into(),

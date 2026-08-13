@@ -130,10 +130,7 @@ impl Plugin for RateLimitPlugin {
         "rate-limit"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let key = match &self.key_source {
             KeySource::RemoteAddr => ctx.request.remote_addr.clone(),
             KeySource::Header(header) => ctx

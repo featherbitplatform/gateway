@@ -216,10 +216,7 @@ impl Plugin for ConsumerRestrictionPlugin {
         "consumer-restriction"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let value = ctx
             .message
             .get(self.value_key())
@@ -424,10 +421,7 @@ mod tests {
             "whitelist": ["alice"],
             "rejected_msg": "denied for {{request.method}}"
         }));
-        let out = p
-            .execute(ctx("POST", Some("mallory"), None))
-            .await
-            .unwrap();
+        let out = p.execute(ctx("POST", Some("mallory"), None)).await.unwrap();
         assert_eq!(out.port, Some("denied"));
         let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["message"], "denied for POST");

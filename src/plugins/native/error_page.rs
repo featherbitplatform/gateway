@@ -142,10 +142,7 @@ impl Plugin for ErrorPagePlugin {
         "error-page"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Only gateway-generated responses are intercepted (APISIX skips
         // responses sourced from the upstream).
         let gateway_generated = !ctx.errors.is_empty();
@@ -224,10 +221,7 @@ mod tests {
                 "content_type": "application/json"
             }
         }));
-        let out = p
-            .execute(test_context(502, true))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, true)).await.unwrap();
         assert_eq!(
             out.context.response.body.as_ref(),
             b"{\"error\": \"bad gateway\"}"
@@ -243,10 +237,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_page_default_body_and_content_type() {
         let p = plugin(serde_json::json!({ "error_503": {} }));
-        let out = p
-            .execute(test_context(503, true))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(503, true)).await.unwrap();
         let body = String::from_utf8(out.context.response.body.to_vec()).unwrap();
         assert!(body.contains("<h1>503 Service Unavailable</h1>"), "{body}");
         assert!(body.contains("featherbit"));
@@ -261,10 +252,7 @@ mod tests {
         // Same 502, but no gateway errors recorded → the response came from
         // the upstream and must pass through untouched.
         let p = plugin(serde_json::json!({ "error_502": {} }));
-        let out = p
-            .execute(test_context(502, false))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, false)).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");
         assert_eq!(
             out.context.response.headers.get("content-type"),
@@ -281,10 +269,7 @@ mod tests {
                 "content_type": "application/json"
             }
         }));
-        let out = p
-            .execute(test_context(503, true))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(503, true)).await.unwrap();
         assert_eq!(
             out.context.response.body.as_ref(),
             b"{\"error\": \"unavailable\", \"path\": \"/test\"}"
@@ -314,18 +299,12 @@ mod tests {
     async fn test_error_page_skips_unconfigured_status() {
         let p = plugin(serde_json::json!({ "error_502": {} }));
         // 500 is a supported status but has no configured page here.
-        let out = p
-            .execute(test_context(500, true))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(500, true)).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");
 
         // Non-error statuses always pass through.
         let p = plugin(serde_json::json!({ "error_502": {} }));
-        let out = p
-            .execute(test_context(200, true))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(200, true)).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");
     }
 

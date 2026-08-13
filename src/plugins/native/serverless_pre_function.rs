@@ -150,10 +150,7 @@ impl Plugin for ServerlessPreFunctionPlugin {
         self.runner.plugin_type
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let ctx = self.runner.run(ctx)?;
         Ok(PluginOutput::success(ctx))
     }
@@ -260,10 +257,7 @@ mod tests {
             "function execute(ctx)\n  error(\"boom\")\n  return ctx\nend"
         ])))
         .unwrap();
-        let err = p
-            .execute(test_context())
-            .await
-            .unwrap_err();
+        let err = p.execute(test_context()).await.unwrap_err();
         assert_eq!(err.error.code, "LUA_EXECUTION_ERROR");
     }
 }

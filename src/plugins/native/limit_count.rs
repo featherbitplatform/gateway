@@ -212,10 +212,7 @@ impl Plugin for LimitCountPlugin {
         "limit-count"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let key = self.resolve_key(&ctx);
 
         let result = match self
@@ -438,11 +435,7 @@ mod tests {
             "count": 5, "time_window": 60, "show_limit_quota_header": false
         }))
         .unwrap();
-        let ctx = p
-            .execute(test_ctx())
-            .await
-            .unwrap()
-            .context;
+        let ctx = p.execute(test_ctx()).await.unwrap().context;
         assert!(!ctx.response.headers.contains_key("x-ratelimit-limit"));
     }
 }

@@ -312,10 +312,7 @@ impl Plugin for ZipkinPlugin {
         "zipkin"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         match self.phase {
             Phase::Start => self.run_start(&mut ctx),
             Phase::End => self.run_end(&ctx),

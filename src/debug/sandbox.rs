@@ -292,8 +292,8 @@ pub fn synthesize_policy(
     let already_wired: std::collections::HashSet<String> =
         edges.iter().map(|e| e.from.clone()).collect();
     for n in &user_nodes {
-        let spec = crate::plugins::port_spec(&n.node_type)
-            .unwrap_or(&crate::plugins::ports::DEFAULT_SPEC);
+        let spec =
+            crate::plugins::port_spec(&n.node_type).unwrap_or(&crate::plugins::ports::DEFAULT_SPEC);
         for p in spec.outputs {
             if matches!(p.kind, crate::plugins::ports::PortKind::Error) {
                 continue;

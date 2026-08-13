@@ -322,10 +322,7 @@ impl Plugin for OpenWhiskPlugin {
         "openwhisk"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let request = self.build_request(&ctx);
 
         let response: OutboundResponse = match self.client.request(request).await {

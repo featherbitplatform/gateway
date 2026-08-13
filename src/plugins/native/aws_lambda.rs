@@ -300,10 +300,7 @@ impl Plugin for AwsLambdaPlugin {
         "aws-lambda"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -773,10 +770,7 @@ mod tests {
             "function_uri": "http://127.0.0.1:1/fn",
             "timeout": 200
         }));
-        let err = p
-            .execute(ctx_with("POST", "/"))
-            .await
-            .unwrap_err();
+        let err = p.execute(ctx_with("POST", "/")).await.unwrap_err();
         assert_eq!(err.error.code, "AWS_LAMBDA_CALLOUT_ERROR");
         assert!(err.context.response.status_code >= 502);
     }

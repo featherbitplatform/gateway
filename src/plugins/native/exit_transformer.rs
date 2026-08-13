@@ -150,10 +150,7 @@ impl Plugin for ExitTransformerPlugin {
         "exit-transformer"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Gate: gateway-generated exits only, unless `always`.
         let applies = self.always || !ctx.errors.is_empty();
 
@@ -230,10 +227,7 @@ mod tests {
             "status_map": { "502": 503 },
             "body": "{\"status\": $status, \"path\": \"$uri\"}"
         }));
-        let out = p
-            .execute(test_context(502, true))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, true)).await.unwrap();
         assert_eq!(out.context.response.status_code, 503);
         // $status reflects the remapped status.
         assert_eq!(
@@ -250,10 +244,7 @@ mod tests {
             "body": "transformed"
         }));
         // 502 from the upstream itself: no gateway errors → passthrough.
-        let out = p
-            .execute(test_context(502, false))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, false)).await.unwrap();
         assert_eq!(out.context.response.status_code, 502);
         assert_eq!(out.context.response.body.as_ref(), b"original");
         assert!(out.context.response.headers.contains_key("content-length"));
@@ -265,10 +256,7 @@ mod tests {
             "status_map": { "502": 503 },
             "always": true
         }));
-        let out = p
-            .execute(test_context(502, false))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, false)).await.unwrap();
         assert_eq!(out.context.response.status_code, 503);
         // No body template configured → body untouched.
         assert_eq!(out.context.response.body.as_ref(), b"original");
@@ -280,10 +268,7 @@ mod tests {
         let p = plugin(serde_json::json!({
             "status_map": { "502": 503 }
         }));
-        let out = p
-            .execute(test_context(401, true))
-            .await
-            .unwrap();
+        let out = p.execute(test_context(401, true)).await.unwrap();
         assert_eq!(out.context.response.status_code, 401);
     }
 

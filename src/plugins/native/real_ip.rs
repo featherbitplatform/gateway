@@ -192,13 +192,8 @@ impl Plugin for RealIpPlugin {
         "real-ip"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
-        let passthrough = |ctx: Context| {
-            Ok(PluginOutput::success(ctx))
-        };
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
+        let passthrough = |ctx: Context| Ok(PluginOutput::success(ctx));
 
         // Only rewrite when the DIRECT peer is a trusted proxy.
         let direct = parse_ip_port(&ctx.request.remote_addr);

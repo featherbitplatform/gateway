@@ -151,10 +151,7 @@ impl Plugin for UaRestrictionPlugin {
         "ua-restriction"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let user_agents: Vec<&str> = ctx
             .request
             .headers
@@ -268,7 +265,10 @@ mod tests {
         })))
         .unwrap();
 
-        let out = plugin.execute(test_context(Some("curl/8.1.2"))).await.unwrap();
+        let out = plugin
+            .execute(test_context(Some("curl/8.1.2")))
+            .await
+            .unwrap();
         assert_eq!(out.port, Some("denied"));
         assert_eq!(out.context.response.status_code, 403);
 
@@ -341,7 +341,10 @@ mod tests {
             "denylist": ["curl"], "rejected_code": 405, "rejected_msg": "go away"
         })))
         .unwrap();
-        let out = plugin.execute(test_context(Some("curl/8.1.2"))).await.unwrap();
+        let out = plugin
+            .execute(test_context(Some("curl/8.1.2")))
+            .await
+            .unwrap();
         assert_eq!(out.port, Some("denied"));
         assert_eq!(out.context.response.status_code, 405);
         let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
@@ -354,7 +357,10 @@ mod tests {
             "denylist": ["curl"], "rejected_msg": "blocked {{request.method}}"
         })))
         .unwrap();
-        let out = plugin.execute(test_context(Some("curl/8.1.2"))).await.unwrap();
+        let out = plugin
+            .execute(test_context(Some("curl/8.1.2")))
+            .await
+            .unwrap();
         assert_eq!(out.port, Some("denied"));
         let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["message"], "blocked GET");

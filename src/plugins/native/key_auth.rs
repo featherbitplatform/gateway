@@ -149,10 +149,7 @@ impl Plugin for KeyAuthPlugin {
         "key-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Try header first
         let key = ctx
             .request
@@ -289,10 +286,7 @@ mod tests {
         let mut config = HashMap::new();
         config.insert("use_consumers".to_string(), serde_json::json!(true));
         let plugin = KeyAuthPlugin::from_config(&config, &resources).unwrap();
-        let out = plugin
-            .execute(ctx_with_key(Some("wrong")))
-            .await
-            .unwrap();
+        let out = plugin.execute(ctx_with_key(Some("wrong"))).await.unwrap();
         assert_eq!(out.port, Some("denied"));
         assert_eq!(out.context.response.status_code, 401);
         assert_eq!(
@@ -306,10 +300,7 @@ mod tests {
         config.insert("use_consumers".to_string(), serde_json::json!(true));
         config.insert("anonymous_consumer".to_string(), serde_json::json!("guest"));
         let plugin = KeyAuthPlugin::from_config(&config, &resources).unwrap();
-        let result = plugin
-            .execute(ctx_with_key(None))
-            .await
-            .unwrap();
+        let result = plugin.execute(ctx_with_key(None)).await.unwrap();
         assert_eq!(
             result.context.message.get("consumer.name"),
             Some(&serde_json::json!("guest"))
@@ -321,15 +312,9 @@ mod tests {
         let mut config = HashMap::new();
         config.insert("keys".to_string(), serde_json::json!(["k1"]));
         let plugin = KeyAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
-        let ok = plugin
-            .execute(ctx_with_key(Some("k1")))
-            .await
-            .unwrap();
+        let ok = plugin.execute(ctx_with_key(Some("k1"))).await.unwrap();
         assert_eq!(ok.port, None);
-        let out = plugin
-            .execute(ctx_with_key(Some("k2")))
-            .await
-            .unwrap();
+        let out = plugin.execute(ctx_with_key(Some("k2"))).await.unwrap();
         assert_eq!(out.port, Some("denied"));
     }
 

@@ -98,10 +98,7 @@ impl Plugin for RequestIdPlugin {
         "request-id"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let header_name = self.header_name.render(&ctx).to_lowercase();
 
         // Keep a client-supplied id; generate one otherwise (APISIX rewrite phase).
@@ -160,10 +157,7 @@ mod tests {
     #[tokio::test]
     async fn test_request_id_generates_uuid_when_absent() {
         let plugin = RequestIdPlugin::from_config(&HashMap::new()).unwrap();
-        let result = plugin
-            .execute(test_context())
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context()).await.unwrap();
         let ctx = result.context;
 
         let req_id = &ctx.request.headers.get("x-request-id").unwrap()[0];
@@ -219,10 +213,7 @@ mod tests {
             serde_json::json!("X-Correlation-Id"),
         );
         let plugin = RequestIdPlugin::from_config(&config).unwrap();
-        let result = plugin
-            .execute(test_context())
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context()).await.unwrap();
         assert!(result
             .context
             .request
@@ -235,10 +226,7 @@ mod tests {
         let mut config = HashMap::new();
         config.insert("include_in_response".to_string(), serde_json::json!(false));
         let plugin = RequestIdPlugin::from_config(&config).unwrap();
-        let result = plugin
-            .execute(test_context())
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context()).await.unwrap();
         assert!(!result.context.response.headers.contains_key("x-request-id"));
     }
 

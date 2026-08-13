@@ -346,24 +346,17 @@ impl Plugin for TrafficSplitPlugin {
         "traffic-split"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // No rule matched → fall through to the route's normal upstream.
         let rule = match self.select_rule(&ctx) {
             Some(rule) => rule,
-            None => {
-                return Ok(PluginOutput::success(ctx))
-            }
+            None => return Ok(PluginOutput::success(ctx)),
         };
 
         let slot = rule.pick_slot();
         let targets = match &slot.targets {
             // Default slot → fall through to the normal upstream (success port).
-            None => {
-                return Ok(PluginOutput::success(ctx))
-            }
+            None => return Ok(PluginOutput::success(ctx)),
             Some(targets) => targets,
         };
 
@@ -542,10 +535,7 @@ mod tests {
         }))
         .unwrap();
         // canary != yes → no rule matches → Ok passthrough, no proxy attempt.
-        let out = p
-            .execute(test_ctx(Some("no")))
-            .await
-            .unwrap();
+        let out = p.execute(test_ctx(Some("no"))).await.unwrap();
         assert!(out.port.is_none());
         assert_eq!(out.context.response.status_code, 0);
     }
@@ -583,17 +573,16 @@ mod tests {
     async fn test_target_slot_proxies_and_exits_on_routed_port() {
         let port = spawn_status_server("200 OK", "canary-response").await;
         let resources = PluginResources::empty();
-        let mut config: HashMap<String, serde_json::Value> = serde_json::from_value(
-            serde_json::json!({
+        let mut config: HashMap<String, serde_json::Value> =
+            serde_json::from_value(serde_json::json!({
                 "rules": [{
                     "weighted_upstreams": [{
                         "upstream": { "targets": [{ "host": "127.0.0.1", "port": port }] },
                         "weight": 1
                     }]
                 }]
-            }),
-        )
-        .unwrap();
+            }))
+            .unwrap();
         config.insert("timeout_ms".to_string(), serde_json::json!(2000));
         let p = TrafficSplitPlugin::from_config(&config, &resources).unwrap();
 
@@ -611,17 +600,16 @@ mod tests {
     #[tokio::test]
     async fn test_target_unreachable_stays_err() {
         let resources = PluginResources::empty();
-        let mut config: HashMap<String, serde_json::Value> = serde_json::from_value(
-            serde_json::json!({
+        let mut config: HashMap<String, serde_json::Value> =
+            serde_json::from_value(serde_json::json!({
                 "rules": [{
                     "weighted_upstreams": [{
                         "upstream": { "targets": [{ "host": "127.0.0.1", "port": 1 }] },
                         "weight": 1
                     }]
                 }]
-            }),
-        )
-        .unwrap();
+            }))
+            .unwrap();
         config.insert("timeout_ms".to_string(), serde_json::json!(500));
         let p = TrafficSplitPlugin::from_config(&config, &resources).unwrap();
 

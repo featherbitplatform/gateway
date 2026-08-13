@@ -182,10 +182,7 @@ impl Plugin for DegraphqlPlugin {
         "degraphql"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         if ctx.request.method != "GET" && ctx.request.method != "POST" {
             let method = ctx.request.method.clone();
             return Err(self.fail(
@@ -402,10 +399,7 @@ mod tests {
         config.insert("operation_name".to_string(), serde_json::json!("List"));
         let p = DegraphqlPlugin::from_config(&config).unwrap();
 
-        let out = p
-            .execute(test_context("GET", ""))
-            .await
-            .unwrap();
+        let out = p.execute(test_context("GET", "")).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(body["query"], "{ persons { id } }");
         assert_eq!(body["operationName"], "List");
@@ -415,10 +409,7 @@ mod tests {
     #[tokio::test]
     async fn test_degraphql_rejects_other_methods() {
         let p = plugin(None);
-        let err = p
-            .execute(test_context("DELETE", ""))
-            .await
-            .unwrap_err();
+        let err = p.execute(test_context("DELETE", "")).await.unwrap_err();
         assert_eq!(err.error.code, "METHOD_NOT_ALLOWED");
         assert_eq!(err.context.response.status_code, 405);
     }

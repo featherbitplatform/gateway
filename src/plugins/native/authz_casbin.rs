@@ -231,10 +231,7 @@ impl Plugin for AuthzCasbinPlugin {
         "authz-casbin"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let subject = self.subject(&ctx);
         let object = ctx.request.path.clone();
         let action = ctx.request.method.clone();
@@ -321,9 +318,7 @@ g, alice, admin
             AuthzCasbinPlugin::from_config(&inline_config(), &PluginResources::empty()).unwrap();
         // alice -> admin, admin can GET /data
         let out = plugin
-            .execute(
-                ctx_for("GET", "/data", Some("alice"), None),
-            )
+            .execute(ctx_for("GET", "/data", Some("alice"), None))
             .await;
         assert!(out.is_ok());
     }
@@ -334,9 +329,7 @@ g, alice, admin
             AuthzCasbinPlugin::from_config(&inline_config(), &PluginResources::empty()).unwrap();
         // consumer identity wins over header; alice is admin
         let out = plugin
-            .execute(
-                ctx_for("GET", "/data", Some("nobody"), Some("alice")),
-            )
+            .execute(ctx_for("GET", "/data", Some("nobody"), Some("alice")))
             .await;
         assert!(out.is_ok());
     }
@@ -360,9 +353,7 @@ g, alice, admin
             AuthzCasbinPlugin::from_config(&inline_config(), &PluginResources::empty()).unwrap();
         // admin can GET /data but not POST it
         let out = plugin
-            .execute(
-                ctx_for("POST", "/data", Some("alice"), None),
-            )
+            .execute(ctx_for("POST", "/data", Some("alice"), None))
             .await
             .unwrap();
         assert_eq!(out.port, Some("denied"));

@@ -173,10 +173,7 @@ impl Plugin for ProxyMirrorPlugin {
         "proxy-mirror"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         if self.should_mirror() {
             // Build everything the detached task needs, then spawn it. The
             // mirror never blocks or affects the request path: its response
