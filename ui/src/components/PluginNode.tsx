@@ -8,6 +8,8 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { Link2 } from 'lucide-react';
 import { getPluginMeta } from '../pluginMeta';
+import { isEntryType, resolveOutputs } from '../nodeKinds';
+import type { PortDecl, PortSpec } from '../types';
 
 /**
  * Data payload stored on every `pluginNode` ReactFlow node. GraphCanvas
@@ -23,11 +25,29 @@ export interface PluginNodeData {
   config: Record<string, unknown>;
   /** Optional name of a shared plugin config this node inherits from. */
   configRef?: string;
+  /**
+   * Declared ports for this node's plugin type, from the `GET /api/plugins`
+   * catalog (GraphCanvas looks this up by `pluginType` when building nodes).
+   * Undefined for supernode boundary pseudo-nodes and any type missing from
+   * the catalog; PluginNode resolves the effective outputs via
+   * {@link module:nodeKinds.resolveOutputs}, which applies the entry/terminal
+   * special cases and the default success+error fallback.
+   */
+  ports?: PortSpec;
   /** Called with the node id when the node is clicked; used by GraphCanvas to open the inspector. */
   onSelect?: (nodeId: string) => void;
+  /** When false, ports render as bare handles with hover tooltips; default true renders labeled rows. */
+  showPortNames?: boolean;
   /** Index signature required by ReactFlow's node data constraint. */
   [key: string]: unknown;
 }
+
+/** Stroke/handle color for each port kind. */
+const PORT_COLOR: Record<PortDecl['kind'], string> = {
+  success: 'var(--success)',
+  outcome: 'var(--accent)',
+  error: 'var(--error)',
+};
 
 /**
  * Builds the inline style for a connection handle dot.
@@ -43,24 +63,48 @@ const handleStyle = (color: string): React.CSSProperties => ({
   boxShadow: `0 0 6px ${color}`,
 });
 
+/** One port row: relative so its Handle anchors to the row, not the node. */
+const portRowStyle = (align: 'left' | 'right'): React.CSSProperties => ({
+  position: 'relative',
+  height: 18,
+  lineHeight: '18px',
+  padding: '0 10px',
+  textAlign: align,
+  fontFamily: 'var(--font-mono)',
+  fontSize: 'var(--text-2xs)',
+  color: 'var(--text-muted)',
+  whiteSpace: 'nowrap',
+});
+
 /**
  * Renders one plugin node on the canvas.
  *
- * Handle layout encodes the port model:
+ * Handle layout encodes the port model (see `../nodeKinds` for the shared
+ * entry/terminal classification and output resolution):
  * - `in` (left, target) — omitted on entry-like nodes (`listener`, `input`).
- * - `success` (right, source) — omitted on terminal-like nodes (`client`, `output`, `error`);
- *   centered on entry-like nodes, otherwise paired with the error handle.
- * - `error` (right, source, lower) — only on regular plugin nodes, i.e.
- *   neither entry-like nor terminal-like.
+ * - Outputs (right, source) — omitted on terminal-like nodes (`client`, `output`,
+ *   `error`, none of which get a `success` output either); a single `success`
+ *   handle on entry-like nodes (`listener` reads its own catalog spec, which
+ *   happens to be exactly one `success` port; the non-catalog `input`
+ *   pseudo-node uses a hard-coded fallback of the same shape); otherwise one
+ *   handle per port declared in `data.ports.outputs` (falling back to the
+ *   default success+error pair when the type has no catalog entry), colored
+ *   by {@link PortDecl.kind}. When `data.showPortNames` is not `false`
+ *   (the default), each port renders as a labeled row inside the node body,
+ *   with its handle centered on the row; otherwise handles fall back to the
+ *   previous evenly-spaced absolute placement with only a hover tooltip.
  *
  * Clicking the node invokes `data.onSelect(id)`; selection is shown with an
  * accent border and ring.
  *
  * @remarks
- * These handle ids are the ports serialized as `node_id.port` edge endpoints,
- * matching the success/error routing executed in src/graph/engine.rs.
- * Entry-like and terminal-like nodes are part of the supernode boundary
- * pseudo-nodes (src/graph/expand.rs) alongside listener/client.
+ * Handle ids are the ports serialized as `node_id.port` edge endpoints,
+ * matching the success/outcome/error routing executed in src/graph/engine.rs
+ * and declared in src/plugins/ports.rs. `input`/`output`/`error` are the
+ * supernode boundary pseudo-nodes (src/graph/expand.rs) alongside
+ * listener/client; they are not catalog types, so their handle counts fall
+ * back to the hard-coded shapes in `../nodeKinds` rather than reading
+ * `data.ports`.
  */
 export function PluginNode({ id, data, selected }: NodeProps) {
   const nodeData = data as unknown as PluginNodeData;
@@ -69,11 +113,12 @@ export function PluginNode({ id, data, selected }: NodeProps) {
   // Entry-like nodes have no input handle; terminal-like nodes have no
   // outputs. `input`/`output`/`error` are supernode boundary pseudo-nodes
   // (see src/graph/expand.rs) and mirror listener/client on the canvas.
-  const isEntry = nodeData.pluginType === 'listener' || nodeData.pluginType === 'input';
-  const isTerminal =
-    nodeData.pluginType === 'client' ||
-    nodeData.pluginType === 'output' ||
-    nodeData.pluginType === 'error';
+  // This classification (and the output-port resolution below) is shared
+  // with GraphCanvas's unwired-port save check via ../nodeKinds, so the two
+  // can't independently drift on what counts as an output.
+  const isEntry = isEntryType(nodeData.pluginType);
+  const outputs: PortDecl[] = resolveOutputs(nodeData.pluginType, nodeData.ports);
+  const showNames = nodeData.showPortNames !== false;
 
   return (
     <div
@@ -144,37 +189,63 @@ export function PluginNode({ id, data, selected }: NodeProps) {
         </div>
       )}
 
-      {/* Input handle — not on entry-like nodes (listener, input) */}
-      {!isEntry && (
-        <Handle
-          type="target"
-          position={Position.Left}
-          id="in"
-          style={handleStyle('var(--accent)')}
-        />
-      )}
-
-      {/* Success output — not on terminal-like nodes (client, output, error) */}
-      {!isTerminal && (
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="success"
-          style={{
-            ...handleStyle('var(--success)'),
-            top: isEntry ? '50%' : '36%',
-          }}
-        />
-      )}
-
-      {/* Error output — only on regular plugin nodes */}
-      {!isEntry && !isTerminal && (
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="error"
-          style={{ ...handleStyle('var(--error)'), top: '68%' }}
-        />
+      {/* Ports. With names shown, each port is a labeled row and its handle
+          sits at the row's vertical centre — @xyflow anchors edges off DOM
+          layout, so rows and handles stay aligned however tall the header
+          and body grow. With names hidden, handles keep the previous
+          evenly-spaced absolute placement. */}
+      {showNames ? (
+        <div style={{ borderTop: '1px solid var(--border)', padding: '4px 0' }}>
+          {!isEntry && (
+            <div style={portRowStyle('left')}>
+              <Handle
+                type="target"
+                position={Position.Left}
+                id="in"
+                title={nodeData.ports?.input ?? undefined}
+                style={{ ...handleStyle('var(--accent)'), top: '50%' }}
+              />
+              in
+            </div>
+          )}
+          {outputs.map((p) => (
+            <div key={p.name} style={portRowStyle('right')}>
+              {p.name}
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={p.name}
+                title={`${p.name} — ${p.description}`}
+                style={{ ...handleStyle(PORT_COLOR[p.kind]), top: '50%' }}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          {!isEntry && (
+            <Handle
+              type="target"
+              position={Position.Left}
+              id="in"
+              title={nodeData.ports?.input ?? undefined}
+              style={handleStyle('var(--accent)')}
+            />
+          )}
+          {outputs.map((p, i) => (
+            <Handle
+              key={p.name}
+              type="source"
+              position={Position.Right}
+              id={p.name}
+              title={`${p.name} — ${p.description}`}
+              style={{
+                ...handleStyle(PORT_COLOR[p.kind]),
+                top: `${outputs.length === 1 ? 50 : 25 + (i * 50) / (outputs.length - 1)}%`,
+              }}
+            />
+          ))}
+        </>
       )}
     </div>
   );

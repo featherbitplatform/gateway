@@ -5,7 +5,7 @@ description: Block requests whose URI (path plus query string) matches any of a 
 
 <span className="plugin-chip" style={{'--chip-color': '#dc2626'}}>uri-blocker</span>
 
-Blocks requests whose request URI matches any configured `block_rules` regex. Matching requests receive a configurable status (default 403) through the node's `error` port. Place it at the front of the pipeline, before auth and upstream nodes.
+Blocks requests whose request URI matches any configured `block_rules` regex. Matching requests receive a configurable status (default 403) through the node's `denied` port. Place it at the front of the pipeline, before auth and upstream nodes.
 
 ## Configuration
 
@@ -32,8 +32,20 @@ The subject is the request path plus `?query` when query parameters exist, so a 
 
 ## Behavior
 
-A blocked request writes `rejected_code` onto `context.response` — with a JSON body `{"error_msg": rejected_msg}` (`content-type: application/json`) when `rejected_msg` is set, otherwise an empty body — and routes the Context through the `error` port with error code `URI_BLOCKED`. Non-matching requests pass through the `success` port untouched; the plugin does not write to `context.message`.
+A blocked request writes `rejected_code` onto `context.response` — with a JSON body `{"error_msg": rejected_msg}` (`content-type: application/json`) when `rejected_msg` is set, otherwise an empty body — and exits through the `denied` port. Non-matching requests pass through the `success` port untouched; the plugin does not write to `context.message`.
 
 :::note Behavior notes
 featherbit compiles each rule separately and tests them in order, giving clear per-rule config errors. The query string is rebuilt from parsed parameters (sorted `key=value` pairs) rather than the raw wire bytes, and patterns use Rust `regex` syntax, not PCRE.
 :::
+
+## Ports
+
+`uri-blocker` declares three output ports: `success`, `denied` (a rejection is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `uri-blocker.denied` straight to `client` so the prepared rejection reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: uri-blocker.success
+    to: upstream.in
+  - from: uri-blocker.denied
+    to: client.in
+```

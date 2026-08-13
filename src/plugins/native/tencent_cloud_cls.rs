@@ -320,7 +320,7 @@ impl Plugin for TencentCloudClsPlugin {
         "tencent-cloud-cls"
     }
 
-    async fn execute(&self, ctx: Context, _named_inputs: &HashMap<String, Value>) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let mut entry = build_entry(
             &ctx,
             self.log_format.as_ref(),
@@ -335,10 +335,7 @@ impl Plugin for TencentCloudClsPlugin {
             }
         }
         self.sink.push(entry);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 

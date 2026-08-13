@@ -7,9 +7,11 @@
 //! `https_port` plugin attribute).
 //!
 //! Redirecting *stops* the pipeline in featherbit terms: the plugin fills in
-//! `context.response` (status + `location`) and returns success, so the
-//! node's `success` edge should go straight to `client.in` — not through an
-//! `upstream` node, which would overwrite the response.
+//! `context.response` (status + `location`) and exits through the dedicated
+//! `redirect` output port, so the node's `redirect` edge should go straight
+//! to `client.in` — not through an `upstream` node, which would overwrite
+//! the response. Requests that don't redirect (the `http_to_https`
+//! already-secure passthrough) continue on `success`.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -24,11 +26,12 @@ use crate::vars::{interpolate, resolve};
 /// `{{namespace.path}}` references plus legacy `$var` interpolation) or the
 /// `http_to_https` shortcut.
 ///
-/// This plugin never fails at execution time. The only case where it does
-/// **not** redirect is `http_to_https` on a request that is already HTTPS
-/// (per `x-forwarded-proto` or the request scheme): the context passes
-/// through unchanged, so `http_to_https` should only be wired into routes
-/// served over plain HTTP.
+/// This plugin never fails at execution time. A prepared redirect exits on
+/// the dedicated `redirect` port. The only case where it does **not**
+/// redirect is `http_to_https` on a request that is already HTTPS (per
+/// `x-forwarded-proto` or the request scheme): the context passes through
+/// unchanged on `success`, so `http_to_https` should only be wired into
+/// routes served over plain HTTP.
 pub struct RedirectPlugin {
     /// Redirect plain-HTTP requests to `https://$host$request_uri`.
     http_to_https: bool,
@@ -128,11 +131,7 @@ impl Plugin for RedirectPlugin {
         "redirect"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let (new_uri, ret_code) = if self.http_to_https {
             // Honor x-forwarded-proto from an outer proxy, like APISIX.
             let scheme = ctx
@@ -145,10 +144,7 @@ impl Plugin for RedirectPlugin {
 
             if scheme == "https" {
                 // Already secure: pass through untouched.
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
 
             let ret_code = match ctx.request.method.as_str() {
@@ -184,10 +180,10 @@ impl Plugin for RedirectPlugin {
         ctx.response.headers.remove("content-length");
         ctx.response.headers.remove("content-encoding");
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        // The 3xx is fully prepared: exit on the dedicated `redirect` port
+        // rather than `success` (and from there into `upstream`, which would
+        // overwrite the response).
+        Ok(PluginOutput::on_port(ctx, "redirect"))
     }
 }
 
@@ -265,10 +261,8 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("/old/path"), &HashMap::new())
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("/old/path")).await.unwrap();
+        assert_eq!(result.port, Some("redirect"));
         let ctx = result.context;
         assert_eq!(ctx.response.status_code, 302); // default ret_code
         assert_eq!(
@@ -276,6 +270,20 @@ mod tests {
             Some(&vec!["https://example.com/moved/old/path".to_string()])
         );
         assert!(ctx.response.body.is_empty());
+    }
+
+    /// A matching redirect exits on the dedicated `redirect` port with the
+    /// 3xx + `location` fully prepared.
+    #[tokio::test]
+    async fn test_redirect_exits_on_redirect_port() {
+        let plugin = RedirectPlugin::from_config(&config(serde_json::json!({
+            "uri": "/new"
+        })))
+        .unwrap();
+
+        let out = plugin.execute(test_context("/old")).await.unwrap();
+        assert_eq!(out.port, Some("redirect"));
+        assert_eq!(out.context.response.status_code, 302);
     }
 
     #[tokio::test]
@@ -287,10 +295,7 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("/p"), &HashMap::new())
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("/p")).await.unwrap();
         assert_eq!(
             result.context.response.headers.get("location"),
             Some(&vec!["http://x/p".to_string()])
@@ -305,10 +310,8 @@ mod tests {
         })))
         .unwrap();
 
-        let result = plugin
-            .execute(test_context("/old"), &HashMap::new())
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("/old")).await.unwrap();
+        assert_eq!(result.port, Some("redirect"));
         assert_eq!(result.context.response.status_code, 301);
     }
 
@@ -324,7 +327,8 @@ mod tests {
         ctx.request
             .query_params
             .insert("a".to_string(), vec!["1".to_string()]);
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
+        assert_eq!(result.port, Some("redirect"));
         assert_eq!(
             result.context.response.headers.get("location"),
             Some(&vec!["/new?a=1".to_string()])
@@ -340,17 +344,16 @@ mod tests {
         ctx.request
             .query_params
             .insert("a".to_string(), vec!["1".to_string()]);
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
+        assert_eq!(result.port, Some("redirect"));
         assert_eq!(
             result.context.response.headers.get("location"),
             Some(&vec!["/new?x=y&a=1".to_string()])
         );
 
         // No query params: nothing appended.
-        let result = plugin
-            .execute(test_context("/old"), &HashMap::new())
-            .await
-            .unwrap();
+        let result = plugin.execute(test_context("/old")).await.unwrap();
+        assert_eq!(result.port, Some("redirect"));
         assert_eq!(
             result.context.response.headers.get("location"),
             Some(&vec!["/new?x=y".to_string()])
@@ -369,7 +372,8 @@ mod tests {
         ctx.request
             .query_params
             .insert("a".to_string(), vec!["1".to_string()]);
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
+        assert_eq!(result.port, Some("redirect"));
         assert_eq!(result.context.response.status_code, 301);
         assert_eq!(
             result.context.response.headers.get("location"),
@@ -379,7 +383,8 @@ mod tests {
         // Non-GET/HEAD -> 308
         let mut ctx = test_context("/path");
         ctx.request.method = "POST".to_string();
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
+        assert_eq!(result.port, Some("redirect"));
         assert_eq!(result.context.response.status_code, 308);
     }
 
@@ -393,7 +398,8 @@ mod tests {
         // Scheme https
         let mut ctx = test_context("/path");
         ctx.request.scheme = "https".to_string();
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
+        assert_eq!(result.port, None);
         assert_eq!(result.context.response.status_code, 0);
         assert!(!result.context.response.headers.contains_key("location"));
 
@@ -402,7 +408,8 @@ mod tests {
         ctx.request
             .headers
             .insert("x-forwarded-proto".to_string(), vec!["https".to_string()]);
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
+        assert_eq!(result.port, None);
         assert_eq!(result.context.response.status_code, 0);
     }
 }

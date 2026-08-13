@@ -9,11 +9,22 @@
 //!   the node config and placing the node in the graph is the enable switch.
 //! - APISIX only intercepts responses whose source is not the upstream
 //!   (`get_response_source(ctx) ~= "upstream"`). featherbit's equivalent
-//!   heuristic is `Context.errors` being non-empty — a response produced by
-//!   the gateway (error-handler, auth rejection, ...) always carries the
-//!   error record that routed it there, while a clean upstream response does
-//!   not. An upstream's own 502 therefore passes through untouched, exactly
-//!   as in APISIX.
+//!   heuristic is `Context.errors` being non-empty — a response produced by a
+//!   node that **failed** (upstream connection error, a failed IdP callout,
+//!   the error-handler that rendered it) always carries the error record that
+//!   routed it there, while a clean upstream response does not. An upstream's
+//!   own 502 therefore passes through untouched, exactly as in APISIX.
+//!
+//! ## Outcome exits are not replaced
+//!
+//! `gateway_generated` keys on the presence of an **error record**, so this
+//! node does not touch responses that arrived on an *outcome* port — a
+//! `denied` 403, a `limited` 429, a `broken` 503, an `abort`. Those are
+//! deliberate, already-formed responses and carry no error record. They also
+//! do not normally pass through here at all: an outcome port is wired straight
+//! to `client`. To style them, wire that port through a response-shaping node
+//! (`response-rewrite`, or `exit-transformer` with `always: true`) on its way
+//! to `client` instead of expecting `error-page` to catch them.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -131,11 +142,7 @@ impl Plugin for ErrorPagePlugin {
         "error-page"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Only gateway-generated responses are intercepted (APISIX skips
         // responses sourced from the upstream).
         let gateway_generated = !ctx.errors.is_empty();
@@ -155,10 +162,7 @@ impl Plugin for ErrorPagePlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -217,10 +221,7 @@ mod tests {
                 "content_type": "application/json"
             }
         }));
-        let out = p
-            .execute(test_context(502, true), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, true)).await.unwrap();
         assert_eq!(
             out.context.response.body.as_ref(),
             b"{\"error\": \"bad gateway\"}"
@@ -236,10 +237,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_page_default_body_and_content_type() {
         let p = plugin(serde_json::json!({ "error_503": {} }));
-        let out = p
-            .execute(test_context(503, true), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(503, true)).await.unwrap();
         let body = String::from_utf8(out.context.response.body.to_vec()).unwrap();
         assert!(body.contains("<h1>503 Service Unavailable</h1>"), "{body}");
         assert!(body.contains("featherbit"));
@@ -254,10 +252,7 @@ mod tests {
         // Same 502, but no gateway errors recorded → the response came from
         // the upstream and must pass through untouched.
         let p = plugin(serde_json::json!({ "error_502": {} }));
-        let out = p
-            .execute(test_context(502, false), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, false)).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");
         assert_eq!(
             out.context.response.headers.get("content-type"),
@@ -274,10 +269,7 @@ mod tests {
                 "content_type": "application/json"
             }
         }));
-        let out = p
-            .execute(test_context(503, true), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(503, true)).await.unwrap();
         assert_eq!(
             out.context.response.body.as_ref(),
             b"{\"error\": \"unavailable\", \"path\": \"/test\"}"
@@ -296,7 +288,7 @@ mod tests {
         ctx.request
             .headers
             .insert("x-charset".to_string(), vec!["utf-16".to_string()]);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.response.headers.get("content-type"),
             Some(&vec!["text/plain; charset=utf-16".to_string()])
@@ -307,18 +299,12 @@ mod tests {
     async fn test_error_page_skips_unconfigured_status() {
         let p = plugin(serde_json::json!({ "error_502": {} }));
         // 500 is a supported status but has no configured page here.
-        let out = p
-            .execute(test_context(500, true), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(500, true)).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");
 
         // Non-error statuses always pass through.
         let p = plugin(serde_json::json!({ "error_502": {} }));
-        let out = p
-            .execute(test_context(200, true), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(200, true)).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");
     }
 

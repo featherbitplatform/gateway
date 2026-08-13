@@ -150,16 +150,9 @@ impl Plugin for ServerlessPreFunctionPlugin {
         self.runner.plugin_type
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let ctx = self.runner.run(ctx)?;
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -206,7 +199,7 @@ mod tests {
         ])))
         .unwrap();
 
-        let out = p.execute(test_context(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_context()).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("x-step"),
             Some(&vec!["one".to_string()])
@@ -227,7 +220,7 @@ mod tests {
         ])))
         .unwrap();
 
-        let out = p.execute(test_context(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_context()).await.unwrap();
         assert_eq!(
             out.context.message.get("trail"),
             Some(&serde_json::json!(["a", "b"]))
@@ -264,10 +257,7 @@ mod tests {
             "function execute(ctx)\n  error(\"boom\")\n  return ctx\nend"
         ])))
         .unwrap();
-        let err = p
-            .execute(test_context(), &HashMap::new())
-            .await
-            .unwrap_err();
+        let err = p.execute(test_context()).await.unwrap_err();
         assert_eq!(err.error.code, "LUA_EXECUTION_ERROR");
     }
 }

@@ -300,11 +300,7 @@ impl Plugin for AwsLambdaPlugin {
         "aws-lambda"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -319,10 +315,7 @@ impl Plugin for AwsLambdaPlugin {
         match self.client.request(request).await {
             Ok(response) => {
                 apply_response(&mut ctx, response);
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             Err(e) => {
                 let (status, message) = match &e {
@@ -777,10 +770,7 @@ mod tests {
             "function_uri": "http://127.0.0.1:1/fn",
             "timeout": 200
         }));
-        let err = p
-            .execute(ctx_with("POST", "/"), &HashMap::new())
-            .await
-            .unwrap_err();
+        let err = p.execute(ctx_with("POST", "/")).await.unwrap_err();
         assert_eq!(err.error.code, "AWS_LAMBDA_CALLOUT_ERROR");
         assert!(err.context.response.status_code >= 502);
     }

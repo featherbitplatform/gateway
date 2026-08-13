@@ -13,13 +13,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 use crate::vars::template::Template;
 
 /// Validates `context.request` headers and body against compiled JSON
-/// Schemas. On failure the request is rejected through the `error` port with
-/// error code `VALIDATION_FAILED` and a JSON response using `rejected_code`.
+/// Schemas. On failure the request is rejected through the `denied` port
+/// with a JSON response using `rejected_code`.
 ///
 /// Headers are validated as a single-value object (first value per header,
 /// names lowercased), matching the shape APISIX passes to its schema check.
@@ -184,9 +184,9 @@ impl RequestValidationPlugin {
         })
     }
 
-    /// Writes the rejection onto the response and returns the error that
-    /// routes the context through the node's `error` port.
-    fn reject(&self, mut ctx: Context, detail: String) -> PluginExecutionError {
+    /// Writes the rejection onto the response and routes the context through
+    /// the node's `denied` port.
+    fn reject(&self, mut ctx: Context, detail: String) -> PluginResult {
         let message = self
             .rejected_msg
             .as_ref()
@@ -200,15 +200,7 @@ impl RequestValidationPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "VALIDATION_FAILED".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        }
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -218,11 +210,7 @@ impl Plugin for RequestValidationPlugin {
         "request-validation"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         if let Some(validator) = &self.header_schema {
             let headers: serde_json::Map<String, serde_json::Value> = ctx
                 .request
@@ -234,13 +222,13 @@ impl Plugin for RequestValidationPlugin {
                 })
                 .collect();
             if let Err(e) = validator.validate(&serde_json::Value::Object(headers)) {
-                return Err(self.reject(ctx, format!("header validation failed: {}", e)));
+                return self.reject(ctx, format!("header validation failed: {}", e));
             }
         }
 
         if let Some(validator) = &self.body_schema {
             if ctx.request.body.is_empty() {
-                return Err(self.reject(ctx, "request body is required".to_string()));
+                return self.reject(ctx, "request body is required".to_string());
             }
 
             let is_urlencoded = ctx
@@ -261,15 +249,14 @@ impl Plugin for RequestValidationPlugin {
                 match serde_json::from_slice::<serde_json::Value>(&ctx.request.body) {
                     Ok(v) => (v, true),
                     Err(e) => {
-                        return Err(
-                            self.reject(ctx, format!("failed to decode the request body: {}", e))
-                        );
+                        return self
+                            .reject(ctx, format!("failed to decode the request body: {}", e));
                     }
                 }
             };
 
             if let Err(e) = validator.validate(&parsed) {
-                return Err(self.reject(ctx, format!("body validation failed: {}", e)));
+                return self.reject(ctx, format!("body validation failed: {}", e));
             }
 
             if body_is_json {
@@ -281,10 +268,7 @@ impl Plugin for RequestValidationPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -339,7 +323,7 @@ mod tests {
             "properties": { "name": { "type": "string" } }
         }));
         let ctx = test_context(r#"{"name":  "jack"}"#, Some("application/json"));
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         // validated JSON is re-serialized (normalized) and content-length dropped
         assert_eq!(out.context.request.body, Bytes::from(r#"{"name":"jack"}"#));
         assert!(!out.context.request.headers.contains_key("content-length"));
@@ -352,10 +336,10 @@ mod tests {
             "required": ["name"]
         }));
         let ctx = test_context(r#"{"age": 3}"#, Some("application/json"));
-        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
-        assert_eq!(err.error.code, "VALIDATION_FAILED");
-        assert_eq!(err.context.response.status_code, 400);
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        let out = p.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 400);
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["error"], "validation_failed");
     }
 
@@ -363,18 +347,18 @@ mod tests {
     async fn test_request_validation_non_json_body_rejected() {
         let p = body_plugin(serde_json::json!({ "type": "object" }));
         let ctx = test_context("this is not json", Some("application/json"));
-        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
-        assert_eq!(err.error.code, "VALIDATION_FAILED");
+        let out = p.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
     async fn test_request_validation_missing_body_rejected() {
         let p = body_plugin(serde_json::json!({ "type": "object" }));
-        let err = p
-            .execute(test_context("", Some("application/json")), &HashMap::new())
+        let out = p
+            .execute(test_context("", Some("application/json")))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "VALIDATION_FAILED");
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -388,7 +372,7 @@ mod tests {
             "user=jack&note=hello%20world",
             Some("application/x-www-form-urlencoded"),
         );
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         // urlencoded bodies are not rewritten
         assert_eq!(
             out.context.request.body,
@@ -396,7 +380,7 @@ mod tests {
         );
 
         let ctx = test_context("note=only", Some("application/x-www-form-urlencoded"));
-        assert!(p.execute(ctx, &HashMap::new()).await.is_err());
+        assert_eq!(p.execute(ctx).await.unwrap().port, Some("denied"));
     }
 
     #[tokio::test]
@@ -413,14 +397,16 @@ mod tests {
         let p = RequestValidationPlugin::from_config(&config).unwrap();
 
         assert!(p
-            .execute(test_context("", None), &HashMap::new())
+            .execute(test_context("", None))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
 
         let mut ctx = test_context("", None);
         ctx.request.headers.remove("x-api-version");
-        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
-        assert_eq!(err.error.code, "VALIDATION_FAILED");
+        let out = p.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -435,9 +421,11 @@ mod tests {
         let p = RequestValidationPlugin::from_config(&config).unwrap();
 
         let ctx = test_context("[1,2,3]", Some("application/json"));
-        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
-        assert_eq!(err.context.response.status_code, 422);
-        assert_eq!(err.error.message, "bad payload");
+        let out = p.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 422);
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
+        assert_eq!(body["message"], "bad payload");
     }
 
     #[tokio::test]
@@ -454,9 +442,9 @@ mod tests {
         let p = RequestValidationPlugin::from_config(&config).unwrap();
 
         let ctx = test_context(r#"{"age": 3}"#, Some("application/json"));
-        let err = p.execute(ctx, &HashMap::new()).await.unwrap_err();
-        assert_eq!(err.error.message, "bad payload for /api");
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        let out = p.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["message"], "bad payload for /api");
     }
 

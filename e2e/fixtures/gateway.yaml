@@ -162,6 +162,8 @@ policies:
         to: cors.in
       - from: cors.success
         to: strip-prefix.in
+      - from: cors.preflight
+        to: client.in
       - from: strip-prefix.success
         to: echo-backend.in
       - from: echo-backend.success
@@ -173,11 +175,12 @@ policies:
 
   # /secure/* -> key-auth + rate-limit in front of the echo backend.
   #
-  # key-auth and rate-limit wire their `error` ports STRAIGHT TO client.in. Both
-  # plugins set the rejection response (401 / 429) on the context and then return
-  # an error; routing that error to `client` is what lets the status survive. Send
-  # it to an error-handler instead and the handler's status_code overwrites it —
-  # leave it unwired and the generic 500 fallback does. E2E-DP-05 pins this.
+  # key-auth's `denied` port and rate-limit's `limited` port wire STRAIGHT TO
+  # client.in. Both plugins set the rejection response (401 / 429) on the
+  # context; routing that exit straight to `client` is what lets the status
+  # survive. Send it to an error-handler instead and the handler's
+  # status_code overwrites it — leave either port unwired and policy
+  # compilation fails (mandatory outcome-port wiring). E2E-DP-05 pins this.
   - name: secure-policy
     nodes:
       - id: listener
@@ -216,17 +219,21 @@ policies:
         to: echo-backend.in
       - from: echo-backend.success
         to: client.in
+      - from: api-key.denied
+        to: client.in
       - from: api-key.error
         to: client.in
-      - from: throttle.error
+      - from: throttle.limited
         to: client.in
 
   # /bearer/* -> openid-connect in bearer_only mode. Signatures are verified for
   # real against the mock IdP's published JWKS.
   #
-  # `oidc.error -> client.in` is required: the plugin sets 401 on the context and
-  # then returns an error, exactly like key-auth. Without that edge the caller
-  # gets the generic 500 instead of the 401.
+  # A missing/invalid/unverifiable bearer token exits on `denied` (401);
+  # `oidc.denied -> client.in` carries that to the caller. `redirect` never
+  # fires in bearer_only mode but is still mandatory wiring for the type.
+  # `oidc.error -> client.in` covers a genuine JWKS/discovery/introspection
+  # provider failure.
   - name: bearer-policy
     nodes:
       - id: listener
@@ -266,14 +273,21 @@ policies:
         to: echo-backend.in
       - from: echo-backend.success
         to: client.in
+      - from: oidc.denied
+        to: client.in
+      - from: oidc.redirect
+        to: client.in
       - from: oidc.error
         to: client.in
 
   # /app/* -> openid-connect interactive login (Authorization Code + PKCE).
   #
   # Both the 302 to the IdP and the post-callback 302 leave through the node's
-  # ERROR port with the response already prepared, so `oidc.error -> client.in`
-  # is what actually makes the browser move. Wire it anywhere else and login hangs.
+  # dedicated `redirect` port with the response already prepared, so
+  # `oidc.redirect -> client.in` is what actually makes the browser move. Wire
+  # it anywhere else and login hangs. Deliberate rejections (bad state/nonce,
+  # invalid id_token) exit on `denied`; a genuine discovery/token-endpoint
+  # callout failure exits on `error`.
   - name: app-policy
     nodes:
       - id: listener
@@ -311,12 +325,17 @@ policies:
         to: echo-backend.in
       - from: echo-backend.success
         to: client.in
+      - from: oidc.denied
+        to: client.in
+      - from: oidc.redirect
+        to: client.in
       - from: oidc.error
         to: client.in
 
   # /fauth/* -> forward-auth delegates to the mock auth service, then (on allow)
-  # proxies to echo. `oidc/forward-auth-style` error routing: the plugin returns
-  # Err on deny, so oidc.error -> client.in carries the 403 to the caller.
+  # proxies to echo. A non-2xx auth-service reply exits on `denied`, so
+  # fauth.denied -> client.in carries the 403 to the caller; a genuine callout
+  # failure would exit on `error` instead.
   - name: fauth-policy
     nodes:
       - id: listener
@@ -351,6 +370,8 @@ policies:
       - from: strip-prefix.success
         to: echo-backend.in
       - from: echo-backend.success
+        to: client.in
+      - from: fauth.denied
         to: client.in
       - from: fauth.error
         to: client.in
@@ -388,11 +409,16 @@ policies:
         to: echo-backend.in
       - from: echo-backend.success
         to: client.in
+      - from: opa.denied
+        to: client.in
       - from: opa.error
         to: client.in
 
   # /casdoor/* -> authz-casdoor bearer mode: introspect the token, allow on active.
-  # Decision is on the TOKEN (valid-token), not the path.
+  # Decision is on the TOKEN (valid-token), not the path. A missing/inactive
+  # token exits on `denied`; `redirect` never fires in stateless mode but is
+  # still mandatory wiring for the type; a genuine introspection-callout
+  # failure exits on `error`.
   - name: casdoor-policy
     nodes:
       - id: listener
@@ -424,6 +450,10 @@ policies:
       - from: strip-prefix.success
         to: echo-backend.in
       - from: echo-backend.success
+        to: client.in
+      - from: casdoor.denied
+        to: client.in
+      - from: casdoor.redirect
         to: client.in
       - from: casdoor.error
         to: client.in
@@ -460,11 +490,15 @@ policies:
         to: echo-backend.in
       - from: echo-backend.success
         to: client.in
+      - from: wolf.denied
+        to: client.in
       - from: wolf.error
         to: client.in
 
   # /kc-allow/* and /kc-deny/* -> authz-keycloak. The permission string is static
-  # per policy; the mock permits the one naming an "allow" resource.
+  # per policy; the mock permits the one naming an "allow" resource. A denied
+  # UMA decision (or a missing bearer) exits on `denied`; a genuine
+  # token-endpoint callout failure exits on `error`.
   - name: kc-allow-policy
     nodes:
       - id: listener
@@ -495,6 +529,8 @@ policies:
         to: echo-backend.in
       - from: echo-backend.success
         to: client.in
+      - from: keycloak.denied
+        to: client.in
       - from: keycloak.error
         to: client.in
 
@@ -522,6 +558,8 @@ policies:
       - from: keycloak.success
         to: echo-backend.in
       - from: echo-backend.success
+        to: client.in
+      - from: keycloak.denied
         to: client.in
       - from: keycloak.error
         to: client.in
@@ -555,6 +593,10 @@ policies:
       - from: strip-prefix.success
         to: echo-backend.in
       - from: echo-backend.success
+        to: client.in
+      - from: cas.denied
+        to: client.in
+      - from: cas.redirect
         to: client.in
       - from: cas.error
         to: client.in
@@ -590,6 +632,8 @@ policies:
       - from: strip-prefix.success
         to: echo-backend.in
       - from: echo-backend.success
+        to: client.in
+      - from: dingtalk.denied
         to: client.in
       - from: dingtalk.error
         to: client.in
@@ -627,6 +671,8 @@ policies:
         to: echo-backend.in
       - from: echo-backend.success
         to: client.in
+      - from: feishu.denied
+        to: client.in
       - from: feishu.error
         to: client.in
 
@@ -663,6 +709,8 @@ policies:
         to: echo-backend.in
       - from: echo-backend.success
         to: client.in
+      - from: auth.denied
+        to: client.in
       - from: auth.error
         to: client.in
 
@@ -698,6 +746,8 @@ policies:
         to: echo-backend.in
       - from: echo-backend.success
         to: client.in
+      - from: ldap.denied
+        to: client.in
       - from: ldap.error
         to: client.in
 
@@ -731,6 +781,8 @@ policies:
       - from: strip-prefix.success
         to: echo-backend.in
       - from: echo-backend.success
+        to: client.in
+      - from: auth.denied
         to: client.in
       - from: auth.error
         to: client.in
@@ -768,6 +820,8 @@ policies:
         to: auth.in
       - from: auth.success
         to: strip-prefix.in
+      - from: auth.preflight
+        to: client.in
       - from: strip-prefix.success
         to: echo-backend.in
       - from: echo-backend.success

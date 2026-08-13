@@ -176,11 +176,7 @@ impl Plugin for ProxyRewritePlugin {
         "proxy-rewrite"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         match self.phase {
             RewritePhase::Request => {
                 // Strip path prefix
@@ -234,10 +230,7 @@ impl Plugin for ProxyRewritePlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -284,7 +277,7 @@ mod tests {
 
         let plugin = ProxyRewritePlugin::from_config(&config).unwrap();
         let ctx = test_context("/api/v1/users");
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.request.path, "/users");
     }
 
@@ -298,7 +291,7 @@ mod tests {
 
         let plugin = ProxyRewritePlugin::from_config(&config).unwrap();
         let ctx = test_context("/api/v1");
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.request.path, "/");
     }
 
@@ -317,7 +310,7 @@ mod tests {
 
         let plugin = ProxyRewritePlugin::from_config(&config).unwrap();
         let ctx = test_context("/test");
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.request.headers.get("x-custom"),
             Some(&vec!["value".to_string()])
@@ -335,7 +328,7 @@ mod tests {
 
         let plugin = ProxyRewritePlugin::from_config(&config).unwrap();
         let ctx = test_context("/test");
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.request.headers.get("x-custom"),
             Some(&vec!["value".to_string()])
@@ -359,7 +352,7 @@ mod tests {
 
         let plugin = ProxyRewritePlugin::from_config(&config).unwrap();
         let ctx = test_context("/test");
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.response.headers.get("x-custom"),
             Some(&vec!["value".to_string()])
@@ -377,7 +370,7 @@ mod tests {
 
         let plugin = ProxyRewritePlugin::from_config(&config).unwrap();
         let ctx = test_context("/test");
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.request.headers.get("x-version"),
             Some(&vec!["2".to_string()])
@@ -419,7 +412,7 @@ mod tests {
             .headers
             .insert("x-internal".to_string(), vec!["secret".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert!(!result.context.response.headers.contains_key("x-internal"));
     }
 
@@ -437,7 +430,7 @@ mod tests {
         let plugin = ProxyRewritePlugin::from_config(&config).unwrap();
         let mut ctx = test_context("/test");
         ctx.request.method = "POST".to_string();
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.request.headers.get("x-method"),
             Some(&vec!["POST".to_string()])
@@ -458,7 +451,7 @@ mod tests {
 
         let plugin = ProxyRewritePlugin::from_config(&config).unwrap();
         let ctx = test_context("/test");
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             result.context.request.headers.get("x-secret"),
             Some(&vec!["pa$sword4".to_string()])
@@ -479,7 +472,7 @@ mod tests {
         ctx.request
             .headers
             .insert("x-tenant".to_string(), vec!["acme".to_string()]);
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert_eq!(result.context.request.path, "/acme/users");
     }
 
@@ -505,7 +498,7 @@ mod tests {
             .headers
             .insert("X-Powered-By".to_string(), vec!["php".to_string()]);
 
-        let result = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let result = plugin.execute(ctx).await.unwrap();
         assert!(!result.context.response.headers.contains_key("X-Powered-By"));
     }
 }

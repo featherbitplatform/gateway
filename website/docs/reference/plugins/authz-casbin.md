@@ -63,14 +63,27 @@ One of the two source pairs is required.
 
 The enforcer is compiled eagerly at config load; a malformed model or policy fails fast (config is rejected) rather than at request time.
 
-On success the context passes through the **success** port unchanged. On a denied decision the plugin routes through the **error** port:
+On success the context passes through the **success** port unchanged. On a denied decision the plugin exits through the dedicated **`denied`** port:
 
 - `context.response.status_code` = `403`
 - Body: `{"message":"Access Denied"}` with `content-type: application/json`
-- Error code appended to `context.errors`: `AUTHZ_CASBIN_DENIED`
+
+An enforcer evaluation error (not expected with a valid model) is treated the same as an explicit denial and also exits on `denied`; the model/policy is compiled eagerly at load, so this should never occur at request time in practice. There is no separate infra-failure path — `authz-casbin` evaluates entirely in-process and never calls out over the network, so the **error** port is declared but unused.
 
 ## Behavior notes
 
 - **Subject resolution.** The subject is resolved in order: the attached consumer identity (`consumer.name`) when present, then the header named by `username_header` (default `x-user`), then `"anonymous"` — integrating with featherbit's consumer model.
 - **Per-node model/policy.** There is no global plugin-metadata layer; supply the model/policy per node via the file paths or inline strings.
 - **Enforcer construction.** Casbin's enforcer is async to build; featherbit constructs it at load on a dedicated short-lived thread with its own Tokio runtime, then shares it read-only (`Arc<Enforcer>`) across requests.
+
+## Ports
+
+`authz-casbin` declares three output ports: `success`, `denied` (a `403` rejection is prepared — the enforcer denied the request), and `error` (declared for consistency with the rest of the auth family, but never produced). `denied` is a mandatory port, same as `success`: the policy compiler rejects any policy that leaves it unwired.
+
+```yaml
+edges:
+  - from: authz-casbin.success
+    to: upstream.in
+  - from: authz-casbin.denied
+    to: client.in
+```

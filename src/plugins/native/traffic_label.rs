@@ -211,11 +211,7 @@ impl Plugin for TrafficLabelPlugin {
         "traffic-label"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         for rule in &self.rules {
             let matched = rule.matcher.as_ref().is_none_or(|e| e.eval(&ctx));
             if !matched {
@@ -250,10 +246,7 @@ impl Plugin for TrafficLabelPlugin {
             break;
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -307,10 +300,7 @@ mod tests {
         }))
         .unwrap();
 
-        let out = p
-            .execute(test_ctx(Some("beta")), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_ctx(Some("beta"))).await.unwrap();
         let ctx = out.context;
         assert_eq!(
             ctx.request.headers.get("x-server-id"),
@@ -322,10 +312,7 @@ mod tests {
         );
 
         // Non-matching request passes through untouched.
-        let out = p
-            .execute(test_ctx(Some("stable")), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_ctx(Some("stable"))).await.unwrap();
         assert!(out.context.request.headers.is_empty());
     }
 
@@ -337,7 +324,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let out = p.execute(test_ctx(None), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx(None)).await.unwrap();
         assert_eq!(
             out.context.message.get("label.tier"),
             Some(&serde_json::json!("beta"))
@@ -362,7 +349,7 @@ mod tests {
 
         let mut counts: HashMap<String, u32> = HashMap::new();
         for _ in 0..8 {
-            let out = p.execute(test_ctx(None), &HashMap::new()).await.unwrap();
+            let out = p.execute(test_ctx(None)).await.unwrap();
             let v = out.context.request.headers.get("x-variant").unwrap()[0].clone();
             *counts.entry(v).or_insert(0) += 1;
         }
@@ -379,7 +366,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let out = p.execute(test_ctx(None), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx(None)).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("x-fallback"),
             Some(&vec!["yes".to_string()])
@@ -395,7 +382,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let out = p.execute(test_ctx(None), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx(None)).await.unwrap();
         assert_eq!(
             out.context.message.get("label.rule"),
             Some(&serde_json::json!("first"))

@@ -60,11 +60,7 @@ impl Plugin for AttachConsumerLabelPlugin {
         "attach-consumer-label"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Only act when a consumer with labels is attached; otherwise passthrough.
         if let Some(labels) = ctx
             .message
@@ -81,10 +77,7 @@ impl Plugin for AttachConsumerLabelPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -131,10 +124,9 @@ mod tests {
     async fn test_attaches_labels_with_default_prefix() {
         let p = plugin(serde_json::json!({}));
         let out = p
-            .execute(
-                ctx(Some(serde_json::json!({ "tier": "gold", "region": "eu" }))),
-                &HashMap::new(),
-            )
+            .execute(ctx(Some(
+                serde_json::json!({ "tier": "gold", "region": "eu" }),
+            )))
             .await
             .unwrap();
         let headers = &out.context.request.headers;
@@ -152,10 +144,7 @@ mod tests {
     async fn test_custom_prefix() {
         let p = plugin(serde_json::json!({ "header_prefix": "X-Label-" }));
         let out = p
-            .execute(
-                ctx(Some(serde_json::json!({ "tier": "gold" }))),
-                &HashMap::new(),
-            )
+            .execute(ctx(Some(serde_json::json!({ "tier": "gold" }))))
             .await
             .unwrap();
         assert_eq!(
@@ -171,7 +160,7 @@ mod tests {
         c.request
             .headers
             .insert("x-realm".to_string(), vec!["Eu".to_string()]);
-        let out = p.execute(c, &HashMap::new()).await.unwrap();
+        let out = p.execute(c).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("x-eu-tier"),
             Some(&vec!["gold".to_string()])
@@ -181,7 +170,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_consumer_is_passthrough() {
         let p = plugin(serde_json::json!({}));
-        let out = p.execute(ctx(None), &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx(None)).await.unwrap();
         // no consumer -> no headers injected, no error
         assert!(out
             .context

@@ -10,7 +10,7 @@
 import {test, expect, request} from '@playwright/test';
 
 import {GATEWAY_URL, IDP_URL} from '../playwright.config';
-import {dataPlane} from '../helpers/admin';
+import {adminApi, dataPlane} from '../helpers/admin';
 
 /** The echo backend reports the request as it reached the upstream. */
 type Echo = {method: string; path: string; headers: Record<string, string>};
@@ -26,6 +26,24 @@ async function mintToken(query = ''): Promise<string> {
 function header(headers: Record<string, string>, name: string): string | undefined {
   const hit = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase());
   return hit ? headers[hit] : undefined;
+}
+
+/**
+ * Sums `gateway_node_errors_total` across every `error_code` label for the
+ * given policy/node pair. IntCounterVec only exports a label combination once
+ * it has been incremented at least once, so a node that has never failed is
+ * legitimately absent from the text -- that reads as 0, not a parse failure.
+ */
+function nodeErrorCount(metricsText: string, policy: string, nodeId: string): number {
+  // Lookaheads, not a fixed label order -- the Prometheus text exposition
+  // format does not promise `policy` renders before `node_id`.
+  const re = new RegExp(
+    `gateway_node_errors_total\\{(?=[^}]*policy="${policy}")(?=[^}]*node_id="${nodeId}")[^}]*\\}\\s+(\\d+(?:\\.\\d+)?)`,
+    'g',
+  );
+  let total = 0;
+  for (const m of metricsText.matchAll(re)) total += Number(m[1]);
+  return total;
 }
 
 test.describe('openid-connect: bearer mode', () => {
@@ -182,5 +200,32 @@ test.describe('openid-connect: interactive login', () => {
     expect(res.headers()['location']).toContain(`${IDP_URL}/authorize`);
 
     await raw.dispose();
+  });
+
+  /**
+   * Named-output-ports regression guard: the plugin prepares its 302 and exits
+   * through the dedicated `redirect` port (see `oidc.redirect -> client.in` in
+   * the testbook's fixture note), the same outcome-port shape as `key-auth`'s
+   * `denied`. That is a successful `Ok` result from the node's point of view,
+   * so it must never touch `gateway_node_errors_total` -- only a genuine
+   * failure (a bad discovery/JWKS/token callout) returns `Err` and increments
+   * it. There is no dead-discovery-endpoint fixture for openid-connect in this
+   * suite (unlike, say, the LDAP mocks for other auth plugins), so this only
+   * asserts the non-increment side; there is nothing to reuse for the positive
+   * "a genuine failure does increment it" half.
+   */
+  test('E2E-OIDC-11: the login redirect is not counted as a node error', async () => {
+    const api = await adminApi();
+    const before = nodeErrorCount(await (await api.get('/metrics')).text(), 'app-policy', 'oidc');
+
+    const raw = await request.newContext({baseURL: GATEWAY_URL, maxRedirects: 0});
+    const res = await raw.get('/app/metrics-probe');
+    expect(res.status()).toBe(302); // the redirect port fired, not the error port
+    await raw.dispose();
+
+    const after = nodeErrorCount(await (await api.get('/metrics')).text(), 'app-policy', 'oidc');
+    expect(after).toBe(before);
+
+    await api.dispose();
   });
 });

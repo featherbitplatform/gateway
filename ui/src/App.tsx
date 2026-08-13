@@ -5,13 +5,18 @@
  *
  * @module App
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { GraphCanvas } from './components/GraphCanvas';
 import { PluginConfigPanel } from './components/PluginConfigPanel';
 import { Dialog, DialogButton, DialogField } from './components/Dialog';
 import { DebugPanel } from './components/DebugPanel';
 import { Toast, type ToastData } from './components/Toast';
+import { CommandPalette } from './components/CommandPalette';
+import { buildCommands, matchesShortcut, type CommandContext } from './commands';
+import { useEditorActions } from './editorActions';
+import { usePortNames } from './usePortNames';
+import { toggleTheme } from './theme';
 import { api } from './api/client';
 import type {
   Route,
@@ -90,6 +95,13 @@ export default function App() {
   // panel can explain why it is unavailable rather than appearing broken.
   const [debugOpen, setDebugOpen] = useState(false);
   const [debugConfig, setDebugConfig] = useState<DebugConfig | null>(null);
+
+  // Port-name visibility (P) and the command palette (Ctrl+K). Owned here —
+  // a single usePortNames() call — so the palette's toggle and the canvas
+  // it re-renders can never see two different copies of the preference.
+  const [showPortNames, togglePortNames] = usePortNames();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const editorActions = useEditorActions();
 
   const loadData = useCallback(async () => {
     try {
@@ -175,11 +187,14 @@ export default function App() {
     setSelectedPluginConfig(name);
   };
 
-  const handleCreateRoute = () => {
+  // The create/view/reload handlers below are useCallback'd because they are
+  // fields of the memoized `commandCtx`, which keys the global keydown effect
+  // (an unstable field there would resubscribe the listener every render).
+  const handleCreateRoute = useCallback(() => {
     setNewName('');
     setNewPath('/*');
     setCreateOpen(true);
-  };
+  }, []);
 
   const submitCreateRoute = async () => {
     const name = newName.trim();
@@ -227,10 +242,10 @@ export default function App() {
     }
   };
 
-  const handleCreateSupernode = () => {
+  const handleCreateSupernode = useCallback(() => {
     setNewSupernodeName('');
     setCreateSupernodeOpen(true);
-  };
+  }, []);
 
   const submitCreateSupernode = async () => {
     const name = newSupernodeName.trim();
@@ -274,11 +289,11 @@ export default function App() {
     }
   };
 
-  const handleCreatePluginConfig = () => {
+  const handleCreatePluginConfig = useCallback(() => {
     setNewPcName('');
     setNewPcType('');
     setCreatePluginConfigOpen(true);
-  };
+  }, []);
 
   const submitCreatePluginConfig = async () => {
     const name = newPcName.trim();
@@ -320,14 +335,14 @@ export default function App() {
     }
   };
 
-  const handleViewYaml = async () => {
+  const handleViewYaml = useCallback(async () => {
     try {
       const yaml = await api.exportConfig();
       setYamlView(yaml);
     } catch (e) {
       setToast({ tone: 'error', title: 'Failed to export config', message: `${e}` });
     }
-  };
+  }, []);
 
   const copyYaml = async () => {
     if (yamlView == null) return;
@@ -350,7 +365,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const handleReload = async () => {
+  const handleReload = useCallback(async () => {
     try {
       await api.reload();
       await loadData();
@@ -358,40 +373,176 @@ export default function App() {
     } catch (e) {
       setToast({ tone: 'error', title: 'Reload failed', message: `${e}` });
     }
-  };
+  }, [loadData]);
 
-  const handleSavePolicy = async (policy: Policy) => {
-    try {
-      await api.updatePolicy(policy.name, policy);
-      await loadData();
-      setToast({
-        tone: 'success',
-        title: 'Policy saved',
-        message: `${policy.name} · ${policy.nodes.length} nodes persisted`,
-      });
-    } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to save policy', message: `${e}` });
-    }
-  };
-
-  const handleSaveGraph = async (graph: Policy) => {
-    if (selectedSupernodeDef) {
+  // Wrapped in useCallback (rather than a plain function, as most handlers
+  // in this file are) because it's registered as the canvas's `save-graph`
+  // editor action (see GraphCanvas's `useRegisterEditorAction('save-graph',
+  // handleSave)`, where `handleSave` closes over `onSavePolicy` — this
+  // function). An unstable identity here would flow through and destabilize
+  // `handleSave` too, churning that registration on every unrelated App
+  // re-render. Deps are exactly the free variables read below; `loadData`
+  // and `setToast` are already stable (see their own definitions).
+  const handleSavePolicy = useCallback(
+    async (policy: Policy) => {
       try {
-        await api.updateSupernode(graph.name, {
-          name: graph.name,
-          description: selectedSupernodeDef.description,
-          nodes: graph.nodes,
-          edges: graph.edges,
-        });
+        await api.updatePolicy(policy.name, policy);
         await loadData();
-        setToast({ tone: 'success', title: 'Supernode saved', message: graph.name });
+        setToast({
+          tone: 'success',
+          title: 'Policy saved',
+          message: `${policy.name} · ${policy.nodes.length} nodes persisted`,
+        });
       } catch (e) {
-        setToast({ tone: 'error', title: 'Failed to save supernode', message: `${e}` });
+        setToast({ tone: 'error', title: 'Failed to save policy', message: `${e}` });
       }
-      return;
-    }
-    await handleSavePolicy(graph);
-  };
+    },
+    [loadData]
+  );
+
+  // Same stability requirement as handleSavePolicy above — this is the
+  // function actually passed as GraphCanvas's `onSavePolicy`.
+  // `selectedSupernodeDef` is a `.find()` result over `supernodes`, so its
+  // identity only changes when the underlying list or selection changes,
+  // not on every render.
+  const handleSaveGraph = useCallback(
+    async (graph: Policy) => {
+      if (selectedSupernodeDef) {
+        try {
+          await api.updateSupernode(graph.name, {
+            name: graph.name,
+            description: selectedSupernodeDef.description,
+            nodes: graph.nodes,
+            edges: graph.edges,
+          });
+          await loadData();
+          setToast({ tone: 'success', title: 'Supernode saved', message: graph.name });
+        } catch (e) {
+          setToast({ tone: 'error', title: 'Failed to save supernode', message: `${e}` });
+        }
+        return;
+      }
+      await handleSavePolicy(graph);
+    },
+    [selectedSupernodeDef, loadData, handleSavePolicy]
+  );
+
+  // Hoisted out of the GraphCanvas JSX (where an inline arrow would be a
+  // fresh function every render) for the same reason: it's a dependency of
+  // GraphCanvas's `handleSave`, which is registered as an editor action.
+  // `setToast` is a stable setState setter, so this has no real deps.
+  const handleSaveWarning = useCallback((title: string, message: string) => {
+    setToast({ tone: 'warning', title, message });
+  }, []);
+
+  // Selection across routes/supernodes/plugin configs is mutually exclusive
+  // (see handleSelect* above), so any one of them being set means "something
+  // is selected" for the view-yaml command's `when`.
+  const hasSelection = selectedRoute !== null || selectedSupernode !== null || selectedPluginConfig !== null;
+
+  // Memoized: this object is the only non-primitive dependency of the global
+  // keydown effect below, so a fresh literal every render would tear down and
+  // re-add the window listener on every render. It is also CommandPalette's
+  // `ctx` prop, and the palette memoizes its filtered list on it — that memo
+  // only ever hits because this identity is stable.
+  const editorOpen = canvasPolicy !== null;
+  const commandCtx: CommandContext = useMemo(
+    () => ({
+      editorOpen,
+      hasSelection,
+      togglePortNames,
+      createRoute: handleCreateRoute,
+      createSupernode: handleCreateSupernode,
+      createPluginConfig: handleCreatePluginConfig,
+      viewYaml: handleViewYaml,
+      reloadConfig: handleReload,
+      toggleTheme,
+      // Bridged to whatever GraphCanvas has registered (see editorActions.tsx).
+      // Registration alone is not "a graph is open" — GraphCanvas registers
+      // even when mounted with `policy={null}` — so the canvas commands' when()
+      // pairs `hasEditorAction` with `editorOpen` (see commands.ts).
+      invokeEditorAction: editorActions.invoke,
+      hasEditorAction: editorActions.has,
+    }),
+    [
+      editorOpen,
+      hasSelection,
+      togglePortNames,
+      handleCreateRoute,
+      handleCreateSupernode,
+      handleCreatePluginConfig,
+      handleViewYaml,
+      handleReload,
+      editorActions,
+    ]
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+        return;
+      }
+      if (paletteOpen) {
+        // The palette owns keys while it is open — but its own Escape binding
+        // lives on the search input, and a click on the list padding or the
+        // "No matching command" row blurs focus to <body>. Handling Escape
+        // here keeps "Escape closes it" true regardless of where focus is,
+        // without touching the input's autoFocus.
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setPaletteOpen(false);
+        }
+        return;
+      }
+
+      const commands = buildCommands();
+
+      // Modifier shortcuts run ABOVE the text-field guard. Ctrl+S must never
+      // reach the browser's Save Page dialog — not from the inspector's
+      // raw-config textarea, and not when `save-graph` happens to be
+      // unavailable either. So preventDefault() fires for any registered
+      // Ctrl+* binding; only run() is gated on when().
+      for (const cmd of commands) {
+        if (!cmd.shortcut?.startsWith('Ctrl+') || !matchesShortcut(e, cmd.shortcut)) continue;
+        e.preventDefault();
+        if (cmd.when && !cmd.when(commandCtx)) return;
+        cmd.run(commandCtx);
+        return;
+      }
+
+      // Bare single letters are typing, not commands, wherever text is being
+      // entered. SELECT counts: a native <select> uses letters for type-ahead,
+      // and preventDefault() here would kill it (see NodeInspector's shared-
+      // config picker and SchemaForm's enum fields).
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === 'INPUT' ||
+          t.tagName === 'TEXTAREA' ||
+          t.tagName === 'SELECT' ||
+          t.isContentEditable)
+      )
+        return;
+      // Nor are they commands behind a modal dialog: Dialog has no focus trap,
+      // so clicking its body blurs the autofocused field and any bare letter
+      // would stack a second dialog at the same z-index. (The palette itself
+      // never reaches here — it returns above.)
+      if (document.querySelector('[role="dialog"]')) return;
+
+      for (const cmd of commands) {
+        if (!cmd.shortcut || cmd.shortcut.startsWith('Ctrl+')) continue;
+        if (!matchesShortcut(e, cmd.shortcut)) continue;
+        if (cmd.when && !cmd.when(commandCtx)) continue;
+        e.preventDefault();
+        cmd.run(commandCtx);
+        return;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [paletteOpen, commandCtx]);
 
   if (error) {
     return (
@@ -485,12 +636,17 @@ export default function App() {
           plugins={plugins}
           scripts={scripts}
           onSavePolicy={handleSaveGraph}
+          onSaveWarning={handleSaveWarning}
           kind={selectedSupernodeDef ? 'supernode' : 'policy'}
           supernodes={supernodes}
           pluginConfigs={pluginConfigs}
           debugConfig={debugConfig}
+          showPortNames={showPortNames}
+          onOpenPalette={() => setPaletteOpen(true)}
         />
       )}
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} ctx={commandCtx} />
 
       <Dialog
         open={createOpen}

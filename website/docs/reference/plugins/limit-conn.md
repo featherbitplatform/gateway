@@ -34,7 +34,7 @@ request/response.
 
 ## Wiring
 
-The acquire node goes **before** `upstream`; its `error` port routes to
+The acquire node goes **before** `upstream`; its `limited` port routes to
 `client.in`, so an over-limit request short-circuits straight to the client with
 the rejection response. The release node goes **after** `upstream` on **both**
 the success and error paths, so a failed upstream call still frees the slot and
@@ -54,10 +54,11 @@ nodes:
 edges:
   - { from: listener.out,        to: conn-acquire.in }
   - { from: conn-acquire.success, to: upstream.in }
-  - { from: conn-acquire.error,   to: client.in }      # over-limit → 503
+  - { from: conn-acquire.limited, to: client.in }      # over-limit → 503
   - { from: upstream.success,     to: conn-release.in } # free the slot
   - { from: upstream.error,       to: conn-release.in } # …on failures too
   - { from: conn-release.success, to: client.in }
+  - { from: conn-release.limited, to: client.in }      # release never rejects, but the port is still mandatory wiring
 ```
 
 ## Behavior
@@ -65,9 +66,9 @@ edges:
 The acquire node increments the shared counter and reads the number of requests
 already in flight. If that count is at or above `conn + burst`, it undoes its
 increment, writes the rejection onto `context.response` (status `rejected_code`,
-JSON body, `content-type: application/json`) and fails with error code
-`LIMIT_CONN_EXCEEDED`, routing the Context through the `error` port. Otherwise it
-passes through and the slot stays held until the paired release node runs.
+JSON body, `content-type: application/json`) and exits through the `limited`
+port. Otherwise it passes through and the slot stays held until the paired
+release node runs.
 
 The release node decrements the counter, floored at zero so a stray release can
 never drive it negative.
@@ -78,3 +79,7 @@ The acquire and release nodes share state **only** when their `key` (and
 identically before and after the upstream call. Counters live in process memory
 and are per gateway instance.
 :::
+
+## Ports
+
+The **acquire** node declares three output ports: `success`, `limited` (an over-limit rejection is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `limited` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `limited` straight to `client` as shown in [Wiring](#wiring) above. The **release** node's `limited` port is unused (it never rejects) but still requires wiring — routing it to `client.in` alongside `success` is the simplest choice.

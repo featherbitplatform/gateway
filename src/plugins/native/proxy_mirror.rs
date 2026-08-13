@@ -173,11 +173,7 @@ impl Plugin for ProxyMirrorPlugin {
         "proxy-mirror"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         if self.should_mirror() {
             // Build everything the detached task needs, then spawn it. The
             // mirror never blocks or affects the request path: its response
@@ -189,10 +185,7 @@ impl Plugin for ProxyMirrorPlugin {
             });
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -301,7 +294,7 @@ mod tests {
             "host": "http://127.0.0.1:1", "sample_ratio": 1
         }))
         .unwrap();
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
         assert_eq!(out.context.request.path, "/api/users");
         assert_eq!(out.context.response.status_code, 0);
     }

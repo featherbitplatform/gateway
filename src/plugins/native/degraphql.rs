@@ -182,11 +182,7 @@ impl Plugin for DegraphqlPlugin {
         "degraphql"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         if ctx.request.method != "GET" && ctx.request.method != "POST" {
             let method = ctx.request.method.clone();
             return Err(self.fail(
@@ -260,10 +256,7 @@ impl Plugin for DegraphqlPlugin {
         ctx.request.headers.remove("content-length");
         ctx.request.headers.remove("content-encoding");
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -318,7 +311,7 @@ mod tests {
             .query_params
             .insert("name".to_string(), vec!["jack".to_string()]);
 
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let req = &out.context.request;
         assert_eq!(req.method, "POST");
         assert_eq!(
@@ -336,7 +329,7 @@ mod tests {
     async fn test_degraphql_body_from_json_body_preserves_types() {
         let p = plugin(Some(serde_json::json!(["name", "limit"])));
         let ctx = test_context("POST", r#"{"name":"jill","limit":10,"noise":true}"#);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         // JSON body values keep their JSON types
         assert_eq!(
@@ -352,7 +345,7 @@ mod tests {
         ctx.request
             .query_params
             .insert("name".to_string(), vec!["from-args".to_string()]);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(body["variables"]["name"], "from-args");
     }
@@ -384,7 +377,7 @@ mod tests {
             .query_params
             .insert("name".to_string(), vec!["jack".to_string()]);
 
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(body["operationName"], "GetPerson");
         assert_eq!(body["variables"], serde_json::json!({ "name": "jack" }));
@@ -394,7 +387,7 @@ mod tests {
     async fn test_degraphql_missing_variable_omitted() {
         let p = plugin(Some(serde_json::json!(["name", "ghost"])));
         let ctx = test_context("POST", r#"{"name":"jack"}"#);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(body["variables"], serde_json::json!({ "name": "jack" }));
     }
@@ -406,10 +399,7 @@ mod tests {
         config.insert("operation_name".to_string(), serde_json::json!("List"));
         let p = DegraphqlPlugin::from_config(&config).unwrap();
 
-        let out = p
-            .execute(test_context("GET", ""), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context("GET", "")).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(body["query"], "{ persons { id } }");
         assert_eq!(body["operationName"], "List");
@@ -419,10 +409,7 @@ mod tests {
     #[tokio::test]
     async fn test_degraphql_rejects_other_methods() {
         let p = plugin(None);
-        let err = p
-            .execute(test_context("DELETE", ""), &HashMap::new())
-            .await
-            .unwrap_err();
+        let err = p.execute(test_context("DELETE", "")).await.unwrap_err();
         assert_eq!(err.error.code, "METHOD_NOT_ALLOWED");
         assert_eq!(err.context.response.status_code, 405);
     }
@@ -431,7 +418,7 @@ mod tests {
     async fn test_degraphql_invalid_body_when_variable_needed() {
         let p = plugin(Some(serde_json::json!(["name"])));
         let err = p
-            .execute(test_context("POST", "not json"), &HashMap::new())
+            .execute(test_context("POST", "not json"))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "INVALID_REQUEST_BODY");

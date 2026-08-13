@@ -5,8 +5,8 @@
 //! request and sending the base64 signature alongside the `access_key` that
 //! identifies the credential. featherbit recomputes the signature with the
 //! matching secret and compares; a mismatch, an unknown key, a stale `Date`,
-//! or a missing required signed header is rejected as `401 HMAC_INVALID`
-//! through the node's error port.
+//! or a missing required signed header is rejected with a `401` through the
+//! node's `denied` port.
 //!
 //! # Wire format
 //!
@@ -62,9 +62,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::consumers::attach_consumer;
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 use crate::vars::template::Template;
 
 /// The X-HMAC-* header names (lowercased) used as the alternative to the
@@ -328,8 +328,7 @@ impl HmacAuthPlugin {
         })
     }
 
-    /// Builds the 401 rejection routed through the error port with code
-    /// `HMAC_INVALID`.
+    /// Builds the 401 rejection and exits on the `denied` port.
     fn reject(&self, mut ctx: Context, msg: &str) -> PluginResult {
         let realm = self.realm.render(&ctx).into_owned();
         ctx.response.status_code = 401;
@@ -345,15 +344,7 @@ impl HmacAuthPlugin {
             "www-authenticate".to_string(),
             vec![format!("hmac realm=\"{}\"", realm)],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "HMAC_INVALID".to_string(),
-                message: msg.to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 
     /// Reads a single-valued request header (lowercased key).
@@ -525,11 +516,7 @@ impl Plugin for HmacAuthPlugin {
         "hmac-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let params = match Self::retrieve_params(&ctx) {
             Some(p) => p,
             None => {
@@ -549,10 +536,7 @@ impl Plugin for HmacAuthPlugin {
             if &params.access_key == ak {
                 if self.verify_signature(&ctx, &params, sk) {
                     self.strip_headers(&mut ctx);
-                    return Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    });
+                    return Ok(PluginOutput::success(ctx));
                 }
                 return self.reject(ctx, "Invalid signature");
             }
@@ -571,10 +555,7 @@ impl Plugin for HmacAuthPlugin {
                     if self.verify_signature(&ctx, &params, secret) {
                         self.strip_headers(&mut ctx);
                         attach_consumer(&mut ctx, &consumer, "hmac-auth");
-                        return Ok(PluginOutput {
-                            context: ctx,
-                            named_outputs: HashMap::new(),
-                        });
+                        return Ok(PluginOutput::success(ctx));
                     }
                 }
                 return self.reject(ctx, "Invalid signature");
@@ -597,10 +578,7 @@ impl HmacAuthPlugin {
             let store = self.resources.consumers.load();
             if let Some(consumer) = store.get(name) {
                 attach_consumer(&mut ctx, &consumer, "hmac-auth");
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         }
         self.reject(ctx, "Invalid user authorization")
@@ -760,7 +738,7 @@ mod tests {
         let plugin = inline_plugin(serde_json::json!({}));
         let date = http_date(now() as i64);
         let ctx = signed_request("sk1", "ak1", HmacAlgorithm::Sha256, &date);
-        let out = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = plugin.execute(ctx).await.unwrap();
         // keep_headers defaults false → proof headers stripped
         assert!(!out.context.request.headers.contains_key(HDR_SIGNATURE));
     }
@@ -771,9 +749,9 @@ mod tests {
         let date = http_date(now() as i64);
         // client signs with the wrong secret
         let ctx = signed_request("wrong", "ak1", HmacAlgorithm::Sha256, &date);
-        let err = plugin.execute(ctx, &HashMap::new()).await.unwrap_err();
-        assert_eq!(err.error.code, "HMAC_INVALID");
-        assert_eq!(err.context.response.status_code, 401);
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
     }
 
     #[tokio::test]
@@ -783,9 +761,10 @@ mod tests {
         let date = http_date(now() as i64);
         let mut ctx = signed_request("wrong", "ak1", HmacAlgorithm::Sha256, &date);
         ctx.request.host = "tenant-b.example.com".to_string();
-        let err = plugin.execute(ctx, &HashMap::new()).await.unwrap_err();
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
         assert_eq!(
-            err.context.response.headers.get("www-authenticate"),
+            out.context.response.headers.get("www-authenticate"),
             Some(&vec![
                 "hmac realm=\"realm-tenant-b.example.com\"".to_string()
             ])
@@ -797,7 +776,8 @@ mod tests {
         let plugin = inline_plugin(serde_json::json!({ "clock_skew": 10 }));
         let stale = http_date(now() as i64 - 3600);
         let ctx = signed_request("sk1", "ak1", HmacAlgorithm::Sha256, &stale);
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_err());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -806,7 +786,8 @@ mod tests {
         let plugin = inline_plugin(serde_json::json!({ "signed_headers": ["@request-target"] }));
         let date = http_date(now() as i64);
         let ctx = signed_request("sk1", "ak1", HmacAlgorithm::Sha256, &date);
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_err());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -828,7 +809,8 @@ mod tests {
         ctx.request
             .headers
             .insert("authorization".to_string(), vec![auth]);
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_ok());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, None);
     }
 
     fn resources_with_consumers() -> Arc<PluginResources> {
@@ -857,7 +839,7 @@ mod tests {
 
         let date = http_date(now() as i64);
         let ctx = signed_request("alice-sk", "alice-ak", HmacAlgorithm::Sha256, &date);
-        let out = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.message.get("consumer.name"),
             Some(&serde_json::json!("alice"))
@@ -869,7 +851,8 @@ mod tests {
 
         // unknown access key rejected
         let ctx = signed_request("x", "nobody", HmacAlgorithm::Sha256, &date);
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_err());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -881,7 +864,7 @@ mod tests {
         let plugin = HmacAuthPlugin::from_config(&config, &resources).unwrap();
 
         // no signature at all → anonymous
-        let out = plugin.execute(base_ctx(), &HashMap::new()).await.unwrap();
+        let out = plugin.execute(base_ctx()).await.unwrap();
         assert_eq!(
             out.context.message.get("consumer.name"),
             Some(&serde_json::json!("guest"))

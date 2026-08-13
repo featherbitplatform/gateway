@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 use crate::vars::template::Template;
 
 /// What consumer attribute the lists match against.
@@ -38,8 +38,8 @@ struct AllowedByMethod {
 /// rejects), then the whitelist (a non-match rejects), then — only for
 /// consumers not already cleared by the whitelist — `allowed_by_methods`. When
 /// no consumer is attached the request is rejected `401`; list rejections use
-/// `rejected_code` (default `403`). All rejections carry error code
-/// `CONSUMER_RESTRICTED`.
+/// `rejected_code` (default `403`). All rejections are routed through the
+/// node's `denied` port.
 pub struct ConsumerRestrictionPlugin {
     /// Which consumer attribute the lists match (`consumer_name` / `consumer_group_id`).
     restriction_type: RestrictionType,
@@ -197,7 +197,8 @@ impl ConsumerRestrictionPlugin {
         }
     }
 
-    /// Builds a rejection carrying the context so the graph routes the error port.
+    /// Builds a rejection carrying the context so the graph routes it through
+    /// the `denied` port.
     fn reject(&self, mut ctx: Context, status: u16, message: String) -> PluginResult {
         ctx.response.status_code = status;
         ctx.response.body = Bytes::from(serde_json::json!({ "message": message }).to_string());
@@ -205,15 +206,7 @@ impl ConsumerRestrictionPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "CONSUMER_RESTRICTED".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -223,11 +216,7 @@ impl Plugin for ConsumerRestrictionPlugin {
         "consumer-restriction"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let value = ctx
             .message
             .get(self.value_key())
@@ -280,10 +269,7 @@ impl Plugin for ConsumerRestrictionPlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -331,28 +317,32 @@ mod tests {
     async fn test_consumer_restriction_whitelist() {
         let p = plugin(serde_json::json!({ "whitelist": ["alice", "bob"] }));
         assert!(p
-            .execute(ctx("GET", Some("alice"), None), &HashMap::new())
+            .execute(ctx("GET", Some("alice"), None))
             .await
-            .is_ok());
-        let err = p
-            .execute(ctx("GET", Some("mallory"), None), &HashMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "CONSUMER_RESTRICTED");
-        assert_eq!(err.context.response.status_code, 403);
+            .unwrap()
+            .port
+            .is_none());
+        let out = p.execute(ctx("GET", Some("mallory"), None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
     }
 
     #[tokio::test]
     async fn test_consumer_restriction_blacklist() {
         let p = plugin(serde_json::json!({ "blacklist": ["mallory"] }));
         assert!(p
-            .execute(ctx("GET", Some("alice"), None), &HashMap::new())
+            .execute(ctx("GET", Some("alice"), None))
             .await
-            .is_ok());
-        assert!(p
-            .execute(ctx("GET", Some("mallory"), None), &HashMap::new())
-            .await
-            .is_err());
+            .unwrap()
+            .port
+            .is_none());
+        assert_eq!(
+            p.execute(ctx("GET", Some("mallory"), None))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
     }
 
     #[tokio::test]
@@ -360,24 +350,26 @@ mod tests {
         let p =
             plugin(serde_json::json!({ "type": "consumer_group_id", "whitelist": ["partners"] }));
         assert!(p
-            .execute(ctx("GET", Some("alice"), Some("partners")), &HashMap::new())
+            .execute(ctx("GET", Some("alice"), Some("partners")))
             .await
-            .is_ok());
-        assert!(p
-            .execute(ctx("GET", Some("alice"), Some("randoms")), &HashMap::new())
-            .await
-            .is_err());
+            .unwrap()
+            .port
+            .is_none());
+        assert_eq!(
+            p.execute(ctx("GET", Some("alice"), Some("randoms")))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
     }
 
     #[tokio::test]
     async fn test_no_consumer_attached_401() {
         let p = plugin(serde_json::json!({ "whitelist": ["alice"] }));
-        let err = p
-            .execute(ctx("GET", None, None), &HashMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.context.response.status_code, 401);
-        assert_eq!(err.error.code, "CONSUMER_RESTRICTED");
+        let out = p.execute(ctx("GET", None, None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
     }
 
     #[tokio::test]
@@ -387,18 +379,25 @@ mod tests {
         }));
         // alice restricted to GET
         assert!(p
-            .execute(ctx("GET", Some("alice"), None), &HashMap::new())
+            .execute(ctx("GET", Some("alice"), None))
             .await
-            .is_ok());
-        assert!(p
-            .execute(ctx("POST", Some("alice"), None), &HashMap::new())
-            .await
-            .is_err());
+            .unwrap()
+            .port
+            .is_none());
+        assert_eq!(
+            p.execute(ctx("POST", Some("alice"), None))
+                .await
+                .unwrap()
+                .port,
+            Some("denied")
+        );
         // bob has no entry -> unrestricted
         assert!(p
-            .execute(ctx("DELETE", Some("bob"), None), &HashMap::new())
+            .execute(ctx("DELETE", Some("bob"), None))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     #[tokio::test]
@@ -409,9 +408,11 @@ mod tests {
         }));
         // whitelisted -> method restriction skipped
         assert!(p
-            .execute(ctx("POST", Some("alice"), None), &HashMap::new())
+            .execute(ctx("POST", Some("alice"), None))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
     }
 
     #[tokio::test]
@@ -420,13 +421,10 @@ mod tests {
             "whitelist": ["alice"],
             "rejected_msg": "denied for {{request.method}}"
         }));
-        let err = p
-            .execute(ctx("POST", Some("mallory"), None), &HashMap::new())
-            .await
-            .unwrap_err();
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        let out = p.execute(ctx("POST", Some("mallory"), None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
         assert_eq!(body["message"], "denied for POST");
-        assert_eq!(err.error.message, "denied for POST");
     }
 
     #[test]
