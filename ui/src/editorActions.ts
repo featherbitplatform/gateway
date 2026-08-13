@@ -28,38 +28,18 @@
  *
  * @module editorActions
  */
-import { createContext, useContext, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo } from 'react';
 
-interface EditorActionsValue {
+export interface EditorActionsValue {
   invoke: (id: string) => void;
   has: (id: string) => boolean;
   register: (id: string, fn: () => void) => () => void;
 }
 
-const Ctx = createContext<EditorActionsValue | null>(null);
-
-/** Wraps the app so canvas actions are reachable from the palette. */
-export function EditorActionsProvider({ children }: { children: ReactNode }) {
-  const actions = useRef(new Map<string, () => void>());
-
-  const register = useCallback((id: string, fn: () => void) => {
-    actions.current.set(id, fn);
-    return () => {
-      actions.current.delete(id);
-    };
-  }, []);
-
-  const invoke = useCallback((id: string) => actions.current.get(id)?.(), []);
-  const has = useCallback((id: string) => actions.current.has(id), []);
-
-  // Memoized so the value's identity is stable across renders: invoke/has/
-  // register never change, and without this the context value would be a
-  // fresh object every render, which would make useRegisterEditorAction's
-  // effect (keyed on `ctx`) re-run on every provider render.
-  const value = useMemo(() => ({ invoke, has, register }), [invoke, has, register]);
-
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
-}
+/** Shared with the provider component (components/EditorActionsProvider.tsx),
+ *  which lives in its own file so this one exports no components and stays
+ *  fast-refresh clean. */
+export const Ctx = createContext<EditorActionsValue | null>(null);
 
 /** Registers one action for as long as the calling component is mounted. */
 export function useRegisterEditorAction(id: string, fn: () => void): void {

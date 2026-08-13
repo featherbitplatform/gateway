@@ -7,7 +7,7 @@
  *
  * @module components/CommandPalette
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { buildCommands, type CommandContext } from '../commands';
 
 /** Props for {@link CommandPalette}. */
@@ -30,14 +30,17 @@ export function CommandPalette({ open, onClose, ctx }: CommandPaletteProps) {
       .filter((c) => c.title.toLowerCase().includes(q));
   }, [query, ctx]);
 
-  // Reset per opening, and keep the cursor inside the filtered list.
-  useEffect(() => {
+  // Reset per opening — adjusted during render (React's sanctioned pattern
+  // for derived resets) rather than in an effect, so the palette never paints
+  // one frame with the previous session's query.
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
     if (open) {
       setQuery('');
       setActive(0);
     }
-  }, [open]);
-  useEffect(() => setActive(0), [query]);
+  }
 
   if (!open) return null;
 
@@ -80,7 +83,11 @@ export function CommandPalette({ open, onClose, ctx }: CommandPaletteProps) {
           autoFocus
           value={query}
           placeholder="Type a command…"
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            // Keep the cursor inside the newly filtered list.
+            setQuery(e.target.value);
+            setActive(0);
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Escape') {
               e.preventDefault();

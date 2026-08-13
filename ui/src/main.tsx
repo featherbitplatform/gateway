@@ -14,7 +14,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
 import App from './App';
-import { EditorActionsProvider } from './editorActions';
+import { EditorActionsProvider } from './components/EditorActionsProvider';
 
 // Dark-first: dark is the default theme, light is opt-in
 const savedTheme = localStorage.getItem('theme');
