@@ -121,8 +121,9 @@ Props: the resolved `Supernode` definition and the `PortSpecLookup`.
 
 ## Testing
 
-The UI has no unit-test harness; the established pattern is the Playwright
-e2e suite.
+Pure logic modules get vitest unit tests (the established `connectionRules.test.ts`
+pattern — the extracted `policyGraph.ts` is covered this way); UI behavior is
+covered by the Playwright e2e suite.
 
 - Extend `e2e/tests/supernodes.spec.ts` (+ a scenario row in
   `e2e/E2E_TESTBOOK.md`):
