@@ -468,6 +468,22 @@ export function GraphCanvas({
     );
   };
 
+  // Prunes ids removed via keyboard delete (ReactFlow's onNodesDelete, which
+  // bypasses handleDeleteNode) out of expandedSupernodes, so a keyboard-deleted
+  // expanded supernode doesn't leave a stale expansion entry behind.
+  const handleNodesDelete = useCallback((deleted: Node[]) => {
+    setExpandedSupernodes((prev) => {
+      let next: Set<string> | null = null;
+      for (const n of deleted) {
+        if (prev.has(n.id)) {
+          if (!next) next = new Set(prev);
+          next.delete(n.id);
+        }
+      }
+      return next ?? prev;
+    });
+  }, []);
+
   const handleDeleteNode = (nodeId: string) => {
     setNodes((nds) => nds.filter((n) => n.id !== nodeId));
     setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
@@ -567,6 +583,7 @@ export function GraphCanvas({
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onEdgeClick={onEdgeClick}
+        onNodesDelete={handleNodesDelete}
         nodeTypes={nodeTypes}
         deleteKeyCode={['Backspace', 'Delete']}
         fitView
