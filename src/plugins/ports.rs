@@ -40,9 +40,6 @@ pub struct PortSpec {
     pub outputs: &'static [PortDecl],
 }
 
-/// Names no custom port may use. `out` is a YAML alias for `success`.
-pub const RESERVED_PORT_NAMES: &[&str] = &["in", "out", "success", "error"];
-
 const SUCCESS: PortDecl = PortDecl {
     name: "success",
     kind: PortKind::Success,
@@ -180,7 +177,8 @@ pub const LIMIT_SPEC: PortSpec = PortSpec {
         PortDecl {
             name: "limited",
             kind: PortKind::Outcome,
-            description: "The request exceeded a traffic limit; a 429 response is prepared. Wire to client.",
+            description:
+                "The request exceeded a traffic limit; a 429 response is prepared. Wire to client.",
         },
         ERROR,
     ],
@@ -195,7 +193,8 @@ pub const BREAKER_SPEC: PortSpec = PortSpec {
         PortDecl {
             name: "broken",
             kind: PortKind::Outcome,
-            description: "The circuit breaker is open; the break response is prepared. Wire to client.",
+            description:
+                "The circuit breaker is open; the break response is prepared. Wire to client.",
         },
         ERROR,
     ],
@@ -232,7 +231,8 @@ pub const TRAFFIC_SPLIT_SPEC: PortSpec = PortSpec {
         PortDecl {
             name: "routed",
             kind: PortKind::Outcome,
-            description: "The request was steered to and served by a weighted split target; wire to client.",
+            description:
+                "The request was steered to and served by a weighted split target; wire to client.",
         },
         ERROR,
     ],
@@ -258,23 +258,41 @@ pub const PROXY_CACHE_SPEC: PortSpec = PortSpec {
 mod tests {
     use super::*;
 
+    /// Names no custom port may use. `out` is a YAML alias for `success`.
+    /// (Nothing validates this at runtime — every spec is a static in this
+    /// file, so the test below is the enforcement point.)
+    const RESERVED_PORT_NAMES: &[&str] = &["in", "out", "success", "error"];
+
     /// Every registered plugin type resolves to a spec, and every custom
     /// (non-default) output name is lowercase-kebab and non-reserved.
     #[test]
     fn test_every_known_type_has_a_valid_spec() {
         for ty in crate::plugins::KNOWN_PLUGIN_TYPES {
-            let spec = crate::plugins::port_spec(ty)
-                .unwrap_or_else(|| panic!("no port spec for '{ty}'"));
+            let spec =
+                crate::plugins::port_spec(ty).unwrap_or_else(|| panic!("no port spec for '{ty}'"));
             for p in spec.outputs {
                 if p.name != "success" && p.name != "error" {
-                    assert!(!RESERVED_PORT_NAMES.contains(&p.name),
-                        "'{ty}' declares reserved port '{}'", p.name);
-                    assert!(p.name.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
-                        "'{ty}' port '{}' is not lowercase-kebab", p.name);
-                    assert!(matches!(p.kind, PortKind::Outcome),
-                        "'{ty}' custom port '{}' must be kind outcome", p.name);
+                    assert!(
+                        !RESERVED_PORT_NAMES.contains(&p.name),
+                        "'{ty}' declares reserved port '{}'",
+                        p.name
+                    );
+                    assert!(
+                        p.name.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                        "'{ty}' port '{}' is not lowercase-kebab",
+                        p.name
+                    );
+                    assert!(
+                        matches!(p.kind, PortKind::Outcome),
+                        "'{ty}' custom port '{}' must be kind outcome",
+                        p.name
+                    );
                 }
-                assert!(!p.description.is_empty(), "'{ty}' port '{}' lacks description", p.name);
+                assert!(
+                    !p.description.is_empty(),
+                    "'{ty}' port '{}' lacks description",
+                    p.name
+                );
             }
         }
     }
