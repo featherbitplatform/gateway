@@ -2,7 +2,7 @@
  * Policy ⇄ ReactFlow conversion helpers shared by the policy editor canvas
  * (GraphCanvas) and the read-only supernode preview (SupernodePreview).
  *
- * A gateway {@link Policy} — and a {@link Supernode}, which shares the same
+ * A gateway {@link Policy} — and a `Supernode`, which shares the same
  * nodes/edges shape — converts to ReactFlow nodes/edges with `node_id.port`
  * endpoints split per src/graph/engine.rs::parse_edge_endpoint, saved
  * positions honored, auto-layout for never-saved graphs, and edge styling
@@ -39,7 +39,7 @@ export const PORT_STROKE: Record<PortDecl['kind'], string> = {
  * @param sourceType - Plugin type of the edge's source node.
  * @param port - Source port name (already normalized; `out` should be
  *   resolved to `success` by the caller).
- * @param portSpecs - Catalog-derived lookup from {@link buildPortSpecs}.
+ * @param portSpecs - Catalog-derived lookup from `buildPortSpecs`.
  */
 export function portKindFor(
   sourceType: string | undefined,
