@@ -284,11 +284,36 @@ pub fn synthesize_policy(
         }
     }
 
+    // Any output port the chain wiring above didn't already cover — an
+    // "outcome" port on a node that isn't last in the chain — must still be
+    // wired, or compilation will reject it as an unwired mandatory port.
+    // Route it straight to the client: the sandbox has no meaningful "next
+    // node" for a short-circuit outcome like "denied".
+    let already_wired: std::collections::HashSet<String> =
+        edges.iter().map(|e| e.from.clone()).collect();
+    for n in &user_nodes {
+        let spec =
+            crate::plugins::port_spec(&n.node_type).unwrap_or(&crate::plugins::ports::DEFAULT_SPEC);
+        for p in spec.outputs {
+            if matches!(p.kind, crate::plugins::ports::PortKind::Error) {
+                continue;
+            }
+            let from = format!("{}.{}", n.id, p.name);
+            if !already_wired.contains(&from) {
+                edges.push(EdgeConfig {
+                    from,
+                    to: "client.in".to_string(),
+                });
+            }
+        }
+    }
+
     let mut all = Vec::with_capacity(user_nodes.len() + 2);
     all.push(NodeConfig {
         id: "listener".to_string(),
         node_type: "listener".to_string(),
         config: HashMap::new(),
+        config_ref: None,
         position: None,
     });
     all.extend(user_nodes);
@@ -296,6 +321,7 @@ pub fn synthesize_policy(
         id: "client".to_string(),
         node_type: "client".to_string(),
         config: HashMap::new(),
+        config_ref: None,
         position: None,
     });
 
@@ -316,6 +342,7 @@ mod tests {
             id: id.to_string(),
             node_type: node_type.to_string(),
             config: HashMap::new(),
+            config_ref: None,
             position: None,
         }
     }
@@ -459,7 +486,10 @@ mod tests {
             vec![
                 "listener.out->a.in",
                 "a.success->b.in",
-                "b.success->client.in"
+                "b.success->client.in",
+                // `a` (cors) has a mandatory outcome port not covered by the
+                // chain wiring above — auto-wired straight to `client`.
+                "a.preflight->client.in"
             ]
         );
         // The policy must satisfy the same validation the editor applies.

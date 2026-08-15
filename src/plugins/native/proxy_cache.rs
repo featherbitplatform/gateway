@@ -22,26 +22,28 @@
 //!  listener →│ proxy-cache      │success →│ upstream │success →│ proxy-cache      │→ client
 //!            │  (phase=lookup)  │        │          │        │  (phase=store)   │
 //!            └──────────────────┘        └──────────┘        └──────────────────┘
-//!                    │ error                                    (caches responses
+//!                    │ hit                                      (caches responses
 //!                    ▼                                        whose status is cacheable)
 //!               client.in
 //!         (cached response, HIT)
 //! ```
 //!
 //! On a hit, the lookup node writes the cached response onto the context, adds
-//! `featherbit-cache-status: HIT`, and fails with `PROXY_CACHE_HIT` — its `error`
-//! port goes to `client.in`, delivering the cached response without touching
-//! the upstream. On a miss it passes through; the store node then caches the
-//! upstream response and marks it `featherbit-cache-status: MISS`.
+//! `featherbit-cache-status: HIT`, and exits through the dedicated `hit`
+//! port — wired to `client.in`, delivering the cached response without
+//! touching the upstream. On a miss it passes through `success`; the store
+//! node then caches the upstream response and marks it
+//! `featherbit-cache-status: MISS`.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Header written by both nodes to report the cache outcome.
 const CACHE_STATUS_HEADER: &str = "featherbit-cache-status";
@@ -65,8 +67,10 @@ pub struct ProxyCachePlugin {
     role: Role,
     /// Shared cache namespace — links the lookup and store nodes.
     id: String,
-    /// Cache-key components, each interpolated and joined per request.
-    cache_key: Vec<String>,
+    /// Cache-key components, each rendered (supports `{{namespace.path}}`
+    /// references and legacy `$var` interpolation — see
+    /// [`Template::render_with_legacy`]) and joined per request.
+    cache_key: Vec<Template>,
     /// Freshness lifetime for stored entries.
     cache_ttl: Duration,
     /// Response statuses eligible for caching.
@@ -87,9 +91,11 @@ impl ProxyCachePlugin {
     /// - `id` (string, **required**): shared cache namespace; the lookup and
     ///   store nodes of one pair must use the same `id`.
     /// - `cache_key` (array of string templates **or** a single string,
-    ///   default `["$request_method", "$host", "$uri"]`): components
-    ///   interpolated (see [`crate::vars::interpolate`]) and joined to form the
-    ///   key. Both nodes must configure it identically.
+    ///   default `["$request_method", "$host", "$uri"]`): components rendered
+    ///   (supports `{{namespace.path}}` references plus legacy `$var`
+    ///   interpolation — see
+    ///   [`crate::vars::template::Template::render_with_legacy`]) and joined
+    ///   to form the key. Both nodes must configure it identically.
     /// - `cache_ttl` (integer seconds, default `300`): freshness lifetime.
     /// - `cache_http_statuses` (array, default `[200, 301, 404]`): statuses
     ///   eligible for caching. (`cache_http_status`, APISIX's singular spelling,
@@ -147,7 +153,7 @@ impl ProxyCachePlugin {
             .ok_or("proxy-cache: 'id' is required (links the lookup/store pair)")?
             .to_string();
 
-        let cache_key = match config.get("cache_key") {
+        let cache_key: Vec<String> = match config.get("cache_key") {
             None => vec![
                 "$request_method".to_string(),
                 "$host".to_string(),
@@ -173,6 +179,9 @@ impl ProxyCachePlugin {
                 )
             }
         };
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let cache_key: Vec<Template> = cache_key.iter().map(|s| Template::parse(s).0).collect();
 
         let ttl_secs = config
             .get("cache_ttl")
@@ -232,15 +241,17 @@ impl ProxyCachePlugin {
         self.cache_methods.contains(&method)
     }
 
-    /// Derives the cache key: `id` namespace + interpolated `cache_key`
-    /// components joined by a control-char separator (outside the character set
-    /// of any header/method/path, so components can't collide).
+    /// Derives the cache key: `id` namespace + `cache_key` components
+    /// (each rendered via `{{namespace.path}}` references plus legacy `$var`
+    /// interpolation) joined by a control-char separator (outside the
+    /// character set of any header/method/path, so components can't
+    /// collide).
     fn derive_key(&self, ctx: &Context) -> String {
         let mut key = String::with_capacity(64);
         key.push_str(&self.id);
         for component in &self.cache_key {
             key.push('\u{1}');
-            key.push_str(&crate::vars::interpolate(ctx, component));
+            key.push_str(&component.render_with_legacy(ctx));
         }
         key
     }
@@ -277,17 +288,10 @@ impl Plugin for ProxyCachePlugin {
         "proxy-cache"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Non-cacheable methods bypass the cache entirely in both phases.
         if !self.method_cacheable(&ctx) {
-            return Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            });
+            return Ok(PluginOutput::success(ctx));
         }
 
         let key = self.derive_key(&ctx);
@@ -296,7 +300,7 @@ impl Plugin for ProxyCachePlugin {
             Role::Lookup => {
                 if let Some(entry) = self.resources.traffic.cache.get(&key) {
                     // Hit: serve the cached response and short-circuit to the
-                    // client via the error port (→ client.in).
+                    // client via the `hit` port (→ client.in).
                     ctx.response.status_code = entry.status;
                     ctx.response.headers = entry.headers;
                     ctx.response.body = entry.body;
@@ -309,22 +313,10 @@ impl Plugin for ProxyCachePlugin {
                         .headers
                         .insert(CACHE_STATUS_HEADER.to_string(), vec!["HIT".to_string()]);
 
-                    let error = GatewayError {
-                        node_id: String::new(),
-                        code: "PROXY_CACHE_HIT".to_string(),
-                        message: "Served from cache".to_string(),
-                        metadata: HashMap::new(),
-                    };
-                    return Err(PluginExecutionError {
-                        context: ctx,
-                        error,
-                    });
+                    return Ok(PluginOutput::on_port(ctx, "hit"));
                 }
                 // Miss: continue to the upstream.
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             Role::Store => {
                 let status = ctx.response.status_code;
@@ -341,10 +333,7 @@ impl Plugin for ProxyCachePlugin {
                 ctx.response
                     .headers
                     .insert(CACHE_STATUS_HEADER.to_string(), vec!["MISS".to_string()]);
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
         }
     }
@@ -443,25 +432,28 @@ mod tests {
         let s = store(&r);
 
         // Cold lookup → miss (passes through).
-        let miss = l.execute(ctx("GET"), &HashMap::new()).await;
-        assert!(miss.is_ok(), "cold lookup should miss and pass through");
+        let miss = l.execute(ctx("GET")).await.unwrap();
+        assert!(
+            miss.port.is_none(),
+            "cold lookup should miss and pass through"
+        );
 
         // Upstream produced a 200 body → store caches it.
         let mut resp = ctx("GET");
         resp.response.status_code = 200;
         resp.response.body = Bytes::from_static(b"cached-body");
-        let stored = s.execute(resp, &HashMap::new()).await.unwrap();
+        let stored = s.execute(resp).await.unwrap();
         assert_eq!(
             stored.context.response.headers.get(CACHE_STATUS_HEADER),
             Some(&vec!["MISS".to_string()])
         );
 
-        // Warm lookup → hit, short-circuits with the cached body.
+        // Warm lookup → hit, short-circuits with the cached body on the `hit` port.
         let hit = l
-            .execute(ctx("GET"), &HashMap::new())
+            .execute(ctx("GET"))
             .await
-            .expect_err("warm lookup should hit and short-circuit");
-        assert_eq!(hit.error.code, "PROXY_CACHE_HIT");
+            .expect("warm lookup should hit and short-circuit");
+        assert_eq!(hit.port, Some("hit"));
         assert_eq!(hit.context.response.status_code, 200);
         assert_eq!(
             hit.context.response.body,
@@ -483,9 +475,12 @@ mod tests {
         let mut resp = ctx("POST");
         resp.response.status_code = 200;
         resp.response.body = Bytes::from_static(b"not-cached");
-        s.execute(resp, &HashMap::new()).await.unwrap();
+        s.execute(resp).await.unwrap();
 
-        let out = l.execute(ctx("POST"), &HashMap::new()).await;
-        assert!(out.is_ok(), "non-cacheable method must never hit the cache");
+        let out = l.execute(ctx("POST")).await.unwrap();
+        assert!(
+            out.port.is_none(),
+            "non-cacheable method must never hit the cache"
+        );
     }
 }

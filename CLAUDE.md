@@ -60,28 +60,32 @@ tool configs at the repo root are the shared source of truth):
 A high-performance API gateway delivered as a single Rust binary. (The original `REQUIREMENTS.md` specification no longer exists in the repo; the closest current equivalents are the docs site under `website/docs/` and the honest-state ledger at `website/docs/reference/roadmap.md`.)
 
 Core features:
-- **Node-graph routing policies** — request/response pipelines declared in YAML with success/error port routing
+- **Node-graph routing policies** — request/response pipelines declared in YAML with declared-port routing (success/outcome/error); 37 node types exit deliberate rejections, redirects, throttles, and cache/split short-circuits on dedicated outcome ports (`denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`, `routed`, `hit`) instead of the `error` port, and the compiler rejects any policy that leaves a `success`/outcome port unwired
 - **Two-tier plugin system** — 80+ native Rust node types (structural nodes, proxy/transform, security, auth & authz incl. interactive SSO, traffic control, 17 loggers, tracing, metrics, serverless/FaaS — most ported from Apache APISIX 3.17) + scripted plugins in Lua (mlua, Luau runtime)
 - **Context object** — `request`, `response`, `message`, `errors` flowing through every node
 - **Admin API** — axum-based REST API on separate port with Basic Auth, CRUD for routes/policies, health/ready/metrics endpoints
 - **Hot-reload** — file watcher (notify) triggers config reload on gateway.yaml changes
 - **Prometheus metrics** — per-route and per-node counters/histograms at `/metrics`
+- **Supernodes** — reusable named subgraphs inlined into policies at compile time
+- **Shared plugin configs** — named, typed config profiles referenced by nodes via config_ref, resolved at compile time
+- **Context var autocomplete** — $var suggestions with live value preview from debug traces, plus GET /api/vars catalog
+- **Universal config templates** — {{namespace.path}} rendering in all traffic-bound plugin config, with env vars and live-preview suggestions everywhere
 
 ## Architecture
 
-**Request flow**: HTTP request → `server::listener` matches route → builds `Context` → `CompiledGraph::execute()` walks nodes following success/error edges → final `Context.response` sent to client.
+**Request flow**: HTTP request → `server::listener` matches route → builds `Context` → `CompiledGraph::execute()` walks nodes following declared-port edges (success/outcome/error) → final `Context.response` sent to client.
 
 **Key modules**:
-- `src/graph/engine.rs` — compiles PolicyConfig into CompiledGraph, executes node graph with success/error port routing
+- `src/graph/engine.rs` — compiles PolicyConfig into CompiledGraph, executes node graph with declared-port routing (success/outcome/error)
 - `src/state.rs` — SharedState with RwLock-protected routes, used by both data-plane and admin API
 - `src/plugins/mod.rs` — Plugin trait + `create_plugin()` factory for all 80+ node types
 - `src/plugins/script/lua_runtime.rs` — Context↔Lua table marshalling, script execution
 - `src/admin/` — axum Router with basic auth middleware, CRUD endpoints, /healthz, /readyz, /metrics
 - `src/debug/` — debug mode: per-request policy-execution traces (context snapshot + derived diff per node, redacted at capture time, bounded ring buffer) and the plugin sandbox; served from `/api/debug/*` and the UI's Debug panel. Off unless `debug.enabled` is set in `system.yaml` (restart-gated by design)
 
-**Plugin contract**: `async fn execute(ctx, named_inputs) -> Result<PluginOutput, PluginExecutionError>`. Errors include the context so the graph engine can route through error ports.
+**Plugin contract**: `async fn execute(&self, ctx: Context) -> Result<PluginOutput, PluginExecutionError>` (no `named_inputs` — removed as dead plumbing when named output ports landed). `PluginOutput.port: Option<&'static str>` names the declared output port the result leaves on (`None` = `success`); it must match a port of kind `outcome` in the node type's static `PortSpec` (`src/plugins/ports.rs`). Errors include the context so the graph engine can route through the node's error edge (or the policy catch-all).
 
-**Edge format in YAML**: `from: node_id.port` / `to: node_id.port`. Ports: `out`, `success`, `error`, `in`.
+**Edge format in YAML**: `from: node_id.port` / `to: node_id.port`. Ports: `out` (alias for `success`), `success`, plugin-declared `outcome` ports (e.g. `denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`, `routed`, `hit`), `error`, `in`. Every `success`/`outcome` port must be wired or policy compilation fails; `error` alone keeps its fallback chain.
 
 ## Configuration
 
@@ -98,7 +102,7 @@ Core features:
 - Python scripting runtime (pyo3) — Lua (mlua/Luau) is the shipped scripting runtime
 - `unpack` node
 
-(The web UI node-graph editor and the proxy-cache plugin **are** implemented — the UI is embedded via `rust-embed` and served from `src/admin/ui.rs`; proxy-cache is registered in the `create_plugin` factory. The UI is gated by the default-on `ui` cargo feature (`--no-default-features` = headless build, published as the `-headless` Docker variant) and by `admin.ui_enabled` at runtime.)
+(The web UI node-graph editor and the proxy-cache plugin **are** implemented — the UI is embedded via `rust-embed` and served from `src/admin/ui.rs`; proxy-cache is registered in the `create_plugin` factory. The UI is gated by the default-on `ui` cargo feature (`--no-default-features` = headless build, published as the `-headless` Docker variant) and by `admin.ui_enabled` at runtime. The editor also has a `Ctrl+K` command palette — a searchable, keyboard-navigable list of every editor action with its shortcut — and renders each node's ports as labeled rows, toggleable from the palette (`P`, default on, persisted per browser in `localStorage`). Supernode instances on the policy canvas expand in place (header chevron) to a read-only, zoomed-out preview of their inner graph — a nested inert ReactFlow in `ui/src/components/SupernodePreview.tsx`, fed by the shared conversion helpers in `ui/src/policyGraph.ts`; expansion state lives only in canvas state and never persists into the saved policy.)
 
 TLS termination, HTTP/2, WebSocket, L4 TCP/UDP stream proxying, and graceful shutdown **are** implemented. On SIGTERM/Ctrl+C every listener stops accepting and in-flight HTTP/Admin requests drain (hyper `GracefulShutdown`, bounded by `timeouts.shutdown_timeout_seconds`) before exit; signal handling + the shutdown `watch` channel live in `src/main.rs`. Set `tls:` in `system.yaml` for HTTPS on the data-plane (and `admin.tls` for the Admin API); HTTP/2 is negotiated per connection (ALPN over TLS, h2c over plaintext) and advertised to TLS upstreams. WebSocket upgrades run the policy graph then relay to a `ws://`/`wss://` upstream, accepting both HTTP/1.1 upgrades and HTTP/2 extended CONNECT (RFC 8441) from clients. L4 stream listeners under `stream:` proxy raw TCP/UDP to a load-balanced pool via the shared `src/balancer.rs`. TLS certs hot-reload on cert-file change (ArcSwap + notify watcher; `src/server/tls.rs`), mTLS client-cert verification is supported (`client_ca_path` on `TlsConfig`; the client identity — fingerprint, subject CN, SAN DNS — is exposed to the graph as `__client_cert_fingerprint`/`__client_cert_subject_cn`/`__client_cert_san_dns` via `x509-parser`), SNI multi-cert termination selects a per-hostname cert (`sni_certs` + a `ResolvesServerCert` resolver in `src/server/tls.rs`), and TCP streams support SNI-based TLS passthrough routing (`src/stream/sni.rs`; the shared wildcard matcher `SniPattern` is reused by both). Outbound mTLS is supported per `upstream` node (`client_cert_path`/`client_key_path`, plus `ca_cert_path` for private CAs), applied to both HTTPS proxying and wss relays. Transport code: `src/server/tls.rs`, `src/server/websocket.rs`, `src/stream/`. Follow-ups: CRL/OCSP revocation, RFC 8441 to the upstream, dynamic stream routes.
 

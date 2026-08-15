@@ -6,7 +6,12 @@
  * @module components/PluginNode
  */
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { ChevronDown, ChevronUp, Link2 } from 'lucide-react';
 import { getPluginMeta } from '../pluginMeta';
+import { isEntryType, resolveOutputs } from '../nodeKinds';
+import { SupernodePreview } from './SupernodePreview';
+import type { PortSpecLookup } from '../portSpecs';
+import type { PortDecl, PortSpec, Supernode } from '../types';
 
 /**
  * Data payload stored on every `pluginNode` ReactFlow node. GraphCanvas
@@ -20,11 +25,39 @@ export interface PluginNodeData {
   pluginType: string;
   /** Plugin configuration, serialized verbatim into the policy node's `config` on save. */
   config: Record<string, unknown>;
+  /** Optional name of a shared plugin config this node inherits from. */
+  configRef?: string;
+  /**
+   * Declared ports for this node's plugin type, from the `GET /api/plugins`
+   * catalog (GraphCanvas looks this up by `pluginType` when building nodes).
+   * Undefined for supernode boundary pseudo-nodes and any type missing from
+   * the catalog; PluginNode resolves the effective outputs via
+   * {@link module:nodeKinds.resolveOutputs}, which applies the entry/terminal
+   * special cases and the default success+error fallback.
+   */
+  ports?: PortSpec;
   /** Called with the node id when the node is clicked; used by GraphCanvas to open the inspector. */
   onSelect?: (nodeId: string) => void;
+  /** When false, ports render as bare handles with hover tooltips; default true renders labeled rows. */
+  showPortNames?: boolean;
+  /** Resolved supernode definition for `supernode` nodes; undefined = unresolved (stale/missing reference). */
+  supernodeDef?: Supernode;
+  /** Catalog port-spec lookup, threaded to the expanded preview's inner nodes (supernode nodes only). */
+  portSpecs?: PortSpecLookup;
+  /** Whether this supernode instance is expanded to its inline preview. */
+  expanded?: boolean;
+  /** Called with the node id when the expand/fold chevron is clicked (supernode nodes only). */
+  onToggleExpand?: (nodeId: string) => void;
   /** Index signature required by ReactFlow's node data constraint. */
   [key: string]: unknown;
 }
+
+/** Stroke/handle color for each port kind. */
+const PORT_COLOR: Record<PortDecl['kind'], string> = {
+  success: 'var(--success)',
+  outcome: 'var(--accent)',
+  error: 'var(--error)',
+};
 
 /**
  * Builds the inline style for a connection handle dot.
@@ -40,29 +73,70 @@ const handleStyle = (color: string): React.CSSProperties => ({
   boxShadow: `0 0 6px ${color}`,
 });
 
+/** One port row: relative so its Handle anchors to the row, not the node. */
+const portRowStyle = (align: 'left' | 'right'): React.CSSProperties => ({
+  position: 'relative',
+  height: 18,
+  lineHeight: '18px',
+  padding: '0 10px',
+  textAlign: align,
+  fontFamily: 'var(--font-mono)',
+  fontSize: 'var(--text-2xs)',
+  color: 'var(--text-muted)',
+  whiteSpace: 'nowrap',
+});
+
 /**
  * Renders one plugin node on the canvas.
  *
- * Handle layout encodes the port model:
- * - `in` (left, target) — omitted on `listener`, the pipeline entry point.
- * - `success` (right, source) — omitted on `client`, the terminal node;
- *   centered on `listener`, otherwise paired with the error handle.
- * - `error` (right, source, lower) — only on regular plugin nodes, i.e.
- *   neither `listener` nor `client`.
+ * Handle layout encodes the port model (see `../nodeKinds` for the shared
+ * entry/terminal classification and output resolution):
+ * - `in` (left, target) — omitted on entry-like nodes (`listener`, `input`).
+ * - Outputs (right, source) — omitted on terminal-like nodes (`client`, `output`,
+ *   `error`, none of which get a `success` output either); a single `success`
+ *   handle on entry-like nodes (`listener` reads its own catalog spec, which
+ *   happens to be exactly one `success` port; the non-catalog `input`
+ *   pseudo-node uses a hard-coded fallback of the same shape); otherwise one
+ *   handle per port declared in `data.ports.outputs` (falling back to the
+ *   default success+error pair when the type has no catalog entry), colored
+ *   by {@link PortDecl.kind}. When `data.showPortNames` is not `false`
+ *   (the default), each port renders as a labeled row inside the node body,
+ *   with its handle centered on the row; otherwise handles fall back to the
+ *   previous evenly-spaced absolute placement with only a hover tooltip.
  *
  * Clicking the node invokes `data.onSelect(id)`; selection is shown with an
  * accent border and ring.
  *
  * @remarks
- * These handle ids are the ports serialized as `node_id.port` edge endpoints,
- * matching the success/error routing executed in src/graph/engine.rs.
+ * Handle ids are the ports serialized as `node_id.port` edge endpoints,
+ * matching the success/outcome/error routing executed in src/graph/engine.rs
+ * and declared in src/plugins/ports.rs. `input`/`output`/`error` are the
+ * supernode boundary pseudo-nodes (src/graph/expand.rs) alongside
+ * listener/client; they are not catalog types, so their handle counts fall
+ * back to the hard-coded shapes in `../nodeKinds` rather than reading
+ * `data.ports`.
  */
 export function PluginNode({ id, data, selected }: NodeProps) {
   const nodeData = data as unknown as PluginNodeData;
   const meta = getPluginMeta(nodeData.pluginType);
   const Icon = meta.icon;
-  const isListener = nodeData.pluginType === 'listener';
-  const isClient = nodeData.pluginType === 'client';
+  // Entry-like nodes have no input handle; terminal-like nodes have no
+  // outputs. `input`/`output`/`error` are supernode boundary pseudo-nodes
+  // (see src/graph/expand.rs) and mirror listener/client on the canvas.
+  // This classification (and the output-port resolution below) is shared
+  // with GraphCanvas's unwired-port save check via ../nodeKinds, so the two
+  // can't independently drift on what counts as an output.
+  const isEntry = isEntryType(nodeData.pluginType);
+  const outputs: PortDecl[] = resolveOutputs(nodeData.pluginType, nodeData.ports);
+  const isSupernode = nodeData.pluginType === 'supernode';
+  const isExpanded = isSupernode && nodeData.expanded;
+  // The absolute/evenly-spaced handle layout (showNames === false) assumes a
+  // fixed card height; expanding adds 320px of preview below the ports, which
+  // would slide those handles down into the preview area. Force the
+  // labeled-rows layout whenever expanded so handles stay anchored to their
+  // rows regardless of the show-port-names preference. Collapsed nodes and
+  // non-supernodes are unaffected.
+  const showNames = nodeData.showPortNames !== false || isExpanded;
 
   return (
     <div
@@ -75,7 +149,9 @@ export function PluginNode({ id, data, selected }: NodeProps) {
         borderRadius: 'var(--radius-md)',
         boxShadow: selected
           ? '0 0 0 3px var(--accent-soft), var(--shadow-md)'
-          : 'var(--shadow-sm)',
+          : isExpanded
+            ? 'var(--shadow-md)'
+            : 'var(--shadow-sm)',
         transition:
           'border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out)',
       }}
@@ -102,6 +178,20 @@ export function PluginNode({ id, data, selected }: NodeProps) {
         >
           {nodeData.pluginType}
         </span>
+        {isSupernode && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              nodeData.onToggleExpand?.(id);
+            }}
+            aria-label={nodeData.expanded ? 'Collapse supernode preview' : 'Expand supernode preview'}
+            title={nodeData.expanded ? 'Fold preview' : 'Preview contents'}
+            className="flex items-center justify-center"
+            style={{ marginLeft: 'auto', width: 18, height: 18, color: '#fff', opacity: 0.9, background: 'transparent' }}
+          >
+            {nodeData.expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          </button>
+        )}
       </div>
 
       {/* Body */}
@@ -116,37 +206,107 @@ export function PluginNode({ id, data, selected }: NodeProps) {
         {nodeData.label}
       </div>
 
-      {/* Input handle — not on listener (it's the entry point) */}
-      {!isListener && (
-        <Handle
-          type="target"
-          position={Position.Left}
-          id="in"
-          style={handleStyle('var(--accent)')}
-        />
-      )}
-
-      {/* Success output — not on client (it's the terminal) */}
-      {!isClient && (
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="success"
+      {nodeData.configRef && (
+        <div
+          className="flex items-center"
           style={{
-            ...handleStyle('var(--success)'),
-            top: isListener ? '50%' : '36%',
+            gap: 4,
+            padding: '0 10px 8px',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--text-2xs)',
+            color: 'var(--text-muted)',
           }}
-        />
+          title={`Inherits shared config '${nodeData.configRef}'`}
+        >
+          <Link2 size={10} style={{ flexShrink: 0 }} />
+          {nodeData.configRef}
+        </div>
       )}
 
-      {/* Error output — only on regular plugin nodes */}
-      {!isListener && !isClient && (
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="error"
-          style={{ ...handleStyle('var(--error)'), top: '68%' }}
-        />
+      {/* Ports. With names shown, each port is a labeled row and its handle
+          sits at the row's vertical centre — @xyflow anchors edges off DOM
+          layout, so rows and handles stay aligned however tall the header
+          and body grow. With names hidden, handles keep the previous
+          evenly-spaced absolute placement. */}
+      {showNames ? (
+        <div style={{ borderTop: '1px solid var(--border)', padding: '4px 0' }}>
+          {!isEntry && (
+            <div style={portRowStyle('left')}>
+              <Handle
+                type="target"
+                position={Position.Left}
+                id="in"
+                title={nodeData.ports?.input ?? undefined}
+                style={{ ...handleStyle('var(--accent)'), top: '50%' }}
+              />
+              in
+            </div>
+          )}
+          {outputs.map((p) => (
+            <div key={p.name} style={portRowStyle('right')}>
+              {p.name}
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={p.name}
+                title={`${p.name} — ${p.description}`}
+                style={{ ...handleStyle(PORT_COLOR[p.kind]), top: '50%' }}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          {!isEntry && (
+            <Handle
+              type="target"
+              position={Position.Left}
+              id="in"
+              title={nodeData.ports?.input ?? undefined}
+              style={handleStyle('var(--accent)')}
+            />
+          )}
+          {outputs.map((p, i) => (
+            <Handle
+              key={p.name}
+              type="source"
+              position={Position.Right}
+              id={p.name}
+              title={`${p.name} — ${p.description}`}
+              style={{
+                ...handleStyle(PORT_COLOR[p.kind]),
+                top: `${outputs.length === 1 ? 50 : 25 + (i * 50) / (outputs.length - 1)}%`,
+              }}
+            />
+          ))}
+        </>
+      )}
+
+      {/* Expanded supernode preview. Sits BELOW the port rows so the
+          in/success/error handles barely move on expand — @xyflow re-anchors
+          edges off DOM layout either way. nowheel/nopan/nodrag isolate
+          preview events from the outer canvas; stopPropagation keeps a
+          preview click from opening the inspector. */}
+      {isSupernode && nodeData.expanded && (
+        <div
+          data-testid="supernode-preview"
+          className="nowheel nopan nodrag"
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            width: 480,
+            height: 320,
+            borderTop: '1px solid var(--border)',
+            borderRadius: '0 0 6px 6px',
+            overflow: 'hidden',
+            background: 'var(--bg-canvas)',
+          }}
+        >
+          <SupernodePreview
+            name={typeof nodeData.config?.name === 'string' ? nodeData.config.name : undefined}
+            supernode={nodeData.supernodeDef}
+            portSpecs={nodeData.portSpecs ?? {}}
+          />
+        </div>
       )}
     </div>
   );

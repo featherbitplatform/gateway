@@ -28,11 +28,15 @@ These are recorded without any plugin and served at `/metrics` on the Admin API 
 |---|---|---|
 | `gateway_requests_total` | `route`, `method`, `status` | Total requests. |
 | `gateway_request_duration_seconds` | `route` | End-to-end request-latency histogram. |
-| `gateway_request_errors_total` | `route`, `error_code` | Failed requests. |
+| `gateway_request_errors_total` | `route`, `error_code` | Genuine node failures — one per error record in `context.errors` (see the note below). |
 | `gateway_node_executions_total` | `policy`, `node_id`, `node_type` | Graph-node executions. |
 | `gateway_node_duration_seconds` | `policy`, `node_id` | Per-node execution-latency histogram. |
-| `gateway_node_errors_total` | `policy`, `node_id`, `error_code` | Node failures. |
+| `gateway_node_errors_total` | `policy`, `node_id`, `error_code` | Node failures (same criterion). |
 | `gateway_consumer_requests_total` | `consumer`, `route` | **Added by this node** — per-consumer request count. |
+
+:::info Errors are failures, not rejections
+Both error counters record only cases where a node **could not do its job** (unreachable upstream, failed IdP callout, counter store down, unparseable input). A deliberate rejection exits on an [outcome port](../../concepts/policies-and-graphs.md#outcome-ports-and-the-mandatory-wiring-rule) — `denied`, `limited`, `broken`, `abort`, `redirect`, `preflight`, `routed`, `hit` — and appends **no** error record, so it increments neither. Count denials and throttles from `gateway_requests_total`'s `status` label instead.
+:::
 
 ## Configuration
 

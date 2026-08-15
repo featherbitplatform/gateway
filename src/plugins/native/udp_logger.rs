@@ -27,7 +27,7 @@ use tokio::net::UdpSocket;
 
 use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Serializes one entry to its datagram payload (compact JSON bytes). Pure and
@@ -79,7 +79,7 @@ impl BatchFlusher for UdpFlusher {
 /// The `udp-logger` plugin node.
 pub struct UdpLoggerPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
 }
@@ -91,7 +91,7 @@ impl UdpLoggerPlugin {
     /// - `host` (string, **required**): UDP server hostname or IP.
     /// - `port` (integer, **required**): UDP server port.
     /// - `timeout` (integer seconds, default `3`): per-datagram send timeout.
-    /// - `log_format` (object): custom `name -> "$var"` entry.
+    /// - `log_format` (object): custom `name -> "template"` entry (`{{namespace.path}}` references plus legacy `$var` interpolation).
     /// - `include_req_body` / `include_resp_body` (bool, default `false`).
     /// - batch keys — see [`BatchConfig::from_config`].
     ///
@@ -152,7 +152,7 @@ impl Plugin for UdpLoggerPlugin {
         "udp-logger"
     }
 
-    async fn execute(&self, ctx: Context, _named_inputs: &HashMap<String, Value>) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let entry = build_entry(
             &ctx,
             self.log_format.as_ref(),
@@ -160,10 +160,7 @@ impl Plugin for UdpLoggerPlugin {
             self.include_resp_body,
         );
         self.sink.push(entry);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 

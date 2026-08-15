@@ -23,13 +23,16 @@ use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundClient, OutboundRequest, OutboundResponse};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 use super::faas;
 
 /// Forwards the request to an OpenFunction endpoint and maps its reply into
 /// `Context.response`.
 pub struct OpenFunctionPlugin {
-    function_uri: String,
+    /// Supports `{{namespace.path}}` template references, rendered per
+    /// request.
+    function_uri: Template,
     /// Pre-computed `Basic <base64(service_token)>` header value, if configured.
     authorization: Option<String>,
     ssl_verify: bool,
@@ -66,8 +69,10 @@ impl OpenFunctionPlugin {
             .get("function_uri")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "openfunction plugin requires 'function_uri'".to_string())?
-            .to_string();
+            .ok_or_else(|| "openfunction plugin requires 'function_uri'".to_string())?;
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let function_uri = Template::parse(function_uri).0;
 
         let authorization = config
             .get("authorization")
@@ -101,7 +106,8 @@ impl OpenFunctionPlugin {
     /// Builds the outbound request: the client's method/body/query forwarded to
     /// `function_uri` plus the optional `Authorization: Basic` header.
     fn build_request(&self, ctx: &Context) -> Result<OutboundRequest, String> {
-        let (mut headers, url, method) = faas::forward_parts(&self.function_uri, ctx)?;
+        let function_uri = self.function_uri.render(ctx);
+        let (mut headers, url, method) = faas::forward_parts(&function_uri, ctx)?;
         if let Some(authz) = &self.authorization {
             headers.retain(|(k, _)| k != "authorization");
             headers.push(("authorization".to_string(), authz.clone()));
@@ -131,11 +137,7 @@ impl Plugin for OpenFunctionPlugin {
         "openfunction"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let request = match self.build_request(&ctx) {
             Ok(req) => req,
             Err(message) => return Err(reject(ctx, 502, message)),
@@ -144,10 +146,7 @@ impl Plugin for OpenFunctionPlugin {
         match self.client.request(request).await {
             Ok(response) => {
                 apply_response(&mut ctx, response);
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             Err(e) => {
                 let (status, message) = faas::classify_error("openfunction", &e);
@@ -231,6 +230,19 @@ mod tests {
     }
 
     #[test]
+    fn test_function_uri_renders_template() {
+        let p = plugin(serde_json::json!({
+            "function_uri": "http://of.svc/{{request.headers.x-fn}}"
+        }));
+        let mut c = ctx();
+        c.request
+            .headers
+            .insert("x-fn".to_string(), vec!["hello".to_string()]);
+        let req = p.build_request(&c).unwrap();
+        assert_eq!(req.url, "http://of.svc/hello");
+    }
+
+    #[test]
     fn test_no_auth_when_absent() {
         let p = plugin(serde_json::json!({ "function_uri": "http://of.svc/fn" }));
         let req = p.build_request(&ctx()).unwrap();
@@ -243,7 +255,7 @@ mod tests {
             "function_uri": "http://127.0.0.1:1/fn",
             "timeout": 200
         }));
-        let err = p.execute(ctx(), &HashMap::new()).await.unwrap_err();
+        let err = p.execute(ctx()).await.unwrap_err();
         assert_eq!(err.error.code, "OPENFUNCTION_CALLOUT_ERROR");
         assert!(err.context.response.status_code >= 502);
     }

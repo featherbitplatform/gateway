@@ -41,7 +41,7 @@ use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 const API_VERSION: &str = "0.6.0";
@@ -50,7 +50,7 @@ const SIGNATURE_METHOD: &str = "hmac-sha1";
 /// Node that batches access-log entries and ships them to Alibaba Cloud SLS.
 pub struct SlsLoggerPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
 }
@@ -448,7 +448,7 @@ impl Plugin for SlsLoggerPlugin {
         "sls-logger"
     }
 
-    async fn execute(&self, ctx: Context, _named_inputs: &HashMap<String, Value>) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let entry = build_entry(
             &ctx,
             self.log_format.as_ref(),
@@ -456,10 +456,7 @@ impl Plugin for SlsLoggerPlugin {
             self.include_resp_body,
         );
         self.sink.push(entry);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 

@@ -9,11 +9,22 @@
 //!   the node config and placing the node in the graph is the enable switch.
 //! - APISIX only intercepts responses whose source is not the upstream
 //!   (`get_response_source(ctx) ~= "upstream"`). featherbit's equivalent
-//!   heuristic is `Context.errors` being non-empty — a response produced by
-//!   the gateway (error-handler, auth rejection, ...) always carries the
-//!   error record that routed it there, while a clean upstream response does
-//!   not. An upstream's own 502 therefore passes through untouched, exactly
-//!   as in APISIX.
+//!   heuristic is `Context.errors` being non-empty — a response produced by a
+//!   node that **failed** (upstream connection error, a failed IdP callout,
+//!   the error-handler that rendered it) always carries the error record that
+//!   routed it there, while a clean upstream response does not. An upstream's
+//!   own 502 therefore passes through untouched, exactly as in APISIX.
+//!
+//! ## Outcome exits are not replaced
+//!
+//! `gateway_generated` keys on the presence of an **error record**, so this
+//! node does not touch responses that arrived on an *outcome* port — a
+//! `denied` 403, a `limited` 429, a `broken` 503, an `abort`. Those are
+//! deliberate, already-formed responses and carry no error record. They also
+//! do not normally pass through here at all: an outcome port is wired straight
+//! to `client`. To style them, wire that port through a response-shaping node
+//! (`response-rewrite`, or `exit-transformer` with `always: true`) on its way
+//! to `client` instead of expecting `error-page` to catch them.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -21,6 +32,7 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// The status codes APISIX's error-page supports (its metadata schema
 /// hardcodes `error_404` / `error_500` / `error_502` / `error_503`).
@@ -33,8 +45,14 @@ const SUPPORTED_STATUS: [(u16, &str); 4] = [
 
 /// One configured error page.
 struct ErrorPage {
-    body: Bytes,
-    content_type: String,
+    /// Supports `{{namespace.path}}` references (no legacy `$var`
+    /// interpolation — error-page bodies never supported it, so this sweep
+    /// must not start).
+    body: Template,
+    /// Supports `{{namespace.path}}` references (no legacy `$var`
+    /// interpolation — error-page content types never supported it, so this
+    /// sweep must not start).
+    content_type: Template,
 }
 
 /// Replaces `Context.response.body` and `content-type` when the response was
@@ -62,9 +80,11 @@ impl ErrorPagePlugin {
     /// intercepted): `error_404`, `error_500`, `error_502`, `error_503` —
     /// each an object with:
     /// - `body` (string, default an APISIX-style HTML page for that status):
-    ///   the replacement response body.
+    ///   the replacement response body; supports `{{namespace.path}}`
+    ///   references.
     /// - `content_type` (string, default `text/html`): the replacement
-    ///   `content-type` header value.
+    ///   `content-type` header value; supports `{{namespace.path}}`
+    ///   references.
     ///
     /// An `error_XXX` key set to a non-object, or `body`/`content_type` with
     /// a non-string value, fails at config load. Setting a key to an empty
@@ -105,13 +125,11 @@ impl ErrorPagePlugin {
                     .to_string(),
             };
 
-            pages.insert(
-                status,
-                ErrorPage {
-                    body: Bytes::from(body),
-                    content_type,
-                },
-            );
+            // Discard warnings here — the compile-time walk (a later task)
+            // reports well-formed-but-unknown references; execution must not.
+            let body = Template::parse(&body).0;
+            let content_type = Template::parse(&content_type).0;
+            pages.insert(status, ErrorPage { body, content_type });
         }
 
         Ok(Self { pages })
@@ -124,21 +142,19 @@ impl Plugin for ErrorPagePlugin {
         "error-page"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Only gateway-generated responses are intercepted (APISIX skips
         // responses sourced from the upstream).
         let gateway_generated = !ctx.errors.is_empty();
 
         if gateway_generated {
             if let Some(page) = self.pages.get(&ctx.response.status_code) {
-                ctx.response.body = page.body.clone();
+                let body = Bytes::from(page.body.render(&ctx).into_owned());
+                let content_type = page.content_type.render(&ctx).into_owned();
+                ctx.response.body = body;
                 ctx.response
                     .headers
-                    .insert("content-type".to_string(), vec![page.content_type.clone()]);
+                    .insert("content-type".to_string(), vec![content_type]);
                 // Body-mutation convention: the server layer recomputes the
                 // length; the configured page is not encoded.
                 ctx.response.headers.remove("content-length");
@@ -146,10 +162,7 @@ impl Plugin for ErrorPagePlugin {
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -208,10 +221,7 @@ mod tests {
                 "content_type": "application/json"
             }
         }));
-        let out = p
-            .execute(test_context(502, true), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, true)).await.unwrap();
         assert_eq!(
             out.context.response.body.as_ref(),
             b"{\"error\": \"bad gateway\"}"
@@ -227,10 +237,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_page_default_body_and_content_type() {
         let p = plugin(serde_json::json!({ "error_503": {} }));
-        let out = p
-            .execute(test_context(503, true), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(503, true)).await.unwrap();
         let body = String::from_utf8(out.context.response.body.to_vec()).unwrap();
         assert!(body.contains("<h1>503 Service Unavailable</h1>"), "{body}");
         assert!(body.contains("featherbit"));
@@ -245,10 +252,7 @@ mod tests {
         // Same 502, but no gateway errors recorded → the response came from
         // the upstream and must pass through untouched.
         let p = plugin(serde_json::json!({ "error_502": {} }));
-        let out = p
-            .execute(test_context(502, false), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(502, false)).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");
         assert_eq!(
             out.context.response.headers.get("content-type"),
@@ -258,21 +262,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_error_page_body_renders_template() {
+        let p = plugin(serde_json::json!({
+            "error_503": {
+                "body": "{\"error\": \"unavailable\", \"path\": \"{{request.path}}\"}",
+                "content_type": "application/json"
+            }
+        }));
+        let out = p.execute(test_context(503, true)).await.unwrap();
+        assert_eq!(
+            out.context.response.body.as_ref(),
+            b"{\"error\": \"unavailable\", \"path\": \"/test\"}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_error_page_content_type_renders_template() {
+        let p = plugin(serde_json::json!({
+            "error_503": {
+                "body": "unavailable",
+                "content_type": "text/plain; charset={{request.headers.x-charset}}"
+            }
+        }));
+        let mut ctx = test_context(503, true);
+        ctx.request
+            .headers
+            .insert("x-charset".to_string(), vec!["utf-16".to_string()]);
+        let out = p.execute(ctx).await.unwrap();
+        assert_eq!(
+            out.context.response.headers.get("content-type"),
+            Some(&vec!["text/plain; charset=utf-16".to_string()])
+        );
+    }
+
+    #[tokio::test]
     async fn test_error_page_skips_unconfigured_status() {
         let p = plugin(serde_json::json!({ "error_502": {} }));
         // 500 is a supported status but has no configured page here.
-        let out = p
-            .execute(test_context(500, true), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(500, true)).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");
 
         // Non-error statuses always pass through.
         let p = plugin(serde_json::json!({ "error_502": {} }));
-        let out = p
-            .execute(test_context(200, true), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context(200, true)).await.unwrap();
         assert_eq!(out.context.response.body.as_ref(), b"original");
     }
 
