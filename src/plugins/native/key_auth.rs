@@ -2,8 +2,8 @@
 //!
 //! Checks a request header (and optionally a query parameter as fallback)
 //! against a static list of valid keys and/or the shared consumer store;
-//! unmatched requests are rejected with a 401 error routed through the
-//! node's error port.
+//! unmatched requests are rejected with a 401 routed through the node's
+//! `denied` port.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::consumers::attach_consumer;
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Authenticates requests by matching an API key against a configured list
 /// and/or the consumer store.
@@ -121,9 +121,7 @@ impl KeyAuthPlugin {
         })
     }
 
-    /// Builds the 401 rejection with a JSON error body and returns a
-    /// `PluginExecutionError` (code `UNAUTHORIZED`) carrying the context so
-    /// the graph engine routes through the error port.
+    /// Builds the 401 rejection and exits on the `denied` port.
     fn reject(ctx: Context) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 401;
@@ -133,15 +131,7 @@ impl KeyAuthPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "UNAUTHORIZED".to_string(),
-                message: "Invalid or missing API key".to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 
     /// Removes the credential from the request (per `hide_credentials`).
@@ -159,11 +149,7 @@ impl Plugin for KeyAuthPlugin {
         "key-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Try header first
         let key = ctx
             .request
@@ -189,10 +175,7 @@ impl Plugin for KeyAuthPlugin {
                 if self.hide_credentials {
                     self.strip_credential(&mut ctx);
                 }
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         }
 
@@ -205,10 +188,7 @@ impl Plugin for KeyAuthPlugin {
                         self.strip_credential(&mut ctx);
                     }
                     attach_consumer(&mut ctx, &consumer, "key-auth");
-                    return Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    });
+                    return Ok(PluginOutput::success(ctx));
                 }
             }
         }
@@ -218,10 +198,7 @@ impl Plugin for KeyAuthPlugin {
             let store = self.resources.consumers.load();
             if let Some(consumer) = store.get(name) {
                 attach_consumer(&mut ctx, &consumer, "key-auth");
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         }
 
@@ -287,7 +264,7 @@ mod tests {
         let plugin = KeyAuthPlugin::from_config(&config, &resources).unwrap();
 
         let result = plugin
-            .execute(ctx_with_key(Some("alice-key")), &HashMap::new())
+            .execute(ctx_with_key(Some("alice-key")))
             .await
             .unwrap();
         let ctx = result.context;
@@ -309,19 +286,21 @@ mod tests {
         let mut config = HashMap::new();
         config.insert("use_consumers".to_string(), serde_json::json!(true));
         let plugin = KeyAuthPlugin::from_config(&config, &resources).unwrap();
-        assert!(plugin
-            .execute(ctx_with_key(Some("wrong")), &HashMap::new())
-            .await
-            .is_err());
+        let out = plugin.execute(ctx_with_key(Some("wrong"))).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+        assert_eq!(
+            out.context.response.body,
+            Bytes::from_static(
+                br#"{"error": "unauthorized", "message": "Invalid or missing API key"}"#
+            )
+        );
 
         let mut config = HashMap::new();
         config.insert("use_consumers".to_string(), serde_json::json!(true));
         config.insert("anonymous_consumer".to_string(), serde_json::json!("guest"));
         let plugin = KeyAuthPlugin::from_config(&config, &resources).unwrap();
-        let result = plugin
-            .execute(ctx_with_key(None), &HashMap::new())
-            .await
-            .unwrap();
+        let result = plugin.execute(ctx_with_key(None)).await.unwrap();
         assert_eq!(
             result.context.message.get("consumer.name"),
             Some(&serde_json::json!("guest"))
@@ -333,14 +312,10 @@ mod tests {
         let mut config = HashMap::new();
         config.insert("keys".to_string(), serde_json::json!(["k1"]));
         let plugin = KeyAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
-        assert!(plugin
-            .execute(ctx_with_key(Some("k1")), &HashMap::new())
-            .await
-            .is_ok());
-        assert!(plugin
-            .execute(ctx_with_key(Some("k2")), &HashMap::new())
-            .await
-            .is_err());
+        let ok = plugin.execute(ctx_with_key(Some("k1"))).await.unwrap();
+        assert_eq!(ok.port, None);
+        let out = plugin.execute(ctx_with_key(Some("k2"))).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[test]

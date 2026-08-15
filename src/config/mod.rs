@@ -8,16 +8,24 @@
 
 mod gateway;
 mod loader;
+mod resolve;
 mod system;
+mod warnings;
 
 pub use loader::{interpolate_env_json, load_yaml_with_env};
 // featherbit is a binary crate, so `pub` exports nothing externally: re-exports
 // consumed only by `#[cfg(test)]` code read as unused in the bin build.
 #[allow(unused_imports)]
-pub use gateway::{EdgeConfig, GatewayConfig, MatchRule, NodeConfig, PolicyConfig, RouteConfig};
+pub use gateway::{
+    EdgeConfig, GatewayConfig, MatchRule, NodeConfig, PluginConfigDef, PolicyConfig, Position,
+    RouteConfig, SupernodeConfig,
+};
+#[allow(unused_imports)]
+pub use resolve::resolve_plugin_configs;
 #[allow(unused_imports)]
 pub use system::{
     AdminConfig, ConfigSourceKind, DebugConfig, EtcdConfig, LoggingConfig, SniCert, SniRoute,
     StreamListenerConfig, StreamProtocol, StreamUpstreamConfig, SystemConfig, TimeoutConfig,
     TlsConfig,
 };
+pub use warnings::collect_template_warnings;

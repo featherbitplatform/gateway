@@ -52,16 +52,9 @@ impl Plugin for ServerlessPostFunctionPlugin {
         "serverless-post-function"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let ctx = self.runner.run(ctx)?;
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -105,7 +98,7 @@ mod tests {
             "function execute(ctx)\n  ctx.response.headers[\"x-served-by\"] = {\"featherbit\"}\n  return ctx\nend"
         ])))
         .unwrap();
-        let out = p.execute(test_context(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_context()).await.unwrap();
         assert_eq!(
             out.context.response.headers.get("x-served-by"),
             Some(&vec!["featherbit".to_string()])

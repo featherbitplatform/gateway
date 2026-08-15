@@ -5,9 +5,10 @@
 //! optionally, the matched consumer), POSTs it to
 //! `<host>/v1/data/<policy>`, and interprets the decision under `result`:
 //! `allow: true` continues (optionally copying selected OPA-provided headers
-//! onto the request forwarded upstream), while `allow: false`/missing rejects,
-//! honoring OPA-supplied status, headers, and reason. A callout or
-//! response-parse failure blocks the request by default.
+//! onto the request forwarded upstream), while `allow: false`/missing denies
+//! (exits on the `denied` port), honoring OPA-supplied status, headers, and
+//! reason. A callout or response-parse failure is a genuine infrastructure
+//! failure — it exits on the `error` port and blocks the request by default.
 //!
 //! Ports the APISIX `opa` plugin (and its `opa/helper.lua` input builder) onto
 //! featherbit's shared outbound HTTP client.
@@ -30,10 +31,11 @@ use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Sends an OPA input document to an external policy server and routes on the
-/// returned decision: `allow: true` continues (success port), otherwise
-/// rejects (error port).
+/// returned decision: `allow: true` continues (`success` port), `allow: false`
+/// denies (`denied` port), and a callout/parse failure exits on `error`.
 pub struct OpaPlugin {
     /// OPA base URL (e.g. `http://opa:8181`).
     host: String,
@@ -46,8 +48,9 @@ pub struct OpaPlugin {
     /// Include the matched consumer object in the input document.
     with_consumer: bool,
     /// OPA-response header names copied onto the request forwarded upstream on
-    /// allow (lowercased). Empty means none are copied.
-    send_headers_upstream: Vec<String>,
+    /// allow (rendered per request, then lowercased). Empty means none are
+    /// copied. Supports `{{namespace.path}}` template references.
+    send_headers_upstream: Vec<Template>,
     /// Shared pooled HTTP client (from [`PluginResources`]).
     client: Arc<OutboundClient>,
 }
@@ -141,12 +144,14 @@ impl OpaPlugin {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
         let send_headers_upstream = config
             .get("send_headers_upstream")
             .and_then(|v| v.as_array())
             .map(|seq| {
                 seq.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                    .filter_map(|v| v.as_str().map(|s| Template::parse(s).0))
                     .collect()
             })
             .unwrap_or_default();
@@ -205,23 +210,23 @@ impl OpaPlugin {
     /// from the OPA response onto the request forwarded upstream. A configured
     /// header absent from the OPA response removes any client-supplied value.
     fn apply_allow(&self, ctx: &mut Context, decision: &OpaDecision) {
-        for name in &self.send_headers_upstream {
-            match decision.headers.get(name) {
+        for name_tpl in &self.send_headers_upstream {
+            let name = name_tpl.render(ctx).to_lowercase();
+            match decision.headers.get(&name) {
                 Some(value) => {
-                    ctx.request
-                        .headers
-                        .insert(name.clone(), vec![value.clone()]);
+                    ctx.request.headers.insert(name, vec![value.clone()]);
                 }
                 None => {
-                    ctx.request.headers.remove(name);
+                    ctx.request.headers.remove(&name);
                 }
             }
         }
     }
 
-    /// Builds the `OPA_DENIED` rejection from a deny decision, honoring
-    /// OPA-supplied status (default `403`), headers, and reason (as the body).
-    fn build_deny(&self, mut ctx: Context, decision: &OpaDecision) -> PluginExecutionError {
+    /// Builds the deny response from a deny decision, honoring OPA-supplied
+    /// status (default `403`), headers, and reason (as the body), and exits
+    /// on the `denied` port.
+    fn build_deny(&self, mut ctx: Context, decision: &OpaDecision) -> PluginOutput {
         let status = decision.status.unwrap_or(403);
         ctx.response.status_code = status;
         if let Some(reason) = &decision.reason {
@@ -232,15 +237,7 @@ impl OpaPlugin {
                 .headers
                 .insert(name.clone(), vec![value.clone()]);
         }
-        PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "OPA_DENIED".to_string(),
-                message: format!("OPA denied the request ({})", status),
-                metadata: HashMap::new(),
-            },
-        }
+        PluginOutput::on_port(ctx, "denied")
     }
 
     /// Builds the `OPA_ERROR` rejection used when the callout fails or the
@@ -390,11 +387,7 @@ impl Plugin for OpaPlugin {
         "opa"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -442,14 +435,11 @@ impl Plugin for OpaPlugin {
         };
 
         if !decision.allow {
-            return Err(self.build_deny(ctx, &decision));
+            return Ok(self.build_deny(ctx, &decision));
         }
 
         self.apply_allow(&mut ctx, &decision);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -614,12 +604,12 @@ mod tests {
             reason: Some("denied".to_string()),
             headers: HashMap::from([("x-why".to_string(), "policy".to_string())]),
         };
-        let err = p.build_deny(test_ctx(), &decision);
-        assert_eq!(err.error.code, "OPA_DENIED");
-        assert_eq!(err.context.response.status_code, 401);
-        assert_eq!(err.context.response.body, Bytes::from_static(b"denied"));
+        let out = p.build_deny(test_ctx(), &decision);
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+        assert_eq!(out.context.response.body, Bytes::from_static(b"denied"));
         assert_eq!(
-            err.context.response.headers.get("x-why"),
+            out.context.response.headers.get("x-why"),
             Some(&vec!["policy".to_string()])
         );
     }
@@ -647,6 +637,30 @@ mod tests {
             Some(&vec!["u42".to_string()])
         );
         assert!(!ctx.request.headers.contains_key("x-absent"));
+    }
+
+    #[test]
+    fn test_send_headers_upstream_name_renders_template() {
+        let p = plugin(serde_json::json!({
+            "host": "http://opa",
+            "policy": "p",
+            "send_headers_upstream": ["X-{{request.headers.x-suffix}}"]
+        }));
+        let mut ctx = test_ctx();
+        ctx.request
+            .headers
+            .insert("x-suffix".to_string(), vec!["User-Id".to_string()]);
+        let decision = OpaDecision {
+            allow: true,
+            status: None,
+            reason: None,
+            headers: HashMap::from([("x-user-id".to_string(), "u42".to_string())]),
+        };
+        p.apply_allow(&mut ctx, &decision);
+        assert_eq!(
+            ctx.request.headers.get("x-user-id"),
+            Some(&vec!["u42".to_string()])
+        );
     }
 
     #[test]

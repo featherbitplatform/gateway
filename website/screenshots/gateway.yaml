@@ -1,10 +1,13 @@
 # gateway.yaml for documentation screenshots only -- not a deployment config.
 #
 # The policy is posed for the canvas: a realistic request chain (CORS -> auth ->
-# rate limit -> rewrite -> upstream -> access log) with three error edges
-# converging on one error-handler. Nodes carry no `position`, so the UI's
-# auto-layout runs: the success chain marches left-to-right and the error branch
-# drops below it -- which is exactly the shape the error-routing screenshot needs.
+# rate limit -> rewrite -> upstream -> access log). api-key's rejection and
+# rate-limit's throttling each exit straight to client.in through their own
+# dedicated outcome port (`denied` / `limited`); only the failing-upstream
+# error edge converges on the shared error-handler. Nodes carry no `position`,
+# so the UI's auto-layout runs: the success chain marches left-to-right and
+# the error branch drops below it -- which is exactly the shape the
+# error-routing screenshot needs.
 routes:
   - name: orders-api
     match:
@@ -17,6 +20,15 @@ routes:
       path: /api/catalog/*
       methods: [GET]
     policy: orders-policy
+
+  # Posed for the supernode-preview screenshot only: a small policy whose
+  # middle node is a supernode instance, expanded in place by capture.mjs.
+  # Kept as its own route/policy so the orders-policy shots stay unchanged.
+  - name: checkout-api
+    match:
+      path: /api/checkout/*
+      methods: [POST]
+    policy: checkout-policy
 
 policies:
   - name: orders-policy
@@ -78,6 +90,8 @@ policies:
         to: cors.in
       - from: cors.success
         to: api-key.in
+      - from: cors.preflight
+        to: client.in
       - from: api-key.success
         to: rate-limit.in
       - from: rate-limit.success
@@ -89,13 +103,82 @@ policies:
       - from: access-log.success
         to: client.in
 
-      # Error ports: a rejected key, a throttled client, and a failing upstream
-      # all route to the same handler instead of a raw 500.
-      - from: api-key.error
-        to: error-handler.in
-      - from: rate-limit.error
-        to: error-handler.in
+      # api-key's rejection and rate-limit's throttling each exit on their own
+      # dedicated outcome port (`denied` / `limited`) with the 401/429 already
+      # fully prepared, so both go STRAIGHT to client.in -- through
+      # error-handler its status_code/body_template would overwrite the
+      # prepared response. A failing upstream is a genuine error-port exit and
+      # still routes to the shared handler.
+      - from: api-key.denied
+        to: client.in
+      - from: rate-limit.limited
+        to: client.in
       - from: orders-backend.error
         to: error-handler.in
       - from: error-handler.success
         to: client.in
+
+  # The supernode-preview shot: listener -> instance -> client, with the
+  # instance's error exit feeding a dedicated handler so both exits are wired.
+  - name: checkout-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: sec
+        type: supernode
+        config:
+          name: secured-call
+      - id: checkout-errors
+        type: error-handler
+        config:
+          status_code: 502
+          body_template: '{"error": "{{error.code}}"}'
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: sec.in
+      - from: sec.success
+        to: client.in
+      - from: sec.error
+        to: checkout-errors.in
+      - from: checkout-errors.success
+        to: client.in
+
+supernodes:
+  - name: secured-call
+    description: "Key auth + upstream with a unified error exit"
+    nodes:
+      # Posed positions: a clean left-to-right chain with the error boundary
+      # below — the preview honors saved positions instead of auto-layout.
+      - id: input
+        type: input
+        position: { x: 0, y: 60 }
+      - id: output
+        type: output
+        position: { x: 760, y: 60 }
+      - id: error
+        type: error
+        position: { x: 400, y: 260 }
+      - id: auth
+        type: key-auth
+        position: { x: 240, y: 40 }
+        config:
+          keys: ["${CHECKOUT_API_KEY:-demo-key}"]
+          header_name: x-api-key
+      - id: up
+        type: upstream
+        position: { x: 500, y: 40 }
+        config:
+          targets:
+            - host: ${CHECKOUT_BACKEND_HOST:-checkout.internal}
+              port: ${CHECKOUT_BACKEND_PORT:-8080}
+    edges:
+      - from: input.out
+        to: auth.in
+      - from: auth.success
+        to: up.in
+      - from: auth.denied
+        to: error.in
+      - from: up.success
+        to: output.in

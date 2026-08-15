@@ -66,6 +66,8 @@ export interface PolicyNode {
   type: string;
   /** Plugin-specific configuration; its shape is described per type by the pluginConfig schema registry. */
   config: Record<string, unknown>;
+  /** Optional name of a shared plugin config to inherit from (local keys win). */
+  config_ref?: string;
   /** Canvas coordinates for the editor; ignored by the gateway engine. */
   position?: { x: number; y: number };
 }
@@ -87,6 +89,74 @@ export interface PolicyEdge {
 }
 
 /**
+ * A reusable named subgraph with a fixed input/output/error boundary,
+ * usable in any policy as a single node of type `supernode`.
+ *
+ * @remarks
+ * Served and persisted by the CRUD handlers in src/admin/supernodes.rs;
+ * inlined into policies at compile time by src/graph/expand.rs.
+ */
+export interface Supernode {
+  /** Unique supernode name, referenced from policy nodes' `config.name`. */
+  name: string;
+  /** Optional human-readable description shown in the library. */
+  description?: string;
+  /** Inner plugin nodes plus the `input`/`output`/`error` boundary nodes. */
+  nodes: PolicyNode[];
+  /** Directed connections; boundary edges use `input.out` / `output.in` / `error.in`. */
+  edges: PolicyEdge[];
+}
+
+/**
+ * A named, typed shared plugin configuration, referenced by plugin nodes
+ * via {@link PolicyNode.config_ref}; resolved at compile time by the gateway.
+ *
+ * @remarks
+ * Served and persisted by the CRUD handlers in src/admin/plugin_configs.rs.
+ */
+export interface PluginConfigDef {
+  /** Unique name, referenced by `config_ref`. */
+  name: string;
+  /** Plugin type this config is for; only nodes of the same type may reference it. */
+  type: string;
+  /** Optional human-readable description shown in the library. */
+  description?: string;
+  /** The shared plugin configuration (same shape as a node's `config`). */
+  config: Record<string, unknown>;
+}
+
+/**
+ * One declared output port on a plugin type.
+ *
+ * @remarks
+ * Mirrors `src/plugins/ports.rs::PortDecl` field for field. `kind` drives
+ * both graph-compiler validation (`success`/`outcome` ports must be wired;
+ * `error` is optional) and the editor's handle color.
+ */
+export interface PortDecl {
+  /** Port name, serialized as the `node_id.port` edge endpoint (e.g. `denied`, `success`). */
+  name: string;
+  /** Port flavor: `success` (normal completion), `outcome` (an alternate named exit,
+   * mandatory wiring like `success`), or `error` (failure, optional wiring). */
+  kind: 'success' | 'outcome' | 'error';
+  /** One-line human-readable explanation, shown as the handle's tooltip. */
+  description: string;
+}
+
+/**
+ * A plugin type's full port declaration.
+ *
+ * @remarks
+ * Mirrors `src/plugins/ports.rs::PortSpec` field for field.
+ */
+export interface PortSpec {
+  /** Description of the single `in` port; `null` = the node has no input (only `listener`). */
+  input: string | null;
+  /** Declared output ports, in display order. */
+  outputs: PortDecl[];
+}
+
+/**
  * A plugin type available on the gateway, as listed by `GET /api/plugins`.
  *
  * @remarks
@@ -98,6 +168,8 @@ export interface PluginType {
   type: string;
   /** Human-readable one-line description. */
   description: string;
+  /** Declared input/output ports, resolved from src/plugins/ports.rs. */
+  ports: PortSpec;
 }
 
 /**
@@ -153,6 +225,37 @@ export interface BodyCapture {
   binary?: boolean;
 }
 
+/**
+ * One row of the context-variable catalog served by `GET /api/vars`.
+ *
+ * @remarks
+ * Mirrors `src/vars/catalog.rs::VarEntry` field for field. `kind: 'static'`
+ * entries are fixed names (`uri`, `status`, ...); `kind: 'family'` entries
+ * are `prefix_*` patterns (`http_*`, `arg_*`, ...) whose members are only
+ * known once a trace is available, in which case `family_source` names the
+ * context collection (`request_headers`, `query_params`, ...) that supplies
+ * the live members.
+ */
+export interface VarEntry {
+  /** Variable name, e.g. `uri`, or a `prefix_*` pattern for families. */
+  name: string;
+  /** Whether this is a single fixed name or a `prefix_*` family. */
+  kind: 'static' | 'family';
+  /** For families, the context collection that populates live members. */
+  family_source?: string;
+  /** One-line human-readable explanation. */
+  description: string;
+  /** Example `$var` usage shown in the UI. */
+  example: string;
+  /**
+   * Universal-template namespace spelling (e.g. `request.method`), or `""`
+   * when this entry has no direct `{{...}}` equivalent (e.g. `protocol`,
+   * `query_string`, `post_arg_*`) — those remain legacy-`$`-only and are
+   * skipped when building path-keyed suggestions.
+   */
+  path: string;
+}
+
 /** Redacted point-in-time view of the gateway Context. */
 export interface ContextSnapshot {
   request: {
@@ -184,6 +287,7 @@ export interface Change {
 /** Which edge the engine followed after a node. */
 export type EdgeKind =
   | 'success'
+  | 'outcome'
   | 'error'
   | 'catch_all'
   | 'terminal'
@@ -199,6 +303,8 @@ export interface NodeStep {
   outcome: { kind: 'success' } | { kind: 'error'; code: string; message: string };
   duration_us: number;
   edge: EdgeKind;
+  /** Set when `edge` is `outcome` — the named port the step left on (e.g. `denied`). */
+  port?: string;
   next_node_id?: string;
   after: ContextSnapshot;
   /** Computed server-side when a trace is fetched. */

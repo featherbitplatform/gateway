@@ -5,9 +5,11 @@
 //! request's forwarding metadata (`X-Forwarded-*`) plus any configured client
 //! headers; a 2xx reply lets the request continue (optionally copying selected
 //! auth-response headers onto the request forwarded upstream), while a non-2xx
-//! reply rejects the request, mirroring the auth service's status/body/headers
-//! back to the client. A callout failure either degrades open or rejects with
-//! a configurable status, depending on `allow_degradation`.
+//! reply denies the request (exits on the `denied` port), mirroring the auth
+//! service's status/body/headers back to the client. A callout failure either
+//! degrades open (`success`) or exits on the `error` port with a configurable
+//! status, depending on `allow_degradation` — it is a genuine infrastructure
+//! failure, not a deliberate denial.
 //!
 //! Ports the APISIX `forward-auth` plugin onto featherbit's shared outbound
 //! HTTP client.
@@ -22,10 +24,12 @@ use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundClient, OutboundRequest, OutboundResponse};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Sends each request to an external authorization endpoint and routes on its
-/// verdict: 2xx continues (success port), non-2xx or (non-degrading) callout
-/// failure rejects (error port).
+/// verdict: 2xx continues (`success` port), non-2xx denies (`denied` port),
+/// and a (non-degrading) callout failure is a genuine infra failure (`error`
+/// port).
 pub struct ForwardAuthPlugin {
     /// External authorization endpoint.
     uri: String,
@@ -33,16 +37,20 @@ pub struct ForwardAuthPlugin {
     method: http::Method,
     /// Whether the callout is a `POST` (forwards the client body).
     is_post: bool,
-    /// Client request header names copied onto the callout (lowercased).
-    request_headers: Vec<String>,
+    /// Client request header names copied onto the callout (rendered per
+    /// request, then lowercased). Supports `{{namespace.path}}` references.
+    request_headers: Vec<Template>,
     /// Auth-response header names copied onto the request forwarded upstream
-    /// on success (lowercased).
-    upstream_headers: Vec<String>,
+    /// on success (rendered per request, then lowercased). Supports
+    /// `{{namespace.path}}` references.
+    upstream_headers: Vec<Template>,
     /// Auth-response header names copied onto the client-facing response on
     /// failure (lowercased).
     client_headers: Vec<String>,
-    /// Extra callout headers whose values may reference `$var` templates.
-    extra_headers: Vec<(String, String)>,
+    /// Extra callout headers; values support `{{namespace.path}}` references
+    /// and legacy `$var` interpolation (see
+    /// [`Template::render_with_legacy`]).
+    extra_headers: Vec<(String, Template)>,
     /// TLS certificate verification for `https` callouts.
     ssl_verify: bool,
     /// Whole-call callout deadline.
@@ -75,8 +83,9 @@ impl ForwardAuthPlugin {
     /// - `client_headers` (array of strings, default `[]`): auth-response
     ///   header names copied onto the client-facing response on failure.
     /// - `extra_headers` (object of string→string, optional): additional
-    ///   callout headers; values support `$var` / `${var}` interpolation
-    ///   (e.g. `$remote_addr`, `$request_uri`).
+    ///   callout headers; values support `{{namespace.path}}` references plus
+    ///   legacy `$var` / `${var}` interpolation (e.g. `$remote_addr`,
+    ///   `$request_uri`).
     /// - `ssl_verify` (bool, default `true`): verify TLS certificates for
     ///   `https` callouts.
     /// - `timeout` (integer ms, default `3000`): whole-call callout deadline.
@@ -137,7 +146,25 @@ impl ForwardAuthPlugin {
                 .unwrap_or_default()
         };
 
-        let extra_headers = config
+        // Header-name lists that support `{{namespace.path}}` references,
+        // rendered (then lowercased) per request. Discard warnings here — the
+        // compile-time walk (a later task) reports well-formed-but-unknown
+        // references; execution must not.
+        let template_list = |key: &str| -> Vec<Template> {
+            config
+                .get(key)
+                .and_then(|v| v.as_array())
+                .map(|seq| {
+                    seq.iter()
+                        .filter_map(|v| v.as_str().map(|s| Template::parse(s).0))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let extra_headers: Vec<(String, Template)> = config
             .get("extra_headers")
             .and_then(|v| v.as_object())
             .map(|obj| {
@@ -149,7 +176,7 @@ impl ForwardAuthPlugin {
                             serde_json::Value::Bool(b) => b.to_string(),
                             _ => return None,
                         };
-                        Some((k.clone(), value))
+                        Some((k.clone(), Template::parse(&value).0))
                     })
                     .collect()
             })
@@ -181,8 +208,8 @@ impl ForwardAuthPlugin {
             uri,
             method,
             is_post,
-            request_headers: string_list("request_headers"),
-            upstream_headers: string_list("upstream_headers"),
+            request_headers: template_list("request_headers"),
+            upstream_headers: template_list("upstream_headers"),
             client_headers: string_list("client_headers"),
             extra_headers,
             ssl_verify,
@@ -225,19 +252,20 @@ impl ForwardAuthPlugin {
         }
 
         for (name, template) in &self.extra_headers {
-            headers.push((name.clone(), crate::vars::interpolate(ctx, template)));
+            headers.push((name.clone(), template.render_with_legacy(ctx)));
         }
 
         // Copy configured client headers unless already set above.
-        for name in &self.request_headers {
+        for name_tpl in &self.request_headers {
+            let name = name_tpl.render(ctx).to_lowercase();
             let already = headers
                 .iter()
-                .any(|(existing, _)| existing.eq_ignore_ascii_case(name));
+                .any(|(existing, _)| existing.eq_ignore_ascii_case(&name));
             if already {
                 continue;
             }
-            if let Some(value) = ctx.request.headers.get(name).and_then(|v| v.first()) {
-                headers.push((name.clone(), value.clone()));
+            if let Some(value) = ctx.request.headers.get(&name).and_then(|v| v.first()) {
+                headers.push((name, value.clone()));
             }
         }
 
@@ -248,13 +276,14 @@ impl ForwardAuthPlugin {
     /// auth response onto the request forwarded upstream. A configured header
     /// absent from the auth response removes any client-supplied value.
     fn apply_allow(&self, ctx: &mut Context, resp_headers: &HashMap<String, Vec<String>>) {
-        for name in &self.upstream_headers {
-            match resp_headers.get(name) {
+        for name_tpl in &self.upstream_headers {
+            let name = name_tpl.render(ctx).to_lowercase();
+            match resp_headers.get(&name) {
                 Some(values) => {
-                    ctx.request.headers.insert(name.clone(), values.clone());
+                    ctx.request.headers.insert(name, values.clone());
                 }
                 None => {
-                    ctx.request.headers.remove(name);
+                    ctx.request.headers.remove(&name);
                 }
             }
         }
@@ -262,14 +291,14 @@ impl ForwardAuthPlugin {
 
     /// On a non-2xx auth reply, mirrors the auth service's status and body onto
     /// the client-facing response, copies the configured `client_headers`, and
-    /// returns the `FORWARD_AUTH_DENIED` rejection carrying the context.
+    /// exits on the `denied` port.
     fn build_deny(
         &self,
         mut ctx: Context,
         status: u16,
         body: Bytes,
         resp_headers: &HashMap<String, Vec<String>>,
-    ) -> PluginExecutionError {
+    ) -> PluginOutput {
         ctx.response.status_code = status;
         ctx.response.body = body;
         for name in &self.client_headers {
@@ -277,15 +306,7 @@ impl ForwardAuthPlugin {
                 ctx.response.headers.insert(name.clone(), values.clone());
             }
         }
-        PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "FORWARD_AUTH_DENIED".to_string(),
-                message: format!("Authorization service denied the request ({})", status),
-                metadata: HashMap::new(),
-            },
-        }
+        PluginOutput::on_port(ctx, "denied")
     }
 
     /// Builds the `FORWARD_AUTH_ERROR` rejection used when the callout fails
@@ -310,11 +331,7 @@ impl Plugin for ForwardAuthPlugin {
         "forward-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let headers = self.build_callout_headers(&ctx);
         let body = if self.is_post {
             ctx.request.body.clone()
@@ -337,24 +354,18 @@ impl Plugin for ForwardAuthPlugin {
             Err(e) => {
                 if self.allow_degradation {
                     // Degrade open: let the request continue unchanged.
-                    return Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    });
+                    return Ok(PluginOutput::success(ctx));
                 }
                 return Err(self.build_error(ctx, format!("forward-auth callout failed: {}", e)));
             }
         };
 
         if response.status >= 300 {
-            return Err(self.build_deny(ctx, response.status, response.body, &response.headers));
+            return Ok(self.build_deny(ctx, response.status, response.body, &response.headers));
         }
 
         self.apply_allow(&mut ctx, &response.headers);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -455,6 +466,42 @@ mod tests {
     }
 
     #[test]
+    fn test_request_headers_name_renders_template() {
+        let p = plugin(serde_json::json!({
+            "uri": "http://auth",
+            "request_headers": ["{{request.headers.x-forward-header}}"]
+        }));
+        let mut ctx = test_ctx();
+        ctx.request.headers.insert(
+            "x-forward-header".to_string(),
+            vec!["authorization".to_string()],
+        );
+        let headers = p.build_callout_headers(&ctx);
+        assert!(headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v == "Bearer tok"));
+    }
+
+    #[test]
+    fn test_upstream_headers_name_renders_template() {
+        let p = plugin(serde_json::json!({
+            "uri": "http://auth",
+            "upstream_headers": ["X-{{request.headers.x-suffix}}"]
+        }));
+        let mut ctx = test_ctx();
+        ctx.request
+            .headers
+            .insert("x-suffix".to_string(), vec!["User-Id".to_string()]);
+        let mut resp_headers = HashMap::new();
+        resp_headers.insert("x-user-id".to_string(), vec!["u42".to_string()]);
+        p.apply_allow(&mut ctx, &resp_headers);
+        assert_eq!(
+            ctx.request.headers.get("x-user-id"),
+            Some(&vec!["u42".to_string()])
+        );
+    }
+
+    #[test]
     fn test_get_callout_omits_body_headers() {
         let p = plugin(serde_json::json!({ "uri": "http://auth" }));
         let headers = p.build_callout_headers(&test_ctx());
@@ -493,17 +540,17 @@ mod tests {
         }));
         let mut resp_headers = HashMap::new();
         resp_headers.insert("www-authenticate".to_string(), vec!["Bearer".to_string()]);
-        let err = p.build_deny(
+        let out = p.build_deny(
             test_ctx(),
             401,
             Bytes::from_static(b"denied"),
             &resp_headers,
         );
-        assert_eq!(err.error.code, "FORWARD_AUTH_DENIED");
-        assert_eq!(err.context.response.status_code, 401);
-        assert_eq!(err.context.response.body, Bytes::from_static(b"denied"));
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+        assert_eq!(out.context.response.body, Bytes::from_static(b"denied"));
         assert_eq!(
-            err.context.response.headers.get("www-authenticate"),
+            out.context.response.headers.get("www-authenticate"),
             Some(&vec!["Bearer".to_string()])
         );
     }

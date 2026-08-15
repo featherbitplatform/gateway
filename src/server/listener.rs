@@ -6,6 +6,7 @@
 //! [`CompiledGraph`](crate::graph::CompiledGraph), and writes `Context.response`
 //! back to the client.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -421,23 +422,75 @@ async fn handle_request(
         }
     }
 
+    Ok(build_response(
+        status,
+        &result_ctx.response.headers,
+        trace_id.as_deref(),
+        result_ctx.response.body,
+    ))
+}
+
+/// Builds the final client-facing response from the policy-graph result.
+///
+/// Header names/values here may be templated from request data (e.g. a
+/// `request-id` `header_name` rendered from a missing header can yield an
+/// empty name, or a templated value can carry a raw newline). `http`'s
+/// `Response::builder()` defers name/value validation until `.body()` is
+/// called, so an unvalidated pair would surface as a panic on an otherwise
+/// normal request — unauthenticated and request-triggerable. Validate each
+/// pair up front and drop only the offending one; failing the whole response
+/// over one bad header would itself be a client-triggerable denial of
+/// service. Once every header is pre-validated, `.body()` can only fail from
+/// a builder-internal error (e.g. an earlier `.status()` rejection), so the
+/// residual case falls back to a bare 500 rather than panicking the
+/// connection.
+fn build_response(
+    status: u16,
+    headers: &HashMap<String, Vec<String>>,
+    trace_id: Option<&str>,
+    body: Bytes,
+) -> Response<Full<Bytes>> {
     let mut response_builder = Response::builder().status(status);
 
-    for (key, values) in &result_ctx.response.headers {
+    for (key, values) in headers {
+        let header_name = match hyper::header::HeaderName::try_from(key.as_str()) {
+            Ok(name) => name,
+            Err(e) => {
+                warn!(
+                    "dropping response header with invalid name {:?}: {}",
+                    key, e
+                );
+                continue;
+            }
+        };
         for value in values {
-            response_builder = response_builder.header(key.as_str(), value.as_str());
+            let header_value = match hyper::header::HeaderValue::try_from(value.as_str()) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(
+                        "dropping response header {:?} with invalid value: {}",
+                        key, e
+                    );
+                    continue;
+                }
+            };
+            response_builder = response_builder.header(header_name.clone(), header_value);
         }
     }
 
     // Tell the caller which trace to fetch. Only ever set for a request that
     // opted in, so it reveals nothing to anyone who did not already know.
     if let Some(id) = trace_id {
-        response_builder = response_builder.header("x-featherbit-trace-id", id.as_str());
+        response_builder = response_builder.header("x-featherbit-trace-id", id);
     }
 
-    Ok(response_builder
-        .body(Full::new(result_ctx.response.body))
-        .unwrap())
+    response_builder.body(Full::new(body)).unwrap_or_else(|e| {
+        error!("failed to build response: {}", e);
+        Response::builder()
+            .status(500)
+            .body(Full::new(Bytes::from_static(b"internal server error")))
+            .expect("static 500 response must build")
+    })
 }
 
 #[cfg(test)]
@@ -789,5 +842,36 @@ policies:
             tokio_tungstenite::connect_async(&url).await.is_err(),
             "handshake must fail when the upstream is unreachable"
         );
+    }
+
+    #[test]
+    fn test_build_response_drops_invalid_headers_without_panicking() {
+        // An empty header name (e.g. a templated `header_name` rendered from a
+        // missing request header) and a value carrying a raw newline (header
+        // splitting) are both rejected by `http`'s builder only once `.body()`
+        // is called — `build_response` must validate eagerly, skip just the
+        // offending pairs, and still deliver the response instead of
+        // panicking the connection.
+        let mut headers = HashMap::new();
+        headers.insert("".to_string(), vec!["oops".to_string()]);
+        headers.insert("x-bad-value".to_string(), vec!["line1\nline2".to_string()]);
+        headers.insert("x-good".to_string(), vec!["fine".to_string()]);
+
+        let resp = build_response(200, &headers, None, Bytes::from_static(b"ok"));
+
+        assert_eq!(resp.status(), 200);
+        assert!(
+            !resp.headers().contains_key("x-bad-value"),
+            "header with an invalid (newline-containing) value must be dropped"
+        );
+        assert_eq!(
+            resp.headers().get("x-good").map(|v| v.to_str().unwrap()),
+            Some("fine"),
+            "well-formed headers must still be delivered"
+        );
+        // An empty name can never appear as a valid `HeaderName`, so there is
+        // nothing to look up by key — the assertion above (only the good
+        // header survives) already covers it, together with the fact this
+        // call did not panic.
     }
 }

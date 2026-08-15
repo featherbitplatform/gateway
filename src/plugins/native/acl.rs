@@ -16,8 +16,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Admits or blocks requests based on the attached consumer's group.
 ///
@@ -25,8 +26,8 @@ use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 /// `denied_by` list is checked first (deny wins) — a consumer whose group is
 /// listed is rejected. Then, when `allowed_by` is non-empty, a consumer whose
 /// group is not listed (including a consumer with no group) is rejected. List
-/// rejections use `rejected_code` (default `403`) and carry error code
-/// `ACL_DENIED`.
+/// rejections use `rejected_code` (default `403`) and are routed through the
+/// node's `denied` port.
 pub struct AclPlugin {
     /// Groups permitted through; when non-empty, all other groups are rejected.
     allowed_by: Vec<String>,
@@ -34,8 +35,10 @@ pub struct AclPlugin {
     denied_by: Vec<String>,
     /// HTTP status used for list rejections.
     rejected_code: u16,
-    /// Optional custom rejection message.
-    rejected_msg: Option<String>,
+    /// Optional custom rejection message. Supports `{{namespace.path}}`
+    /// references (no legacy `$var` interpolation — this field never
+    /// supported it, so this sweep must not start).
+    rejected_msg: Option<Template>,
 }
 
 impl AclPlugin {
@@ -49,6 +52,7 @@ impl AclPlugin {
     /// - At least one of `allowed_by` / `denied_by` is required.
     /// - `rejected_code` (integer, default `403`): status for list rejections.
     /// - `rejected_msg` (string, optional): custom rejection message.
+    ///   Supports `{{namespace.path}}` references.
     ///
     /// ```yaml
     /// type: acl
@@ -86,7 +90,9 @@ impl AclPlugin {
         let rejected_msg = config
             .get("rejected_msg")
             .and_then(|v| v.as_str())
-            .map(String::from);
+            // Discard warnings here — the compile-time walk (a later task)
+            // reports well-formed-but-unknown references; execution must not.
+            .map(|s| Template::parse(s).0);
 
         Ok(Self {
             allowed_by,
@@ -96,7 +102,8 @@ impl AclPlugin {
         })
     }
 
-    /// Builds a rejection carrying the context so the graph routes the error port.
+    /// Builds a rejection carrying the context so the graph routes it through
+    /// the `denied` port.
     fn reject(&self, mut ctx: Context, status: u16, message: String) -> PluginResult {
         ctx.response.status_code = status;
         ctx.response.body = Bytes::from(serde_json::json!({ "message": message }).to_string());
@@ -104,15 +111,7 @@ impl AclPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "ACL_DENIED".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -122,11 +121,7 @@ impl Plugin for AclPlugin {
         "acl"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         // No consumer attached at all -> authentication is missing.
         if ctx
             .message
@@ -143,16 +138,18 @@ impl Plugin for AclPlugin {
             .and_then(|v| v.as_str())
             .map(String::from);
 
-        let reject_msg = || {
+        let reject_msg = |ctx: &Context| {
             self.rejected_msg
-                .clone()
+                .as_ref()
+                .map(|t| t.render(ctx).into_owned())
                 .unwrap_or_else(|| "The consumer is forbidden.".to_string())
         };
 
         // Deny wins.
         if let Some(ref g) = group {
             if self.denied_by.contains(g) {
-                return self.reject(ctx, self.rejected_code, reject_msg());
+                let msg = reject_msg(&ctx);
+                return self.reject(ctx, self.rejected_code, msg);
             }
         }
 
@@ -160,14 +157,12 @@ impl Plugin for AclPlugin {
         if !self.allowed_by.is_empty() {
             let allowed = group.as_ref().is_some_and(|g| self.allowed_by.contains(g));
             if !allowed {
-                return self.reject(ctx, self.rejected_code, reject_msg());
+                let msg = reject_msg(&ctx);
+                return self.reject(ctx, self.rejected_code, msg);
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -215,21 +210,21 @@ mod tests {
     async fn test_allowed_by() {
         let p = plugin(serde_json::json!({ "allowed_by": ["partners"] }));
         assert!(p
-            .execute(ctx(Some("alice"), Some("partners")), &HashMap::new())
+            .execute(ctx(Some("alice"), Some("partners")))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         // group not in allowlist
-        let err = p
-            .execute(ctx(Some("alice"), Some("randoms")), &HashMap::new())
+        let out = p
+            .execute(ctx(Some("alice"), Some("randoms")))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "ACL_DENIED");
-        assert_eq!(err.context.response.status_code, 403);
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
         // consumer with no group is rejected under an allowlist
-        assert!(p
-            .execute(ctx(Some("alice"), None), &HashMap::new())
-            .await
-            .is_err());
+        let out = p.execute(ctx(Some("alice"), None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -239,14 +234,14 @@ mod tests {
             "denied_by": ["banned"]
         }));
         assert!(p
-            .execute(ctx(Some("alice"), Some("partners")), &HashMap::new())
+            .execute(ctx(Some("alice"), Some("partners")))
             .await
-            .is_ok());
+            .unwrap()
+            .port
+            .is_none());
         // in allowlist but also denied -> deny wins
-        assert!(p
-            .execute(ctx(Some("bob"), Some("banned")), &HashMap::new())
-            .await
-            .is_err());
+        let out = p.execute(ctx(Some("bob"), Some("banned"))).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -254,24 +249,36 @@ mod tests {
         let p = plugin(serde_json::json!({ "denied_by": ["banned"] }));
         // no allowlist: everything not denied passes, incl. groupless consumers
         assert!(p
-            .execute(ctx(Some("alice"), None), &HashMap::new())
+            .execute(ctx(Some("alice"), None))
             .await
-            .is_ok());
-        assert!(p
-            .execute(ctx(Some("bob"), Some("banned")), &HashMap::new())
+            .unwrap()
+            .port
+            .is_none());
+        let out = p.execute(ctx(Some("bob"), Some("banned"))).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+    }
+
+    #[tokio::test]
+    async fn test_rejected_msg_renders_template() {
+        let p = plugin(serde_json::json!({
+            "allowed_by": ["partners"],
+            "rejected_msg": "denied group for {{request.path}}"
+        }));
+        let out = p
+            .execute(ctx(Some("alice"), Some("randoms")))
             .await
-            .is_err());
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
+        assert_eq!(body["message"], "denied group for /");
     }
 
     #[tokio::test]
     async fn test_no_consumer_attached_401() {
         let p = plugin(serde_json::json!({ "allowed_by": ["partners"] }));
-        let err = p
-            .execute(ctx(None, None), &HashMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.context.response.status_code, 401);
-        assert_eq!(err.error.code, "ACL_DENIED");
+        let out = p.execute(ctx(None, None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
     }
 
     #[test]

@@ -15,6 +15,8 @@ const sidebars: SidebarsConfig = {
       items: [
         'concepts/architecture',
         'concepts/policies-and-graphs',
+        'concepts/supernodes',
+        'concepts/plugin-configs',
         'concepts/context-object',
         'concepts/listener-and-client',
         'concepts/error-handling',
@@ -188,6 +190,8 @@ const sidebars: SidebarsConfig = {
             'reference/plugins/script',
           ],
         },
+        'reference/templates',
+        'reference/context-vars',
         'reference/roadmap',
       ],
     },

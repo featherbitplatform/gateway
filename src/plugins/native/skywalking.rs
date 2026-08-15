@@ -319,15 +319,12 @@ impl Plugin for SkywalkingPlugin {
         "skywalking"
     }
 
-    async fn execute(&self, ctx: Context, _named_inputs: &HashMap<String, Value>) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let ctx = match self.phase {
             Phase::Start => self.run_start(ctx),
             Phase::End => self.run_end(ctx),
         };
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -483,7 +480,7 @@ mod tests {
     async fn end_returns_ok_without_span() {
         // No start ran -> no span -> nothing exported, still Ok.
         let p = plugin(json!({ "phase": "end" })).unwrap();
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
         assert_eq!(out.context.response.status_code, 200);
     }
 
@@ -493,7 +490,7 @@ mod tests {
         let p = plugin(json!({ "phase": "end", "endpoint_addr": "http://127.0.0.1:1" })).unwrap();
         let start = plugin(json!({ "phase": "start", "sample_ratio": 1 })).unwrap();
         let ctx = start.run_start(test_ctx());
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         // context passes through unchanged
         assert_eq!(out.context.request.path, "/api/users");
     }
@@ -504,7 +501,7 @@ mod tests {
         let start = plugin(json!({ "phase": "start", "sample_ratio": 0 })).unwrap();
         let ctx = start.run_start(test_ctx());
         assert!(!load_span(&ctx).unwrap().sampled);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         assert_eq!(out.context.request.path, "/api/users");
     }
 }

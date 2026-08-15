@@ -129,6 +129,38 @@ async function captureTheme(browser, theme) {
   await page.waitForTimeout(700);
   await shot('node-inspector');
 
+  // 5. Supernode expanded in place: the posed checkout policy's instance grown
+  //    to its read-only inner-graph preview. Selecting the route remounts the
+  //    canvas, so re-fit before expanding; re-fit again after, because the
+  //    card's size changes. Clipped to the expanded node plus its neighbors'
+  //    edges (pad generously) so the "floats above the canvas" framing reads.
+  await page.getByText('checkout-api', {exact: true}).click();
+  await page.waitForSelector('.react-flow__node');
+  await page.locator('.react-flow__controls-fitview').click();
+  await page.waitForTimeout(800);
+  await page.getByRole('button', {name: 'Expand supernode preview'}).click();
+  await page.getByTestId('supernode-preview').waitFor();
+  await page.locator('.react-flow__controls-fitview').click();
+  await page.waitForTimeout(1200); // expansion + nested fitView settle
+  // The MiniMap sits bottom-right and bleeds into the clipped box; hide the
+  // outer canvas's one for this shot (the nested preview renders none).
+  await page.addStyleTag({content: '.react-flow__minimap { display: none; }'});
+  const snBox = await page.evaluate(() => {
+    const rects = [...document.querySelectorAll('.react-flow__nodes')][0]
+      ? [...document.querySelectorAll('.react-flow__nodes')[0].children].map((n) => n.getBoundingClientRect())
+      : [];
+    const pad = 48;
+    const x = Math.min(...rects.map((r) => r.left)) - pad;
+    const y = Math.min(...rects.map((r) => r.top)) - pad;
+    return {
+      x,
+      y,
+      width: Math.max(...rects.map((r) => r.right)) + pad - x,
+      height: Math.max(...rects.map((r) => r.bottom)) + pad - y,
+    };
+  });
+  await shot('supernode-preview', {clip: snBox});
+
   await page.close();
 }
 
