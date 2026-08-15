@@ -22,7 +22,7 @@ use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Builds the Loki push payload: one stream carrying `labels`, with one
@@ -100,7 +100,7 @@ impl BatchFlusher for LokiLoggerFlusher {
 /// Batches access-log entries and POSTs them to a Grafana Loki push endpoint.
 pub struct LokiLoggerPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
 }
@@ -268,7 +268,7 @@ impl Plugin for LokiLoggerPlugin {
         "loki-logger"
     }
 
-    async fn execute(&self, ctx: Context, _named_inputs: &HashMap<String, Value>) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let entry = build_entry(
             &ctx,
             self.log_format.as_ref(),
@@ -276,10 +276,7 @@ impl Plugin for LokiLoggerPlugin {
             self.include_resp_body,
         );
         self.sink.push(entry);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 

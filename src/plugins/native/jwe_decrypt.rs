@@ -12,8 +12,7 @@
 //! The symmetric key is either configured inline (`key`, base64) or resolved
 //! per request from the consumer store (`use_consumers`) using the `kid`
 //! carried in the JWE protected header. Malformed tokens and decryption
-//! failures are rejected with a 401 (`JWE_INVALID`) routed through the error
-//! port.
+//! failures are rejected with a 401 routed through the node's `denied` port.
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -22,9 +21,9 @@ use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// The consumer-store auth type under which jwe-decrypt credentials are indexed.
 const AUTH_TYPE: &str = "jwe-decrypt";
@@ -89,8 +88,8 @@ fn aes256gcm_decrypt(
 /// in the outbound request; the request otherwise continues unchanged through
 /// the **success** port. On any failure (missing token when `strict`,
 /// malformed compact serialization, unsupported algorithm, unknown `kid`, or a
-/// failed AEAD check) the request is rejected with a 401 JSON response and a
-/// `JWE_INVALID` error routed through the **error** port.
+/// failed AEAD check) the request is rejected with a 401 JSON response and
+/// exits through the **denied** port.
 pub struct JweDecryptPlugin {
     /// Lowercased header the encrypted token is read from.
     header: String,
@@ -211,8 +210,7 @@ impl JweDecryptPlugin {
         })
     }
 
-    /// Builds the 401 rejection (code `JWE_INVALID`) carrying the context so the
-    /// graph engine routes through the error port.
+    /// Builds the 401 rejection and exits on the `denied` port.
     fn reject(ctx: Context, message: &str) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 401;
@@ -224,15 +222,7 @@ impl JweDecryptPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "JWE_INVALID".to_string(),
-                message: message.to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 
     /// Resolves the 32-byte AES key for the given token `kid` from the consumer
@@ -273,11 +263,7 @@ impl Plugin for JweDecryptPlugin {
         "jwe-decrypt"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Fetch the token, stripping a Bearer prefix (case-insensitive).
         let raw = ctx
             .request
@@ -298,10 +284,7 @@ impl Plugin for JweDecryptPlugin {
                 if self.strict {
                     return Self::reject(ctx, "missing JWE token in request");
                 }
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         };
 
@@ -371,10 +354,7 @@ impl Plugin for JweDecryptPlugin {
                 ctx.request
                     .headers
                     .insert(self.forward_header.clone(), vec![value]);
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
             None => Self::reject(ctx, "failed to decrypt JWE token"),
         }
@@ -466,7 +446,7 @@ mod tests {
         let plugin = JweDecryptPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
 
         let ctx = ctx_with_header("authorization", Some(&format!("Bearer {}", token)));
-        let out = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("x-decrypted"),
             Some(&vec!["hello-plaintext".to_string()])
@@ -503,7 +483,7 @@ mod tests {
         let plugin = JweDecryptPlugin::from_config(&cfg, &resources).unwrap();
 
         let ctx = ctx_with_header("authorization", Some(&token));
-        let out = plugin.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = plugin.execute(ctx).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("x-decrypted"),
             Some(&vec!["consumer-body".to_string()])
@@ -522,9 +502,9 @@ mod tests {
 
         // Only 4 segments -> malformed.
         let ctx = ctx_with_header("authorization", Some("not.a.valid.jwe"));
-        let err = plugin.execute(ctx, &HashMap::new()).await.unwrap_err();
-        assert_eq!(err.error.code, "JWE_INVALID");
-        assert_eq!(err.context.response.status_code, 401);
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
     }
 
     #[tokio::test]
@@ -545,7 +525,8 @@ mod tests {
         );
         let plugin = JweDecryptPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
         let ctx = ctx_with_header("authorization", Some(&tampered));
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_err());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -559,6 +540,7 @@ mod tests {
         cfg.insert("strict".to_string(), serde_json::json!(false));
         let plugin = JweDecryptPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
         let ctx = ctx_with_header("authorization", None);
-        assert!(plugin.execute(ctx, &HashMap::new()).await.is_ok());
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, None);
     }
 }

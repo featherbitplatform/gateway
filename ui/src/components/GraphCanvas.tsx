@@ -6,7 +6,7 @@
  *
  * @module components/GraphCanvas
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -23,12 +23,24 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { GitFork, Plus, Save, Trash2 } from 'lucide-react';
+import { Command, GitFork, Plus, Save, Trash2 } from 'lucide-react';
 import { PluginNode, type PluginNodeData } from './PluginNode';
 import { PluginDrawer } from './PluginDrawer';
 import { NodeInspector } from './NodeInspector';
 import { ThemeToggle } from './ThemeToggle';
-import type { Policy, PluginType, ScriptFile } from '../types';
+import { useRegisterEditorAction } from '../editorActions';
+import type {
+  DebugConfig,
+  Policy,
+  PluginConfigDef,
+  PluginType,
+  ScriptFile,
+  Supernode,
+} from '../types';
+import { edgesAfterConnect } from '../connectionRules';
+import { buildPortSpecs, type PortSpecLookup } from '../portSpecs';
+import { resolveOutputs } from '../nodeKinds';
+import { PORT_STROKE, policyToEdges, policyToNodes, portKindFor } from '../policyGraph';
 
 /**
  * Builds the shared inline style for floating-toolbar buttons.
@@ -59,133 +71,71 @@ interface GraphCanvasProps {
   scripts: ScriptFile[];
   /** Fires when the user clicks Save Policy, with the graph converted back to the Policy contract. */
   onSavePolicy: (policy: Policy) => void;
+  /**
+   * Fires just before `onSavePolicy`, only when the graph has mandatory
+   * (`success`/`outcome`) ports with no outgoing edge — a client-side
+   * heads-up ahead of the server's authoritative "must be wired" rejection
+   * (see `findUnwiredPorts`); the save attempt proceeds regardless.
+   */
+  onSaveWarning?: (title: string, message: string) => void;
+  /** Whether the canvas is editing a policy or a supernode definition. */
+  kind: 'policy' | 'supernode';
+  /** Supernode definitions offered in the policy palette (empty in supernode mode). */
+  supernodes: Supernode[];
+  /** Named shared plugin configs offered by the inspector's picker (from GET /api/plugin-configs). */
+  pluginConfigs: PluginConfigDef[];
+  /** Debug settings (enabled/capture_bodies/...), threaded to the inspector's var-suggestion hook. */
+  debugConfig: DebugConfig | null;
+  /**
+   * Current value of the persisted port-names preference. Owned by App (a
+   * single `usePortNames()` call) so the command palette's toggle and this
+   * canvas always agree — see the `showPortNames` doc on {@link policyToNodes}.
+   */
+  showPortNames: boolean;
+  /** Opens the App-level command palette; omitted renders no toolbar button. */
+  onOpenPalette?: () => void;
 }
 
 /** ReactFlow custom node-type registry; every policy node renders as a {@link PluginNode}. */
 const nodeTypes = { pluginNode: PluginNode };
 
 /**
- * Converts a gateway {@link Policy} into ReactFlow nodes.
+ * Finds every `success`/`outcome` port across a policy's nodes that has no
+ * outgoing edge.
  *
- * Saved `position` values on policy nodes win; nodes without one get an
- * auto-layout position: starting from the `listener` node, each success-port
- * successor is placed one column (250px) to the right on the same row, while
- * an error-port successor drops 1.5 rows (225px) below. Nodes unreachable
- * from the listener are appended in subsequent columns at y=300.
+ * The gateway rejects a saved policy that leaves a mandatory port unwired
+ * (error ports are optional — the engine falls back to the policy's
+ * `error_handler`, then a generic 500), so this lets the editor warn before
+ * the round-trip to the server, without duplicating or overriding that
+ * server-side validation.
  *
- * @param policy - Policy whose `nodes`/`edges` describe the graph.
- * @param onSelect - Callback wired into each node's data so clicking a
- *   rendered {@link PluginNode} selects it in the canvas.
- * @returns ReactFlow nodes of type `pluginNode` carrying {@link PluginNodeData}.
+ * Uses `resolveOutputs` — the same entry/terminal-aware helper PluginNode
+ * uses to render handles — rather than reading the catalog spec directly.
+ * That matters for the supernode boundary pseudo-nodes: `output`/`error`
+ * are terminal (no outputs at all, and `src/graph/validation.rs::validate_supernode`
+ * forbids any outgoing edge from them), but neither has a catalog entry, so
+ * reading the catalog spec naively falls back to the default success+error
+ * pair and wrongly demands an unwired `output.success`/`error.success` edge
+ * on every supernode. `resolveOutputs` special-cases them to zero outputs.
+ *
+ * @param policy - Policy already rebuilt by `nodesToPolicy` (so `edge.from`
+ *   is already the exact `node_id.port` string to match against).
+ * @param portSpecs - Catalog-derived lookup used to enumerate each node
+ *   type's declared outputs.
+ * @returns `node_id.port` strings for every unwired mandatory port, in node order.
  */
-function policyToNodes(policy: Policy, onSelect: (id: string) => void): Node[] {
-  const positions = new Map<string, { x: number; y: number }>();
-
-  // Auto-layout: place listener at left, then each connected node to the right
-  const visited = new Set<string>();
-  const successMap = new Map<string, string>();
-  const errorMap = new Map<string, string>();
-
-  for (const edge of policy.edges) {
-    const [fromNode, fromPort] = splitEdge(edge.from);
-    const [toNode] = splitEdge(edge.to);
-    if (fromPort === 'error') {
-      errorMap.set(fromNode, toNode);
-    } else {
-      successMap.set(fromNode, toNode);
-    }
-  }
-
-  let col = 0;
-  function layout(nodeId: string, row: number) {
-    if (visited.has(nodeId)) return;
-    visited.add(nodeId);
-    positions.set(nodeId, { x: col * 250, y: row * 150 });
-    col++;
-    const next = successMap.get(nodeId);
-    if (next) layout(next, row);
-    const errNext = errorMap.get(nodeId);
-    if (errNext) layout(errNext, row + 1.5);
-  }
-
-  const listenerNode = policy.nodes.find((n) => n.type === 'listener');
-  if (listenerNode) layout(listenerNode.id, 1);
-
-  // Place any unvisited nodes
+function findUnwiredPorts(policy: Policy, portSpecs: PortSpecLookup): string[] {
+  const wired = new Set(policy.edges.map((e) => e.from));
+  const missing: string[] = [];
   for (const node of policy.nodes) {
-    if (!visited.has(node.id)) {
-      positions.set(node.id, { x: col * 250, y: 300 });
-      col++;
+    const outputs = resolveOutputs(node.type, portSpecs[node.type]);
+    for (const port of outputs) {
+      if (port.kind === 'error') continue;
+      const key = `${node.id}.${port.name}`;
+      if (!wired.has(key)) missing.push(key);
     }
   }
-
-  return policy.nodes.map((node) => ({
-    id: node.id,
-    type: 'pluginNode',
-    position: node.position || positions.get(node.id) || { x: 0, y: 0 },
-    data: {
-      label: node.id,
-      pluginType: node.type,
-      config: node.config || {},
-      onSelect: onSelect,
-    } satisfies PluginNodeData,
-  }));
-}
-
-/**
- * Converts a gateway {@link Policy}'s edges into styled ReactFlow edges.
- *
- * Each `node_id.port` endpoint is split with `splitEdge`. A source port
- * of `out` is normalized to the `success` handle (PluginNode renders no `out`
- * handle). Edges leaving an `error` port are identified by that source port
- * alone and styled distinctly: animated, red (`var(--error)`) stroke and
- * arrowhead; all other edges are green (`var(--success)`). Edge ids are
- * positional (`e-<index>`).
- *
- * @param policy - Policy whose edges use the `node_id.port` endpoint format.
- * @returns ReactFlow edges targeting each node's `in` handle.
- *
- * @remarks
- * The endpoint format mirrors what the Rust engine parses in
- * src/graph/engine.rs (parse_edge_endpoint), where error-port edges feed the
- * error-routing table used by CompiledGraph::execute.
- */
-function policyToEdges(policy: Policy): Edge[] {
-  return policy.edges.map((edge, i) => {
-    const [fromNode, fromPort] = splitEdge(edge.from);
-    const [toNode] = splitEdge(edge.to);
-    const isError = fromPort === 'error';
-
-    return {
-      id: `e-${i}`,
-      source: fromNode,
-      sourceHandle: fromPort === 'out' ? 'success' : fromPort,
-      target: toNode,
-      targetHandle: 'in',
-      animated: isError,
-      style: { stroke: isError ? 'var(--error)' : 'var(--success)', strokeWidth: 2 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: isError ? 'var(--error)' : 'var(--success)' },
-    };
-  });
-}
-
-/**
- * Splits a `node_id.port` edge endpoint into its node id and port.
- *
- * Splits on the last dot so node ids containing dots stay intact; an
- * endpoint with no dot yields the default port `out`.
- *
- * @param endpoint - Endpoint string such as `upstream.error` or `listener.out`.
- * @returns Tuple of `[nodeId, port]`.
- *
- * @remarks
- * TypeScript counterpart of parse_edge_endpoint in src/graph/engine.rs —
- * the two must agree for policies to round-trip between UI and gateway.
- */
-function splitEdge(endpoint: string): [string, string] {
-  const dot = endpoint.lastIndexOf('.');
-  if (dot === -1) return [endpoint, 'out'];
-  return [endpoint.substring(0, dot), endpoint.substring(dot + 1)];
+  return missing;
 }
 
 /**
@@ -225,6 +175,7 @@ function nodesToPolicy(
         id: n.id,
         type: data.pluginType,
         config: data.config || {},
+        ...(data.configRef ? { config_ref: data.configRef } : {}),
         position: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
       };
     }),
@@ -252,69 +203,147 @@ function nodesToPolicy(
  * - Selecting a node opens the inspector (unless the drawer is open);
  *   clicking an edge selects it and reveals a Delete Edge button; clicking
  *   the pane clears both selections. Deleting a node also removes its edges.
+ * - While mounted, registers `add-plugin`/`save-graph` with the App-level
+ *   command palette (see {@link useRegisterEditorAction}), so the palette's
+ *   corresponding entries and shortcuts are live only when a canvas is open.
  *
  * @remarks
  * Success/error handles correspond to the port routing model executed by
  * CompiledGraph::execute in src/graph/engine.rs.
  */
-export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCanvasProps) {
+export function GraphCanvas({
+  policy,
+  plugins,
+  scripts,
+  onSavePolicy,
+  onSaveWarning,
+  kind,
+  supernodes,
+  pluginConfigs,
+  debugConfig,
+  showPortNames,
+  onOpenPalette,
+}: GraphCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Ids of supernode instances currently expanded to their inline preview.
+  // Canvas-session-only by design: held here (not in anything nodesToPolicy
+  // serializes), so expansion can never leak into the saved policy.
+  const [expandedSupernodes, setExpandedSupernodes] = useState<Set<string>>(new Set());
+  const handleToggleExpand = useCallback((nodeId: string) => {
+    setExpandedSupernodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  }, []);
 
   const handleSelect = useCallback((id: string) => {
     setSelectedNodeId(id);
     setDrawerOpen(false);
   }, []);
 
+  // Supernode definitions can't contain endpoint nodes (spec §6): a
+  // supernode has no listener to bind and its instance already stands in
+  // for a client via the success/error ports. PluginDrawer filters
+  // 'listener'/'script' internally for every mode; the 'client' exclusion
+  // is supernode-only, so it's applied here rather than inside the drawer.
+  const drawerPlugins = useMemo(
+    () =>
+      kind === 'supernode'
+        ? plugins.filter((p) => p.type !== 'listener' && p.type !== 'client')
+        : plugins,
+    [plugins, kind]
+  );
+
+  // Catalog-derived port declarations, keyed by plugin type; threaded into
+  // every node's data so PluginNode can render its declared handles, and
+  // consulted for edge coloring and the unwired-port save warning below.
+  const portSpecs = useMemo(() => buildPortSpecs(plugins), [plugins]);
+
   // The parent keys this component by policy name, so a different policy
   // remounts the canvas and nodes/edges/selection all start fresh from the
   // prop. Refetches of the same policy keep the local (unsaved) graph state.
   const initialNodes = useMemo(
-    () => (policy ? policyToNodes(policy, handleSelect) : []),
-    [policy, handleSelect]
+    () => (policy ? policyToNodes(policy, handleSelect, portSpecs, showPortNames) : []),
+    [policy, handleSelect, portSpecs, showPortNames]
   );
-  const initialEdges = useMemo(() => (policy ? policyToEdges(policy) : []), [policy]);
+  const initialEdges = useMemo(
+    () => (policy ? policyToEdges(policy, portSpecs) : []),
+    [policy, portSpecs]
+  );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
+  // Node `data` is captured at conversion time, so flipping the preference
+  // after the initial render needs an explicit rewrite of every existing node.
+  useEffect(() => {
+    setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, showPortNames } })));
+  }, [showPortNames, setNodes]);
+
+  // Supernode instances carry extra render-time data: the resolved
+  // definition (kept fresh when the library refetches — same rewrite
+  // pattern as showPortNames above), the port-spec lookup for the preview's
+  // inner nodes, and the expand/fold state. zIndex floats an expanded card
+  // above its neighbors.
+  useEffect(() => {
+    setNodes((nds) =>
+      nds.map((n) => {
+        const data = n.data as unknown as PluginNodeData;
+        if (data.pluginType !== 'supernode') return n;
+        const refName = typeof data.config?.name === 'string' ? data.config.name : undefined;
+        const expanded = expandedSupernodes.has(n.id);
+        return {
+          ...n,
+          zIndex: expanded ? 1000 : 0,
+          data: {
+            ...data,
+            supernodeDef: refName ? supernodes.find((s) => s.name === refName) : undefined,
+            portSpecs,
+            expanded,
+            onToggleExpand: handleToggleExpand,
+          },
+        };
+      })
+    );
+  }, [supernodes, portSpecs, expandedSupernodes, handleToggleExpand, setNodes]);
+
   const onConnect = useCallback(
     (connection: Connection) => {
       setEdges((eds) => {
-        // Check if the target input already has an edge.
-        // Exceptions: listener.in (multiple paths return response) and
-        // error-handler nodes (receive errors from multiple nodes).
+        // Cardinality rules (connectionRules.ts): an occupied single-input
+        // target rejects the edge; an occupied source port is rewired so a
+        // port never fans out — the compiler would reject the save anyway.
         const targetNode = nodes.find((n) => n.id === connection.target);
         const targetType = (targetNode?.data as unknown as PluginNodeData)?.pluginType;
-        const isClient = targetType === 'client';
-        const isErrorHandler = targetType === 'error-handler';
-
-        if (!isClient && !isErrorHandler) {
-          const alreadyConnected = eds.some(
-            (e) => e.target === connection.target && e.targetHandle === (connection.targetHandle || 'in')
-          );
-          if (alreadyConnected) {
-            return eds;
-          }
+        const base = edgesAfterConnect(eds, connection, targetType);
+        if (base === null) {
+          return eds;
         }
 
-        const isError = connection.sourceHandle === 'error';
+        const sourceNode = nodes.find((n) => n.id === connection.source);
+        const sourceType = (sourceNode?.data as unknown as PluginNodeData)?.pluginType;
+        const kind = portKindFor(sourceType, connection.sourceHandle || 'success', portSpecs);
+        const color = PORT_STROKE[kind];
         return addEdge(
           {
             ...connection,
-            animated: isError,
-            style: { stroke: isError ? 'var(--error)' : 'var(--success)', strokeWidth: 2 },
+            animated: kind === 'error',
+            style: { stroke: color, strokeWidth: 2 },
             markerEnd: {
               type: MarkerType.ArrowClosed,
-              color: isError ? 'var(--error)' : 'var(--success)',
+              color,
             },
           },
-          eds
+          base
         );
       });
     },
-    [setEdges, nodes]
+    [setEdges, nodes, portSpecs]
   );
 
   const onEdgeClick = useCallback((_event: React.MouseEvent, edge: Edge) => {
@@ -331,6 +360,27 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
 
+  // Predecessor lookup for the var-suggestion hook (NodeInspector): the
+  // incoming edge feeding the selected node's `in` handle, preferring the
+  // success-port edge over an error-port one when both exist. `undefined` =
+  // no incoming edge yet (nothing to preview from); `null` = the predecessor
+  // is the pipeline entry (listener/input), so preview from trace.initial
+  // rather than a node step. See varSuggestions.ts's module doc comment for
+  // the full encoding.
+  const incoming = edges.filter((e) => e.target === selectedNodeId);
+  const successEdge = incoming.find((e) => e.sourceHandle !== 'error') ?? incoming[0];
+  const predecessorType =
+    successEdge === undefined
+      ? undefined
+      : (nodes.find((n) => n.id === successEdge.source)?.data as PluginNodeData | undefined)
+          ?.pluginType;
+  const predecessorId =
+    successEdge === undefined
+      ? undefined
+      : predecessorType === 'listener' || predecessorType === 'input'
+        ? null
+        : successEdge.source;
+
   const handleAddPlugin = (type: string) => {
     const id = `${type}-${Date.now().toString(36)}`;
     const newNode: Node = {
@@ -341,7 +391,9 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
         label: id,
         pluginType: type,
         config: {},
+        ports: portSpecs[type],
         onSelect: handleSelect,
+        showPortNames,
       } satisfies PluginNodeData,
     };
     setNodes((nds) => [...nds, newNode]);
@@ -362,7 +414,37 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
           runtime: script.runtime,
           source: script.file,
         },
+        ports: portSpecs['script'],
         onSelect: handleSelect,
+        showPortNames,
+      } satisfies PluginNodeData,
+    };
+    setNodes((nds) => [...nds, newNode]);
+    setSelectedNodeId(id);
+    setDrawerOpen(false);
+  };
+
+  const handleAddSupernode = (sn: Supernode) => {
+    const id = `${sn.name}-${Date.now().toString(36)}`;
+    const newNode: Node = {
+      id,
+      type: 'pluginNode',
+      position: { x: 300, y: 200 + nodes.length * 80 },
+      data: {
+        label: `⬡ ${sn.name}`,
+        pluginType: 'supernode',
+        config: { name: sn.name },
+        // 'supernode' has no catalog entry (it's not a src/plugins/mod.rs
+        // type); portSpecs lookup misses and PluginNode falls back to the
+        // default success+error pair, matching a supernode instance's fixed
+        // output/error boundary exits (src/graph/expand.rs).
+        ports: portSpecs['supernode'],
+        onSelect: handleSelect,
+        showPortNames,
+        supernodeDef: sn,
+        portSpecs,
+        expanded: false,
+        onToggleExpand: handleToggleExpand,
       } satisfies PluginNodeData,
     };
     setNodes((nds) => [...nds, newNode]);
@@ -380,18 +462,74 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
     );
   };
 
+  const handleUpdateConfigRef = (nodeId: string, ref: string | undefined) => {
+    setNodes((nds) =>
+      nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, configRef: ref } } : n))
+    );
+  };
+
+  // Prunes ids removed via keyboard delete (ReactFlow's onNodesDelete, which
+  // bypasses handleDeleteNode) out of expandedSupernodes, so a keyboard-deleted
+  // expanded supernode doesn't leave a stale expansion entry behind.
+  const handleNodesDelete = useCallback((deleted: Node[]) => {
+    setExpandedSupernodes((prev) => {
+      let next: Set<string> | null = null;
+      for (const n of deleted) {
+        if (prev.has(n.id)) {
+          if (!next) next = new Set(prev);
+          next.delete(n.id);
+        }
+      }
+      return next ?? prev;
+    });
+  }, []);
+
   const handleDeleteNode = (nodeId: string) => {
     setNodes((nds) => nds.filter((n) => n.id !== nodeId));
     setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    setExpandedSupernodes((prev) => {
+      if (!prev.has(nodeId)) return prev;
+      const next = new Set(prev);
+      next.delete(nodeId);
+      return next;
+    });
     setSelectedNodeId(null);
   };
 
-  const handleSave = () => {
+  const handleSave = useCallback(() => {
     if (!policy) return;
     const updated = nodesToPolicy(policy.name, nodes, edges, policy.error_handler);
+
+    // Client-side heads-up only: the server is the authority (it rejects the
+    // save outright with a "must be wired — add an edge from ..." message,
+    // which the existing error toast already surfaces), so this warns without
+    // blocking the attempt.
+    const unwired = findUnwiredPorts(updated, portSpecs);
+    if (unwired.length > 0) {
+      onSaveWarning?.(
+        'Unwired ports',
+        `No outgoing edge for: ${unwired.join(', ')} — the save may be rejected.`
+      );
+    }
+
     console.log('Saving policy:', JSON.stringify(updated, null, 2));
     onSavePolicy(updated);
-  };
+  }, [policy, nodes, edges, portSpecs, onSaveWarning, onSavePolicy]);
+
+  // Exposes canvas-owned actions to the App-level command palette (see
+  // editorActions.tsx) for as long as this canvas is mounted. These hook
+  // calls must stay ABOVE the `if (!policy)` early return below, or hook
+  // order would vary between the empty state and the editor — which means
+  // registration alone does not imply a graph is open. The palette's
+  // `when()` pairs it with `CommandContext.editorOpen` for that.
+  useRegisterEditorAction(
+    'add-plugin',
+    useCallback(() => {
+      setSelectedNodeId(null);
+      setDrawerOpen(true);
+    }, [])
+  );
+  useRegisterEditorAction('save-graph', handleSave);
 
   if (!policy) {
     return (
@@ -445,6 +583,7 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onEdgeClick={onEdgeClick}
+        onNodesDelete={handleNodesDelete}
         nodeTypes={nodeTypes}
         deleteKeyCode={['Backspace', 'Delete']}
         fitView
@@ -470,6 +609,23 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
             }}
           >
             <ThemeToggle />
+            <button
+              onClick={onOpenPalette}
+              className="flex items-center justify-center transition-colors"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 'var(--radius-sm)',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              title="Command palette (Ctrl+K)"
+              aria-label="Open command palette"
+            >
+              <Command size={15} />
+            </button>
             <span
               style={{ width: 1, height: 18, background: 'var(--border)', margin: '0 2px' }}
             />
@@ -507,17 +663,19 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
               onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
             >
               <Save size={13} />
-              Save Policy
+              {kind === 'supernode' ? 'Save Supernode' : 'Save Policy'}
             </button>
           </div>
         </Panel>
       </ReactFlow>
 
       <PluginDrawer
-        plugins={plugins}
+        plugins={drawerPlugins}
         scripts={scripts}
+        supernodes={kind === 'policy' ? supernodes : []}
         onAddPlugin={handleAddPlugin}
         onAddScript={handleAddScript}
+        onAddSupernode={handleAddSupernode}
         isOpen={drawerOpen}
         onClose={() => setDrawerOpen(false)}
       />
@@ -525,9 +683,15 @@ export function GraphCanvas({ policy, plugins, scripts, onSavePolicy }: GraphCan
       {selectedNodeId && !drawerOpen && (
         <NodeInspector
           node={selectedNode}
+          pluginConfigs={pluginConfigs}
           onUpdateConfig={handleUpdateConfig}
+          onUpdateConfigRef={handleUpdateConfigRef}
           onDeleteNode={handleDeleteNode}
           onClose={() => setSelectedNodeId(null)}
+          policyName={policy?.name ?? null}
+          predecessorId={predecessorId}
+          debugConfig={debugConfig}
+          kind={kind}
         />
       )}
     </div>

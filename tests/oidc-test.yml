@@ -89,6 +89,10 @@ policies:
     to: openid-connect-mrqfwpxq.in
   - from: openid-connect-mrqfwpxq.success
     to: rewrite-request.in
+  - from: openid-connect-mrqfwpxq.denied
+    to: client.in
+  - from: openid-connect-mrqfwpxq.redirect
+    to: client.in
   - from: openid-connect-mrqfwpxq.error
     to: client.in
 consumers: []

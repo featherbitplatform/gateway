@@ -5,7 +5,7 @@ description: Filter clients by remote address against allow and deny lists of ex
 
 <span className="plugin-chip" style={{'--chip-color': '#ec4899'}}>ip-restriction</span>
 
-Restricts access based on `context.request.remote_addr`, matching it against configured allow and deny lists of exact IPs or CIDR blocks. Denied clients receive a 403 through the node's `error` port. Place it at the front of the pipeline, before auth and upstream nodes.
+Restricts access based on `context.request.remote_addr`, matching it against configured allow and deny lists of exact IPs or CIDR blocks. Denied clients receive a 403 through the node's `denied` port. Place it at the front of the pipeline, before auth and upstream nodes.
 
 ## Configuration
 
@@ -34,8 +34,20 @@ Checks run in order:
 1. **Deny list first** — if `deny` is non-empty and the client matches, the request is rejected with error code `IP_DENIED`.
 2. **Allow list** — if `allow` is non-empty and the client does not match, the request is rejected with error code `IP_NOT_ALLOWED`.
 
-Either rejection writes a 403 JSON response onto `context.response` (`{"error": "forbidden", ...}` with `content-type: application/json`) and routes the Context through the `error` port. Permitted requests pass through the `success` port with the Context untouched. The plugin does not write to `context.message`.
+Either rejection writes a 403 JSON response onto `context.response` (`{"error": "forbidden", ...}` with `content-type: application/json`) and exits through the `denied` port. Permitted requests pass through the `success` port with the Context untouched. The plugin does not write to `context.message`.
 
 :::note Legacy configs
 Older UI builds saved the keys `mode` and `rules`, which the plugin ignores - nodes saved with them apply no restriction. Re-save the node (the editor now uses `allow` and `deny` lists) or update the YAML.
 :::
+
+## Ports
+
+`ip-restriction` declares three output ports: `success`, `denied` (a rejection is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `ip-restriction.denied` straight to `client` so the prepared `403` reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: ip-restriction.success
+    to: upstream.in
+  - from: ip-restriction.denied
+    to: client.in
+```

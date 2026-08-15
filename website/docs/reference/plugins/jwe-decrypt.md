@@ -47,19 +47,30 @@ consumers:
 
 The token is read from `header` (stripping a `Bearer ` prefix), parsed as a 5-part JWE compact serialization (`protected.encrypted_key.iv.ciphertext.tag`), and its protected header is checked for `alg: dir` / `enc: A256GCM`. The 32-byte AES key comes from the inline `key` or, with `use_consumers`, from the consumer selected by the token's `kid`. The ciphertext is decrypted with AES-256-GCM (the protected header being the AEAD additional-authenticated-data, per RFC 7516).
 
-On success the decrypted plaintext replaces the value of `forward_header` and the request continues through the **success** port. On any failure the request is rejected and routed through the **error** port:
+On success the decrypted plaintext replaces the value of `forward_header` and the request continues through the **success** port. On any failure the request is rejected and exits through the **`denied`** port:
 
 - `context.response.status_code` = `401`
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
-- Error code appended to `context.errors`: `JWE_INVALID`
 
 Failure covers a missing token (when `strict`), a malformed compact serialization, an unsupported `alg`/`enc` in the token, an unknown or missing `kid`, and any failed AEAD authentication (tampered ciphertext, wrong key).
+
+## Ports
+
+`jwe-decrypt` declares three output ports: `success`, `denied` (a rejection is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `jwe-decrypt.denied` straight to `client` so the prepared `401` reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: jwe-decrypt.success
+    to: upstream.in
+  - from: jwe-decrypt.denied
+    to: client.in
+```
 
 ## Limitations
 
 The plugin implements the `dir` (direct) key-management algorithm with `A256GCM` content encryption, and nothing else:
 
-- **Only `dir` + `A256GCM` is supported.** There is no RSA-OAEP, ECDH-ES, key-wrap, or alternative content cipher. A node whose config sets `alg`/`enc` to anything else **fails at config load**; a *token* that declares another algorithm is rejected at request time with `JWE_INVALID`.
+- **Only `dir` + `A256GCM` is supported.** There is no RSA-OAEP, ECDH-ES, key-wrap, or alternative content cipher. A node whose config sets `alg`/`enc` to anything else **fails at config load**; a *token* that declares another algorithm is rejected at request time on the `denied` port.
 - The `encrypted_key` segment of the compact serialization must be empty (as it always is for `dir`). A non-empty segment is rejected.
 - The consumer `secret` must be a 32-byte AES-256 key — either 32 raw bytes (`is_base64_encoded: false`) or base64url that decodes to 32 bytes (`is_base64_encoded: true`).
-- **All rejections return `401`.** A single `401` with the `JWE_INVALID` code is used for every rejection path, consistent with featherbit's other auth plugins.
+- **All rejections return `401` on the `denied` port**, consistent with featherbit's other credential-auth plugins.

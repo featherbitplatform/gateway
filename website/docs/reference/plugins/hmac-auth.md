@@ -75,12 +75,23 @@ The plugin extracts the signature parameters, enforces the algorithm/`clock_skew
 
 On success the context passes through the **success** port; the `X-HMAC-*` proof headers are stripped unless `keep_headers` is set, and the `Authorization` header is stripped when `hide_credentials` is set.
 
-On a missing/invalid signature, unknown access key, stale `Date`, or a missing required signed header, the plugin routes through the **error** port:
+On a missing/invalid signature, unknown access key, stale `Date`, or a missing required signed header, the plugin exits through the **`denied`** port:
 
 - `context.response.status_code` = `401`
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
 - `WWW-Authenticate: hmac realm="<realm>"` challenge header
-- Error code appended to `context.errors`: `HMAC_INVALID`
+
+## Ports
+
+`hmac-auth` declares three output ports: `success`, `denied` (a rejection is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `denied` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `hmac-auth.denied` straight to `client` so the prepared `401` (with its `WWW-Authenticate` challenge) reaches the caller instead of continuing into `upstream`:
+
+```yaml
+edges:
+  - from: hmac-auth.success
+    to: upstream.in
+  - from: hmac-auth.denied
+    to: client.in
+```
 
 ## Behavior notes
 

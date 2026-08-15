@@ -29,7 +29,7 @@ use tokio::net::TcpStream;
 
 use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Serializes each entry as one line of JSON, newline-terminated, and
@@ -85,7 +85,7 @@ impl BatchFlusher for TcpFlusher {
 /// The `tcp-logger` plugin node.
 pub struct TcpLoggerPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
 }
@@ -99,7 +99,7 @@ impl TcpLoggerPlugin {
     /// - `timeout` (integer ms, default `1000`): connect/send timeout.
     /// - `tls` (bool, default `false`): **not yet supported** — `true` is rejected.
     /// - `tls_options` (string): accepted but ignored (TLS unsupported).
-    /// - `log_format` (object): custom `name -> "$var"` entry; when set, the
+    /// - `log_format` (object): custom `name -> "template"` entry (`{{namespace.path}}` references plus legacy `$var` interpolation); when set, the
     ///   default structured entry is replaced by this flat object.
     /// - `include_req_body` / `include_resp_body` (bool, default `false`): add
     ///   the request/response body to the default entry.
@@ -172,7 +172,7 @@ impl Plugin for TcpLoggerPlugin {
         "tcp-logger"
     }
 
-    async fn execute(&self, ctx: Context, _named_inputs: &HashMap<String, Value>) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let entry = build_entry(
             &ctx,
             self.log_format.as_ref(),
@@ -180,10 +180,7 @@ impl Plugin for TcpLoggerPlugin {
             self.include_resp_body,
         );
         self.sink.push(entry);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 

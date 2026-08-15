@@ -2,7 +2,7 @@
 //!
 //! Validates the `Authorization: Basic ...` header against a static user map
 //! and/or the shared consumer store, and rejects unauthenticated requests with
-//! a 401 challenge so the graph engine routes through the node's error port.
+//! a 401 challenge so the graph engine routes through the node's `denied` port.
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD;
@@ -12,9 +12,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::consumers::attach_consumer;
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Authenticates requests using HTTP Basic credentials checked against a
 /// configured username/password map and/or the consumer store.
@@ -33,8 +34,10 @@ use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 pub struct BasicAuthPlugin {
     /// Username -> plaintext password map the credentials are checked against.
     users: HashMap<String, String>,
-    /// Realm advertised in the `WWW-Authenticate` challenge header.
-    realm: String,
+    /// Realm advertised in the `WWW-Authenticate` challenge header. Supports
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// `realm` never supported it, so this sweep must not start).
+    realm: Template,
     /// When true, credentials are also resolved against the consumer store.
     use_consumers: bool,
     /// Consumer attached when no credential matches (instead of rejecting).
@@ -54,7 +57,8 @@ impl BasicAuthPlugin {
     ///   consumer.
     /// - At least one of `users` / `use_consumers` must be provided.
     /// - `realm` (string, default `"gateway"`): realm used in the
-    ///   `WWW-Authenticate` challenge.
+    ///   `WWW-Authenticate` challenge; supports `{{namespace.path}}`
+    ///   references.
     /// - `anonymous_consumer` (string, optional): consumer name attached when
     ///   no credential matches, instead of rejecting (APISIX semantics).
     /// - `hide_credentials` (bool, default `false`): strip the `Authorization`
@@ -87,6 +91,9 @@ impl BasicAuthPlugin {
             .and_then(|v| v.as_str())
             .unwrap_or("gateway")
             .to_string();
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let realm = Template::parse(&realm).0;
 
         let anonymous_consumer = config
             .get("anonymous_consumer")
@@ -109,11 +116,11 @@ impl BasicAuthPlugin {
     }
 
     /// Builds the 401 rejection: sets a JSON error body plus the
-    /// `WWW-Authenticate` challenge on the response and returns a
-    /// `PluginExecutionError` (code `UNAUTHORIZED`) carrying the context so
-    /// the graph engine routes through the error port.
+    /// `WWW-Authenticate` challenge on the response and exits on the
+    /// `denied` port.
     fn reject(&self, ctx: Context) -> PluginResult {
         let mut ctx = ctx;
+        let realm = self.realm.render(&ctx).into_owned();
         ctx.response.status_code = 401;
         ctx.response.body =
             Bytes::from(r#"{"error": "unauthorized", "message": "Invalid credentials"}"#);
@@ -123,17 +130,9 @@ impl BasicAuthPlugin {
         );
         ctx.response.headers.insert(
             "www-authenticate".to_string(),
-            vec![format!("Basic realm=\"{}\"", self.realm)],
+            vec![format!("Basic realm=\"{}\"", realm)],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "UNAUTHORIZED".to_string(),
-                message: "Invalid credentials".to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 
     /// Removes the `Authorization` header (per `hide_credentials`).
@@ -148,11 +147,7 @@ impl Plugin for BasicAuthPlugin {
         "basic-auth"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let auth_header = ctx
             .request
             .headers
@@ -184,10 +179,7 @@ impl Plugin for BasicAuthPlugin {
                         "user".to_string(),
                         serde_json::Value::String(username.clone()),
                     );
-                    return Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    });
+                    return Ok(PluginOutput::success(ctx));
                 }
             }
         }
@@ -212,10 +204,7 @@ impl Plugin for BasicAuthPlugin {
                             "user".to_string(),
                             serde_json::Value::String(username.clone()),
                         );
-                        return Ok(PluginOutput {
-                            context: ctx,
-                            named_outputs: HashMap::new(),
-                        });
+                        return Ok(PluginOutput::success(ctx));
                     }
                 }
             }
@@ -230,10 +219,7 @@ impl Plugin for BasicAuthPlugin {
                     "user".to_string(),
                     serde_json::Value::String(consumer.name.clone()),
                 );
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         }
 
@@ -404,10 +390,7 @@ mod tests {
         let plugin = BasicAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
 
         let ok = plugin
-            .execute(
-                ctx_with_auth(Some(&basic("alice", "s3cret"))),
-                &HashMap::new(),
-            )
+            .execute(ctx_with_auth(Some(&basic("alice", "s3cret"))))
             .await
             .unwrap();
         assert_eq!(
@@ -415,13 +398,11 @@ mod tests {
             Some(&serde_json::json!("alice"))
         );
 
-        assert!(plugin
-            .execute(
-                ctx_with_auth(Some(&basic("alice", "wrong"))),
-                &HashMap::new()
-            )
+        let out = plugin
+            .execute(ctx_with_auth(Some(&basic("alice", "wrong"))))
             .await
-            .is_err());
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -430,10 +411,7 @@ mod tests {
             BasicAuthPlugin::from_config(&inline_config(), &PluginResources::empty()).unwrap();
 
         let ok = plugin
-            .execute(
-                ctx_with_auth(Some(&basic("alice", "s3cret"))),
-                &HashMap::new(),
-            )
+            .execute(ctx_with_auth(Some(&basic("alice", "s3cret"))))
             .await
             .unwrap();
         assert_eq!(
@@ -442,18 +420,14 @@ mod tests {
         );
 
         // wrong password
-        assert!(plugin
-            .execute(
-                ctx_with_auth(Some(&basic("alice", "nope"))),
-                &HashMap::new()
-            )
+        let out = plugin
+            .execute(ctx_with_auth(Some(&basic("alice", "nope"))))
             .await
-            .is_err());
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
         // missing header
-        assert!(plugin
-            .execute(ctx_with_auth(None), &HashMap::new())
-            .await
-            .is_err());
+        let out = plugin.execute(ctx_with_auth(None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -462,15 +436,36 @@ mod tests {
         config.insert("realm".to_string(), serde_json::json!("internal-api"));
         let plugin = BasicAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
 
-        let err = plugin
-            .execute(ctx_with_auth(None), &HashMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "UNAUTHORIZED");
-        assert_eq!(err.context.response.status_code, 401);
+        let out = plugin.execute(ctx_with_auth(None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
         assert_eq!(
-            err.context.response.headers.get("www-authenticate"),
+            out.context.response.headers.get("www-authenticate"),
             Some(&vec!["Basic realm=\"internal-api\"".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reject_realm_renders_template() {
+        // `realm` must render `{{request.host}}` per request — different
+        // hosts get a challenge naming their own host.
+        let mut config = inline_config();
+        config.insert(
+            "realm".to_string(),
+            serde_json::json!("realm-for-{{request.host}}"),
+        );
+        let plugin = BasicAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+
+        let mut ctx = ctx_with_auth(None);
+        ctx.request.host = "tenant-a.example.com".to_string();
+
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(
+            out.context.response.headers.get("www-authenticate"),
+            Some(&vec![
+                "Basic realm=\"realm-for-tenant-a.example.com\"".to_string()
+            ])
         );
     }
 
@@ -483,7 +478,7 @@ mod tests {
         let plugin = BasicAuthPlugin::from_config(&config, &resources).unwrap();
 
         let out = plugin
-            .execute(ctx_with_auth(Some(&basic("alice", "pw"))), &HashMap::new())
+            .execute(ctx_with_auth(Some(&basic("alice", "pw"))))
             .await
             .unwrap();
         let ctx = out.context;
@@ -500,13 +495,11 @@ mod tests {
         assert!(!ctx.request.headers.contains_key("authorization"));
 
         // wrong password against a known consumer is rejected
-        assert!(plugin
-            .execute(
-                ctx_with_auth(Some(&basic("alice", "wrong"))),
-                &HashMap::new()
-            )
+        let out = plugin
+            .execute(ctx_with_auth(Some(&basic("alice", "wrong"))))
             .await
-            .is_err());
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[tokio::test]
@@ -517,10 +510,7 @@ mod tests {
         config.insert("anonymous_consumer".to_string(), serde_json::json!("guest"));
         let plugin = BasicAuthPlugin::from_config(&config, &resources).unwrap();
 
-        let out = plugin
-            .execute(ctx_with_auth(None), &HashMap::new())
-            .await
-            .unwrap();
+        let out = plugin.execute(ctx_with_auth(None)).await.unwrap();
         assert_eq!(
             out.context.message.get("consumer.name"),
             Some(&serde_json::json!("guest"))

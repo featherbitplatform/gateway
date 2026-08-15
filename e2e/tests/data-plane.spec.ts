@@ -51,9 +51,10 @@ test.describe('Data plane', () => {
   });
 
   /**
-   * key-auth sets 401 on the context and then returns an error; the status only
-   * reaches the client because secure-policy wires `api-key.error -> client.in`.
-   * This is the scenario that pins that graph semantic.
+   * key-auth sets 401 on the context and exits on its dedicated `denied`
+   * port; the status only reaches the client because secure-policy wires
+   * `api-key.denied -> client.in`. This is the scenario that pins that graph
+   * semantic.
    */
   test('E2E-DP-05: a missing API key is rejected with the plugin\'s own 401', async () => {
     const traffic = await dataPlane();
@@ -102,21 +103,10 @@ test.describe('Data plane', () => {
     await traffic.dispose();
   });
 
-  /**
-   * KNOWN BUG -- marked `fail`, so the suite stays green while the bug stands and
-   * turns red the day it is fixed (that is the signal to delete this annotation).
-   *
-   * `cors` writes 204 onto the context for a preflight and returns Ok. But writing
-   * a response to the context does not stop the graph: the engine follows the
-   * success edge to the next node, `upstream` proxies the OPTIONS anyway, and the
-   * backend's answer overwrites the 204. The plugin's unit tests pass because they
-   * only inspect the context; end-to-end, a preflight never gets its 204.
-   *
-   * There is no way to wire around it either: expressing "terminate here, but only
-   * for OPTIONS" needs either a conditional/second output port on the node or an
-   * engine-level terminal signal. Neither exists today.
-   */
-  test.fail('E2E-DP-09: CORS preflight is short-circuited with 204', async () => {
+  // `cors` exits an OPTIONS preflight through its dedicated `preflight` port,
+  // wired straight to `client` in the fixture, so the prepared 204 reaches
+  // the caller instead of `upstream` proxying the OPTIONS and overwriting it.
+  test('E2E-DP-09: CORS preflight is short-circuited with 204', async () => {
     const traffic = await dataPlane();
     const res = await traffic.fetch('/api/hello', {
       method: 'OPTIONS',

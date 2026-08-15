@@ -35,7 +35,7 @@ state.
 
 ## Wiring
 
-The check node goes **before** `upstream`; its `error` port routes to
+The check node goes **before** `upstream`; its `broken` port routes to
 `client.in`, so while the breaker is open the request short-circuits to the
 client with the break response. The observe node goes **after** `upstream` on the
 path(s) carrying the real upstream response; it passes the Context through
@@ -59,18 +59,18 @@ nodes:
 edges:
   - { from: listener.out,          to: breaker-check.in }
   - { from: breaker-check.success, to: upstream.in }
-  - { from: breaker-check.error,   to: client.in }        # open → 502
+  - { from: breaker-check.broken,  to: client.in }        # open → 502
   - { from: upstream.success,      to: breaker-observe.in }
   - { from: breaker-observe.success, to: client.in }
+  - { from: breaker-observe.broken,  to: client.in }      # observe never trips this port, but it's still mandatory wiring
 ```
 
 ## Behavior
 
 The **check** node calls the breaker: if it is open (and the cooldown has not
 elapsed) the node writes `break_response_code` / `break_response_body` onto
-`context.response` and fails with error code `API_BREAKER_OPEN`, routing the
-Context through the `error` port. Once the cooldown elapses the breaker becomes
-half-open and lets one probe through.
+`context.response` and exits through the `broken` port. Once the cooldown
+elapses the breaker becomes half-open and lets one probe through.
 
 The **observe** node reads `context.response.status_code`. A status in
 `unhealthy.http_statuses` records a failure; after `unhealthy.failures`
@@ -80,3 +80,7 @@ records a success and resets the failure streak; after `healthy.successes`
 consecutive successes the breaker fully closes.
 
 Breaker state lives in process memory and is per gateway instance.
+
+## Ports
+
+`api-breaker` declares three output ports: `success`, `broken` (the break response is prepared), and `error` (declared for contract symmetry — this plugin has no remaining failure path in either role). `success` and `broken` are mandatory on both the check and observe nodes — the policy compiler rejects any policy that leaves either unwired, even on the observe node where `broken` is never actually emitted. See [Wiring](#wiring) above.

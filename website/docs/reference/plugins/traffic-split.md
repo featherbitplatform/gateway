@@ -45,21 +45,36 @@ For each request the plugin finds the **first** rule whose `match` condition pas
 The picked slot has one of two shapes:
 
 - **Default slot** (no `upstream`) — the plugin returns the Context unchanged through the `success` port, and the request continues to the route's normal `upstream` node.
-- **Target slot** (has `upstream.targets`) — the plugin proxies the request itself to one of the targets (round-robin within the set), reusing the shared outbound HTTP client. It forwards the method, headers (overriding `Host` with the target), and body, writes the backend's status/headers/body onto `context.response`, and **short-circuits** by failing with error code `TRAFFIC_SPLIT_ROUTED` through the `error` port.
+- **Target slot** (has `upstream.targets`) — the plugin proxies the request itself to one of the targets (round-robin within the set), reusing the shared outbound HTTP client. It forwards the method, headers (overriding `Host` with the target), and body, writes the backend's status/headers/body onto `context.response`, and **short-circuits** through the `routed` port.
 
 If no rule matches at all, the request passes through the `success` port unchanged.
 
 ## Split-node wiring
 
-Because featherbit pipelines need a distinct port for "stop here, send this response" versus "keep going", this node uses its two ports as follows (the same convention `fault-injection` and `mocking` use):
+Because featherbit pipelines need a distinct port for "stop here, send this response" versus "keep going", this node uses its ports as follows:
 
 - Wire **`success` → the route's normal `upstream` node**. This is the path for default slots and non-matching requests.
-- Wire **`error` → `client.in`**. This is the path for traffic the plugin proxied itself: the response is already populated on the Context and reaches the client directly.
+- Wire **`routed` → `client.in`**. This is the path for traffic the plugin proxied itself: the response is already populated on the Context and reaches the client directly.
+- Wire **`error` → `client.in`** (or an `error-handler`). This is a genuine infrastructure failure — the split target was unreachable.
 
-If a split target is unreachable, the node fails with code `TRAFFIC_SPLIT_UPSTREAM_ERROR` and a prepared `502` JSON body (`{"error": "bad_gateway", "message": "traffic-split target unreachable"}`, `content-type: application/json`) — also routed through the `error` port to the client.
+If a split target is unreachable, the node fails with code `TRAFFIC_SPLIT_UPSTREAM_ERROR` and a prepared `502` JSON body (`{"error": "bad_gateway", "message": "traffic-split target unreachable"}`, `content-type: application/json`), routed through the `error` port.
+
+## Ports
+
+`traffic-split` declares three output ports: `success` (no rule matched, or the default slot was picked — the request continues to the route's normal upstream), `routed` (a target slot was picked and proxied; wire straight to `client`), and `error` (the split target was unreachable — a genuine infrastructure failure). `success` and `routed` are mandatory — the policy compiler rejects any policy that leaves either unwired.
+
+```yaml
+edges:
+  - from: traffic-split.success
+    to: upstream.in
+  - from: traffic-split.routed
+    to: client.in
+  - from: traffic-split.error
+    to: client.in
+```
 
 ## Behavior notes
 
-- There is no shared upstream registry at this node: a target slot is **proxied by the plugin itself** and short-circuited through the `error` port; a default slot falls through to the route's `upstream` node.
+- There is no shared upstream registry at this node: a target slot is **proxied by the plugin itself** and short-circuited through the `routed` port; a default slot falls through to the route's `upstream` node.
 - Upstream references are inline target lists (`upstream.targets: [{host, port}]`) only — `upstream_id` references to a shared upstream store are not supported.
 - Selection is a deterministic weighted round-robin (a per-rule cursor); the long-run distribution matches the configured weights.

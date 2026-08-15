@@ -91,21 +91,26 @@ export function Dialog({ open, title, children, footer, onClose, width = 380 }: 
  * a route), and `ghost` (bordered/transparent, for cancel).
  *
  * @param variant - Visual style of the button; defaults to `primary`.
+ * @param disabled - When true, dims the button and blocks `onClick` (e.g. a
+ * confirming action whose required fields are not yet filled in).
  */
 export function DialogButton({
   variant = 'primary',
   onClick,
   children,
+  disabled = false,
 }: {
   variant?: 'primary' | 'ghost' | 'danger';
   onClick: () => void;
   children: ReactNode;
+  disabled?: boolean;
 }) {
   const bg =
     variant === 'primary' ? 'var(--accent)' : variant === 'danger' ? 'var(--error)' : 'transparent';
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       style={{
         padding: '6px 14px',
         borderRadius: 'var(--radius-sm)',
@@ -114,9 +119,13 @@ export function DialogButton({
         background: bg,
         color: variant === 'ghost' ? 'var(--text-secondary)' : 'var(--text-on-accent)',
         border: variant === 'ghost' ? '1px solid var(--border)' : '1px solid transparent',
-        transition: 'filter var(--dur-fast) var(--ease-out)',
+        opacity: disabled ? 0.5 : 1,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        transition: 'filter var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out)',
       }}
-      onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+      onMouseEnter={(e) => {
+        if (!disabled) e.currentTarget.style.filter = 'brightness(1.08)';
+      }}
       onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
     >
       {children}

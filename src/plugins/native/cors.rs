@@ -1,8 +1,10 @@
 //! CORS plugin (`cors`).
 //!
-//! Adds `Access-Control-*` response headers for allowed origins and
-//! short-circuits `OPTIONS` preflight requests with a 204 response. Never
-//! errors: disallowed origins simply pass through without CORS headers.
+//! Adds `Access-Control-*` response headers for allowed origins and answers
+//! `OPTIONS` preflight requests with a prepared 204, exiting through the
+//! dedicated `preflight` port so the engine routes the response straight to
+//! the client instead of continuing to `upstream`. Never errors: disallowed
+//! origins simply pass through on `success` without CORS headers.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -10,22 +12,30 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Applies CORS response headers based on the request's `Origin` header.
 ///
 /// For an allowed origin the plugin sets `access-control-allow-origin`
 /// (echoing the origin, or `*` when wildcarded) and, when enabled,
 /// `access-control-allow-credentials`. For preflight (`OPTIONS`) requests it
-/// additionally sets the allow-methods/allow-headers/max-age headers and
-/// short-circuits with a 204 empty response. Does not write to
-/// `context.message` and always succeeds.
+/// additionally sets the allow-methods/allow-headers/max-age headers,
+/// prepares a 204 empty response, and exits through the `preflight` port —
+/// the policy must wire that port (typically straight to `client`) or
+/// compilation rejects it. Does not write to `context.message` and always
+/// succeeds.
 pub struct CorsPlugin {
-    /// Origins granted CORS access; `"*"` matches any origin.
+    /// Origins granted CORS access; `"*"` matches any origin. Never
+    /// templated — semantic tokens (`*`/origin-echo) stay literal.
     allowed_origins: Vec<String>,
-    /// Methods advertised in preflight responses.
-    allowed_methods: Vec<String>,
+    /// Methods advertised in preflight responses. Values support
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// these headers never supported it, so this sweep must not start).
+    allowed_methods: Vec<Template>,
     /// Request headers advertised in preflight responses; may be `"*"`.
-    allowed_headers: Vec<String>,
+    /// Values support `{{namespace.path}}` references, same as
+    /// `allowed_methods`.
+    allowed_headers: Vec<Template>,
     /// Preflight cache lifetime in seconds (`access-control-max-age`).
     max_age: u64,
     /// Whether to emit `access-control-allow-credentials: true`.
@@ -37,10 +47,13 @@ impl CorsPlugin {
     /// default.
     ///
     /// Accepted keys:
-    /// - `allowed_origins` (array of strings, default `["*"]`)
+    /// - `allowed_origins` (array of strings, default `["*"]`) — never
+    ///   templated; semantic tokens (`*`/origin-echo) stay literal.
     /// - `allowed_methods` (array of strings, default
-    ///   `["GET", "POST", "PUT", "DELETE", "OPTIONS"]`)
-    /// - `allowed_headers` (array of strings, default `["*"]`)
+    ///   `["GET", "POST", "PUT", "DELETE", "OPTIONS"]`); values support
+    ///   `{{namespace.path}}` references.
+    /// - `allowed_headers` (array of strings, default `["*"]`); values
+    ///   support `{{namespace.path}}` references.
     /// - `max_age` (integer seconds, default `3600`)
     /// - `allow_credentials` (bool, default `false`)
     ///
@@ -63,7 +76,9 @@ impl CorsPlugin {
             })
             .unwrap_or_else(|| vec!["*".to_string()]);
 
-        let allowed_methods = config
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let allowed_methods: Vec<String> = config
             .get("allowed_methods")
             .and_then(|v| v.as_array())
             .map(|seq| {
@@ -80,8 +95,12 @@ impl CorsPlugin {
                     "OPTIONS".to_string(),
                 ]
             });
+        let allowed_methods = allowed_methods
+            .into_iter()
+            .map(|s| Template::parse(&s).0)
+            .collect();
 
-        let allowed_headers = config
+        let allowed_headers: Vec<String> = config
             .get("allowed_headers")
             .and_then(|v| v.as_array())
             .map(|seq| {
@@ -90,6 +109,10 @@ impl CorsPlugin {
                     .collect()
             })
             .unwrap_or_else(|| vec!["*".to_string()]);
+        let allowed_headers = allowed_headers
+            .into_iter()
+            .map(|s| Template::parse(&s).0)
+            .collect();
 
         let max_age = config
             .get("max_age")
@@ -123,11 +146,7 @@ impl Plugin for CorsPlugin {
         "cors"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let origin = ctx
             .request
             .headers
@@ -157,28 +176,38 @@ impl Plugin for CorsPlugin {
             }
 
             if is_preflight {
-                ctx.response.headers.insert(
-                    "access-control-allow-methods".to_string(),
-                    vec![self.allowed_methods.join(", ")],
-                );
-                ctx.response.headers.insert(
-                    "access-control-allow-headers".to_string(),
-                    vec![self.allowed_headers.join(", ")],
-                );
+                let methods = self
+                    .allowed_methods
+                    .iter()
+                    .map(|tmpl| tmpl.render(&ctx))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let headers = self
+                    .allowed_headers
+                    .iter()
+                    .map(|tmpl| tmpl.render(&ctx))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ctx.response
+                    .headers
+                    .insert("access-control-allow-methods".to_string(), vec![methods]);
+                ctx.response
+                    .headers
+                    .insert("access-control-allow-headers".to_string(), vec![headers]);
                 ctx.response.headers.insert(
                     "access-control-max-age".to_string(),
                     vec![self.max_age.to_string()],
                 );
-                // Short-circuit: return 204 for preflight
+                // Short-circuit: the 204 is fully prepared, exit on the
+                // dedicated `preflight` port rather than continuing to
+                // `success` (and from there to `upstream`).
                 ctx.response.status_code = 204;
                 ctx.response.body = Bytes::new();
+                return Ok(PluginOutput::on_port(ctx, "preflight"));
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -238,7 +267,7 @@ mod tests {
     #[tokio::test]
     async fn test_default_config_allows_any_origin() {
         let out = plugin(serde_json::json!({}))
-            .execute(ctx("GET", Some("http://anything.example")), &HashMap::new())
+            .execute(ctx("GET", Some("http://anything.example")))
             .await
             .unwrap();
         assert_eq!(hdr(&out.context, "access-control-allow-origin"), Some("*"));
@@ -250,7 +279,7 @@ mod tests {
         let out = plugin(serde_json::json!({
             "allowed_origins": ["http://sub.domain.com", "http://sub2.domain.com"]
         }))
-        .execute(ctx("GET", Some("http://sub2.domain.com")), &HashMap::new())
+        .execute(ctx("GET", Some("http://sub2.domain.com")))
         .await
         .unwrap();
         // The matched origin is echoed, not `*`.
@@ -266,7 +295,7 @@ mod tests {
         let out = plugin(serde_json::json!({
             "allowed_origins": ["http://sub.domain.com"]
         }))
-        .execute(ctx("GET", Some("http://evil.example")), &HashMap::new())
+        .execute(ctx("GET", Some("http://evil.example")))
         .await
         .unwrap();
         assert_eq!(hdr(&out.context, "access-control-allow-origin"), None);
@@ -279,7 +308,7 @@ mod tests {
         let out = plugin(serde_json::json!({
             "allowed_origins": ["http://sub.domain.com"]
         }))
-        .execute(ctx("GET", None), &HashMap::new())
+        .execute(ctx("GET", None))
         .await
         .unwrap();
         assert_eq!(hdr(&out.context, "access-control-allow-origin"), None);
@@ -292,7 +321,7 @@ mod tests {
             "allowed_origins": ["http://sub.domain.com"],
             "allow_credentials": true
         }))
-        .execute(ctx("GET", Some("http://sub.domain.com")), &HashMap::new())
+        .execute(ctx("GET", Some("http://sub.domain.com")))
         .await
         .unwrap();
         assert_eq!(
@@ -301,26 +330,20 @@ mod tests {
         );
     }
 
-    /// APISIX TEST 14: an OPTIONS preflight on an allowed origin is answered with
-    /// 204 and the advertised methods/headers/max-age.
-    ///
-    /// NOTE: this is the *plugin-level* contract — the plugin prepares the 204.
-    /// End-to-end the graph engine still walks the success edge into `upstream`,
-    /// so a real preflight is not short-circuited; that gap is tracked by the
-    /// (expected-failure) `E2E-DP-09` e2e test, not here.
+    /// APISIX TEST 14: an OPTIONS preflight on an allowed origin exits on the
+    /// `preflight` port with the 204 fully prepared — the engine routes it
+    /// away from upstream (E2E-DP-09 covers the end-to-end short-circuit).
     #[tokio::test]
-    async fn test_preflight_prepares_204() {
+    async fn test_preflight_exits_on_preflight_port() {
         let out = plugin(serde_json::json!({
             "allowed_origins": ["http://sub.domain.com"],
             "allowed_methods": ["GET", "POST"],
             "max_age": 50
         }))
-        .execute(
-            ctx("OPTIONS", Some("http://sub.domain.com")),
-            &HashMap::new(),
-        )
+        .execute(ctx("OPTIONS", Some("http://sub.domain.com")))
         .await
         .unwrap();
+        assert_eq!(out.port, Some("preflight"));
         assert_eq!(out.context.response.status_code, 204);
         assert_eq!(
             hdr(&out.context, "access-control-allow-methods"),
@@ -330,16 +353,58 @@ mod tests {
         assert!(out.context.response.body.is_empty());
     }
 
+    /// Non-preflight requests and disallowed origins stay on success.
+    #[tokio::test]
+    async fn test_non_preflight_stays_on_success() {
+        let out = plugin(serde_json::json!({}))
+            .execute(ctx("GET", Some("http://x.example")))
+            .await
+            .unwrap();
+        assert_eq!(out.port, None);
+    }
+
+    /// `allowed_methods`/`allowed_headers` values render `{{namespace.path}}`
+    /// references per request.
+    #[tokio::test]
+    async fn test_preflight_headers_and_methods_render_template() {
+        let out = plugin(serde_json::json!({
+            "allowed_origins": ["http://sub.domain.com"],
+            "allowed_methods": ["GET", "{{request.headers.x-extra-method}}"],
+            "allowed_headers": ["{{request.headers.x-extra-header}}"]
+        }))
+        .execute({
+            let mut c = ctx("OPTIONS", Some("http://sub.domain.com"));
+            c.request
+                .headers
+                .insert("x-extra-method".to_string(), vec!["PATCH".to_string()]);
+            c.request
+                .headers
+                .insert("x-extra-header".to_string(), vec!["x-custom".to_string()]);
+            c
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            hdr(&out.context, "access-control-allow-methods"),
+            Some("GET, PATCH")
+        );
+        assert_eq!(
+            hdr(&out.context, "access-control-allow-headers"),
+            Some("x-custom")
+        );
+    }
+
     /// A preflight for a *disallowed* origin is not short-circuited (no 204, no
-    /// CORS headers) — it falls through untouched.
+    /// CORS headers) — it falls through on success untouched.
     #[tokio::test]
     async fn test_preflight_disallowed_origin_untouched() {
         let out = plugin(serde_json::json!({
             "allowed_origins": ["http://sub.domain.com"]
         }))
-        .execute(ctx("OPTIONS", Some("http://evil.example")), &HashMap::new())
+        .execute(ctx("OPTIONS", Some("http://evil.example")))
         .await
         .unwrap();
+        assert_eq!(out.port, None);
         assert_ne!(out.context.response.status_code, 204);
         assert_eq!(hdr(&out.context, "access-control-allow-origin"), None);
     }

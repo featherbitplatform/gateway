@@ -5,14 +5,28 @@
  *
  * @module App
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { GraphCanvas } from './components/GraphCanvas';
+import { PluginConfigPanel } from './components/PluginConfigPanel';
 import { Dialog, DialogButton, DialogField } from './components/Dialog';
 import { DebugPanel } from './components/DebugPanel';
 import { Toast, type ToastData } from './components/Toast';
+import { CommandPalette } from './components/CommandPalette';
+import { buildCommands, matchesShortcut, type CommandContext } from './commands';
+import { useEditorActions } from './editorActions';
+import { usePortNames } from './usePortNames';
+import { toggleTheme } from './theme';
 import { api } from './api/client';
-import type { Route, Policy, PluginType, ScriptFile, DebugConfig } from './types';
+import type {
+  Route,
+  Policy,
+  Supernode,
+  PluginConfigDef,
+  PluginType,
+  ScriptFile,
+  DebugConfig,
+} from './types';
 
 /**
  * Top-level application component and single owner of server state.
@@ -41,9 +55,13 @@ import type { Route, Policy, PluginType, ScriptFile, DebugConfig } from './types
 export default function App() {
   const [routes, setRoutes] = useState<Route[]>([]);
   const [policies, setPolicies] = useState<Policy[]>([]);
+  const [supernodes, setSupernodes] = useState<Supernode[]>([]);
+  const [pluginConfigs, setPluginConfigs] = useState<PluginConfigDef[]>([]);
   const [plugins, setPlugins] = useState<PluginType[]>([]);
   const [scripts, setScripts] = useState<ScriptFile[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
+  const [selectedSupernode, setSelectedSupernode] = useState<string | null>(null);
+  const [selectedPluginConfig, setSelectedPluginConfig] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastData | null>(null);
 
@@ -55,6 +73,21 @@ export default function App() {
   // Delete-route confirmation state
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
+  // Create-supernode dialog state
+  const [createSupernodeOpen, setCreateSupernodeOpen] = useState(false);
+  const [newSupernodeName, setNewSupernodeName] = useState('');
+
+  // Delete-supernode confirmation state
+  const [deleteSupernodeTarget, setDeleteSupernodeTarget] = useState<string | null>(null);
+
+  // Create-plugin-config dialog state
+  const [createPluginConfigOpen, setCreatePluginConfigOpen] = useState(false);
+  const [newPcName, setNewPcName] = useState('');
+  const [newPcType, setNewPcType] = useState('');
+
+  // Delete-plugin-config confirmation state
+  const [deletePluginConfigTarget, setDeletePluginConfigTarget] = useState<string | null>(null);
+
   // View-YAML dialog state: null when closed, the exported YAML string when open.
   const [yamlView, setYamlView] = useState<string | null>(null);
 
@@ -63,16 +96,27 @@ export default function App() {
   const [debugOpen, setDebugOpen] = useState(false);
   const [debugConfig, setDebugConfig] = useState<DebugConfig | null>(null);
 
+  // Port-name visibility (P) and the command palette (Ctrl+K). Owned here —
+  // a single usePortNames() call — so the palette's toggle and the canvas
+  // it re-renders can never see two different copies of the preference.
+  const [showPortNames, togglePortNames] = usePortNames();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const editorActions = useEditorActions();
+
   const loadData = useCallback(async () => {
     try {
-      const [r, p, pl, sc] = await Promise.all([
+      const [r, p, sn, pc, pl, sc] = await Promise.all([
         api.listRoutes(),
         api.listPolicies(),
+        api.listSupernodes(),
+        api.listPluginConfigs(),
         api.listPlugins(),
         api.listScripts(),
       ]);
       setRoutes(r);
       setPolicies(p);
+      setSupernodes(sn);
+      setPluginConfigs(pc);
       setPlugins(pl);
       setScripts(sc);
       setError(null);
@@ -101,11 +145,56 @@ export default function App() {
     return policies.find((p) => p.name === route.policy) || null;
   })();
 
-  const handleCreateRoute = () => {
+  const selectedSupernodeDef = supernodes.find((s) => s.name === selectedSupernode) || null;
+  // A supernode is edited through the same canvas contract as a policy.
+  const canvasPolicy: Policy | null = selectedSupernodeDef
+    ? { name: selectedSupernodeDef.name, nodes: selectedSupernodeDef.nodes, edges: selectedSupernodeDef.edges }
+    : selectedPolicy;
+
+  const selectedPluginConfigDef = pluginConfigs.find((pc) => pc.name === selectedPluginConfig) || null;
+
+  // Shared configs only make sense for plugin nodes with real config, so the
+  // create dialog's type picker excludes the boundary/no-config types —
+  // mirrors the node palette's exclusions (supernode and other boundary
+  // types are not in the catalog at all).
+  // - listener/client: pipeline endpoints, not real plugin nodes — mirrors
+  //   RESERVED_TYPES in src/config/resolve.rs (supernode/boundary types
+  //   never appear in the catalog either).
+  // - script: excluded because a script node's config is file-bound
+  //   (runtime + source path), a poor fit for a shared, reusable profile.
+  const pluginConfigTypeOptions = plugins.filter(
+    (p) => p.type !== 'listener' && p.type !== 'client' && p.type !== 'script'
+  );
+
+  // Selection is mutually exclusive across the routes list, the supernodes
+  // list, and the plugin configs list: picking one clears the other two so
+  // the main panel always reflects a single, unambiguous selection.
+  const handleSelectRoute = (name: string) => {
+    setSelectedSupernode(null);
+    setSelectedPluginConfig(null);
+    setSelectedRoute(name);
+  };
+
+  const handleSelectSupernode = (name: string) => {
+    setSelectedRoute(null);
+    setSelectedPluginConfig(null);
+    setSelectedSupernode(name);
+  };
+
+  const handleSelectPluginConfig = (name: string) => {
+    setSelectedRoute(null);
+    setSelectedSupernode(null);
+    setSelectedPluginConfig(name);
+  };
+
+  // The create/view/reload handlers below are useCallback'd because they are
+  // fields of the memoized `commandCtx`, which keys the global keydown effect
+  // (an unstable field there would resubscribe the listener every render).
+  const handleCreateRoute = useCallback(() => {
     setNewName('');
     setNewPath('/*');
     setCreateOpen(true);
-  };
+  }, []);
 
   const submitCreateRoute = async () => {
     const name = newName.trim();
@@ -153,14 +242,107 @@ export default function App() {
     }
   };
 
-  const handleViewYaml = async () => {
+  const handleCreateSupernode = useCallback(() => {
+    setNewSupernodeName('');
+    setCreateSupernodeOpen(true);
+  }, []);
+
+  const submitCreateSupernode = async () => {
+    const name = newSupernodeName.trim();
+    if (!name) return;
+    setCreateSupernodeOpen(false);
+
+    try {
+      // Seed a minimal pass-through definition: input -> output directly,
+      // with an unwired error boundary node. This validates and compiles
+      // fine as-is (expansion supports the pass-through input.out ->
+      // output.in form) — it is a deliberately minimal starting point, not
+      // something to "fill in" further here.
+      await api.updateSupernode(name, {
+        name,
+        nodes: [
+          { id: 'input', type: 'input', config: {}, position: { x: 0, y: 150 } },
+          { id: 'output', type: 'output', config: {}, position: { x: 500, y: 150 } },
+          { id: 'error', type: 'error', config: {}, position: { x: 500, y: 330 } },
+        ],
+        edges: [{ from: 'input.out', to: 'output.in' }],
+      });
+      await loadData();
+      handleSelectSupernode(name);
+      setToast({ tone: 'success', title: 'Supernode created', message: name });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to create supernode', message: `${e}` });
+    }
+  };
+
+  const submitDeleteSupernode = async () => {
+    const name = deleteSupernodeTarget;
+    setDeleteSupernodeTarget(null);
+    if (!name) return;
+    try {
+      await api.deleteSupernode(name);
+      await loadData();
+      if (selectedSupernode === name) setSelectedSupernode(null);
+      setToast({ tone: 'success', title: 'Supernode deleted', message: name });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to delete supernode', message: `${e}` });
+    }
+  };
+
+  const handleCreatePluginConfig = useCallback(() => {
+    setNewPcName('');
+    setNewPcType('');
+    setCreatePluginConfigOpen(true);
+  }, []);
+
+  const submitCreatePluginConfig = async () => {
+    const name = newPcName.trim();
+    const type = newPcType;
+    if (!name || !type) return;
+    setCreatePluginConfigOpen(false);
+
+    try {
+      await api.updatePluginConfig(name, { name, type, config: {} });
+      await loadData();
+      handleSelectPluginConfig(name);
+      setToast({ tone: 'success', title: 'Plugin config created', message: `${name} · ${type}` });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to create plugin config', message: `${e}` });
+    }
+  };
+
+  const submitDeletePluginConfig = async () => {
+    const name = deletePluginConfigTarget;
+    setDeletePluginConfigTarget(null);
+    if (!name) return;
+    try {
+      await api.deletePluginConfig(name);
+      await loadData();
+      if (selectedPluginConfig === name) setSelectedPluginConfig(null);
+      setToast({ tone: 'success', title: 'Plugin config deleted', message: name });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to delete plugin config', message: `${e}` });
+    }
+  };
+
+  const handleSavePluginConfig = async (def: PluginConfigDef) => {
+    try {
+      await api.updatePluginConfig(def.name, def);
+      await loadData();
+      setToast({ tone: 'success', title: 'Plugin config saved', message: def.name });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to save plugin config', message: `${e}` });
+    }
+  };
+
+  const handleViewYaml = useCallback(async () => {
     try {
       const yaml = await api.exportConfig();
       setYamlView(yaml);
     } catch (e) {
       setToast({ tone: 'error', title: 'Failed to export config', message: `${e}` });
     }
-  };
+  }, []);
 
   const copyYaml = async () => {
     if (yamlView == null) return;
@@ -183,7 +365,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const handleReload = async () => {
+  const handleReload = useCallback(async () => {
     try {
       await api.reload();
       await loadData();
@@ -191,21 +373,176 @@ export default function App() {
     } catch (e) {
       setToast({ tone: 'error', title: 'Reload failed', message: `${e}` });
     }
-  };
+  }, [loadData]);
 
-  const handleSavePolicy = async (policy: Policy) => {
-    try {
-      await api.updatePolicy(policy.name, policy);
-      await loadData();
-      setToast({
-        tone: 'success',
-        title: 'Policy saved',
-        message: `${policy.name} · ${policy.nodes.length} nodes persisted`,
-      });
-    } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to save policy', message: `${e}` });
-    }
-  };
+  // Wrapped in useCallback (rather than a plain function, as most handlers
+  // in this file are) because it's registered as the canvas's `save-graph`
+  // editor action (see GraphCanvas's `useRegisterEditorAction('save-graph',
+  // handleSave)`, where `handleSave` closes over `onSavePolicy` — this
+  // function). An unstable identity here would flow through and destabilize
+  // `handleSave` too, churning that registration on every unrelated App
+  // re-render. Deps are exactly the free variables read below; `loadData`
+  // and `setToast` are already stable (see their own definitions).
+  const handleSavePolicy = useCallback(
+    async (policy: Policy) => {
+      try {
+        await api.updatePolicy(policy.name, policy);
+        await loadData();
+        setToast({
+          tone: 'success',
+          title: 'Policy saved',
+          message: `${policy.name} · ${policy.nodes.length} nodes persisted`,
+        });
+      } catch (e) {
+        setToast({ tone: 'error', title: 'Failed to save policy', message: `${e}` });
+      }
+    },
+    [loadData]
+  );
+
+  // Same stability requirement as handleSavePolicy above — this is the
+  // function actually passed as GraphCanvas's `onSavePolicy`.
+  // `selectedSupernodeDef` is a `.find()` result over `supernodes`, so its
+  // identity only changes when the underlying list or selection changes,
+  // not on every render.
+  const handleSaveGraph = useCallback(
+    async (graph: Policy) => {
+      if (selectedSupernodeDef) {
+        try {
+          await api.updateSupernode(graph.name, {
+            name: graph.name,
+            description: selectedSupernodeDef.description,
+            nodes: graph.nodes,
+            edges: graph.edges,
+          });
+          await loadData();
+          setToast({ tone: 'success', title: 'Supernode saved', message: graph.name });
+        } catch (e) {
+          setToast({ tone: 'error', title: 'Failed to save supernode', message: `${e}` });
+        }
+        return;
+      }
+      await handleSavePolicy(graph);
+    },
+    [selectedSupernodeDef, loadData, handleSavePolicy]
+  );
+
+  // Hoisted out of the GraphCanvas JSX (where an inline arrow would be a
+  // fresh function every render) for the same reason: it's a dependency of
+  // GraphCanvas's `handleSave`, which is registered as an editor action.
+  // `setToast` is a stable setState setter, so this has no real deps.
+  const handleSaveWarning = useCallback((title: string, message: string) => {
+    setToast({ tone: 'warning', title, message });
+  }, []);
+
+  // Selection across routes/supernodes/plugin configs is mutually exclusive
+  // (see handleSelect* above), so any one of them being set means "something
+  // is selected" for the view-yaml command's `when`.
+  const hasSelection = selectedRoute !== null || selectedSupernode !== null || selectedPluginConfig !== null;
+
+  // Memoized: this object is the only non-primitive dependency of the global
+  // keydown effect below, so a fresh literal every render would tear down and
+  // re-add the window listener on every render. It is also CommandPalette's
+  // `ctx` prop, and the palette memoizes its filtered list on it — that memo
+  // only ever hits because this identity is stable.
+  const editorOpen = canvasPolicy !== null;
+  const commandCtx: CommandContext = useMemo(
+    () => ({
+      editorOpen,
+      hasSelection,
+      togglePortNames,
+      createRoute: handleCreateRoute,
+      createSupernode: handleCreateSupernode,
+      createPluginConfig: handleCreatePluginConfig,
+      viewYaml: handleViewYaml,
+      reloadConfig: handleReload,
+      toggleTheme,
+      // Bridged to whatever GraphCanvas has registered (see editorActions.tsx).
+      // Registration alone is not "a graph is open" — GraphCanvas registers
+      // even when mounted with `policy={null}` — so the canvas commands' when()
+      // pairs `hasEditorAction` with `editorOpen` (see commands.ts).
+      invokeEditorAction: editorActions.invoke,
+      hasEditorAction: editorActions.has,
+    }),
+    [
+      editorOpen,
+      hasSelection,
+      togglePortNames,
+      handleCreateRoute,
+      handleCreateSupernode,
+      handleCreatePluginConfig,
+      handleViewYaml,
+      handleReload,
+      editorActions,
+    ]
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+        return;
+      }
+      if (paletteOpen) {
+        // The palette owns keys while it is open — but its own Escape binding
+        // lives on the search input, and a click on the list padding or the
+        // "No matching command" row blurs focus to <body>. Handling Escape
+        // here keeps "Escape closes it" true regardless of where focus is,
+        // without touching the input's autoFocus.
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setPaletteOpen(false);
+        }
+        return;
+      }
+
+      const commands = buildCommands();
+
+      // Modifier shortcuts run ABOVE the text-field guard. Ctrl+S must never
+      // reach the browser's Save Page dialog — not from the inspector's
+      // raw-config textarea, and not when `save-graph` happens to be
+      // unavailable either. So preventDefault() fires for any registered
+      // Ctrl+* binding; only run() is gated on when().
+      for (const cmd of commands) {
+        if (!cmd.shortcut?.startsWith('Ctrl+') || !matchesShortcut(e, cmd.shortcut)) continue;
+        e.preventDefault();
+        if (cmd.when && !cmd.when(commandCtx)) return;
+        cmd.run(commandCtx);
+        return;
+      }
+
+      // Bare single letters are typing, not commands, wherever text is being
+      // entered. SELECT counts: a native <select> uses letters for type-ahead,
+      // and preventDefault() here would kill it (see NodeInspector's shared-
+      // config picker and SchemaForm's enum fields).
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === 'INPUT' ||
+          t.tagName === 'TEXTAREA' ||
+          t.tagName === 'SELECT' ||
+          t.isContentEditable)
+      )
+        return;
+      // Nor are they commands behind a modal dialog: Dialog has no focus trap,
+      // so clicking its body blurs the autofocused field and any bare letter
+      // would stack a second dialog at the same z-index. (The palette itself
+      // never reaches here — it returns above.)
+      if (document.querySelector('[role="dialog"]')) return;
+
+      for (const cmd of commands) {
+        if (!cmd.shortcut || cmd.shortcut.startsWith('Ctrl+')) continue;
+        if (!matchesShortcut(e, cmd.shortcut)) continue;
+        if (cmd.when && !cmd.when(commandCtx)) continue;
+        e.preventDefault();
+        cmd.run(commandCtx);
+        return;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [paletteOpen, commandCtx]);
 
   if (error) {
     return (
@@ -265,23 +602,51 @@ export default function App() {
       <Sidebar
         routes={routes}
         selectedRoute={selectedRoute}
-        onSelectRoute={setSelectedRoute}
+        onSelectRoute={handleSelectRoute}
         onCreateRoute={handleCreateRoute}
         onDeleteRoute={(name) => setDeleteTarget(name)}
+        supernodes={supernodes}
+        selectedSupernode={selectedSupernode}
+        onSelectSupernode={handleSelectSupernode}
+        onCreateSupernode={handleCreateSupernode}
+        onDeleteSupernode={(name) => setDeleteSupernodeTarget(name)}
+        pluginConfigs={pluginConfigs}
+        selectedPluginConfig={selectedPluginConfig}
+        onSelectPluginConfig={handleSelectPluginConfig}
+        onCreatePluginConfig={handleCreatePluginConfig}
+        onDeletePluginConfig={(name) => setDeletePluginConfigTarget(name)}
         onReload={handleReload}
         onViewYaml={handleViewYaml}
         onOpenDebug={() => setDebugOpen(true)}
         debugEnabled={debugConfig?.enabled ?? false}
       />
-      {/* Keyed by policy name: switching policies remounts the canvas so
-          nodes/edges/selection re-sync from the prop (see GraphCanvas docs). */}
-      <GraphCanvas
-        key={selectedPolicy?.name ?? ''}
-        policy={selectedPolicy}
-        plugins={plugins}
-        scripts={scripts}
-        onSavePolicy={handleSavePolicy}
-      />
+      {selectedPluginConfigDef ? (
+        <PluginConfigPanel
+          key={selectedPluginConfigDef.name}
+          def={selectedPluginConfigDef}
+          onSave={handleSavePluginConfig}
+        />
+      ) : (
+        // Keyed by policy/supernode name: switching the selection remounts
+        // the canvas so nodes/edges/selection re-sync from the prop (see
+        // GraphCanvas docs).
+        <GraphCanvas
+          key={canvasPolicy?.name ?? ''}
+          policy={canvasPolicy}
+          plugins={plugins}
+          scripts={scripts}
+          onSavePolicy={handleSaveGraph}
+          onSaveWarning={handleSaveWarning}
+          kind={selectedSupernodeDef ? 'supernode' : 'policy'}
+          supernodes={supernodes}
+          pluginConfigs={pluginConfigs}
+          debugConfig={debugConfig}
+          showPortNames={showPortNames}
+          onOpenPalette={() => setPaletteOpen(true)}
+        />
+      )}
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} ctx={commandCtx} />
 
       <Dialog
         open={createOpen}
@@ -318,6 +683,133 @@ export default function App() {
         <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: 0 }}>
           Delete route <code style={{ color: 'var(--text-primary)' }}>{deleteTarget}</code>? Its
           policy is kept and can be reattached.
+        </p>
+      </Dialog>
+
+      <Dialog
+        open={createSupernodeOpen}
+        title="New supernode"
+        onClose={() => setCreateSupernodeOpen(false)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setCreateSupernodeOpen(false)}>
+              Cancel
+            </DialogButton>
+            <DialogButton onClick={submitCreateSupernode}>Create supernode</DialogButton>
+          </>
+        }
+      >
+        <DialogField
+          label="Supernode name"
+          value={newSupernodeName}
+          onChange={setNewSupernodeName}
+          placeholder="rate-limit-bundle"
+          autoFocus
+        />
+      </Dialog>
+
+      <Dialog
+        open={deleteSupernodeTarget !== null}
+        title="Delete supernode"
+        onClose={() => setDeleteSupernodeTarget(null)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setDeleteSupernodeTarget(null)}>
+              Cancel
+            </DialogButton>
+            <DialogButton variant="danger" onClick={submitDeleteSupernode}>
+              Delete
+            </DialogButton>
+          </>
+        }
+      >
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: 0 }}>
+          Delete supernode <code style={{ color: 'var(--text-primary)' }}>{deleteSupernodeTarget}</code>?
+          Deletion fails while any policy still references it.
+        </p>
+      </Dialog>
+
+      <Dialog
+        open={createPluginConfigOpen}
+        title="New plugin config"
+        onClose={() => setCreatePluginConfigOpen(false)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setCreatePluginConfigOpen(false)}>
+              Cancel
+            </DialogButton>
+            <DialogButton
+              onClick={submitCreatePluginConfig}
+              disabled={!newPcName.trim() || !newPcType}
+            >
+              Create plugin config
+            </DialogButton>
+          </>
+        }
+      >
+        <DialogField
+          label="Config name"
+          value={newPcName}
+          onChange={setNewPcName}
+          placeholder="shared-rate-limit"
+          autoFocus
+        />
+        <div style={{ marginBottom: 12 }}>
+          <label
+            style={{
+              display: 'block',
+              fontSize: 'var(--text-xs)',
+              fontWeight: 500,
+              color: 'var(--text-secondary)',
+              marginBottom: 4,
+            }}
+          >
+            Plugin type
+          </label>
+          <select
+            value={newPcType}
+            onChange={(e) => setNewPcType(e.target.value)}
+            className="w-full"
+            style={{
+              padding: '7px 10px',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: 'var(--text-sm)',
+              background: 'var(--surface-input)',
+              color: 'var(--text-primary)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            <option value="" disabled>
+              Select a plugin type&hellip;
+            </option>
+            {pluginConfigTypeOptions.map((p) => (
+              <option key={p.type} value={p.type}>
+                {p.type}
+              </option>
+            ))}
+          </select>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={deletePluginConfigTarget !== null}
+        title="Delete plugin config"
+        onClose={() => setDeletePluginConfigTarget(null)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setDeletePluginConfigTarget(null)}>
+              Cancel
+            </DialogButton>
+            <DialogButton variant="danger" onClick={submitDeletePluginConfig}>
+              Delete
+            </DialogButton>
+          </>
+        }
+      >
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: 0 }}>
+          Delete plugin config{' '}
+          <code style={{ color: 'var(--text-primary)' }}>{deletePluginConfigTarget}</code>? Deletion
+          fails while any node still references it.
         </p>
       </Dialog>
 

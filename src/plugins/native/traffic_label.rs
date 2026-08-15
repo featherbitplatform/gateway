@@ -17,10 +17,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
-use crate::vars::{interpolate, Expr};
+use crate::vars::template::Template;
+use crate::vars::Expr;
 
 /// Applies the first matching rule's action: header values and label values
-/// are `$var` templates interpolated per request.
+/// are `{{namespace.path}}` (plus legacy `$var`) templates interpolated per
+/// request.
 pub struct TrafficLabelPlugin {
     rules: Vec<Rule>,
 }
@@ -37,9 +39,9 @@ struct Rule {
 struct ActionEntry {
     weight: u64,
     /// Lowercased header name → value template, set on the request.
-    set_headers: Vec<(String, String)>,
+    set_headers: Vec<(String, Template)>,
     /// Label key → value template, written to `message["label.<key>"]`.
-    set_labels: Vec<(String, String)>,
+    set_labels: Vec<(String, Template)>,
 }
 
 /// Parses a `{name: scalar-template}` object into ordered pairs; numbers and
@@ -73,10 +75,12 @@ impl TrafficLabelPlugin {
     ///   - `actions` (array of objects, **required**, non-empty): one entry
     ///     is chosen by weighted round-robin. Each entry:
     ///     - `set_headers` (object `{name: value}`): request headers to set
-    ///       (replacing existing values); values support `$var` interpolation.
+    ///       (replacing existing values); values support `{{namespace.path}}`
+    ///       references plus legacy `$var` interpolation.
     ///     - `set_labels` (object `{key: value}`, featherbit extension):
     ///       written to `context.message` as `label.<key>`; values support
-    ///       `$var` interpolation.
+    ///       `{{namespace.path}}` references plus legacy `$var`
+    ///       interpolation.
     ///     - `weight` (integer >= 1, default `1`): selection weight.
     ///
     /// ```yaml
@@ -139,20 +143,26 @@ impl TrafficLabelPlugin {
                                 )
                             })?;
                         }
+                        // Discard warnings here — the compile-time walk (a
+                        // later task) reports well-formed-but-unknown
+                        // references; execution must not.
                         "set_headers" => {
                             entry.set_headers = parse_kv_object(
                                 value,
                                 &format!("rules[{idx}].actions[{aidx}].set_headers"),
                             )?
                             .into_iter()
-                            .map(|(k, v)| (k.to_lowercase(), v))
+                            .map(|(k, v)| (k.to_lowercase(), Template::parse(&v).0))
                             .collect();
                         }
                         "set_labels" => {
                             entry.set_labels = parse_kv_object(
                                 value,
                                 &format!("rules[{idx}].actions[{aidx}].set_labels"),
-                            )?;
+                            )?
+                            .into_iter()
+                            .map(|(k, v)| (k, Template::parse(&v).0))
+                            .collect();
                         }
                         other => {
                             return Err(format!(
@@ -201,11 +211,7 @@ impl Plugin for TrafficLabelPlugin {
         "traffic-label"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         for rule in &self.rules {
             let matched = rule.matcher.as_ref().is_none_or(|e| e.eval(&ctx));
             if !matched {
@@ -222,12 +228,12 @@ impl Plugin for TrafficLabelPlugin {
             let headers: Vec<(String, String)> = action
                 .set_headers
                 .iter()
-                .map(|(name, tmpl)| (name.clone(), interpolate(&ctx, tmpl)))
+                .map(|(name, tmpl)| (name.clone(), tmpl.render_with_legacy(&ctx)))
                 .collect();
             let labels: Vec<(String, String)> = action
                 .set_labels
                 .iter()
-                .map(|(key, tmpl)| (key.clone(), interpolate(&ctx, tmpl)))
+                .map(|(key, tmpl)| (key.clone(), tmpl.render_with_legacy(&ctx)))
                 .collect();
 
             for (name, value) in headers {
@@ -240,10 +246,7 @@ impl Plugin for TrafficLabelPlugin {
             break;
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -297,10 +300,7 @@ mod tests {
         }))
         .unwrap();
 
-        let out = p
-            .execute(test_ctx(Some("beta")), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_ctx(Some("beta"))).await.unwrap();
         let ctx = out.context;
         assert_eq!(
             ctx.request.headers.get("x-server-id"),
@@ -312,10 +312,7 @@ mod tests {
         );
 
         // Non-matching request passes through untouched.
-        let out = p
-            .execute(test_ctx(Some("stable")), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_ctx(Some("stable"))).await.unwrap();
         assert!(out.context.request.headers.is_empty());
     }
 
@@ -327,7 +324,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let out = p.execute(test_ctx(None), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx(None)).await.unwrap();
         assert_eq!(
             out.context.message.get("label.tier"),
             Some(&serde_json::json!("beta"))
@@ -352,7 +349,7 @@ mod tests {
 
         let mut counts: HashMap<String, u32> = HashMap::new();
         for _ in 0..8 {
-            let out = p.execute(test_ctx(None), &HashMap::new()).await.unwrap();
+            let out = p.execute(test_ctx(None)).await.unwrap();
             let v = out.context.request.headers.get("x-variant").unwrap()[0].clone();
             *counts.entry(v).or_insert(0) += 1;
         }
@@ -369,7 +366,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let out = p.execute(test_ctx(None), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx(None)).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("x-fallback"),
             Some(&vec!["yes".to_string()])
@@ -385,7 +382,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let out = p.execute(test_ctx(None), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx(None)).await.unwrap();
         assert_eq!(
             out.context.message.get("label.rule"),
             Some(&serde_json::json!("first"))

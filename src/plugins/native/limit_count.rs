@@ -3,10 +3,11 @@
 //! The featherbit port of Apache APISIX's `limit-count`: counts requests per
 //! resolved key within a fixed time window using a shared [`CounterStore`]
 //! backend (see [`crate::ratelimit`]). Requests that exceed `count` within
-//! `time_window` seconds are rejected through the node's error port with the
-//! configured status. Unlike the token-bucket `rate-limit` plugin (smooth
+//! `time_window` seconds are rejected through the node's `limited` port with
+//! the configured status. Unlike the token-bucket `rate-limit` plugin (smooth
 //! refill), this enforces a hard cap per discrete window, matching APISIX
-//! semantics.
+//! semantics. A counter-backend failure is a genuine infrastructure failure
+//! and stays on `error`.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -18,7 +19,7 @@ use crate::context::{Context, GatewayError};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 use crate::ratelimit::CounterStore;
-use crate::vars::interpolate;
+use crate::vars::template::Template;
 
 /// Enforces a per-key request count within a fixed time window.
 ///
@@ -26,23 +27,26 @@ use crate::vars::interpolate;
 /// (currently only the in-memory `local` backend). Within the limit the
 /// request passes through the `success` port; over the limit it is rejected
 /// with `rejected_code` and a JSON `{"error_msg": ...}` body through the
-/// `error` port (code `RATE_LIMITED`). When `show_limit_quota_header` is set
-/// the `X-RateLimit-Limit`/`-Remaining`/`-Reset` headers are written onto
-/// `context.response` in both cases.
+/// `limited` port. A counter-backend failure stays on `error`. When
+/// `show_limit_quota_header` is set the `X-RateLimit-Limit`/`-Remaining`/
+/// `-Reset` headers are written onto `context.response` in both cases.
 pub struct LimitCountPlugin {
     /// Maximum number of requests allowed per window.
     count: u64,
     /// Length of the fixed window.
     window: Duration,
-    /// Key template (`$var` interpolated); empty result falls back to the
-    /// client remote address.
-    key_template: String,
+    /// Key template: supports `{{namespace.path}}` references and legacy
+    /// `$var` interpolation (see [`Template::render_with_legacy`]); empty
+    /// result falls back to the client remote address.
+    key_template: Template,
     /// Optional counter-key prefix so multiple nodes share one counter.
     group: Option<String>,
     /// Status returned when a request is rejected.
     rejected_code: u16,
-    /// Optional custom message used in the rejection body.
-    rejected_msg: Option<String>,
+    /// Optional custom message used in the rejection body. Supports
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// this field never supported it, so this sweep must not start).
+    rejected_msg: Option<Template>,
     /// Whether to emit the `X-RateLimit-*` quota headers.
     show_limit_quota_header: bool,
     /// When true, a counter-backend error lets the request through instead of
@@ -58,8 +62,9 @@ impl LimitCountPlugin {
     /// Accepted keys:
     /// - `count` (integer > 0, **required**): requests allowed per window.
     /// - `time_window` (integer > 0, **required**): window length in seconds.
-    /// - `key` (string, default `"$remote_addr"`): a `$var` template resolved
-    ///   per request (e.g. `$remote_addr`, `$consumer_name`,
+    /// - `key` (string, default `"$remote_addr"`): a template resolved per
+    ///   request — supports `{{namespace.path}}` references plus legacy
+    ///   `$var` interpolation (e.g. `$remote_addr`, `$consumer_name`,
     ///   `$http_x_api_key`). An empty resolved value falls back to the client
     ///   remote address.
     /// - `policy` (string, default `"local"`): counter backend. Only `local`
@@ -69,7 +74,8 @@ impl LimitCountPlugin {
     /// - `rejected_code` (integer 200-599, default `503`): status for
     ///   over-limit requests.
     /// - `rejected_msg` (string, optional): message placed in the rejection
-    ///   body (`{"error_msg": ...}`).
+    ///   body (`{"error_msg": ...}`). Supports `{{namespace.path}}`
+    ///   references.
     /// - `show_limit_quota_header` (bool, default `true`): emit the
     ///   `X-RateLimit-*` headers onto the response.
     /// - `allow_degradation` (bool, default `false`): on a counter-backend
@@ -105,8 +111,10 @@ impl LimitCountPlugin {
             .get("key")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .unwrap_or("$remote_addr")
-            .to_string();
+            .unwrap_or("$remote_addr");
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let key_template = Template::parse(key_template).0;
 
         let policy = config
             .get("policy")
@@ -133,7 +141,9 @@ impl LimitCountPlugin {
             .get("rejected_msg")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(String::from);
+            // Discard warnings here — the compile-time walk (a later task)
+            // reports well-formed-but-unknown references; execution must not.
+            .map(|s| Template::parse(s).0);
 
         let show_limit_quota_header = config
             .get("show_limit_quota_header")
@@ -163,9 +173,9 @@ impl LimitCountPlugin {
     /// (matching APISIX). The `group` prefix, when set, is prepended so nodes
     /// in the same group share one counter.
     fn resolve_key(&self, ctx: &Context) -> String {
-        let mut key = interpolate(ctx, &self.key_template);
+        let mut key = self.key_template.render_with_legacy(ctx);
         if key.is_empty() {
-            key = interpolate(ctx, "$remote_addr");
+            key = crate::vars::interpolate(ctx, "$remote_addr");
         }
         match &self.group {
             Some(group) => format!("{}:{}", group, key),
@@ -202,11 +212,7 @@ impl Plugin for LimitCountPlugin {
         "limit-count"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let key = self.resolve_key(&ctx);
 
         let result = match self
@@ -219,10 +225,7 @@ impl Plugin for LimitCountPlugin {
                 // Counter backend failed. Fail open when configured to
                 // degrade, otherwise reject with a 500 through the error port.
                 if self.allow_degradation {
-                    return Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    });
+                    return Ok(PluginOutput::success(ctx));
                 }
                 ctx.response.status_code = 500;
                 ctx.response.body = Bytes::from(r#"{"error_msg": "failed to limit count"}"#);
@@ -244,17 +247,15 @@ impl Plugin for LimitCountPlugin {
 
         if result.allowed {
             self.set_quota_headers(&mut ctx, result.remaining, result.reset);
-            return Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            });
+            return Ok(PluginOutput::success(ctx));
         }
 
         // Rejected: quota headers show 0 remaining, then a JSON error body.
         self.set_quota_headers(&mut ctx, 0, result.reset);
         let msg = self
             .rejected_msg
-            .clone()
+            .as_ref()
+            .map(|t| t.render(&ctx).into_owned())
             .unwrap_or_else(|| "Requests over the limit".to_string());
         let body = serde_json::json!({ "error_msg": msg }).to_string();
         ctx.response.status_code = self.rejected_code;
@@ -264,15 +265,7 @@ impl Plugin for LimitCountPlugin {
             vec!["application/json".to_string()],
         );
 
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "RATE_LIMITED".to_string(),
-                message: msg,
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "limited"))
     }
 }
 
@@ -363,6 +356,18 @@ mod tests {
         assert_eq!(p.resolve_key(&ctx), "svc:10.1.2.3");
     }
 
+    #[test]
+    fn test_key_superset_template_and_legacy_dollar() {
+        // `key` must render both the new `{{...}}` template syntax and the
+        // legacy `$var` syntax in the same value (superset behavior).
+        let ctx = test_ctx();
+        let p = plugin(serde_json::json!({
+            "count": 10, "time_window": 60, "key": "{{client.ip}}:$http_x_api_key"
+        }))
+        .unwrap();
+        assert_eq!(p.resolve_key(&ctx), "10.1.2.3:abc123");
+    }
+
     #[tokio::test]
     async fn test_rejects_after_count_requests() {
         let count = 3u64;
@@ -373,28 +378,27 @@ mod tests {
 
         // First `count` requests pass.
         for i in 0..count {
-            let out = p.execute(test_ctx(), &HashMap::new()).await;
-            assert!(out.is_ok(), "request {i} should pass");
-            let ctx = out.unwrap().context;
+            let out = p.execute(test_ctx()).await.unwrap();
+            assert!(out.port.is_none(), "request {i} should pass");
             assert_eq!(
-                ctx.response.headers.get("x-ratelimit-limit"),
+                out.context.response.headers.get("x-ratelimit-limit"),
                 Some(&vec!["3".to_string()])
             );
             assert_eq!(
-                ctx.response.headers.get("x-ratelimit-remaining"),
+                out.context.response.headers.get("x-ratelimit-remaining"),
                 Some(&vec![(count - 1 - i).to_string()])
             );
         }
 
-        // The next one is rejected.
-        let err = p.execute(test_ctx(), &HashMap::new()).await.unwrap_err();
-        assert_eq!(err.error.code, "RATE_LIMITED");
-        assert_eq!(err.context.response.status_code, 429);
+        // The next one is rejected on `limited`.
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("limited"));
+        assert_eq!(out.context.response.status_code, 429);
         assert_eq!(
-            err.context.response.headers.get("x-ratelimit-remaining"),
+            out.context.response.headers.get("x-ratelimit-remaining"),
             Some(&vec!["0".to_string()])
         );
-        let body = String::from_utf8(err.context.response.body.to_vec()).unwrap();
+        let body = String::from_utf8(out.context.response.body.to_vec()).unwrap();
         assert!(body.contains("error_msg"), "{body}");
     }
 
@@ -404,11 +408,25 @@ mod tests {
             "count": 1, "time_window": 60, "rejected_msg": "slow down"
         }))
         .unwrap();
-        assert!(p.execute(test_ctx(), &HashMap::new()).await.is_ok());
-        let err = p.execute(test_ctx(), &HashMap::new()).await.unwrap_err();
-        let body = String::from_utf8(err.context.response.body.to_vec()).unwrap();
+        assert!(p.execute(test_ctx()).await.unwrap().port.is_none());
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("limited"));
+        let body = String::from_utf8(out.context.response.body.to_vec()).unwrap();
         assert!(body.contains("slow down"), "{body}");
-        assert_eq!(err.error.message, "slow down");
+    }
+
+    #[tokio::test]
+    async fn test_rejected_msg_renders_template() {
+        // `rejected_msg` must render `{{...}}` references per request (Sweep B).
+        let p = plugin(serde_json::json!({
+            "count": 1, "time_window": 60, "rejected_msg": "blocked method {{request.method}}"
+        }))
+        .unwrap();
+        assert!(p.execute(test_ctx()).await.unwrap().port.is_none());
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("limited"));
+        let body = String::from_utf8(out.context.response.body.to_vec()).unwrap();
+        assert!(body.contains("blocked method GET"), "{body}");
     }
 
     #[tokio::test]
@@ -417,11 +435,7 @@ mod tests {
             "count": 5, "time_window": 60, "show_limit_quota_header": false
         }))
         .unwrap();
-        let ctx = p
-            .execute(test_ctx(), &HashMap::new())
-            .await
-            .unwrap()
-            .context;
+        let ctx = p.execute(test_ctx()).await.unwrap().context;
         assert!(!ctx.response.headers.contains_key("x-ratelimit-limit"));
     }
 }

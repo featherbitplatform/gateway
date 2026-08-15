@@ -13,6 +13,15 @@ export const AUTH_URL = 'http://127.0.0.1:3012';
 export const ADMIN_USER = 'admin';
 export const ADMIN_PASS = 'admin';
 
+/**
+ * A canary env var set only on the gateway process, name AND value both
+ * distinctive. E2E-TPL-04 asserts the name appears in `GET /api/env-vars`
+ * (proving the process really sees it) but the value never does (proving
+ * the endpoint exposes names only, never values).
+ */
+export const ENV_CANARY_NAME = 'FB_E2E_ENV_CANARY';
+export const ENV_CANARY_VALUE = 'do-not-leak-e2e-9f3c1a5b';
+
 /** The release binary the suite exercises. Checked in global-setup. */
 export const GATEWAY_BIN = resolve(
   repo,
@@ -127,7 +136,12 @@ export default defineConfig({
     {
       command: `"${GATEWAY_BIN}" --system-config e2e/.tmp/system.yaml --gateway-config e2e/.tmp/gateway.yaml`,
       cwd: repo,
-      env: {ECHO_HOST: '127.0.0.1', ECHO_PORT: '3010', LOG_LEVEL: 'warn'},
+      env: {
+        ECHO_HOST: '127.0.0.1',
+        ECHO_PORT: '3010',
+        LOG_LEVEL: 'warn',
+        [ENV_CANARY_NAME]: ENV_CANARY_VALUE,
+      },
       // /healthz needs no auth, so it is the honest readiness signal here.
       url: `${ADMIN_URL}/healthz`,
       reuseExistingServer: !process.env.CI,

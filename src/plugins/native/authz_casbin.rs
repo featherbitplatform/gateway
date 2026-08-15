@@ -17,7 +17,7 @@
 //!
 //! `enforcer.enforce((sub, obj, act))` decides the outcome: `true` lets the
 //! request continue through the **success** port; `false` rejects it with a
-//! `403` routed through the **error** port (code `AUTHZ_CASBIN_DENIED`).
+//! `403` routed through the dedicated **`denied`** port.
 //!
 //! ## Enforcer construction (blocking at load)
 //!
@@ -39,9 +39,9 @@ use std::sync::Arc;
 
 use casbin::{CoreApi, DefaultModel, Enforcer, FileAdapter, StringAdapter};
 
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Where the model and policy come from.
 enum EnforcerSource {
@@ -170,8 +170,7 @@ impl AuthzCasbinPlugin {
             .unwrap_or_else(|| "anonymous".to_string())
     }
 
-    /// Builds the 403 denial carrying the context so the graph engine routes
-    /// through the error port.
+    /// Builds the 403 denial and exits on the `denied` port.
     fn deny(ctx: Context) -> PluginResult {
         let mut ctx = ctx;
         ctx.response.status_code = 403;
@@ -180,15 +179,7 @@ impl AuthzCasbinPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "AUTHZ_CASBIN_DENIED".to_string(),
-                message: "Access denied by Casbin policy".to_string(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 }
 
@@ -240,40 +231,21 @@ impl Plugin for AuthzCasbinPlugin {
         "authz-casbin"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let subject = self.subject(&ctx);
         let object = ctx.request.path.clone();
         let action = ctx.request.method.clone();
 
         match self.enforcer.enforce((subject, object, action)) {
-            Ok(true) => Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            }),
+            Ok(true) => Ok(PluginOutput::success(ctx)),
             Ok(false) => Self::deny(ctx),
+            // An evaluation error (should not happen with a valid model) is
+            // treated as a denial, same as an explicit `false` decision, but
+            // logged so a genuine enforcement bug doesn't look identical to a
+            // policy denial in the logs.
             Err(e) => {
-                // An evaluation error (should not happen with a valid model)
-                // is treated as a denial, carrying detail in the error record.
-                let mut ctx = ctx;
-                ctx.response.status_code = 403;
-                ctx.response.body = Bytes::from(r#"{"message":"Access Denied"}"#);
-                ctx.response.headers.insert(
-                    "content-type".to_string(),
-                    vec!["application/json".to_string()],
-                );
-                Err(PluginExecutionError {
-                    context: ctx,
-                    error: GatewayError {
-                        node_id: String::new(),
-                        code: "AUTHZ_CASBIN_DENIED".to_string(),
-                        message: format!("Casbin enforcement error: {e}"),
-                        metadata: HashMap::new(),
-                    },
-                })
+                tracing::warn!("Casbin enforcement error, denying request: {e}");
+                Self::deny(ctx)
             }
         }
     }
@@ -346,10 +318,7 @@ g, alice, admin
             AuthzCasbinPlugin::from_config(&inline_config(), &PluginResources::empty()).unwrap();
         // alice -> admin, admin can GET /data
         let out = plugin
-            .execute(
-                ctx_for("GET", "/data", Some("alice"), None),
-                &HashMap::new(),
-            )
+            .execute(ctx_for("GET", "/data", Some("alice"), None))
             .await;
         assert!(out.is_ok());
     }
@@ -360,10 +329,7 @@ g, alice, admin
             AuthzCasbinPlugin::from_config(&inline_config(), &PluginResources::empty()).unwrap();
         // consumer identity wins over header; alice is admin
         let out = plugin
-            .execute(
-                ctx_for("GET", "/data", Some("nobody"), Some("alice")),
-                &HashMap::new(),
-            )
+            .execute(ctx_for("GET", "/data", Some("nobody"), Some("alice")))
             .await;
         assert!(out.is_ok());
     }
@@ -373,12 +339,12 @@ g, alice, admin
         let plugin =
             AuthzCasbinPlugin::from_config(&inline_config(), &PluginResources::empty()).unwrap();
         // bob has no role -> denied
-        let err = plugin
-            .execute(ctx_for("GET", "/data", Some("bob"), None), &HashMap::new())
+        let out = plugin
+            .execute(ctx_for("GET", "/data", Some("bob"), None))
             .await
-            .unwrap_err();
-        assert_eq!(err.context.response.status_code, 403);
-        assert_eq!(err.error.code, "AUTHZ_CASBIN_DENIED");
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
     }
 
     #[tokio::test]
@@ -386,14 +352,11 @@ g, alice, admin
         let plugin =
             AuthzCasbinPlugin::from_config(&inline_config(), &PluginResources::empty()).unwrap();
         // admin can GET /data but not POST it
-        let err = plugin
-            .execute(
-                ctx_for("POST", "/data", Some("alice"), None),
-                &HashMap::new(),
-            )
+        let out = plugin
+            .execute(ctx_for("POST", "/data", Some("alice"), None))
             .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "AUTHZ_CASBIN_DENIED");
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
     }
 
     #[test]

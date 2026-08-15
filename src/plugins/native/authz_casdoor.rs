@@ -7,7 +7,9 @@
 //!   the `Authorization` header is validated by calling Casdoor's OAuth **token
 //!   introspection** endpoint (`/api/login/oauth/introspect`, RFC 7662)
 //!   authenticated with the client credentials. `active: true` allows the
-//!   request; anything else denies it with `AUTHZ_CASDOOR_DENIED` (`403`).
+//!   request; a missing/inactive/invalid token denies it (`403`) on the
+//!   `denied` port; an unreachable introspection endpoint is a genuine
+//!   callout failure and exits on `error` instead.
 //! - **Interactive (opt-in)** — set `session_secret` (or `session.secret`) to
 //!   turn on the full **OAuth Authorization Code** login flow using the shared
 //!   [encrypted-cookie session primitive](crate::plugins::util::cookie_session).
@@ -19,11 +21,15 @@
 //! ## Redirect wiring (interactive mode)
 //!
 //! A `302` produced by this node (login redirect, post-callback redirect, or
-//! logout) is returned as an [`Err`] carrying the prepared response with code
-//! `CASDOOR_REDIRECT`, following the same early-exit convention as the
-//! `fault-injection`/`mocking` nodes. **Wire the node's `error` edge to
-//! `client.in`** so the redirect reaches the browser; the `success` edge
-//! carries authenticated requests on to the upstream.
+//! logout) exits on the dedicated **`redirect`** output port, following the
+//! same convention as the standalone `redirect` node. **Wire the node's
+//! `redirect` edge to `client.in`** so it reaches the browser; deliberate
+//! denials (missing/invalid token, OAuth state mismatch, Casdoor refusing the
+//! decision) exit on **`denied`** (also wired to `client.in`, or a custom
+//! denial handler); a genuine Casdoor callout failure (token exchange or
+//! introspection unreachable) exits through the ordinary **`error`** port
+//! since the node could not do its job; the `success` edge carries
+//! authenticated requests on to the upstream.
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -246,8 +252,14 @@ impl AuthzCasdoorPlugin {
         })
     }
 
-    /// Builds the 403 denial carrying the context.
+    /// Builds the 403 denial and exits on the `denied` port. Reserved for
+    /// deliberate denials — a missing/invalid token, OAuth state mismatch, or
+    /// Casdoor actively refusing the decision.
     fn deny(ctx: Context, message: impl Into<String>) -> PluginResult {
+        // The reason never reaches the client (the `denied` port carries no
+        // error record, unlike `Err`), but it's still useful for operators
+        // debugging why a request was denied.
+        tracing::debug!("authz-casdoor: denying request: {}", message.into());
         let mut ctx = ctx;
         ctx.response.status_code = 403;
         ctx.response.body = Bytes::from(r#"{"error":"access_denied"}"#);
@@ -255,19 +267,11 @@ impl AuthzCasdoorPlugin {
             "content-type".to_string(),
             vec!["application/json".to_string()],
         );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "AUTHZ_CASDOOR_DENIED".to_string(),
-                message: message.into(),
-                metadata: HashMap::new(),
-            },
-        })
+        Ok(PluginOutput::on_port(ctx, "denied"))
     }
 
-    /// Builds a `302` early-exit carrying the prepared response. Wire the
-    /// node's **error** edge to `client.in` so this reaches the browser.
+    /// Builds a `302` early-exit and exits on the `redirect` port. Wire the
+    /// node's `redirect` edge to `client.in` so this reaches the browser.
     fn redirect(mut ctx: Context, location: String, set_cookies: Vec<String>) -> PluginResult {
         ctx.response.status_code = 302;
         ctx.response
@@ -279,12 +283,28 @@ impl AuthzCasdoorPlugin {
                 .insert("set-cookie".to_string(), set_cookies);
         }
         ctx.response.body = Bytes::new();
+        Ok(PluginOutput::on_port(ctx, "redirect"))
+    }
+
+    /// Builds a genuine infrastructure-failure `Err` (a Casdoor token-exchange
+    /// or introspection callout that transport-failed, timed out, or returned
+    /// an unparseable response) — exits through the `error` port because the
+    /// node could not do its job, unlike `deny`/`redirect` which are
+    /// deliberate, client-facing outcomes.
+    fn callout_error(ctx: Context, message: String) -> PluginResult {
+        let mut ctx = ctx;
+        ctx.response.status_code = 403;
+        ctx.response.body = Bytes::from(r#"{"error":"access_denied"}"#);
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
         Err(PluginExecutionError {
             context: ctx,
             error: GatewayError {
                 node_id: String::new(),
-                code: "CASDOOR_REDIRECT".to_string(),
-                message: "authz-casdoor redirect".to_string(),
+                code: "AUTHZ_CASDOOR_ERROR".to_string(),
+                message,
                 metadata: HashMap::new(),
             },
         })
@@ -390,10 +410,7 @@ impl AuthzCasdoorPlugin {
         if let Some(session) = self.read_session(&ctx) {
             if session.client_id == self.client_id {
                 self.attach_session(&mut ctx, &session);
-                return Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                });
+                return Ok(PluginOutput::success(ctx));
             }
         }
 
@@ -426,7 +443,7 @@ impl AuthzCasdoorPlugin {
 
         let access_token = match self.fetch_access_token(&code).await {
             Ok(t) => t,
-            Err(e) => return Self::deny(ctx, e),
+            Err(e) => return Self::callout_error(ctx, e),
         };
 
         let claims = decode_jwt_claims(&access_token);
@@ -499,16 +516,19 @@ impl AuthzCasdoorPlugin {
         };
 
         match self.outbound.request(request).await {
-            Ok(resp) if resp.status == 200 && token_is_active(&resp.body) => Ok(PluginOutput {
-                context: ctx,
-                named_outputs: HashMap::new(),
-            }),
-            Ok(resp) => Self::deny(
+            Ok(resp) if resp.status == 200 && token_is_active(&resp.body) => {
+                Ok(PluginOutput::success(ctx))
+            }
+            // Per RFC 7662, a `200` with `active: false` is the introspection
+            // endpoint doing its job and saying "no" — a deliberate denial.
+            Ok(resp) if resp.status == 200 => Self::deny(ctx, "Casdoor token inactive"),
+            // A non-200 from the introspection endpoint is not a token
+            // decision at all (e.g. the gateway's own client credentials were
+            // rejected, or a fronting proxy is down) — a genuine callout
+            // failure, not a deliberate denial.
+            Ok(resp) => Self::callout_error(
                 ctx,
-                format!(
-                    "Casdoor token inactive or rejected (status {})",
-                    resp.status
-                ),
+                format!("Casdoor introspection returned status {}", resp.status),
             ),
             Err(e) => {
                 let detail = match &e {
@@ -516,7 +536,7 @@ impl AuthzCasdoorPlugin {
                     OutboundError::InvalidRequest(m) => format!("invalid Casdoor request: {m}"),
                     OutboundError::Transport(m) => format!("Casdoor request failed: {m}"),
                 };
-                Self::deny(ctx, detail)
+                Self::callout_error(ctx, detail)
             }
         }
     }
@@ -746,11 +766,7 @@ impl Plugin for AuthzCasdoorPlugin {
         "authz-casdoor"
     }
 
-    async fn execute(
-        &self,
-        ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         if self.sealer.is_some() {
             self.execute_interactive(ctx).await
         } else {
@@ -888,11 +904,72 @@ mod tests {
         assert_eq!(plugin.endpoint_addr, "https://casdoor.example.com");
         // stateless by default
         assert!(plugin.sealer.is_none());
+        let out = plugin.execute(ctx_with_auth(None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
+    }
+
+    /// Regression: before the port split, a Casdoor introspection callout
+    /// failure (nothing listening) was folded into the same denial as an
+    /// actual invalid/inactive token. It is a genuine infra failure and must
+    /// stay on `Err`.
+    #[tokio::test]
+    async fn test_introspection_unreachable_stays_on_error_port() {
+        let mut config = stateless_cfg();
+        config.insert(
+            "endpoint_addr".to_string(),
+            serde_json::json!("http://127.0.0.1:1"),
+        );
+        config.insert("timeout".to_string(), serde_json::json!(200));
+        let plugin = AuthzCasdoorPlugin::from_config(&config, &PluginResources::empty()).unwrap();
         let err = plugin
-            .execute(ctx_with_auth(None), &HashMap::new())
+            .execute(ctx_with_auth(Some("Bearer tok")))
             .await
             .unwrap_err();
-        assert_eq!(err.error.code, "AUTHZ_CASDOOR_DENIED");
+        assert_eq!(err.error.code, "AUTHZ_CASDOOR_ERROR");
+        assert_eq!(err.context.response.status_code, 403);
+    }
+
+    /// Minimal one-shot HTTP server that answers any request with a fixed
+    /// status line and no body. Returns its port.
+    async fn spawn_status_server(status_line: &'static str) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(
+                        format!("HTTP/1.1 {status_line}\r\ncontent-length: 0\r\n\r\n").as_bytes(),
+                    )
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        port
+    }
+
+    /// Regression: a non-200 from the introspection endpoint is not an
+    /// `active: false` token decision (RFC 7662 signals that with `200`); it
+    /// means the callout itself went wrong (bad client credentials, a
+    /// fronting proxy down, ...), so it must stay a genuine `Err`, not be
+    /// folded into `denied`.
+    #[tokio::test]
+    async fn test_introspection_non_200_is_callout_error_not_denied() {
+        let port = spawn_status_server("500 Internal Server Error").await;
+        let mut config = stateless_cfg();
+        config.insert(
+            "endpoint_addr".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{port}")),
+        );
+        let plugin = AuthzCasdoorPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+        let err = plugin
+            .execute(ctx_with_auth(Some("Bearer tok")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.error.code, "AUTHZ_CASDOOR_ERROR");
         assert_eq!(err.context.response.status_code, 403);
     }
 
@@ -1040,20 +1117,17 @@ mod tests {
     async fn test_interactive_begin_login_redirects() {
         let p =
             AuthzCasdoorPlugin::from_config(&interactive_cfg(), &PluginResources::empty()).unwrap();
-        let err = p
-            .execute(ctx("/protected", HashMap::new()), &HashMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "CASDOOR_REDIRECT");
-        assert_eq!(err.context.response.status_code, 302);
-        let location = &err.context.response.headers.get("location").unwrap()[0];
+        let out = p.execute(ctx("/protected", HashMap::new())).await.unwrap();
+        assert_eq!(out.port, Some("redirect"));
+        assert_eq!(out.context.response.status_code, 302);
+        let location = &out.context.response.headers.get("location").unwrap()[0];
         assert!(
             location.starts_with("https://casdoor.example.com/login/oauth/authorize?"),
             "{location}"
         );
         assert!(location.contains("response_type=code"));
         // A sealed flow cookie is set.
-        let set = &err.context.response.headers.get("set-cookie").unwrap()[0];
+        let set = &out.context.response.headers.get("set-cookie").unwrap()[0];
         assert!(set.starts_with("casdoor_session_flow="), "{set}");
     }
 
@@ -1078,7 +1152,7 @@ mod tests {
             vec![format!("casdoor_session={}", sealed)],
         );
 
-        let out = p.execute(c, &HashMap::new()).await.unwrap();
+        let out = p.execute(c).await.unwrap();
         assert_eq!(
             out.context.request.headers.get("authorization").unwrap()[0],
             "Bearer tok-xyz"
@@ -1109,9 +1183,45 @@ mod tests {
             vec![format!("casdoor_session_flow={}", sealed)],
         );
 
-        let err = p.execute(c, &HashMap::new()).await.unwrap_err();
-        assert_eq!(err.error.code, "AUTHZ_CASDOOR_DENIED");
-        assert_eq!(err.context.response.status_code, 403);
+        let out = p.execute(c).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
+    }
+
+    /// The callback's code-exchange call to Casdoor is a genuine provider
+    /// callout; when it is unreachable that must stay `Err`, not be folded
+    /// into `denied` alongside the state-mismatch check above.
+    #[tokio::test]
+    async fn test_interactive_callback_token_exchange_unreachable_stays_on_error_port() {
+        let mut config = interactive_cfg();
+        config.insert(
+            "endpoint_addr".to_string(),
+            serde_json::json!("http://127.0.0.1:1"),
+        );
+        config.insert("timeout".to_string(), serde_json::json!(200));
+        let p = AuthzCasdoorPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+
+        let sealer = CookieSealer::new("s3cr3t");
+        let flow = CasdoorFlow {
+            state: "matching".into(),
+            original_uri: "/home".into(),
+        };
+        let sealed = sealer.seal(
+            &serde_json::to_vec(&flow).unwrap(),
+            Duration::from_secs(300),
+        );
+
+        let mut query = HashMap::new();
+        query.insert("code".to_string(), vec!["c".to_string()]);
+        query.insert("state".to_string(), vec!["matching".to_string()]);
+        let mut c = ctx("/casdoor/callback", query);
+        c.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("casdoor_session_flow={}", sealed)],
+        );
+
+        let err = p.execute(c).await.unwrap_err();
+        assert_eq!(err.error.code, "AUTHZ_CASDOOR_ERROR");
     }
 
     #[test]

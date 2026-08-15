@@ -22,6 +22,8 @@ interface TraceViewerProps {
 /** Human wording for each edge the engine can follow after a node. */
 const EDGE_LABEL: Record<EdgeKind, string> = {
   success: 'success →',
+  // Followed by the port-name badge below (e.g. "outcome → denied").
+  outcome: 'outcome →',
   error: 'error →',
   catch_all: 'catch-all →',
   terminal: 'terminal (response sent)',
@@ -41,6 +43,19 @@ function changeColor(kind: Change['kind']): string {
   if (kind === 'added') return 'var(--success, #22c55e)';
   if (kind === 'removed') return 'var(--error)';
   return 'var(--accent-hover)';
+}
+
+/** Renders `sec/up` as a muted `sec /` prefix + the inner id, so supernode
+ *  instances group visually; plain ids render unchanged. */
+function NodeId({ id }: { id: string }) {
+  const slash = id.indexOf('/');
+  if (slash === -1) return <>{id}</>;
+  return (
+    <>
+      <span style={{ color: 'var(--text-muted)' }}>{id.slice(0, slash + 1)}</span>
+      {id.slice(slash + 1)}
+    </>
+  );
 }
 
 /** One `path / before / after` row in the Changes pane. */
@@ -186,7 +201,7 @@ export function TraceViewer({ trace }: TraceViewerProps) {
                     fontWeight: 500,
                   }}
                 >
-                  {s.node_id}
+                  <NodeId id={s.node_id} />
                 </span>
                 <span
                   className="truncate"
@@ -218,7 +233,7 @@ export function TraceViewer({ trace }: TraceViewerProps) {
                   color: 'var(--text-primary)',
                 }}
               >
-                {step.node_id}{' '}
+                <NodeId id={step.node_id} />{' '}
                 <span style={{ color: 'var(--text-muted)' }}>({step.node_type})</span>
               </div>
               <div
@@ -229,7 +244,26 @@ export function TraceViewer({ trace }: TraceViewerProps) {
                 }}
               >
                 {EDGE_LABEL[step.edge]}
-                {step.next_node_id ? ` ${step.next_node_id}` : ''}
+                {step.port && (
+                  <span
+                    style={{
+                      marginLeft: 4,
+                      padding: '1px 6px',
+                      borderRadius: 'var(--radius-sm)',
+                      background: 'var(--accent-soft)',
+                      color: 'var(--accent)',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {step.port}
+                  </span>
+                )}
+                {step.next_node_id ? (
+                  <>
+                    {' '}
+                    <NodeId id={step.next_node_id} />
+                  </>
+                ) : ''}
                 {step.outcome.kind === 'error' && (
                   <>
                     {' · '}

@@ -9,10 +9,13 @@
 import type {
   Route,
   Policy,
+  Supernode,
+  PluginConfigDef,
   PluginType,
   ScriptFile,
   GatewayStatus,
   DebugConfig,
+  VarEntry,
   TraceSummary,
   TraceDetail,
   SandboxResult,
@@ -116,6 +119,30 @@ export const api = {
   deletePolicy: (name: string) =>
     request(`/api/policies/${name}`, { method: 'DELETE' }),
 
+  // Supernodes
+  /** `GET /api/supernodes` — returns all supernode definitions. */
+  listSupernodes: () => request<Supernode[]>('/api/supernodes'),
+  /** `GET /api/supernodes/{name}` — returns the named definition. */
+  getSupernode: (name: string) => request<Supernode>(`/api/supernodes/${name}`),
+  /** `PUT /api/supernodes/{name}` — upserts the named definition (also used to create). */
+  updateSupernode: (name: string, sn: Supernode) =>
+    request(`/api/supernodes/${name}`, { method: 'PUT', body: JSON.stringify(sn) }),
+  /** `DELETE /api/supernodes/{name}` — removes the definition; 400 while referenced. */
+  deleteSupernode: (name: string) =>
+    request(`/api/supernodes/${name}`, { method: 'DELETE' }),
+
+  // Plugin configs
+  /** `GET /api/plugin-configs` — returns all shared plugin configs. */
+  listPluginConfigs: () => request<PluginConfigDef[]>('/api/plugin-configs'),
+  /** `GET /api/plugin-configs/{name}` — returns the named shared config. */
+  getPluginConfig: (name: string) => request<PluginConfigDef>(`/api/plugin-configs/${name}`),
+  /** `PUT /api/plugin-configs/{name}` — upserts the named shared config (also used to create). */
+  updatePluginConfig: (name: string, def: PluginConfigDef) =>
+    request(`/api/plugin-configs/${name}`, { method: 'PUT', body: JSON.stringify(def) }),
+  /** `DELETE /api/plugin-configs/{name}` — removes the shared config; 400 while referenced. */
+  deletePluginConfig: (name: string) =>
+    request(`/api/plugin-configs/${name}`, { method: 'DELETE' }),
+
   // Plugins
   /** `GET /api/plugins` — returns the catalog of available plugin types, unwrapped from `{ plugins: [...] }`. */
   listPlugins: () =>
@@ -134,12 +161,33 @@ export const api = {
   /** `GET /api/config/export` — returns the live in-memory config (routes + policies) as a YAML string. */
   exportConfig: () => requestText('/api/config/export'),
 
+  // Vars
+  /** `GET /api/vars` — the context-variable catalog, unwrapped from `{ vars: [...] }`. */
+  listVars: () => request<{ vars: VarEntry[] }>('/api/vars').then((r) => r.vars),
+  /** `GET /api/env-vars` — process environment variable names (no values), unwrapped from `{ names: [...] }`. */
+  listEnvVars: () => request<{ names: string[] }>('/api/env-vars').then((r) => r.names),
+
   // Debug mode
   /** `GET /api/debug/config` — effective debug settings; answers even when debug is disabled. */
   debugConfig: () => request<DebugConfig>('/api/debug/config'),
-  /** `GET /api/debug/traces` — recorded traces, newest first, unwrapped from `{ traces: [...] }`. */
-  listTraces: () =>
-    request<{ traces: TraceSummary[] }>('/api/debug/traces').then((r) => r.traces),
+  /**
+   * `GET /api/debug/traces` — recorded traces, newest first, unwrapped from
+   * `{ traces: [...] }`. Optional `filter.policy` / `filter.limit` /
+   * `filter.source` are sent as query params (`source` maps to the
+   * server-side `TraceFilter.source`, e.g. `"request"` | `"sandbox"` —
+   * see `src/admin/debug.rs`); called with no args, behavior is unchanged
+   * from before (all traces, default server-side limit).
+   */
+  listTraces: (filter?: { policy?: string; limit?: number; source?: string }) => {
+    const q = new URLSearchParams();
+    if (filter?.policy) q.set('policy', filter.policy);
+    if (filter?.limit) q.set('limit', String(filter.limit));
+    if (filter?.source) q.set('source', filter.source);
+    const qs = q.toString();
+    return request<{ traces: TraceSummary[] }>(`/api/debug/traces${qs ? '?' + qs : ''}`).then(
+      (r) => r.traces,
+    );
+  },
   /** `GET /api/debug/traces/{id}` — one trace with per-step computed changes. */
   getTrace: (id: string) => request<TraceDetail>(`/api/debug/traces/${id}`),
   /** `DELETE /api/debug/traces` — empties the trace buffer. */

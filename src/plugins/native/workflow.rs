@@ -6,13 +6,15 @@
 //! status code) and `limit-count` (fixed-window rate limiting via the shared
 //! counter store).
 //!
-//! **Early-exit wiring**: a request rejected by a `return` action or an
-//! exceeded `limit-count` has the rejection already written onto
-//! `Context.response` and exits through the node's **error** port (codes
-//! `WORKFLOW_REJECTED` / `RATE_LIMITED`). Wire `error` to a pass-through path
-//! (straight to `client.in`, or an `error-handler` that preserves the
-//! prepared response). Requests that match no rule — or that pass the
-//! `limit-count` check — continue through the **success** port.
+//! **Early-exit wiring**: a request rejected by a `return` action has the
+//! rejection already written onto `Context.response` and exits through the
+//! node's **`denied`** port; an exceeded `limit-count` action exits through
+//! **`limited`**. Wire both to a pass-through path (straight to `client.in`,
+//! or an `error-handler` that preserves the prepared response). A
+//! counter-backend failure while evaluating `limit-count` is a genuine
+//! infrastructure failure and stays on **error**. Requests that match no
+//! rule — or that pass the `limit-count` check — continue through the
+//! **success** port.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -25,7 +27,8 @@ use crate::context::{Context, GatewayError};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 use crate::ratelimit::CounterStore;
-use crate::vars::{interpolate, Expr};
+use crate::vars::template::Template;
+use crate::vars::Expr;
 
 /// Distinguishes counter namespaces between workflow node instances so two
 /// nodes with identical rules don't share windows (APISIX isolates with a
@@ -55,10 +58,15 @@ enum Action {
 struct LimitCount {
     count: u64,
     time_window: Duration,
-    /// `$var` template resolved per request into the counter key.
-    key_template: String,
+    /// Counter-key template: supports `{{namespace.path}}` references and
+    /// legacy `$var` interpolation (see [`Template::render_with_legacy`]),
+    /// resolved per request.
+    key_template: Template,
     rejected_code: u16,
-    rejected_msg: Option<String>,
+    /// Optional rejection body message. Supports `{{namespace.path}}`
+    /// references (no legacy `$var` interpolation — this field never
+    /// supported it, so this sweep must not start).
+    rejected_msg: Option<Template>,
     /// Namespaces this action's counters: `workflow:<instance>:<rule idx>`.
     counter_prefix: String,
     store: Arc<dyn CounterStore>,
@@ -81,11 +89,13 @@ impl WorkflowPlugin {
     ///     - `"limit-count"` — params:
     ///       - `count` (integer > 0, **required**): allowed requests per window.
     ///       - `time_window` (number > 0, seconds, **required**).
-    ///       - `key` (string, default `"$remote_addr"`): `$var` template
-    ///         resolved per request into the counter key.
+    ///       - `key` (string, default `"$remote_addr"`): template (supports
+    ///         `{{namespace.path}}` references plus legacy `$var`
+    ///         interpolation) resolved per request into the counter key.
     ///       - `rejected_code` (integer 200-599, default `503`).
     ///       - `rejected_msg` (string, optional): when set, the rejection body
-    ///         is `{"error_msg": "<msg>"}`; empty body otherwise.
+    ///         is `{"error_msg": "<msg>"}`; empty body otherwise. Supports
+    ///         `{{namespace.path}}` references.
     ///       - `policy` (string, default `"local"`): counter backend name.
     ///
     /// ```yaml
@@ -186,6 +196,10 @@ impl WorkflowPlugin {
                         })
                         .transpose()?
                         .unwrap_or_else(|| "$remote_addr".to_string());
+                    // Discard warnings here — the compile-time walk (a later
+                    // task) reports well-formed-but-unknown references;
+                    // execution must not.
+                    let key_template = Template::parse(&key_template).0;
                     let rejected_code =
                         params
                             .get("rejected_code")
@@ -203,7 +217,11 @@ impl WorkflowPlugin {
                                 format!("rules[{idx}]: 'rejected_msg' must be a string")
                             })
                         })
-                        .transpose()?;
+                        .transpose()?
+                        // Discard warnings here — the compile-time walk (a
+                        // later task) reports well-formed-but-unknown
+                        // references; execution must not.
+                        .map(|s| Template::parse(&s).0);
                     let policy = params
                         .get("policy")
                         .and_then(|v| v.as_str())
@@ -233,15 +251,10 @@ impl WorkflowPlugin {
         Ok(Self { rules })
     }
 
-    /// Writes a JSON rejection onto the response and returns the error result
-    /// so the graph engine routes through the error port.
-    fn reject(
-        mut ctx: Context,
-        status: u16,
-        body: Bytes,
-        code: &str,
-        message: &str,
-    ) -> PluginResult {
+    /// Writes a JSON body onto the response for a genuine infrastructure
+    /// failure and returns `Err` so the graph engine routes through the
+    /// error port.
+    fn fail(mut ctx: Context, status: u16, body: Bytes, code: &str, message: &str) -> PluginResult {
         ctx.response.status_code = status;
         ctx.response.body = body;
         ctx.response.headers.insert(
@@ -257,6 +270,19 @@ impl WorkflowPlugin {
                 metadata: HashMap::new(),
             },
         })
+    }
+
+    /// Writes a deliberate rejection response onto the context and exits
+    /// through the named outcome port (`denied` for a `return` rule,
+    /// `limited` for an exceeded `limit-count` rule).
+    fn deliberate(mut ctx: Context, status: u16, body: Bytes, port: &'static str) -> PluginResult {
+        ctx.response.status_code = status;
+        ctx.response.body = body;
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
+        Ok(PluginOutput::on_port(ctx, port))
     }
 }
 
@@ -282,11 +308,7 @@ impl Plugin for WorkflowPlugin {
         "workflow"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         for rule in &self.rules {
             let matched = rule.case.as_ref().is_none_or(|e| e.eval(&ctx));
             if !matched {
@@ -296,19 +318,18 @@ impl Plugin for WorkflowPlugin {
             // First matching case wins.
             match &rule.action {
                 Action::Return { code } => {
-                    return Self::reject(
+                    return Self::deliberate(
                         ctx,
                         *code,
                         Bytes::from_static(br#"{"error_msg":"rejected by workflow"}"#),
-                        "WORKFLOW_REJECTED",
-                        "rejected by workflow",
+                        "denied",
                     );
                 }
                 Action::LimitCount(lc) => {
                     let key = format!(
                         "{}:{}",
                         lc.counter_prefix,
-                        interpolate(&ctx, &lc.key_template)
+                        lc.key_template.render_with_legacy(&ctx)
                     );
                     let window = match lc
                         .store
@@ -318,7 +339,7 @@ impl Plugin for WorkflowPlugin {
                         Ok(w) => w,
                         Err(e) => {
                             // Counter backend failure: reject rather than fail open.
-                            return Self::reject(
+                            return Self::fail(
                                 ctx,
                                 500,
                                 Bytes::from_static(br#"{"error_msg":"rate limit backend error"}"#),
@@ -331,33 +352,22 @@ impl Plugin for WorkflowPlugin {
                     set_quota_headers(&mut ctx, window.limit, window.remaining, window.reset);
 
                     if window.allowed {
-                        return Ok(PluginOutput {
-                            context: ctx,
-                            named_outputs: HashMap::new(),
-                        });
+                        return Ok(PluginOutput::success(ctx));
                     }
                     let body = match &lc.rejected_msg {
                         Some(msg) => {
-                            Bytes::from(serde_json::json!({ "error_msg": msg }).to_string())
+                            let rendered = msg.render(&ctx).into_owned();
+                            Bytes::from(serde_json::json!({ "error_msg": rendered }).to_string())
                         }
                         None => Bytes::new(),
                     };
-                    return Self::reject(
-                        ctx,
-                        lc.rejected_code,
-                        body,
-                        "RATE_LIMITED",
-                        "rejected by workflow limit-count",
-                    );
+                    return Self::deliberate(ctx, lc.rejected_code, body, "limited");
                 }
             }
         }
 
         // No rule matched: passthrough.
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -404,22 +414,17 @@ mod tests {
         }))
         .unwrap();
 
-        let err = p
-            .execute(test_ctx("/admin/users"), &HashMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "WORKFLOW_REJECTED");
-        assert_eq!(err.context.response.status_code, 403);
+        let out = p.execute(test_ctx("/admin/users")).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
         assert_eq!(
-            err.context.response.body,
+            out.context.response.body,
             Bytes::from_static(br#"{"error_msg":"rejected by workflow"}"#)
         );
 
         // Non-matching request passes through untouched.
-        let out = p
-            .execute(test_ctx("/public"), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_ctx("/public")).await.unwrap();
+        assert!(out.port.is_none());
         assert_eq!(out.context.response.status_code, 0);
     }
 
@@ -429,11 +434,9 @@ mod tests {
             "rules": [{ "actions": [["return", { "code": 418 }]] }]
         }))
         .unwrap();
-        let err = p
-            .execute(test_ctx("/anything"), &HashMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.context.response.status_code, 418);
+        let out = p.execute(test_ctx("/anything")).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 418);
     }
 
     #[tokio::test]
@@ -445,16 +448,12 @@ mod tests {
             ]
         }))
         .unwrap();
-        let err = p
-            .execute(test_ctx("/both"), &HashMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.context.response.status_code, 401);
-        let err = p
-            .execute(test_ctx("/other"), &HashMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.context.response.status_code, 403);
+        let out = p.execute(test_ctx("/both")).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+        let out = p.execute(test_ctx("/other")).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 403);
     }
 
     #[tokio::test]
@@ -472,28 +471,48 @@ mod tests {
 
         for i in 0..2 {
             let out = p
-                .execute(test_ctx("/x"), &HashMap::new())
+                .execute(test_ctx("/x"))
                 .await
                 .unwrap_or_else(|_| panic!("request {i} should pass"));
+            assert!(out.port.is_none());
             assert_eq!(
                 out.context.response.headers.get("x-ratelimit-limit"),
                 Some(&vec!["2".to_string()])
             );
         }
 
-        let err = p
-            .execute(test_ctx("/x"), &HashMap::new())
-            .await
-            .unwrap_err();
-        assert_eq!(err.error.code, "RATE_LIMITED");
-        assert_eq!(err.context.response.status_code, 503);
+        let out = p.execute(test_ctx("/x")).await.unwrap();
+        assert_eq!(out.port, Some("limited"));
+        assert_eq!(out.context.response.status_code, 503);
         assert_eq!(
-            err.context.response.body,
+            out.context.response.body,
             Bytes::from(r#"{"error_msg":"over quota"}"#)
         );
         assert_eq!(
-            err.context.response.headers.get("x-ratelimit-remaining"),
+            out.context.response.headers.get("x-ratelimit-remaining"),
             Some(&vec!["0".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_limit_count_rejected_msg_renders_template() {
+        let p = plugin(serde_json::json!({
+            "rules": [{
+                "actions": [["limit-count", {
+                    "count": 1,
+                    "time_window": 60,
+                    "rejected_msg": "over quota on {{request.path}}"
+                }]]
+            }]
+        }))
+        .unwrap();
+
+        assert!(p.execute(test_ctx("/x")).await.unwrap().port.is_none());
+        let out = p.execute(test_ctx("/x")).await.unwrap();
+        assert_eq!(out.port, Some("limited"));
+        assert_eq!(
+            out.context.response.body,
+            Bytes::from(r#"{"error_msg":"over quota on /x"}"#)
         );
     }
 
@@ -506,13 +525,16 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(p.execute(test_ctx("/x"), &HashMap::new()).await.is_ok());
-        assert!(p.execute(test_ctx("/x"), &HashMap::new()).await.is_err());
+        assert!(p.execute(test_ctx("/x")).await.unwrap().port.is_none());
+        assert_eq!(
+            p.execute(test_ctx("/x")).await.unwrap().port,
+            Some("limited")
+        );
 
         // A different remote_addr gets its own window (default key $remote_addr).
         let mut other = test_ctx("/x");
         other.request.remote_addr = "192.168.9.9:1".to_string();
-        assert!(p.execute(other, &HashMap::new()).await.is_ok());
+        assert!(p.execute(other).await.unwrap().port.is_none());
     }
 
     #[test]

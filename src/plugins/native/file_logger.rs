@@ -27,7 +27,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::batch::{BatchConfig, BatchFlusher, BatchSink, FlushError};
 use crate::context::Context;
-use crate::plugins::util::log_entry::{build_entry, parse_log_format};
+use crate::plugins::util::log_entry::{build_entry, parse_log_format, LogFormat};
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Serializes each entry as one line of JSON, newline-terminated. Pure and
@@ -64,14 +64,22 @@ impl BatchFlusher for FileFlusher {
             .map_err(|e| FlushError {
                 message: format!("failed to write log file {}: {e}", self.path.display()),
                 first_fail: None,
-            })
+            })?;
+        // tokio::fs::File buffers writes through a background blocking task and
+        // does NOT guarantee delivery on drop — without this await, the batch
+        // can still be in flight when flush() returns (lost lines on exit, and
+        // a race observed as CI flakiness in flusher_appends_to_file).
+        file.flush().await.map_err(|e| FlushError {
+            message: format!("failed to flush log file {}: {e}", self.path.display()),
+            first_fail: None,
+        })
     }
 }
 
 /// The `file-logger` plugin node.
 pub struct FileLoggerPlugin {
     sink: BatchSink,
-    log_format: Option<HashMap<String, Value>>,
+    log_format: Option<LogFormat>,
     include_req_body: bool,
     include_resp_body: bool,
 }
@@ -82,7 +90,7 @@ impl FileLoggerPlugin {
     /// Config keys:
     /// - `path` (string, **required**): target file path. Opened in append mode;
     ///   created if absent, but its parent directory must already exist.
-    /// - `log_format` (object): custom `name -> "$var"` entry.
+    /// - `log_format` (object): custom `name -> "template"` entry (`{{namespace.path}}` references plus legacy `$var` interpolation).
     /// - `include_req_body` / `include_resp_body` (bool, default `false`).
     /// - batch keys (optional) — see [`BatchConfig::from_config`]. Use
     ///   `batch_max_size: 1` for immediate per-request writes.
@@ -133,7 +141,7 @@ impl Plugin for FileLoggerPlugin {
         "file-logger"
     }
 
-    async fn execute(&self, ctx: Context, _named_inputs: &HashMap<String, Value>) -> PluginResult {
+    async fn execute(&self, ctx: Context) -> PluginResult {
         let entry = build_entry(
             &ctx,
             self.log_format.as_ref(),
@@ -141,10 +149,7 @@ impl Plugin for FileLoggerPlugin {
             self.include_resp_body,
         );
         self.sink.push(entry);
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 

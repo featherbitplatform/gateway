@@ -13,6 +13,7 @@ use std::collections::HashMap;
 
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Injects the consumer's labels as upstream request headers.
 ///
@@ -21,8 +22,9 @@ use crate::plugins::{Plugin, PluginOutput, PluginResult};
 /// lowercased, matching how featherbit stores request headers). When no
 /// consumer/labels are present the request passes through untouched.
 pub struct AttachConsumerLabelPlugin {
-    /// Prefix prepended to each label key to form the header name.
-    header_prefix: String,
+    /// Prefix prepended to each label key to form the header name. Supports
+    /// `{{namespace.path}}` template references, rendered per request.
+    header_prefix: Template,
 }
 
 impl AttachConsumerLabelPlugin {
@@ -32,7 +34,7 @@ impl AttachConsumerLabelPlugin {
     /// - `header_prefix` (string, default `"X-Consumer-"`): prefix prepended to
     ///   each label key to form the upstream header name. The combined name is
     ///   lowercased, so a `tier` label with prefix `X-Consumer-` becomes the
-    ///   header `x-consumer-tier`.
+    ///   header `x-consumer-tier`. Supports `{{namespace.path}}` references.
     ///
     /// ```yaml
     /// type: attach-consumer-label
@@ -43,8 +45,10 @@ impl AttachConsumerLabelPlugin {
         let header_prefix = config
             .get("header_prefix")
             .and_then(|v| v.as_str())
-            .unwrap_or("X-Consumer-")
-            .to_string();
+            .unwrap_or("X-Consumer-");
+        // Discard warnings here — the compile-time walk (a later task)
+        // reports well-formed-but-unknown references; execution must not.
+        let header_prefix = Template::parse(header_prefix).0;
 
         Ok(Self { header_prefix })
     }
@@ -56,11 +60,7 @@ impl Plugin for AttachConsumerLabelPlugin {
         "attach-consumer-label"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Only act when a consumer with labels is attached; otherwise passthrough.
         if let Some(labels) = ctx
             .message
@@ -68,18 +68,16 @@ impl Plugin for AttachConsumerLabelPlugin {
             .and_then(|v| v.as_object())
             .cloned()
         {
+            let prefix = self.header_prefix.render(&ctx).into_owned();
             for (key, value) in labels {
                 if let Some(value) = value.as_str() {
-                    let header = format!("{}{}", self.header_prefix, key).to_lowercase();
+                    let header = format!("{}{}", prefix, key).to_lowercase();
                     ctx.request.headers.insert(header, vec![value.to_string()]);
                 }
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -126,10 +124,9 @@ mod tests {
     async fn test_attaches_labels_with_default_prefix() {
         let p = plugin(serde_json::json!({}));
         let out = p
-            .execute(
-                ctx(Some(serde_json::json!({ "tier": "gold", "region": "eu" }))),
-                &HashMap::new(),
-            )
+            .execute(ctx(Some(
+                serde_json::json!({ "tier": "gold", "region": "eu" }),
+            )))
             .await
             .unwrap();
         let headers = &out.context.request.headers;
@@ -147,10 +144,7 @@ mod tests {
     async fn test_custom_prefix() {
         let p = plugin(serde_json::json!({ "header_prefix": "X-Label-" }));
         let out = p
-            .execute(
-                ctx(Some(serde_json::json!({ "tier": "gold" }))),
-                &HashMap::new(),
-            )
+            .execute(ctx(Some(serde_json::json!({ "tier": "gold" }))))
             .await
             .unwrap();
         assert_eq!(
@@ -160,9 +154,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_header_prefix_renders_template() {
+        let p = plugin(serde_json::json!({ "header_prefix": "X-{{request.headers.x-realm}}-" }));
+        let mut c = ctx(Some(serde_json::json!({ "tier": "gold" })));
+        c.request
+            .headers
+            .insert("x-realm".to_string(), vec!["Eu".to_string()]);
+        let out = p.execute(c).await.unwrap();
+        assert_eq!(
+            out.context.request.headers.get("x-eu-tier"),
+            Some(&vec!["gold".to_string()])
+        );
+    }
+
+    #[tokio::test]
     async fn test_no_consumer_is_passthrough() {
         let p = plugin(serde_json::json!({}));
-        let out = p.execute(ctx(None), &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx(None)).await.unwrap();
         // no consumer -> no headers injected, no error
         assert!(out
             .context

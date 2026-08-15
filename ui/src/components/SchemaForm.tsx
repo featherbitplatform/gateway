@@ -8,6 +8,15 @@
  */
 import { Plus, X } from 'lucide-react';
 import type { FieldOption, FieldSchema } from '../pluginConfig';
+import type { Availability, Suggestion } from '../varSuggestions';
+import { VarInput } from './VarInput';
+
+/** Trace-derived `$var`/`{{path}}` suggestions threaded down to every templated field. */
+interface VarContext {
+  suggestions: Suggestion[];
+  availability: Availability;
+  onOpenLegend: () => void;
+}
 
 /** Props for SchemaForm. */
 interface SchemaFormProps {
@@ -17,6 +26,38 @@ interface SchemaFormProps {
   value: Record<string, unknown>;
   /** Called with the full replacement config object on every edit (controlled-component style). */
   onChange: (config: Record<string, unknown>) => void;
+  /**
+   * Live suggestions for fields whose resolved `template` mode is not
+   * `'none'` (see {@link resolveTemplateMode}; covers top-level fields and
+   * their `item`/`fields` sub-entries). When omitted, those fields fall back
+   * to plain inputs with no autocomplete popover — e.g. PluginConfigPanel,
+   * which has no node selected to derive suggestions from.
+   */
+  varContext?: VarContext;
+}
+
+/**
+ * Resolves a field's effective template mode: the explicit `template` flag
+ * when set, else a type-based default.
+ *
+ * The default is **`'env-only'`** for `text`/`textarea` (list/objects items
+ * are resolved by their own `item.type`/`sub.type`) — offering full
+ * request/response/message context suggestions is only honest on fields the
+ * Rust plugin actually renders through `Template`; every other text-like
+ * field only ever reaches `{{env.*}}` substitution (at parse/load time, not
+ * request time), so `'env-only'` is the non-misleading default. Fields the
+ * engine genuinely templates carry an explicit `template: 'full'` in
+ * `pluginConfig.ts`, verified against each plugin's Rust source (see Tasks
+ * 2-5's sweep reports). `'none'` is the default for every other control
+ * (`radio`/`select`/`switch`/`number`), which never render `VarInput`
+ * regardless of any stray override.
+ */
+function resolveTemplateMode(
+  explicit: 'full' | 'env-only' | 'none' | undefined,
+  type: string | undefined
+): 'full' | 'env-only' | 'none' {
+  if (explicit) return explicit;
+  return type === 'text' || type === 'textarea' ? 'env-only' : 'none';
 }
 
 const inputStyle: React.CSSProperties = {
@@ -231,7 +272,7 @@ function Switch({
  * The emitted config object is what the admin API persists as the node's
  * `config` block in gateway.yaml.
  */
-export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
+export function SchemaForm({ schema, value, onChange, varContext }: SchemaFormProps) {
   const set = (key: string, v: unknown) => onChange({ ...value, [key]: v });
 
   /** Renders the input control for one field, switching on `field.type` as documented above. */
@@ -239,7 +280,21 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
     const current = value[field.key];
 
     switch (field.type) {
-      case 'text':
+      case 'text': {
+        const mode = resolveTemplateMode(field.template, field.type);
+        if (mode !== 'none' && varContext) {
+          return (
+            <VarInput
+              value={(current as string) ?? (field.default as string) ?? ''}
+              onChange={(v) => set(field.key, v)}
+              placeholder={field.placeholder}
+              style={inputStyle}
+              templateMode={mode}
+              legacyDollar={field.legacyDollar}
+              {...varContext}
+            />
+          );
+        }
         return (
           <input
             type="text"
@@ -249,6 +304,7 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
             style={inputStyle}
           />
         );
+      }
 
       case 'number':
         return (
@@ -263,7 +319,23 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
           />
         );
 
-      case 'textarea':
+      case 'textarea': {
+        const mode = resolveTemplateMode(field.template, field.type);
+        if (mode !== 'none' && varContext) {
+          return (
+            <VarInput
+              value={(current as string) ?? (field.default as string) ?? ''}
+              onChange={(v) => set(field.key, v)}
+              placeholder={field.placeholder}
+              multiline
+              rows={field.rows ?? 4}
+              style={{ ...inputStyle, fontSize: 'var(--text-xs)' }}
+              templateMode={mode}
+              legacyDollar={field.legacyDollar}
+              {...varContext}
+            />
+          );
+        }
         return (
           <textarea
             value={(current as string) ?? (field.default as string) ?? ''}
@@ -274,6 +346,7 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
             style={{ ...inputStyle, fontSize: 'var(--text-xs)' }}
           />
         );
+      }
 
       case 'radio':
         return (
@@ -310,22 +383,39 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
 
       case 'list': {
         const items = Array.isArray(current) ? (current as unknown[]) : [];
+        const itemMode = resolveTemplateMode(field.item?.template, field.item?.type ?? 'text');
         return (
           <div className="space-y-1.5">
             {items.map((item, i) => (
               <div key={i} className="flex items-center gap-1.5">
-                <input
-                  type={field.item?.type === 'number' ? 'number' : 'text'}
-                  value={(item as string | number) ?? ''}
-                  placeholder={field.item?.placeholder}
-                  onChange={(e) => {
-                    const next = [...items];
-                    next[i] =
-                      field.item?.type === 'number' ? Number(e.target.value) : e.target.value;
-                    set(field.key, next);
-                  }}
-                  style={inputStyle}
-                />
+                {itemMode !== 'none' && field.item?.type !== 'number' && varContext ? (
+                  <VarInput
+                    value={(item as string) ?? ''}
+                    onChange={(v) => {
+                      const next = [...items];
+                      next[i] = v;
+                      set(field.key, next);
+                    }}
+                    placeholder={field.item?.placeholder}
+                    style={inputStyle}
+                    templateMode={itemMode}
+                    legacyDollar={field.item?.legacyDollar}
+                    {...varContext}
+                  />
+                ) : (
+                  <input
+                    type={field.item?.type === 'number' ? 'number' : 'text'}
+                    value={(item as string | number) ?? ''}
+                    placeholder={field.item?.placeholder}
+                    onChange={(e) => {
+                      const next = [...items];
+                      next[i] =
+                        field.item?.type === 'number' ? Number(e.target.value) : e.target.value;
+                      set(field.key, next);
+                    }}
+                    style={inputStyle}
+                  />
+                )}
                 <RemoveButton
                   label={`Remove ${field.addLabel ?? 'item'} ${i + 1}`}
                   onClick={() => set(field.key, items.filter((_, j) => j !== i))}
@@ -370,33 +460,53 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
                   />
                 </div>
                 <div className="space-y-2">
-                  {(field.fields ?? []).map((sub) => (
-                    <div key={sub.key}>
-                      <label style={labelStyle}>{sub.label}</label>
-                      <input
-                        type={sub.type === 'number' ? 'number' : 'text'}
-                        value={(item[sub.key] as string | number) ?? ''}
-                        placeholder={sub.placeholder}
-                        onChange={(e) => {
-                          const next = items.map((it, j) =>
-                            j === i
-                              ? {
-                                  ...it,
-                                  [sub.key]:
-                                    sub.type === 'number'
-                                      ? e.target.value === ''
-                                        ? undefined
-                                        : Number(e.target.value)
-                                      : e.target.value,
-                                }
-                              : it
-                          );
-                          set(field.key, next);
-                        }}
-                        style={inputStyle}
-                      />
-                    </div>
-                  ))}
+                  {(field.fields ?? []).map((sub) => {
+                    const subMode = resolveTemplateMode(sub.template, sub.type);
+                    return (
+                      <div key={sub.key}>
+                        <label style={labelStyle}>{sub.label}</label>
+                        {subMode !== 'none' && sub.type !== 'number' && varContext ? (
+                          <VarInput
+                            value={(item[sub.key] as string) ?? ''}
+                            onChange={(v) => {
+                              const next = items.map((it, j) =>
+                                j === i ? { ...it, [sub.key]: v } : it
+                              );
+                              set(field.key, next);
+                            }}
+                            placeholder={sub.placeholder}
+                            style={inputStyle}
+                            templateMode={subMode}
+                            legacyDollar={sub.legacyDollar}
+                            {...varContext}
+                          />
+                        ) : (
+                          <input
+                            type={sub.type === 'number' ? 'number' : 'text'}
+                            value={(item[sub.key] as string | number) ?? ''}
+                            placeholder={sub.placeholder}
+                            onChange={(e) => {
+                              const next = items.map((it, j) =>
+                                j === i
+                                  ? {
+                                      ...it,
+                                      [sub.key]:
+                                        sub.type === 'number'
+                                          ? e.target.value === ''
+                                            ? undefined
+                                            : Number(e.target.value)
+                                          : e.target.value,
+                                    }
+                                  : it
+                              );
+                              set(field.key, next);
+                            }}
+                            style={inputStyle}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ))}

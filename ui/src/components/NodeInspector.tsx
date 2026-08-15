@@ -1,30 +1,56 @@
 /**
  * Right-hand inspector panel for the node selected on the policy canvas.
- * Edits the node's plugin config either schema-driven (SchemaForm, when the
+ * For regular plugin nodes, offers a shared-config picker (`configRef`) that
+ * shows the inherited config read-only above the editor, then edits the
+ * node's local `config` override either schema-driven (SchemaForm, when the
  * plugin type declares a config schema) or as raw JSON (JsonConfigEditor
  * fallback), and offers node deletion for non-fixed nodes.
  *
  * @module components/NodeInspector
  */
 import { useState } from 'react';
-import { X } from 'lucide-react';
+import { Braces, X } from 'lucide-react';
 import type { Node } from '@xyflow/react';
 import type { PluginNodeData } from './PluginNode';
+import type { DebugConfig, PluginConfigDef } from '../types';
 import { getPluginMeta } from '../pluginMeta';
 import { getPluginConfigSchema } from '../pluginConfig';
 import { SchemaForm } from './SchemaForm';
+import { VarLegend } from './VarLegend';
+import { useContextSuggestions } from '../varSuggestions';
 
 /** Props for {@link NodeInspector}. */
 interface NodeInspectorProps {
   /** Selected ReactFlow node (data is {@link PluginNodeData}); `null` renders nothing. */
   node: Node | null;
+  /** Named shared plugin configs available for the picker (from GET /api/plugin-configs). */
+  pluginConfigs: PluginConfigDef[];
   /** Fires with the node id and full replacement config on every config change/apply. */
   onUpdateConfig: (nodeId: string, config: Record<string, unknown>) => void;
+  /** Fires with the node id and the selected shared config name (or `undefined` to clear it). */
+  onUpdateConfigRef: (nodeId: string, ref: string | undefined) => void;
   /** Fires with the node id when the Delete Node button is clicked. */
   onDeleteNode: (nodeId: string) => void;
   /** Fires when the close (X) button is clicked. */
   onClose: () => void;
+  /** Name of the policy being edited (null in supernode-definition mode); scopes the trace lookup. */
+  policyName: string | null;
+  /**
+   * Node id feeding the selected node's `in` handle, for the var-suggestion
+   * hook: `undefined` = no incoming edge, `null` = the incoming edge comes
+   * from the pipeline entry (listener/input) so preview from the trace's
+   * initial snapshot, a string = a real predecessor node id. See
+   * varSuggestions.ts's module doc comment for the full encoding.
+   */
+  predecessorId: string | null | undefined;
+  /** Debug settings; drives whether live previews are attempted at all. */
+  debugConfig: DebugConfig | null;
+  /** Whether the canvas is editing a policy or a supernode definition. */
+  kind: 'policy' | 'supernode';
 }
+
+/** Plugin types with no configuration of their own — fixed pipeline endpoints and supernode boundary pseudo-nodes. */
+const FIXED_TYPES = ['listener', 'client', 'input', 'output', 'error'];
 
 const labelStyle: React.CSSProperties = {
   display: 'block',
@@ -116,25 +142,66 @@ function JsonConfigEditor({
 /**
  * Inspector panel for the selected policy node.
  *
- * Shows the plugin type and read-only node id, then picks the config editor:
- * `listener` and `client` are fixed pipeline endpoints — no configuration and
- * no Delete Node button; types with a schema from getPluginConfigSchema get a
- * {@link SchemaForm} that calls `onUpdateConfig` on every field change; all
- * other types fall back to `JsonConfigEditor`, which updates only on
- * explicit apply. Updates replace the node's entire `config` object, which is
- * what gets serialized into the policy YAML on save.
+ * Shows the plugin type and read-only node id. For regular (non-fixed,
+ * non-supernode) nodes, first renders a "Shared config" picker sourced from
+ * `pluginConfigs` (filtered to the node's plugin type) that calls
+ * `onUpdateConfigRef`; when a config is selected, its full definition is
+ * shown read-only beneath the picker as the inherited base. Then picks the
+ * config editor: `listener` and `client` are fixed pipeline endpoints — no
+ * configuration and no Delete Node button; types with a schema from
+ * getPluginConfigSchema get a {@link SchemaForm} that calls `onUpdateConfig`
+ * on every field change; all other types fall back to `JsonConfigEditor`,
+ * which updates only on explicit apply. Updates replace the node's entire
+ * local `config` object (the overrides layered on top of the inherited
+ * config, if any), which is what gets serialized into the policy YAML on
+ * save.
  *
  * @remarks
  * The edited config is the same `config` block the Rust plugins deserialize
- * when instantiated via create_plugin in src/plugins/mod.rs.
+ * when instantiated via create_plugin in src/plugins/mod.rs. A local key
+ * (including an explicit `null`) always wins over the same key inherited
+ * from `config_ref` — merging happens at compile time on the gateway side.
  */
-export function NodeInspector({ node, onUpdateConfig, onDeleteNode, onClose }: NodeInspectorProps) {
+export function NodeInspector({
+  node,
+  pluginConfigs,
+  onUpdateConfig,
+  onUpdateConfigRef,
+  onDeleteNode,
+  onClose,
+  policyName,
+  predecessorId,
+  debugConfig,
+  kind,
+}: NodeInspectorProps) {
+  // Computed ahead of the `!node` early return below so the hooks that
+  // follow (useState, useContextSuggestions) run unconditionally on every
+  // render — conditioning them on `node` would violate the rules of hooks
+  // whenever the selection changes to/from null.
+  const pendingData = node?.data as unknown as PluginNodeData | undefined;
+  const isFixedNode = pendingData ? FIXED_TYPES.includes(pendingData.pluginType) : false;
+  const isSupernodeNode = pendingData?.pluginType === 'supernode';
+  // The hook must not run network calls for fixed/supernode/boundary nodes
+  // (nor when nothing is selected): pass nodeId: null to skip fetching.
+  const skipFetch = !node || isFixedNode || isSupernodeNode;
+
+  const [legendOpen, setLegendOpen] = useState(false);
+  const { suggestions, availability, catalog } = useContextSuggestions({
+    policyName,
+    nodeId: !skipFetch && node ? node.id : null,
+    predecessorId,
+    kind,
+    debugEnabled: debugConfig?.enabled ?? false,
+    captureBodies: debugConfig?.capture_bodies ?? false,
+  });
+
   if (!node) return null;
 
   const data = node.data as unknown as PluginNodeData;
   const meta = getPluginMeta(data.pluginType);
   const schema = getPluginConfigSchema(data.pluginType);
-  const isFixed = data.pluginType === 'listener' || data.pluginType === 'client';
+  const isFixed = isFixedNode;
+  const isSupernode = isSupernodeNode;
 
   return (
     <div
@@ -176,16 +243,29 @@ export function NodeInspector({ node, onUpdateConfig, onDeleteNode, onClose }: N
             {node.id}
           </p>
         </div>
-        <button
-          onClick={onClose}
-          className="flex items-center justify-center rounded transition-colors"
-          style={{ width: 26, height: 26, color: 'var(--text-secondary)' }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-          aria-label="Close"
-        >
-          <X size={15} />
-        </button>
+        <div className="flex items-center" style={{ gap: 4 }}>
+          <button
+            onClick={() => setLegendOpen(true)}
+            className="flex items-center justify-center rounded transition-colors"
+            style={{ width: 26, height: 26, color: 'var(--text-secondary)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            aria-label="Context vars reference"
+            title="Context vars reference"
+          >
+            <Braces size={15} />
+          </button>
+          <button
+            onClick={onClose}
+            className="flex items-center justify-center rounded transition-colors"
+            style={{ width: 26, height: 26, color: 'var(--text-secondary)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            aria-label="Close"
+          >
+            <X size={15} />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -209,16 +289,94 @@ export function NodeInspector({ node, onUpdateConfig, onDeleteNode, onClose }: N
           />
         </div>
 
+        {/* Shared config picker */}
+        {!isFixed && !isSupernode && (
+          <div>
+            <label style={labelStyle}>Shared config</label>
+            <select
+              value={data.configRef ?? ''}
+              onChange={(e) => onUpdateConfigRef(node.id, e.target.value || undefined)}
+              className="w-full"
+              style={{
+                padding: '6px 10px',
+                borderRadius: 'var(--radius-sm)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--text-sm)',
+                background: 'var(--surface-input)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              <option value="">None</option>
+              {pluginConfigs
+                .filter((p) => p.type === data.pluginType)
+                .map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+            </select>
+            {data.configRef && (
+              <div style={{ marginTop: 8 }}>
+                <label style={labelStyle}>
+                  Inherited from {data.configRef} (local keys below override)
+                </label>
+                <div
+                  style={{
+                    padding: '8px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-xs)',
+                    background: 'var(--surface-sunken)',
+                    color: 'var(--text-muted)',
+                    border: '1px solid var(--border)',
+                    maxHeight: 160,
+                    overflowY: 'auto',
+                    whiteSpace: 'pre',
+                  }}
+                >
+                  {JSON.stringify(
+                    pluginConfigs.find((p) => p.name === data.configRef)?.config ?? {},
+                    null,
+                    2
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Configuration */}
         {isFixed ? (
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', margin: 0 }}>
             This node takes no configuration.
           </p>
+        ) : isSupernode ? (
+          <div>
+            <label style={labelStyle}>Supernode</label>
+            <div
+              style={{
+                padding: '6px 10px',
+                borderRadius: 'var(--radius-sm)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--text-sm)',
+                background: 'var(--surface-input)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              {String(data.config?.name ?? '')}
+            </div>
+            <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 6 }}>
+              Reusable subgraph — edit its definition from the Supernodes section in the sidebar.
+            </p>
+          </div>
         ) : schema.length > 0 ? (
           <SchemaForm
             schema={schema}
             value={data.config || {}}
             onChange={(config) => onUpdateConfig(node.id, config)}
+            varContext={{ suggestions, availability, onOpenLegend: () => setLegendOpen(true) }}
           />
         ) : (
           <JsonConfigEditor
@@ -248,6 +406,14 @@ export function NodeInspector({ node, onUpdateConfig, onDeleteNode, onClose }: N
           </button>
         </div>
       )}
+
+      <VarLegend
+        open={legendOpen}
+        onClose={() => setLegendOpen(false)}
+        catalog={catalog}
+        suggestions={suggestions}
+        availability={availability}
+      />
     </div>
   );
 }

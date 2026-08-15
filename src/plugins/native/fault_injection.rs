@@ -7,28 +7,29 @@
 //!
 //! **Early-exit wiring**: an aborted request has the configured response
 //! already written onto `Context.response` and exits through the node's
-//! **error** port with code `FAULT_INJECTED`; non-aborted requests continue
-//! through the **success** port. Wire `error` to a pass-through path (e.g.
-//! straight to `client.in`, or an `error-handler` that preserves the prepared
-//! response) so the injected status/body reach the client, and wire `success`
-//! to the rest of the pipeline. This deviates mechanically from APISIX (where
-//! abort is a direct exit, not an error) because featherbit pipelines need a
-//! distinct port for "stop here" versus "keep going".
+//! dedicated **`abort`** output port; non-aborted requests (nothing
+//! triggered, or delay-only) continue through the **success** port. Wire
+//! `abort` to a pass-through path (e.g. straight to `client.in`, or an
+//! `error-handler` that preserves the prepared response) so the injected
+//! status/body reach the client, and wire `success` to the rest of the
+//! pipeline.
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
-use crate::vars::{interpolate, Expr};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
+use crate::vars::Expr;
 
 /// Injects delays and/or abort responses into matching requests.
 ///
 /// Order matches APISIX: the delay (if it triggers) is applied first, then
-/// the abort check runs. `body`, and string header values, support `$var`
-/// interpolation against the request.
+/// the abort check runs. `body`, and string header values, support
+/// `{{namespace.path}}` references plus legacy `$var` interpolation against
+/// the request.
 pub struct FaultInjectionPlugin {
     abort: Option<AbortRule>,
     delay: Option<DelayRule>,
@@ -36,10 +37,12 @@ pub struct FaultInjectionPlugin {
 
 struct AbortRule {
     http_status: u16,
-    /// Body template (`$var` interpolated); empty body when unset.
-    body: Option<String>,
+    /// Body template: supports `{{namespace.path}}` references and legacy
+    /// `$var` interpolation (see [`Template::render_with_legacy`]); empty
+    /// body when unset.
+    body: Option<Template>,
     /// Lowercased header name → value template.
-    headers: Vec<(String, String)>,
+    headers: Vec<(String, Template)>,
     percentage: Option<u8>,
     /// OR-ed list of expressions (APISIX shape); `None` means always match.
     vars: Option<Vec<Expr>>,
@@ -196,10 +199,12 @@ impl FaultInjectionPlugin {
     /// Accepted keys:
     /// - `abort` (object): injected response.
     ///   - `http_status` (integer >= 200, **required**): response status.
-    ///   - `body` (string): response body; supports `$var` interpolation.
-    ///     Empty body when unset.
+    ///   - `body` (string): response body; supports `{{namespace.path}}`
+    ///     references plus legacy `$var` interpolation. Empty body when
+    ///     unset.
     ///   - `headers` (map `{name: value}` or array `[{name, value}]`):
-    ///     response headers; string values support `$var` interpolation.
+    ///     response headers; string values support `{{namespace.path}}`
+    ///     references plus legacy `$var` interpolation.
     ///   - `percentage` (integer 0-100): chance the abort triggers; unset
     ///     means always.
     ///   - `vars` (array): APISIX condition expressions, OR-ed across items.
@@ -231,13 +236,22 @@ impl FaultInjectionPlugin {
                     .filter(|n| (200..=599).contains(n))
                     .ok_or("abort.http_status is required and must be an integer >= 200")?
                     as u16;
+                // Discard warnings here — the compile-time walk (a later
+                // task) reports well-formed-but-unknown references;
+                // execution must not.
                 let body = match obj.get("body") {
                     None => None,
-                    Some(v) => Some(v.as_str().ok_or("abort.body must be a string")?.to_string()),
+                    Some(v) => {
+                        let s = v.as_str().ok_or("abort.body must be a string")?;
+                        Some(Template::parse(s).0)
+                    }
                 };
                 let headers = match obj.get("headers") {
                     None => Vec::new(),
-                    Some(v) => parse_headers(v, "abort.headers")?,
+                    Some(v) => parse_headers(v, "abort.headers")?
+                        .into_iter()
+                        .map(|(name, value)| (name, Template::parse(&value).0))
+                        .collect(),
                 };
                 let percentage = parse_percentage(obj, "abort")?;
                 let vars = match obj.get("vars") {
@@ -292,11 +306,7 @@ impl Plugin for FaultInjectionPlugin {
         "fault-injection"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         if let Some(delay) = &self.delay {
             if sample_hit(delay.percentage) && vars_match(&delay.vars, &ctx) {
                 tokio::time::sleep(delay.duration).await;
@@ -309,12 +319,12 @@ impl Plugin for FaultInjectionPlugin {
                 let body = abort
                     .body
                     .as_ref()
-                    .map(|b| interpolate(&ctx, b))
+                    .map(|b| b.render_with_legacy(&ctx))
                     .unwrap_or_default();
                 let headers: Vec<(String, String)> = abort
                     .headers
                     .iter()
-                    .map(|(name, tmpl)| (name.clone(), interpolate(&ctx, tmpl)))
+                    .map(|(name, tmpl)| (name.clone(), tmpl.render_with_legacy(&ctx)))
                     .collect();
 
                 ctx.response.status_code = abort.http_status;
@@ -323,22 +333,14 @@ impl Plugin for FaultInjectionPlugin {
                     ctx.response.headers.insert(name, vec![value]);
                 }
 
-                return Err(PluginExecutionError {
-                    context: ctx,
-                    error: GatewayError {
-                        node_id: String::new(),
-                        code: "FAULT_INJECTED".to_string(),
-                        message: format!("fault injected: abort with status {}", abort.http_status),
-                        metadata: HashMap::new(),
-                    },
-                });
+                // The abort response is fully prepared: exit on the
+                // dedicated `abort` port rather than `error`, and rather
+                // than `success` (which would continue into `upstream`).
+                return Ok(PluginOutput::on_port(ctx, "abort"));
             }
         }
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -379,7 +381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_abort_prepares_response_and_errors() {
+    async fn test_abort_exits_on_abort_port() {
         let p = plugin(serde_json::json!({
             "abort": {
                 "http_status": 503,
@@ -389,9 +391,9 @@ mod tests {
         }))
         .unwrap();
 
-        let err = p.execute(test_ctx(), &HashMap::new()).await.unwrap_err();
-        assert_eq!(err.error.code, "FAULT_INJECTED");
-        let ctx = err.context;
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("abort"));
+        let ctx = out.context;
         assert_eq!(ctx.response.status_code, 503);
         assert_eq!(ctx.response.body, Bytes::from("injected for /api/users"));
         assert_eq!(
@@ -413,7 +415,8 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(p.execute(test_ctx(), &HashMap::new()).await.is_err());
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("abort"));
 
         // No expression matches -> passthrough on success.
         let p = plugin(serde_json::json!({
@@ -423,7 +426,8 @@ mod tests {
             }
         }))
         .unwrap();
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, None);
         assert_eq!(out.context.response.status_code, 0);
     }
 
@@ -436,7 +440,8 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(p.execute(test_ctx(), &HashMap::new()).await.is_err());
+        let out = p.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("abort"));
     }
 
     #[tokio::test]
@@ -451,8 +456,10 @@ mod tests {
         }))
         .unwrap();
         for _ in 0..20 {
-            assert!(p0.execute(test_ctx(), &HashMap::new()).await.is_ok());
-            assert!(p100.execute(test_ctx(), &HashMap::new()).await.is_err());
+            let out0 = p0.execute(test_ctx()).await.unwrap();
+            assert_eq!(out0.port, None);
+            let out100 = p100.execute(test_ctx()).await.unwrap();
+            assert_eq!(out100.port, Some("abort"));
         }
     }
 
@@ -463,7 +470,7 @@ mod tests {
         }))
         .unwrap();
         let start = Instant::now();
-        let out = p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        let out = p.execute(test_ctx()).await.unwrap();
         assert!(start.elapsed() >= Duration::from_millis(45));
         assert_eq!(out.context.response.status_code, 0);
     }
@@ -478,7 +485,7 @@ mod tests {
         }))
         .unwrap();
         let start = Instant::now();
-        p.execute(test_ctx(), &HashMap::new()).await.unwrap();
+        p.execute(test_ctx()).await.unwrap();
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 

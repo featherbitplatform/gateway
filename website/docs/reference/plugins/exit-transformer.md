@@ -5,7 +5,7 @@ description: Remap status codes and template the body of gateway-generated exit 
 
 <span className="plugin-chip" style={{'--chip-color': '#7c3aed'}}>exit-transformer</span>
 
-Reshapes gateway-generated responses ("exits": auth rejections, rate-limit denials, upstream failures, ...) with a status-code remap and a `$var` body template. It is a response-phase node — place it after `upstream`, before `client`.
+Reshapes gateway-generated responses ("exits") with a status-code remap and a `$var` body template. It is a response-phase node — place it after `upstream`, before `client`.
 
 > **Declarative by design.** This node covers the declarative core of exit transformation — a status remap plus a body template — applied to gateway-generated exits. In featherbit, arbitrary scripted transformation belongs to the [`script`](script.md) node.
 
@@ -34,9 +34,32 @@ Malformed shapes fail at config load: a non-map `status_map`, non-numeric or out
 
 This plugin never fails at execution time — it always exits through the `success` port.
 
-1. **Gate** — unless `always: true`, the node only acts when `context.errors` is non-empty (a gateway-generated exit). Otherwise the context passes through unchanged.
+1. **Gate** — unless `always: true`, the node only acts when `context.errors` is non-empty (a node **failed** and its error record is in the context). Otherwise the context passes through unchanged.
 2. **Status remap** — if the current status is a `status_map` key, it is replaced. Statuses without a mapping are kept.
 3. **Body template** — if `body` is configured, it is interpolated against the context (after the remap, so `$status` is the final client-visible code) and replaces the response body; the stale `content-length` and `content-encoding` headers are removed (the server layer recomputes the length).
+
+### Reshaping denials and throttles needs `always: true`
+
+The default gate is the presence of an **error record**. A deliberate rejection that left its node on an [outcome port](../../concepts/policies-and-graphs.md#outcome-ports-and-the-mandatory-wiring-rule) — `denied`, `limited`, `broken`, `abort`, `redirect` — carries **no** error record, so it is **not** transformed by default. To reshape those, set `always: true` **and** put this node on the branch that outcome port takes, instead of wiring the port straight to `client`:
+
+```yaml
+nodes:
+  - id: shape-exits
+    type: exit-transformer
+    config:
+      always: true            # required: a denial carries no error record
+      status_map:
+        "401": 403
+      body: '{"status": $status, "path": "$uri"}'
+
+edges:
+  - from: auth.denied
+    to: shape-exits.in        # not straight to client
+  - from: shape-exits.success
+    to: client.in
+```
+
+With `always: true` the node transforms **every** response that reaches it, clean upstream replies included — so give it its own branch as above rather than placing it on the main success path.
 
 The node does not modify response headers beyond the body-mutation convention — combine with `response-rewrite` or `proxy-rewrite` (response phase) for header changes, or use a `script` node for fully dynamic transformations.
 

@@ -22,6 +22,7 @@ use std::collections::HashMap;
 
 use crate::context::{Context, GatewayError};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Rewrites the request into a GraphQL POST for the configured `query`.
 ///
@@ -32,10 +33,13 @@ use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 /// body (any JSON type); names found in neither are omitted from
 /// `variables`. A non-empty request body that is not valid JSON fails with
 /// a 400 and code `INVALID_REQUEST_BODY` when body lookups are needed.
+///
+/// `query`, `operation_name`, and each `variables` entry support
+/// `{{namespace.path}}` template references, rendered per request.
 pub struct DegraphqlPlugin {
-    query: String,
-    variables: Vec<String>,
-    operation_name: Option<String>,
+    query: Template,
+    variables: Vec<Template>,
+    operation_name: Option<Template>,
 }
 
 /// Structural sanity check for a GraphQL document: non-blank, contains a
@@ -108,12 +112,15 @@ impl DegraphqlPlugin {
                 if items.is_empty() {
                     return Err("degraphql: 'variables' must not be empty when present".to_string());
                 }
+                // Discard warnings here — the compile-time walk (a later
+                // task) reports well-formed-but-unknown references;
+                // execution must not.
                 items
                     .iter()
                     .map(|v| {
                         v.as_str()
                             .filter(|s| !s.is_empty())
-                            .map(String::from)
+                            .map(|s| Template::parse(s).0)
                             .ok_or(
                                 "degraphql: 'variables' items must be non-empty strings"
                                     .to_string(),
@@ -130,12 +137,12 @@ impl DegraphqlPlugin {
                     .as_str()
                     .filter(|s| !s.is_empty() && s.len() <= 1024)
                     .ok_or("degraphql: 'operation_name' must be a string of 1–1024 characters")?;
-                Some(s.to_string())
+                Some(Template::parse(s).0)
             }
         };
 
         Ok(Self {
-            query: query.to_string(),
+            query: Template::parse(query).0,
             variables,
             operation_name,
         })
@@ -175,11 +182,7 @@ impl Plugin for DegraphqlPlugin {
         "degraphql"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         if ctx.request.method != "GET" && ctx.request.method != "POST" {
             let method = ctx.request.method.clone();
             return Err(self.fail(
@@ -194,12 +197,12 @@ impl Plugin for DegraphqlPlugin {
         let mut new_body = serde_json::Map::new();
         new_body.insert(
             "query".to_string(),
-            serde_json::Value::String(self.query.clone()),
+            serde_json::Value::String(self.query.render(&ctx).into_owned()),
         );
         if let Some(op) = &self.operation_name {
             new_body.insert(
                 "operationName".to_string(),
-                serde_json::Value::String(op.clone()),
+                serde_json::Value::String(op.render(&ctx).into_owned()),
             );
         }
 
@@ -209,8 +212,9 @@ impl Plugin for DegraphqlPlugin {
             let mut json_body: Option<serde_json::Value> = None;
             let mut vars = serde_json::Map::new();
 
-            for name in &self.variables {
-                if let Some(v) = ctx.request.query_params.get(name).and_then(|v| v.first()) {
+            for name_tpl in &self.variables {
+                let name = name_tpl.render(&ctx).into_owned();
+                if let Some(v) = ctx.request.query_params.get(&name).and_then(|v| v.first()) {
                     vars.insert(name.clone(), serde_json::Value::String(v.clone()));
                     continue;
                 }
@@ -229,7 +233,7 @@ impl Plugin for DegraphqlPlugin {
                             }
                         }
                     }
-                    if let Some(v) = json_body.as_ref().and_then(|b| b.get(name)) {
+                    if let Some(v) = json_body.as_ref().and_then(|b| b.get(&name)) {
                         vars.insert(name.clone(), v.clone());
                     }
                 }
@@ -252,10 +256,7 @@ impl Plugin for DegraphqlPlugin {
         ctx.request.headers.remove("content-length");
         ctx.request.headers.remove("content-encoding");
 
-        Ok(PluginOutput {
-            context: ctx,
-            named_outputs: HashMap::new(),
-        })
+        Ok(PluginOutput::success(ctx))
     }
 }
 
@@ -310,7 +311,7 @@ mod tests {
             .query_params
             .insert("name".to_string(), vec!["jack".to_string()]);
 
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let req = &out.context.request;
         assert_eq!(req.method, "POST");
         assert_eq!(
@@ -328,7 +329,7 @@ mod tests {
     async fn test_degraphql_body_from_json_body_preserves_types() {
         let p = plugin(Some(serde_json::json!(["name", "limit"])));
         let ctx = test_context("POST", r#"{"name":"jill","limit":10,"noise":true}"#);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         // JSON body values keep their JSON types
         assert_eq!(
@@ -344,16 +345,49 @@ mod tests {
         ctx.request
             .query_params
             .insert("name".to_string(), vec!["from-args".to_string()]);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(body["variables"]["name"], "from-args");
+    }
+
+    /// TDD (Task 3): `operation_name` and each `variables` entry render
+    /// `{{...}}` template references per request.
+    #[tokio::test]
+    async fn test_degraphql_operation_name_and_variable_name_render_template() {
+        let mut config = HashMap::new();
+        config.insert("query".to_string(), serde_json::json!(QUERY));
+        config.insert(
+            "operation_name".to_string(),
+            serde_json::json!("Get{{request.headers.x-op-suffix}}"),
+        );
+        config.insert(
+            "variables".to_string(),
+            serde_json::json!(["{{request.headers.x-var-name}}"]),
+        );
+        let p = DegraphqlPlugin::from_config(&config).unwrap();
+
+        let mut ctx = test_context("GET", "");
+        ctx.request
+            .headers
+            .insert("x-op-suffix".to_string(), vec!["Person".to_string()]);
+        ctx.request
+            .headers
+            .insert("x-var-name".to_string(), vec!["name".to_string()]);
+        ctx.request
+            .query_params
+            .insert("name".to_string(), vec!["jack".to_string()]);
+
+        let out = p.execute(ctx).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
+        assert_eq!(body["operationName"], "GetPerson");
+        assert_eq!(body["variables"], serde_json::json!({ "name": "jack" }));
     }
 
     #[tokio::test]
     async fn test_degraphql_missing_variable_omitted() {
         let p = plugin(Some(serde_json::json!(["name", "ghost"])));
         let ctx = test_context("POST", r#"{"name":"jack"}"#);
-        let out = p.execute(ctx, &HashMap::new()).await.unwrap();
+        let out = p.execute(ctx).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(body["variables"], serde_json::json!({ "name": "jack" }));
     }
@@ -365,10 +399,7 @@ mod tests {
         config.insert("operation_name".to_string(), serde_json::json!("List"));
         let p = DegraphqlPlugin::from_config(&config).unwrap();
 
-        let out = p
-            .execute(test_context("GET", ""), &HashMap::new())
-            .await
-            .unwrap();
+        let out = p.execute(test_context("GET", "")).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&out.context.request.body).unwrap();
         assert_eq!(body["query"], "{ persons { id } }");
         assert_eq!(body["operationName"], "List");
@@ -378,10 +409,7 @@ mod tests {
     #[tokio::test]
     async fn test_degraphql_rejects_other_methods() {
         let p = plugin(None);
-        let err = p
-            .execute(test_context("DELETE", ""), &HashMap::new())
-            .await
-            .unwrap_err();
+        let err = p.execute(test_context("DELETE", "")).await.unwrap_err();
         assert_eq!(err.error.code, "METHOD_NOT_ALLOWED");
         assert_eq!(err.context.response.status_code, 405);
     }
@@ -390,7 +418,7 @@ mod tests {
     async fn test_degraphql_invalid_body_when_variable_needed() {
         let p = plugin(Some(serde_json::json!(["name"])));
         let err = p
-            .execute(test_context("POST", "not json"), &HashMap::new())
+            .execute(test_context("POST", "not json"))
             .await
             .unwrap_err();
         assert_eq!(err.error.code, "INVALID_REQUEST_BODY");

@@ -21,26 +21,27 @@
 //!  listener →│ api-breaker      │success →│ upstream │─ any ─→│ api-breaker      │→ client
 //!            │  (phase=check)   │        │          │        │  (phase=observe) │
 //!            └──────────────────┘        └──────────┘        └──────────────────┘
-//!                    │ error                                        (records the
+//!                    │ broken                                       (records the
 //!                    ▼                                          upstream status into
 //!               client.in                                        the shared breaker)
 //!          (break_response_code)
 //! ```
 //!
-//! The check node's `error` port goes to `client.in`: while the breaker is open
-//! the request short-circuits to the client with the configured break response.
-//! The observe node passes the response through untouched and simply records
-//! the status; wire it on the path(s) out of `upstream` that carry the real
-//! upstream response.
+//! The check node's `broken` port goes to `client.in`: while the breaker is
+//! open the request short-circuits to the client with the configured break
+//! response. The observe node passes the response through untouched and
+//! simply records the status; wire it on the path(s) out of `upstream` that
+//! carry the real upstream response.
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::vars::template::Template;
 
 /// Which half of the pair this node is.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,8 +74,10 @@ pub struct ApiBreakerPlugin {
     max_breaker_sec: u64,
     /// Status returned while the breaker is open.
     break_response_code: u16,
-    /// Optional body returned while the breaker is open.
-    break_response_body: Option<String>,
+    /// Optional body returned while the breaker is open. Supports
+    /// `{{namespace.path}}` references (no legacy `$var` interpolation —
+    /// this field never supported it, so this sweep must not start).
+    break_response_body: Option<Template>,
     resources: Arc<PluginResources>,
 }
 
@@ -119,7 +122,8 @@ impl ApiBreakerPlugin {
     ///   successes before the breaker fully closes.
     /// - `break_response_code` (integer, default `502`): status returned while
     ///   the breaker is open.
-    /// - `break_response_body` (string, optional): body returned while open.
+    /// - `break_response_body` (string, optional): body returned while open;
+    ///   supports `{{namespace.path}}` references.
     /// - `break_base_sec` (integer, default `2`): base cooldown; the open
     ///   window grows as `break_base_sec * 2^trip` (APISIX's `2^n` backoff).
     /// - `max_breaker_sec` (integer, default `300`, min `3`): cooldown ceiling.
@@ -213,7 +217,9 @@ impl ApiBreakerPlugin {
         let break_response_body = config
             .get("break_response_body")
             .and_then(|v| v.as_str())
-            .map(String::from);
+            // Discard warnings here — the compile-time walk (a later task)
+            // reports well-formed-but-unknown references; execution must not.
+            .map(|s| Template::parse(s).0);
 
         let break_base_sec = config
             .get("break_base_sec")
@@ -251,36 +257,20 @@ impl Plugin for ApiBreakerPlugin {
         "api-breaker"
     }
 
-    async fn execute(
-        &self,
-        mut ctx: Context,
-        _named_inputs: &HashMap<String, serde_json::Value>,
-    ) -> PluginResult {
+    async fn execute(&self, mut ctx: Context) -> PluginResult {
         let breaker = self.resources.traffic.breakers.breaker(&self.id);
 
         match self.role {
             Role::Check => {
                 let allowed = breaker.lock().await.allow();
                 if allowed {
-                    Ok(PluginOutput {
-                        context: ctx,
-                        named_outputs: HashMap::new(),
-                    })
+                    Ok(PluginOutput::success(ctx))
                 } else {
                     ctx.response.status_code = self.break_response_code;
                     if let Some(body) = &self.break_response_body {
-                        ctx.response.body = Bytes::from(body.clone());
+                        ctx.response.body = Bytes::from(body.render(&ctx).into_owned());
                     }
-                    let error = GatewayError {
-                        node_id: String::new(),
-                        code: "API_BREAKER_OPEN".to_string(),
-                        message: "Circuit breaker is open".to_string(),
-                        metadata: HashMap::new(),
-                    };
-                    Err(PluginExecutionError {
-                        context: ctx,
-                        error,
-                    })
+                    Ok(PluginOutput::on_port(ctx, "broken"))
                 }
             }
             Role::Observe => {
@@ -294,10 +284,7 @@ impl Plugin for ApiBreakerPlugin {
                 } else if self.healthy_statuses.contains(&status) {
                     breaker.lock().await.record_healthy(self.healthy_successes);
                 }
-                Ok(PluginOutput {
-                    context: ctx,
-                    named_outputs: HashMap::new(),
-                })
+                Ok(PluginOutput::success(ctx))
             }
         }
     }
@@ -398,19 +385,60 @@ mod tests {
         .unwrap();
 
         // Breaker starts closed → check allows.
-        assert!(check.execute(ctx(0), &HashMap::new()).await.is_ok());
+        assert!(check.execute(ctx(0)).await.unwrap().port.is_none());
 
         // Two unhealthy responses (threshold 2) → breaker opens.
-        observe.execute(ctx(500), &HashMap::new()).await.unwrap();
-        observe.execute(ctx(500), &HashMap::new()).await.unwrap();
+        observe.execute(ctx(500)).await.unwrap();
+        observe.execute(ctx(500)).await.unwrap();
 
-        // Now check rejects with the break response.
-        let err = check
-            .execute(ctx(0), &HashMap::new())
+        // Now check rejects with the break response on `broken`.
+        let out = check
+            .execute(ctx(0))
             .await
-            .expect_err("check should reject while the breaker is open");
-        assert_eq!(err.error.code, "API_BREAKER_OPEN");
-        assert_eq!(err.context.response.status_code, 502);
+            .expect("check completes with a `broken` outcome while the breaker is open");
+        assert_eq!(out.port, Some("broken"));
+        assert_eq!(out.context.response.status_code, 502);
+    }
+
+    #[tokio::test]
+    async fn test_break_response_body_renders_template() {
+        let r = PluginResources::empty();
+        let check = ApiBreakerPlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("check")),
+                ("id", serde_json::json!("svc3")),
+                (
+                    "break_response_body",
+                    serde_json::json!("blocked path={{request.path}}"),
+                ),
+                (
+                    "unhealthy",
+                    serde_json::json!({"http_statuses": [500], "failures": 1}),
+                ),
+            ]),
+            &r,
+        )
+        .unwrap();
+        let observe = ApiBreakerPlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("observe")),
+                ("id", serde_json::json!("svc3")),
+                (
+                    "unhealthy",
+                    serde_json::json!({"http_statuses": [500], "failures": 1}),
+                ),
+            ]),
+            &r,
+        )
+        .unwrap();
+
+        observe.execute(ctx(500)).await.unwrap();
+        let out = check
+            .execute(ctx(0))
+            .await
+            .expect("check completes with a `broken` outcome while the breaker is open");
+        assert_eq!(out.port, Some("broken"));
+        assert_eq!(out.context.response.body.as_ref(), b"blocked path=/");
     }
 
     #[tokio::test]
@@ -445,11 +473,11 @@ mod tests {
         )
         .unwrap();
 
-        observe.execute(ctx(500), &HashMap::new()).await.unwrap();
-        observe.execute(ctx(500), &HashMap::new()).await.unwrap();
-        observe.execute(ctx(200), &HashMap::new()).await.unwrap(); // resets
-        observe.execute(ctx(500), &HashMap::new()).await.unwrap();
+        observe.execute(ctx(500)).await.unwrap();
+        observe.execute(ctx(500)).await.unwrap();
+        observe.execute(ctx(200)).await.unwrap(); // resets
+        observe.execute(ctx(500)).await.unwrap();
         // Only one unhealthy since the reset (< threshold 3) → still closed.
-        assert!(check.execute(ctx(0), &HashMap::new()).await.is_ok());
+        assert!(check.execute(ctx(0)).await.unwrap().port.is_none());
     }
 }
