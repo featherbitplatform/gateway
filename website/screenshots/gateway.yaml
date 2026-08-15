@@ -21,6 +21,15 @@ routes:
       methods: [GET]
     policy: orders-policy
 
+  # Posed for the supernode-preview screenshot only: a small policy whose
+  # middle node is a supernode instance, expanded in place by capture.mjs.
+  # Kept as its own route/policy so the orders-policy shots stay unchanged.
+  - name: checkout-api
+    match:
+      path: /api/checkout/*
+      methods: [POST]
+    policy: checkout-policy
+
 policies:
   - name: orders-policy
     error_handler: error-handler
@@ -108,3 +117,68 @@ policies:
         to: error-handler.in
       - from: error-handler.success
         to: client.in
+
+  # The supernode-preview shot: listener -> instance -> client, with the
+  # instance's error exit feeding a dedicated handler so both exits are wired.
+  - name: checkout-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: sec
+        type: supernode
+        config:
+          name: secured-call
+      - id: checkout-errors
+        type: error-handler
+        config:
+          status_code: 502
+          body_template: '{"error": "{{error.code}}"}'
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: sec.in
+      - from: sec.success
+        to: client.in
+      - from: sec.error
+        to: checkout-errors.in
+      - from: checkout-errors.success
+        to: client.in
+
+supernodes:
+  - name: secured-call
+    description: "Key auth + upstream with a unified error exit"
+    nodes:
+      # Posed positions: a clean left-to-right chain with the error boundary
+      # below — the preview honors saved positions instead of auto-layout.
+      - id: input
+        type: input
+        position: { x: 0, y: 60 }
+      - id: output
+        type: output
+        position: { x: 760, y: 60 }
+      - id: error
+        type: error
+        position: { x: 400, y: 260 }
+      - id: auth
+        type: key-auth
+        position: { x: 240, y: 40 }
+        config:
+          keys: ["${CHECKOUT_API_KEY:-demo-key}"]
+          header_name: x-api-key
+      - id: up
+        type: upstream
+        position: { x: 500, y: 40 }
+        config:
+          targets:
+            - host: ${CHECKOUT_BACKEND_HOST:-checkout.internal}
+              port: ${CHECKOUT_BACKEND_PORT:-8080}
+    edges:
+      - from: input.out
+        to: auth.in
+      - from: auth.success
+        to: up.in
+      - from: auth.denied
+        to: error.in
+      - from: up.success
+        to: output.in
