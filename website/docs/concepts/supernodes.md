@@ -3,6 +3,8 @@ title: Supernodes
 description: Reusable named subgraphs — defined once, referenced from any policy by a single node, and inlined at compile time.
 ---
 
+import UiShot from '@site/src/components/UiShot';
+
 A **supernode** is a reusable, named subgraph — its own nodes and edges — stored top-level in `gateway.yaml` under `supernodes:` and usable from any [policy](policies-and-graphs.md) as a single node. Where a policy graph is per-route, a supernode is shared: an auth-then-upstream-then-error-handling pattern that would otherwise get copy-pasted across policies (and drift apart over time) can be written once and referenced everywhere. Editing the definition updates every policy that uses it — true reuse, not copy-paste.
 
 ## Boundary nodes
@@ -48,6 +50,16 @@ Inside a policy, an instance is a plain node with `type: supernode`, referencing
 ```
 
 From the policy's point of view `sec` behaves like any other node — it has one input port and `success`/`error` output ports — regardless of how many nodes the definition contains internally.
+
+### Previewing an instance in the editor
+
+In the [web UI](../guides/web-ui.md), a supernode instance on the policy canvas carries an expand chevron in its header. Clicking it grows the node in place into a zoomed-out, **read-only** preview of the definition's inner graph — boundary nodes included — floating above its neighbors with the instance's edges still attached; clicking again folds it back. The preview is a glance, not an editor: nothing inside is clickable or draggable, and editing still happens in the definition's own canvas (the Supernodes section of the sidebar). Expansion is per-session editor state — it is never written into the policy, mirroring how [expansion is never persisted](#compile-time-expansion) on the gateway side. If the instance references a definition that no longer exists (deleted from the library while an unsaved instance still points at it), the preview shows an inline `supernode '<name>' not found` message instead of a graph.
+
+<UiShot
+  name="supernode-preview"
+  alt="A supernode instance expanded in place on the policy canvas, showing a zoomed-out read-only preview of its inner graph below the node's ports."
+  caption="An expanded instance. The inner graph — boundary nodes included — renders zoomed out below the instance's own ports; its edges into the policy stay attached, and folding restores the compact node."
+/>
 
 ### An instance exposes exactly two exits
 
