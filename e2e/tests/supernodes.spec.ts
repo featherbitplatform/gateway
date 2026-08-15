@@ -135,4 +135,153 @@ test.describe('Supernodes', () => {
     await api.delete('/api/supernodes/e2e-editor-check');
     await api.dispose();
   });
+
+  test('E2E-SN-03: expand and fold a supernode preview on the policy canvas', async ({page}) => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'sn-preview-route');
+    await api.delete('/api/policies/sn-preview-policy');
+    await api.delete('/api/supernodes/e2e-preview-sn');
+
+    const sn = {...(await echoSupernode(api)), name: 'e2e-preview-sn'};
+    expect((await api.put('/api/supernodes/e2e-preview-sn', {data: sn})).ok()).toBeTruthy();
+    const policy = {
+      name: 'sn-preview-policy',
+      nodes: [
+        {id: 'listener', type: 'listener', config: {}},
+        {id: 'sec', type: 'supernode', config: {name: 'e2e-preview-sn'}},
+        {id: 'client', type: 'client', config: {}},
+      ],
+      edges: [
+        {from: 'listener.out', to: 'sec.in'},
+        {from: 'sec.success', to: 'client.in'},
+      ],
+    };
+    expect((await api.put('/api/policies/sn-preview-policy', {data: policy})).ok()).toBeTruthy();
+    expect(
+      (
+        await api.post('/api/routes', {
+          data: {name: 'sn-preview-route', match: {path: '/sn-preview/*', methods: ['GET']}, policy: 'sn-preview-policy'},
+        })
+      ).ok(),
+    ).toBeTruthy();
+
+    await page.goto('/');
+    await page.getByText('sn-preview-route', {exact: true}).click();
+    await page.waitForSelector('.react-flow__node');
+
+    // The outer canvas's own nodes: direct children of the FIRST nodes
+    // container in DOM order — the nested preview instance adds its own,
+    // later container, so this locator stays outer-only after expansion.
+    const outerNodes = page.locator('.react-flow__nodes').first().locator('> .react-flow__node');
+    await expect(outerNodes).toHaveCount(3);
+
+    // Expand: the preview appears with the definition's inner graph.
+    // ('input'/'output' appear twice inside a preview node — type header +
+    // id body — so .first() disambiguates; 'up' has a distinct header.)
+    await page.getByRole('button', {name: 'Expand supernode preview'}).click();
+    const preview = page.getByTestId('supernode-preview');
+    await expect(preview).toBeVisible();
+    await expect(preview.getByText('input', {exact: true}).first()).toBeVisible();
+    await expect(preview.getByText('up', {exact: true})).toBeVisible();
+    await expect(preview.getByText('output', {exact: true}).first()).toBeVisible();
+
+    // The outer canvas gained nothing: expansion is render-only.
+    await expect(outerNodes).toHaveCount(3);
+
+    // Saving while expanded round-trips the policy unchanged.
+    await page.getByRole('button', {name: 'Save Policy'}).click();
+    await expect(page.getByText('Policy saved')).toBeVisible();
+    const saved = (await (await api.get('/api/policies/sn-preview-policy')).json()) as {
+      nodes: {id: string; type: string; config: Record<string, unknown>}[];
+      edges: {from: string; to: string}[];
+    };
+    expect(saved.nodes.map((n) => n.id).sort()).toEqual(['client', 'listener', 'sec']);
+    expect(saved.nodes.find((n) => n.id === 'sec')!.config).toEqual({name: 'e2e-preview-sn'});
+    expect(saved.edges).toHaveLength(2);
+
+    // Fold restores the collapsed card.
+    await page.getByRole('button', {name: 'Collapse supernode preview'}).click();
+    await expect(preview).toHaveCount(0);
+
+    await api.delete('/api/routes/sn-preview-route');
+    await api.delete('/api/policies/sn-preview-policy');
+    await api.delete('/api/supernodes/e2e-preview-sn');
+    await api.dispose();
+  });
+
+  test('E2E-SN-04: deleting the definition flips an expanded preview to not-found', async ({page}) => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'sn-orphan-route');
+    await api.delete('/api/policies/sn-orphan-policy');
+    await api.delete('/api/supernodes/e2e-preview-orphan');
+
+    const sn = {...(await echoSupernode(api)), name: 'e2e-preview-orphan'};
+    expect((await api.put('/api/supernodes/e2e-preview-orphan', {data: sn})).ok()).toBeTruthy();
+
+    // A plain policy (no supernode) opens the canvas; the instance is added
+    // in-editor and never saved — the only way a stale reference can arise,
+    // since delete protection rejects deleting a referenced definition.
+    const policy = {
+      name: 'sn-orphan-policy',
+      nodes: [
+        {id: 'listener', type: 'listener', config: {}},
+        {id: 'client', type: 'client', config: {}},
+      ],
+      edges: [{from: 'listener.out', to: 'client.in'}],
+    };
+    expect((await api.put('/api/policies/sn-orphan-policy', {data: policy})).ok()).toBeTruthy();
+    expect(
+      (
+        await api.post('/api/routes', {
+          data: {name: 'sn-orphan-route', match: {path: '/sn-orphan/*', methods: ['GET']}, policy: 'sn-orphan-policy'},
+        })
+      ).ok(),
+    ).toBeTruthy();
+
+    await page.goto('/');
+    await page.getByText('sn-orphan-route', {exact: true}).click();
+    await page.waitForSelector('.react-flow__node');
+
+    // Add the supernode instance from the drawer (unsaved). The testid scope
+    // matters: the sidebar library lists the same name.
+    await page.getByRole('button', {name: 'Add Node'}).click();
+    await page.getByTestId('plugin-drawer').getByText('e2e-preview-orphan', {exact: true}).click();
+
+    // Adding the node auto-opens the inspector, which overlaps the new
+    // node's chevron at this canvas position; dismiss it via empty pane
+    // corner before expanding (test-only timing fix, not a product step).
+    await page.locator('.react-flow__pane').first().click({position: {x: 5, y: 5}});
+
+    // The new node lands off the initial fitView's frame (only fitted once,
+    // on mount, over the original 2 nodes) and can end up under the minimap
+    // or attribution watermark; re-fit the view so its chevron is clickable
+    // (test-only timing fix, not a product step).
+    await page.getByRole('button', {name: 'Fit View'}).click();
+
+    // Expand: the definition renders.
+    await page.getByRole('button', {name: 'Expand supernode preview'}).click();
+    const preview = page.getByTestId('supernode-preview');
+    await expect(preview.getByText('up', {exact: true})).toBeVisible();
+
+    // Close the inspector (it also shows the definition name, which would
+    // make the sidebar-row text ambiguous) by clicking empty pane corner.
+    await page.locator('.react-flow__pane').first().click({position: {x: 5, y: 5}});
+
+    // Delete the definition from the sidebar library (hover reveals the X),
+    // confirming in the dialog.
+    await page.getByText('e2e-preview-orphan', {exact: true}).hover();
+    await page.getByRole('button', {name: 'Delete supernode e2e-preview-orphan'}).click();
+    await page
+      .getByRole('dialog', {name: 'Delete supernode'})
+      .getByRole('button', {name: 'Delete', exact: true})
+      .click();
+
+    // The library refetch rewrites the node's resolved definition; the open
+    // preview flips to the inline not-found state.
+    await expect(preview.getByText("supernode 'e2e-preview-orphan' not found")).toBeVisible();
+
+    await api.delete('/api/routes/sn-orphan-route');
+    await api.delete('/api/policies/sn-orphan-policy');
+    await api.dispose();
+  });
 });

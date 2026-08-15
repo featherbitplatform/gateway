@@ -195,6 +195,7 @@ export function PluginDrawer({
 
   return (
     <div
+      data-testid="plugin-drawer"
       className="absolute right-0 top-0 h-full z-50 flex flex-col"
       style={{
         width: 'var(--rail-drawer)',
