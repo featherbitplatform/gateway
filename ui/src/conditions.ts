@@ -22,7 +22,13 @@
  * built by this module's own constructors, and `toExpr(fromExpr(e))` equals
  * `e` for any expression this module can represent. Anything the builder
  * model cannot represent (non-scalar operands, malformed groups, ...) makes
- * `fromExpr`/`fromVarsList` return `null` rather than a mangled model.
+ * `fromExpr`/`fromVarsList` return `null` rather than a mangled model. Two
+ * narrow, deliberate exceptions to byte-identical round-tripping: `!=` is
+ * normalized to its `~=` alias at parse time (identical Rust-side semantics),
+ * and a `var`-subject name typed with a legacy `$`/`${...}` wrapper (the
+ * `VarInput` catalog-suggestion convention) has that wrapper stripped at
+ * serialize time (see {@link stripLegacyDollar}) -- neither changes what the
+ * expression means.
  *
  * Pure module: no React imports, no side effects.
  *
@@ -98,6 +104,21 @@ export function opsFor(subject: SubjectKind): string[] {
   return isJsonPath ? [...ALL_OPS] : ALL_OPS.filter((op) => op !== 'is_null');
 }
 
+/**
+ * Strips a legacy `$name`/`${name}` wrapper, for the `var` subject's name
+ * field: it's rendered as a `VarInput` (see ConditionBuilder's `RuleRow`)
+ * whose catalog suggestions insert `$`-prefixed text (the same convention
+ * every other `$var` field in the app uses), but the wire form of a `var`
+ * subject is the bare name with no `$` -- a leading `$` there would instead
+ * be sniffed as a JSONPath subject by {@link parseSubject}. A name typed
+ * without the `$` passes through unchanged.
+ */
+function stripLegacyDollar(name: string): string {
+  if (name.startsWith('${') && name.endsWith('}')) return name.slice(2, -1);
+  if (name.startsWith('$')) return name.slice(1);
+  return name;
+}
+
 /** Serializes a rule's (subject, name) pair into its wire-form subject string. */
 function serializeSubject(subject: SubjectKind, name: string): string {
   switch (subject) {
@@ -108,7 +129,7 @@ function serializeSubject(subject: SubjectKind, name: string): string {
     case 'cookie':
       return `cookie_${name}`;
     case 'var':
-      return name;
+      return stripLegacyDollar(name);
     case 'jsonpath-request':
       return name;
     case 'jsonpath-response':
@@ -159,12 +180,22 @@ function parseScalarOperand(operand: unknown): { value: string; valueType: Value
   return null;
 }
 
-/** Converts a list-op operand array into string values; null if any element is non-scalar. */
+/**
+ * Converts a list-op (`in`/`ipmatch`) operand array into string values; null
+ * if any element isn't already a string.
+ *
+ * Numbers/bools are deliberately rejected rather than stringified: the
+ * builder's list editor only ever produces string items, and stringifying a
+ * numeric/bool item on parse would round-trip `["$.user.age","in",[30,40]]`
+ * into `["30","40"]`, which breaks native JSONPath equality (age `30` would
+ * never match the string `"30"` again). Minimum-fidelity fix: such lists stay
+ * unrepresentable in the builder (-> raw-JSON mode) rather than being
+ * silently mangled; typed in-list authoring is a deferred follow-up.
+ */
 function toListValues(arr: unknown[]): string[] | null {
   const out: string[] = [];
   for (const el of arr) {
     if (typeof el === 'string') out.push(el);
-    else if (typeof el === 'number' || typeof el === 'boolean') out.push(String(el));
     else return null;
   }
   return out;
@@ -196,9 +227,20 @@ function parseRule(arr: unknown[]): ConditionRule | null {
     negate = true;
     idx++;
   }
-  const op = arr[idx];
-  if (typeof op !== 'string') return null;
+  const opRaw = arr[idx];
+  if (typeof opRaw !== 'string') return null;
   idx++;
+  // `!=` is the Rust engine's alias for `~=` (identical semantics) but isn't
+  // offered in the builder's operator dropdown -- normalize it at parse time
+  // so the select doesn't silently display `==` while `~=`/`!=` executes.
+  // This is a byte-level spelling change on round-trip, accepted per the
+  // controller ruling (finding 3a).
+  const op = opRaw === '!=' ? '~=' : opRaw;
+  // Any operator outside the builder's dialect (ALL_OPS) makes the rule
+  // unparseable -> the caller falls back to raw-JSON mode instead of
+  // rendering a dropdown that doesn't actually contain the op in play
+  // (finding 3b).
+  if (!ALL_OPS.includes(op)) return null;
   const remaining = arr.slice(idx);
   const { subject, name } = parseSubject(subjectRaw);
 
@@ -264,6 +306,16 @@ function parseNode(v: unknown): ConditionNode | null {
       const child = parseNode(rest[0]);
       if (child === null) return null;
       if (child.kind === 'rule') {
+        return { kind: 'group', logic: 'AND', negate: true, children: [child] };
+      }
+      // Child is a group. If it's already negated, flattening (`{...child,
+      // negate: true}` is a no-op negate: true -> negate: true) would
+      // silently drop this NOT and its child's NOT collapses into a single
+      // negation -- inverting the predicate on round-trip (double negation
+      // is identity, not negation). Wrap instead so both NOTs survive.
+      // A non-negated child group still flattens as before: NOT of a plain
+      // AND/OR group is exactly that group with negate flipped on.
+      if (child.negate) {
         return { kind: 'group', logic: 'AND', negate: true, children: [child] };
       }
       return { ...child, negate: true };

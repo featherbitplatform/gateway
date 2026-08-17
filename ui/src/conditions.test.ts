@@ -106,4 +106,30 @@ describe('conditions serialization', () => {
     expect(opsFor('jsonpath-request')).toContain('is_null');
     expect(opsFor('var')).toContain('ipmatch');
   });
+
+  it('round-trips double negation without collapsing to a single negation', () => {
+    // ["NOT",["NOT",rule]] is the identity, not a negation -- parseNode must
+    // not flatten a NOT whose child is already a negated group (finding 1).
+    const expr = [['NOT', ['NOT', ['http_authorization', 'present']]]];
+    const model = fromExpr(expr);
+    expect(model).not.toBeNull();
+    expect(toExpr(model!)).toEqual(expr);
+  });
+
+  it('returns null for in-lists with non-string items (numeric/bool operands)', () => {
+    // Stringifying a numeric operand on round-trip would break native
+    // JSONPath equality (age 30 would never match "30" again) -- the parser
+    // returns null so raw mode preserves the original instead (finding 2).
+    expect(fromExpr([['$.user.age', 'in', [30, 40]]])).toBeNull();
+  });
+
+  it('normalizes the != alias to ~= at parse time', () => {
+    const model = fromExpr([['http_authorization', '!=', 'foo']]);
+    expect(model).not.toBeNull();
+    expect(toExpr(model!)).toEqual([['http_authorization', '~=', 'foo']]);
+  });
+
+  it('returns null for operators outside the builder dialect', () => {
+    expect(fromExpr([['http_authorization', 'bogus_op', 'foo']])).toBeNull();
+  });
 });

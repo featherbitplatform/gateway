@@ -40,7 +40,8 @@ import {
   toExpr,
   toVarsList,
 } from '../conditions';
-import { AddButton, RadioGroup, RemoveButton } from './SchemaForm';
+import { AddButton, RadioGroup, RemoveButton, type VarContext } from './SchemaForm';
+import { VarInput } from './VarInput';
 
 /** Mirrors SchemaForm's `inputStyle` (not exported there — see its fast-refresh lint note). */
 const inputStyle: React.CSSProperties = {
@@ -60,6 +61,14 @@ interface ConditionBuilderProps {
   value: unknown;
   shape: 'expr' | 'or-of-exprs';
   onChange: (v: unknown) => void;
+  /**
+   * Live suggestions for the "Context var" rule row's name field, threaded
+   * through from SchemaForm exactly like every other templated field (see
+   * {@link VarContext}). When omitted (e.g. PluginConfigPanel, which has no
+   * node selected to derive suggestions from), that field falls back to a
+   * plain input with no autocomplete popover.
+   */
+  varContext?: VarContext;
 }
 
 /** Subject-kind options for the rule row's subject select, with a per-kind name placeholder. */
@@ -207,11 +216,13 @@ function RuleRow({
   path,
   onRemove,
   onUpdate,
+  varContext,
 }: {
   rule: ConditionRule;
   path: number[];
   onRemove: (path: number[]) => void;
   onUpdate: (path: number[], fn: (node: ConditionNode) => ConditionNode) => void;
+  varContext?: VarContext;
 }) {
   const patch = (partial: Partial<ConditionRule>) =>
     onUpdate(path, (node) => ({ ...(node as ConditionRule), ...partial }));
@@ -255,14 +266,27 @@ function RuleRow({
           </option>
         ))}
       </select>
-      <input
-        type="text"
-        aria-label="Condition name"
-        value={rule.name}
-        placeholder={subjectMeta?.placeholder}
-        onChange={(e) => patch({ name: e.target.value })}
-        style={{ ...inputStyle, width: 140 }}
-      />
+      {rule.subject === 'var' && varContext ? (
+        <VarInput
+          value={rule.name}
+          onChange={(v) => patch({ name: v })}
+          placeholder={subjectMeta?.placeholder}
+          style={{ ...inputStyle, width: 140 }}
+          templateMode="full"
+          legacyDollar
+          ariaLabel="Condition name"
+          {...varContext}
+        />
+      ) : (
+        <input
+          type="text"
+          aria-label="Condition name"
+          value={rule.name}
+          placeholder={subjectMeta?.placeholder}
+          onChange={(e) => patch({ name: e.target.value })}
+          style={{ ...inputStyle, width: 140 }}
+        />
+      )}
       <button
         onClick={() => patch({ negate: !rule.negate })}
         aria-label="Negate rule"
@@ -325,6 +349,7 @@ function GroupCard({
   onAddGroup,
   onRemove,
   onUpdate,
+  varContext,
 }: {
   group: ConditionGroup;
   path: number[];
@@ -335,6 +360,7 @@ function GroupCard({
   onAddGroup: (path: number[]) => void;
   onRemove: (path: number[]) => void;
   onUpdate: (path: number[], fn: (node: ConditionNode) => ConditionNode) => void;
+  varContext?: VarContext;
 }) {
   const isRoot = depth === 0;
   // Root (both shapes) and, for or-of-exprs, its direct "condition set" children
@@ -415,9 +441,17 @@ function GroupCard({
               onAddGroup={onAddGroup}
               onRemove={onRemove}
               onUpdate={onUpdate}
+              varContext={varContext}
             />
           ) : (
-            <RuleRow key={i} rule={child} path={childPath} onRemove={onRemove} onUpdate={onUpdate} />
+            <RuleRow
+              key={i}
+              rule={child}
+              path={childPath}
+              onRemove={onRemove}
+              onUpdate={onUpdate}
+              varContext={varContext}
+            />
           );
         })}
       </div>
@@ -448,7 +482,7 @@ function GroupCard({
  * inspector switching to a different node, since SchemaForm's fields are not
  * remounted per node).
  */
-export function ConditionBuilder({ value, shape, onChange }: ConditionBuilderProps) {
+export function ConditionBuilder({ value, shape, onChange, varContext }: ConditionBuilderProps) {
   const parseModel = (v: unknown): ConditionGroup | null =>
     shape === 'or-of-exprs' ? fromVarsList(v) : fromExpr(v);
   const emptyModel = (): ConditionGroup => (shape === 'or-of-exprs' ? emptyVarsList() : emptyExpr());
@@ -563,6 +597,7 @@ export function ConditionBuilder({ value, shape, onChange }: ConditionBuilderPro
           onAddGroup={(path) => emit(addChildAt(model, path, blankGroup()))}
           onRemove={(path) => emit(removeAt(model, path))}
           onUpdate={(path, fn) => emit(updateAt(model, path, fn))}
+          varContext={varContext}
         />
       ) : (
         <div>
