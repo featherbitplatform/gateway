@@ -193,16 +193,27 @@ enum Node {
 }
 
 enum Op {
-    Eq(String),
-    Ne(String),
+    Eq(serde_json::Value),
+    Ne(serde_json::Value),
     Gt(f64),
     Ge(f64),
     Lt(f64),
     Le(f64),
     Regex(Regex),
-    In(Vec<String>),
-    Has(String),
+    In(Vec<serde_json::Value>),
+    Has(serde_json::Value),
     IpMatch(Vec<IpNet>),
+}
+
+/// Stringifies a scalar config value the way the legacy parser did
+/// (String as-is, Number/Bool via to_string). None for null/array/object.
+fn scalar_str(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
 }
 
 impl Expr {
@@ -270,13 +281,10 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         .get(op_idx + 1)
         .ok_or_else(|| format!("rule for '{}' is missing a value", var))?;
 
-    let scalar = || -> Result<String, String> {
-        match value {
-            serde_json::Value::String(s) => Ok(s.clone()),
-            serde_json::Value::Number(n) => Ok(n.to_string()),
-            serde_json::Value::Bool(b) => Ok(b.to_string()),
-            _ => Err(format!("rule for '{}' needs a scalar value", var)),
-        }
+    let scalar = || -> Result<serde_json::Value, String> {
+        scalar_str(value)
+            .map(|_| value.clone())
+            .ok_or_else(|| format!("rule for '{}' needs a scalar value", var))
     };
     let number = || -> Result<f64, String> {
         value
@@ -306,13 +314,24 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         "<" => Op::Lt(number()?),
         "<=" => Op::Le(number()?),
         "~~" => Op::Regex(
-            Regex::new(&scalar()?).map_err(|e| format!("invalid regex for '{}': {}", var, e))?,
-        ),
-        "~*" => Op::Regex(
-            Regex::new(&format!("(?i){}", scalar()?))
+            Regex::new(&scalar_str(value).ok_or_else(|| format!("rule for '{}' needs a scalar value", var))?)
                 .map_err(|e| format!("invalid regex for '{}': {}", var, e))?,
         ),
-        "in" => Op::In(string_list()?),
+        "~*" => Op::Regex(
+            Regex::new(&format!("(?i){}", scalar_str(value).ok_or_else(|| format!("rule for '{}' needs a scalar value", var))?))
+                .map_err(|e| format!("invalid regex for '{}': {}", var, e))?,
+        ),
+        "in" => {
+            let items = value
+                .as_array()
+                .ok_or_else(|| format!("rule for '{}' (in) needs an array value", var))?;
+            for item in items {
+                if scalar_str(item).is_none() {
+                    return Err(format!("rule for '{}': array items must be scalars", var));
+                }
+            }
+            Op::In(items.clone())
+        }
         "has" => Op::Has(scalar()?),
         "ipmatch" => {
             let nets = string_list()?
@@ -359,15 +378,18 @@ fn eval_node(node: &Node, ctx: &Context) -> bool {
 fn eval_op(op: &Op, value: Option<&str>) -> bool {
     let v = value.unwrap_or("");
     match op {
-        Op::Eq(expected) => v == expected,
-        Op::Ne(expected) => v != expected,
+        Op::Eq(expected) => scalar_str(expected).as_deref() == Some(v),
+        Op::Ne(expected) => scalar_str(expected).as_deref() != Some(v),
         Op::Gt(n) => v.parse::<f64>().is_ok_and(|x| x > *n),
         Op::Ge(n) => v.parse::<f64>().is_ok_and(|x| x >= *n),
         Op::Lt(n) => v.parse::<f64>().is_ok_and(|x| x < *n),
         Op::Le(n) => v.parse::<f64>().is_ok_and(|x| x <= *n),
         Op::Regex(re) => re.is_match(v),
-        Op::In(list) => list.iter().any(|item| item == v),
-        Op::Has(needle) => v.split(',').map(str::trim).any(|part| part == needle),
+        Op::In(list) => list.iter().any(|item| scalar_str(item).as_deref() == Some(v)),
+        Op::Has(needle) => {
+            let needle = scalar_str(needle).unwrap_or_default();
+            v.split(',').map(str::trim).any(|part| part == needle)
+        }
         Op::IpMatch(nets) => value
             .and_then(|v| v.parse::<IpAddr>().ok())
             .is_some_and(|ip| nets.iter().any(|net| net.contains(&ip))),
