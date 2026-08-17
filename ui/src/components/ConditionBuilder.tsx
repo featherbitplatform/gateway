@@ -225,7 +225,15 @@ function RuleRow({
 
   const handleSubjectChange = (subject: SubjectKind) => {
     const validOps = opsFor(subject);
-    patch({ subject, op: validOps.includes(rule.op) ? rule.op : '==' });
+    const stillJsonPath = subject === 'jsonpath-request' || subject === 'jsonpath-response';
+    patch({
+      subject,
+      op: validOps.includes(rule.op) ? rule.op : '==',
+      // valueType only has a visible control for jsonpath-* subjects; reset it so a
+      // stale 'number'/'boolean' doesn't silently coerce a flat-subject value with
+      // no control left to fix it (e.g. ["http_foo", "==", 42] with no way to retype it).
+      ...(stillJsonPath ? {} : { valueType: 'string' as const }),
+    });
   };
 
   return (
@@ -331,7 +339,10 @@ function GroupCard({
   const fixedLogic = shape === 'or-of-exprs' && depth <= 1;
   const showLogicToggle = !fixedLogic && group.children.length > 0;
   const showConditionSetLabel = shape === 'or-of-exprs' && depth === 1;
-  const hideNot = isRoot;
+  // NOT mirrors fixedLogic: toVarsList reads only `.children` at these two levels
+  // (root and its direct "condition set" children), so a negate toggle there would
+  // be a dead control — active styling with zero effect on the serialized value.
+  const hideNot = isRoot || fixedLogic;
 
   return (
     <div
