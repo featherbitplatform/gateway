@@ -18,7 +18,7 @@ At least one of `abort` / `delay` is required. Condition expressions and shapes 
 | `abort.body` | string | empty body | Response body; supports `$var` interpolation (e.g. `$uri`, `$arg_name`). |
 | `abort.headers` | map `{name: value}` or array `[{name, value}]` | — | Response headers; string values support `$var` interpolation. Names are lowercased. |
 | `abort.percentage` | integer 0–100 | always | Chance the abort triggers. `0` never triggers, `100` always does. |
-| `abort.vars` | array | always | Condition expressions in triple-array form, **OR-ed across items, AND-ed within each** (e.g. `[[["arg_debug", "==", "1"]]]`). A flat list of rules (`[["arg_debug", "==", "1"]]`) is accepted as one AND-ed expression. |
+| `abort.vars` | array | always | [Condition expressions](../conditions.md) in triple-array form, **OR-ed across items, AND-ed within each** (e.g. `[[["arg_debug", "==", "1"]]]`). A flat list of rules (`[["arg_debug", "==", "1"]]`) is accepted as one AND-ed expression. |
 | `delay` | object | — | Injected latency (see below). |
 | `delay.duration` | number (seconds, may be fractional) | **required** (within `delay`) | Sleep applied before the request continues. |
 | `delay.percentage` / `delay.vars` | — | always | Same gating as for `abort`, evaluated independently. |
@@ -71,3 +71,4 @@ Routing `abort` through an `error-handler` instead will *replace* the injected b
 
 - Abort exits through the dedicated `abort` output port with the response already prepared, rather than ending the request directly (graph-wiring mechanics; the injected response reaches the client when wired as above).
 - `vars` additionally accepts the flat single-expression shape as a convenience.
+- `vars` supports the full [condition expression](../conditions.md) dialect — JSONPath body subjects, `NOT` groups, `present`/`absent`/`is_null`/`contains`, and all other operators — not just the operators shown in the example above.
