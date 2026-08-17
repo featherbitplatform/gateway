@@ -305,6 +305,9 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
             })
             .collect()
     };
+    let pattern = || -> Result<String, String> {
+        scalar_str(value).ok_or_else(|| format!("rule for '{}' needs a scalar value", var))
+    };
 
     let op = match op_str {
         "==" => Op::Eq(scalar()?),
@@ -314,11 +317,10 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         "<" => Op::Lt(number()?),
         "<=" => Op::Le(number()?),
         "~~" => Op::Regex(
-            Regex::new(&scalar_str(value).ok_or_else(|| format!("rule for '{}' needs a scalar value", var))?)
-                .map_err(|e| format!("invalid regex for '{}': {}", var, e))?,
+            Regex::new(&pattern()?).map_err(|e| format!("invalid regex for '{}': {}", var, e))?,
         ),
         "~*" => Op::Regex(
-            Regex::new(&format!("(?i){}", scalar_str(value).ok_or_else(|| format!("rule for '{}' needs a scalar value", var))?))
+            Regex::new(&format!("(?i){}", pattern()?))
                 .map_err(|e| format!("invalid regex for '{}': {}", var, e))?,
         ),
         "in" => {
@@ -385,7 +387,9 @@ fn eval_op(op: &Op, value: Option<&str>) -> bool {
         Op::Lt(n) => v.parse::<f64>().is_ok_and(|x| x < *n),
         Op::Le(n) => v.parse::<f64>().is_ok_and(|x| x <= *n),
         Op::Regex(re) => re.is_match(v),
-        Op::In(list) => list.iter().any(|item| scalar_str(item).as_deref() == Some(v)),
+        Op::In(list) => list
+            .iter()
+            .any(|item| scalar_str(item).as_deref() == Some(v)),
         Op::Has(needle) => {
             let needle = scalar_str(needle).unwrap_or_default();
             v.split(',').map(str::trim).any(|part| part == needle)
@@ -652,6 +656,30 @@ mod tests {
         for case in &bad {
             assert!(Expr::parse(case).is_err(), "should fail to parse: {case}");
         }
+    }
+
+    #[test]
+    fn test_expr_in_accepts_bool_items() {
+        // widened on purpose: `in` items may be any scalar, including bools;
+        // flat vars compare against their stringified form.
+        let e = Expr::parse(&serde_json::json!([["arg_flag", "in", [true]]]))
+            .expect("should parse bool in list");
+        let mut ctx = test_ctx();
+        ctx.request
+            .query_params
+            .insert("flag".to_string(), vec!["true".to_string()]);
+        assert!(e.eval(&ctx), "flag=true should match in [true]");
+
+        ctx.request
+            .query_params
+            .insert("flag".to_string(), vec!["false".to_string()]);
+        assert!(!e.eval(&ctx), "flag=false should not match in [true]");
+
+        // Also verify non-scalar items still fail to parse
+        assert!(
+            Expr::parse(&serde_json::json!([["arg_x", "in", [[1]]]])).is_err(),
+            "array items in in-list should fail"
+        );
     }
 
     #[test]
