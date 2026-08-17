@@ -18,14 +18,17 @@
 //! (var array contains value), `ipmatch` (value is a list of IPs/CIDRs).
 
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::net::IpAddr;
 
 use ipnet::IpNet;
 use regex::Regex;
 
 use crate::context::Context;
+use crate::vars::jsonpath::{BodyTarget, JsonSubject};
 
 pub mod catalog;
+pub mod jsonpath;
 pub mod template;
 
 /// Resolves a variable name against the context.
@@ -189,7 +192,18 @@ pub struct Expr {
 enum Node {
     And(Vec<Node>),
     Or(Vec<Node>),
-    Rule { var: String, negate: bool, op: Op },
+    Rule {
+        subject: Subject,
+        negate: bool,
+        op: Op,
+    },
+}
+
+/// What a rule's condition is evaluated against: a flat named var, or a
+/// JSONPath query over a request/response body.
+enum Subject {
+    Var(String),
+    Json(JsonSubject),
 }
 
 enum Op {
@@ -236,9 +250,40 @@ impl Expr {
 
     /// Evaluates the expression against the context. Rules referencing absent
     /// variables evaluate as if the variable were the empty string, except
-    /// `ipmatch`, which is false for an absent/unparsable address.
+    /// `ipmatch`, which is false for an absent/unparsable address. JSONPath
+    /// subjects match zero nodes (rule is false) when the body is empty or
+    /// not valid JSON.
     pub fn eval(&self, ctx: &Context) -> bool {
-        eval_node(&self.root, ctx)
+        let state = EvalState::new(ctx);
+        eval_node(&self.root, &state)
+    }
+}
+
+/// Per-evaluation state: the context plus lazily-parsed JSON bodies, so a
+/// multi-rule expression parses each body at most once per eval.
+struct EvalState<'a> {
+    ctx: &'a Context,
+    request_json: OnceCell<Option<serde_json::Value>>,
+    response_json: OnceCell<Option<serde_json::Value>>,
+}
+
+impl<'a> EvalState<'a> {
+    fn new(ctx: &'a Context) -> Self {
+        Self {
+            ctx,
+            request_json: OnceCell::new(),
+            response_json: OnceCell::new(),
+        }
+    }
+
+    /// The parsed JSON body, or None when empty/not valid JSON.
+    fn body_json(&self, target: &BodyTarget) -> Option<&serde_json::Value> {
+        let (cell, bytes) = match target {
+            BodyTarget::Request => (&self.request_json, &self.ctx.request.body),
+            BodyTarget::Response => (&self.response_json, &self.ctx.response.body),
+        };
+        cell.get_or_init(|| serde_json::from_slice(bytes).ok())
+            .as_ref()
     }
 }
 
@@ -268,6 +313,10 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         .as_str()
         .ok_or("rule variable must be a string")?
         .to_string();
+    let subject = match jsonpath::parse_json_subject(&var) {
+        None => Subject::Var(var.clone()),
+        Some(compiled) => Subject::Json(compiled?),
+    };
     let (negate, op_idx) = if arr.get(1).and_then(|v| v.as_str()) == Some("!") {
         (true, 2)
     } else {
@@ -358,16 +407,32 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         }
     };
 
-    Ok(Node::Rule { var, negate, op })
+    Ok(Node::Rule {
+        subject,
+        negate,
+        op,
+    })
 }
 
-fn eval_node(node: &Node, ctx: &Context) -> bool {
+fn eval_node(node: &Node, state: &EvalState) -> bool {
     match node {
-        Node::And(children) => children.iter().all(|c| eval_node(c, ctx)),
-        Node::Or(children) => children.iter().any(|c| eval_node(c, ctx)),
-        Node::Rule { var, negate, op } => {
-            let value = resolve(ctx, var);
-            let result = eval_op(op, value.as_deref());
+        Node::And(children) => children.iter().all(|c| eval_node(c, state)),
+        Node::Or(children) => children.iter().any(|c| eval_node(c, state)),
+        Node::Rule {
+            subject,
+            negate,
+            op,
+        } => {
+            let result = match subject {
+                Subject::Var(name) => eval_op(op, resolve(state.ctx, name).as_deref()),
+                Subject::Json(js) => {
+                    let nodes: Vec<&serde_json::Value> = match state.body_json(&js.target) {
+                        Some(doc) => js.path.query(doc).all(),
+                        None => Vec::new(),
+                    };
+                    eval_op_json(op, &nodes)
+                }
+            };
             if *negate {
                 !result
             } else {
@@ -397,6 +462,43 @@ fn eval_op(op: &Op, value: Option<&str>) -> bool {
         Op::IpMatch(nets) => value
             .and_then(|v| v.parse::<IpAddr>().ok())
             .is_some_and(|ip| nets.iter().any(|net| net.contains(&ip))),
+    }
+}
+
+/// ANY-match: the rule holds if at least one matched node passes.
+fn eval_op_json(op: &Op, nodes: &[&serde_json::Value]) -> bool {
+    nodes.iter().any(|n| eval_op_json_node(op, n))
+}
+
+fn eval_op_json_node(op: &Op, node: &serde_json::Value) -> bool {
+    match op {
+        Op::Eq(expected) => json_scalar_eq(node, expected),
+        Op::Ne(expected) => !json_scalar_eq(node, expected),
+        Op::Gt(n) => node.as_f64().is_some_and(|x| x > *n),
+        Op::Ge(n) => node.as_f64().is_some_and(|x| x >= *n),
+        Op::Lt(n) => node.as_f64().is_some_and(|x| x < *n),
+        Op::Le(n) => node.as_f64().is_some_and(|x| x <= *n),
+        Op::Regex(re) => node.as_str().is_some_and(|s| re.is_match(s)),
+        Op::In(list) => list.iter().any(|e| json_scalar_eq(node, e)),
+        Op::Has(v) => node
+            .as_array()
+            .is_some_and(|arr| arr.iter().any(|e| json_scalar_eq(e, v))),
+        Op::IpMatch(nets) => node
+            .as_str()
+            .and_then(|s| s.parse::<IpAddr>().ok())
+            .is_some_and(|ip| nets.iter().any(|net| net.contains(&ip))),
+    }
+}
+
+/// Native scalar equality: string↔string, number↔number, bool↔bool.
+/// null, arrays, and objects never equal a scalar config value.
+fn json_scalar_eq(node: &serde_json::Value, expected: &serde_json::Value) -> bool {
+    use serde_json::Value as V;
+    match (node, expected) {
+        (V::String(a), V::String(b)) => a == b,
+        (V::Number(a), V::Number(b)) => a.as_f64() == b.as_f64(),
+        (V::Bool(a), V::Bool(b)) => a == b,
+        _ => false,
     }
 }
 
@@ -716,6 +818,77 @@ mod tests {
 
         ctx.request.body = bytes::Bytes::from_static(&[0xff, 0x61]);
         assert_eq!(resolve(&ctx, "request_body").as_deref(), Some("\u{fffd}a"));
+    }
+
+    fn json_body_ctx(body: &str) -> Context {
+        let mut ctx = test_ctx();
+        ctx.request.body = Bytes::from(body.to_string());
+        ctx
+    }
+
+    #[test]
+    fn test_expr_jsonpath_subjects() {
+        let ctx = json_body_ctx(
+            r#"{"user":{"name":"jack","age":30,"tags":["a","b"],"admin":true},"items":[{"price":5},{"price":0}]}"#,
+        );
+
+        let truthy = [
+            serde_json::json!([["$.user.name", "==", "jack"]]),
+            serde_json::json!([["request_body:$.user.name", "==", "jack"]]),
+            serde_json::json!([["$.user.age", ">", 18]]),
+            serde_json::json!([["$.user.admin", "==", true]]),
+            serde_json::json!([["$.user.name", "~~", "^ja"]]),
+            serde_json::json!([["$.user.age", "in", [30, 40]]]),
+            serde_json::json!([["$.user.tags", "has", "a"]]),
+            // ANY-match: one item has price > 1
+            serde_json::json!([["$.items[*].price", ">", 1]]),
+            // ALL via negation: NOT(any price < 0)
+            serde_json::json!([["$.items[*].price", "!", "<", 0]]),
+        ];
+        for case in &truthy {
+            assert!(
+                Expr::parse(case).unwrap().eval(&ctx),
+                "should be true: {case}"
+            );
+        }
+
+        let falsy = [
+            // number node never equals a string scalar
+            serde_json::json!([["$.user.age", "==", "30"]]),
+            serde_json::json!([["$.user.name", "==", "jill"]]),
+            // absent path matches nothing -> comparison false
+            serde_json::json!([["$.missing", "==", "x"]]),
+            // object node never equals a scalar
+            serde_json::json!([["$.user", "==", "jack"]]),
+        ];
+        for case in &falsy {
+            assert!(
+                !Expr::parse(case).unwrap().eval(&ctx),
+                "should be false: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_expr_jsonpath_response_body_and_non_json() {
+        let mut ctx = test_ctx();
+        ctx.response.body = Bytes::from(r#"{"ok":true}"#.to_string());
+        assert!(
+            Expr::parse(&serde_json::json!([["response_body:$.ok", "==", true]]))
+                .unwrap()
+                .eval(&ctx)
+        );
+
+        // non-JSON request body: every request-body path matches zero nodes
+        let ctx = json_body_ctx("plain text");
+        assert!(!Expr::parse(&serde_json::json!([["$.a", "==", "x"]]))
+            .unwrap()
+            .eval(&ctx));
+    }
+
+    #[test]
+    fn test_expr_jsonpath_parse_errors() {
+        assert!(Expr::parse(&serde_json::json!([["$.[", "==", "x"]])).is_err());
     }
 
     #[test]
