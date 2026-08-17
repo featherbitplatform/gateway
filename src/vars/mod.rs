@@ -189,10 +189,12 @@ pub fn interpolate(ctx: &Context, template: &str) -> String {
 ///
 /// Parsed once at config load ([`Expr::parse`]); regexes are compiled at
 /// parse time so evaluation is allocation-light.
+#[derive(Debug)]
 pub struct Expr {
     root: Node,
 }
 
+#[derive(Debug)]
 enum Node {
     And(Vec<Node>),
     Or(Vec<Node>),
@@ -206,11 +208,13 @@ enum Node {
 
 /// What a rule's condition is evaluated against: a flat named var, or a
 /// JSONPath query over a request/response body.
+#[derive(Debug)]
 enum Subject {
     Var(String),
     Json(JsonSubject),
 }
 
+#[derive(Debug)]
 enum Op {
     Eq(serde_json::Value),
     Ne(serde_json::Value),
