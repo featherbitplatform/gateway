@@ -12,8 +12,12 @@ import type { Availability, Suggestion } from '../varSuggestions';
 import { VarInput } from './VarInput';
 import { ConditionBuilder } from './ConditionBuilder';
 
-/** Trace-derived `$var`/`{{path}}` suggestions threaded down to every templated field. */
-interface VarContext {
+/**
+ * Trace-derived `$var`/`{{path}}` suggestions threaded down to every templated
+ * field. Exported so {@link ConditionBuilder} can accept and forward the same
+ * shape to its own `VarInput` (the "Context var" rule row's name field).
+ */
+export interface VarContext {
   suggestions: Suggestion[];
   availability: Availability;
   onOpenLegend: () => void;
@@ -547,6 +551,7 @@ export function SchemaForm({ schema, value, onChange, varContext }: SchemaFormPr
             value={current}
             shape={field.shape ?? 'expr'}
             onChange={(v) => set(field.key, v)}
+            varContext={varContext}
           />
         );
 
