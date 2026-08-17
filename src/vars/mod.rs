@@ -11,13 +11,15 @@
 //!   - ["http_user_agent", "~~", "Mozilla.+"]
 //! ```
 //!
-//! Rules in a top-level list are ANDed. A rule is `[var, op, value]` or the
-//! negated `[var, "!", op, value]`; nested logic uses `["AND", rule...]` /
-//! `["OR", rule...]`. Supported operators: `==`, `~=`, `>`, `>=`, `<`, `<=`,
-//! `~~` (regex), `~*` (case-insensitive regex), `in` (value array), `has`
-//! (var array contains value), `ipmatch` (value is a list of IPs/CIDRs),
-//! `present`, `absent`, `is_null` (unary, no value), `contains` (substring
-//! or array-element match).
+//! Rules in a top-level list are ANDed. A rule is `[subject, op, value]`,
+//! the negated `[subject, "!", op, value]`, or unary `[subject, "present"|"absent"|"is_null"]`.
+//! Nested logic uses `["AND", rule...]`, `["OR", rule...]`, and `["NOT", rule-or-group]`
+//! (NOT is a featherbit extension over APISIX's dialect). Subjects are var
+//! names or JSONPath queries over JSON bodies: `$.user.name` (request body),
+//! `request_body:$...`, `response_body:$...` — multi-node matches use
+//! ANY-semantics. Operators: `==`, `~=`, `>`, `>=`, `<`, `<=`, `~~` (regex),
+//! `~*` (case-insensitive regex), `in`, `has`, `ipmatch`, `present`,
+//! `absent`, `is_null` (JSONPath only), `contains`.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -194,6 +196,7 @@ pub struct Expr {
 enum Node {
     And(Vec<Node>),
     Or(Vec<Node>),
+    Not(Box<Node>),
     Rule {
         subject: Subject,
         negate: bool,
@@ -299,7 +302,7 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         return Err("empty rule".to_string());
     }
 
-    // Nested logic: ["AND"|"OR", rule...]
+    // Nested logic: ["AND"|"OR", rule...] or ["NOT", rule-or-group]
     if let Some(first) = arr[0].as_str() {
         if first.eq_ignore_ascii_case("and") || first.eq_ignore_ascii_case("or") {
             let children = arr[1..]
@@ -311,6 +314,12 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
             } else {
                 Node::Or(children)
             });
+        }
+        if first.eq_ignore_ascii_case("not") {
+            if arr.len() != 2 {
+                return Err("NOT takes exactly one rule or group".to_string());
+            }
+            return Ok(Node::Not(Box::new(parse_node(&arr[1])?)));
         }
     }
 
@@ -452,6 +461,7 @@ fn eval_node(node: &Node, state: &EvalState) -> bool {
     match node {
         Node::And(children) => children.iter().all(|c| eval_node(c, state)),
         Node::Or(children) => children.iter().any(|c| eval_node(c, state)),
+        Node::Not(child) => !eval_node(child, state),
         Node::Rule {
             subject,
             negate,
@@ -1043,5 +1053,56 @@ mod tests {
         for case in &cases {
             assert!(Expr::parse(case).is_err(), "should fail to parse: {case}");
         }
+    }
+
+    #[test]
+    fn test_expr_not_group() {
+        let mut ctx = json_body_ctx(r#"{"user":{"id":null}}"#);
+        ctx.request
+            .headers
+            .insert("authorization".to_string(), vec!["Bearer tok".to_string()]);
+
+        // NOT over a rule
+        assert!(!Expr::parse(&serde_json::json!([[
+            "NOT",
+            ["http_authorization", "present"]
+        ]]))
+        .unwrap()
+        .eval(&ctx));
+
+        // NOT over a group, nested logic (spec example shape)
+        let e = Expr::parse(&serde_json::json!([
+            ["http_authorization", "present"],
+            ["http_authorization", "contains", "Bearer"],
+            [
+                "OR",
+                ["$.user.email", "present"],
+                ["NOT", ["$.user.id", "is_null"]]
+            ]
+        ]))
+        .unwrap();
+        // email absent AND id is null -> OR arm: (false OR NOT(true)) = false
+        assert!(!e.eval(&ctx));
+
+        // nested NOT(NOT(x)) == x
+        assert!(Expr::parse(&serde_json::json!([[
+            "NOT",
+            ["NOT", ["http_authorization", "present"]]
+        ]]))
+        .unwrap()
+        .eval(&ctx));
+    }
+
+    #[test]
+    fn test_expr_not_parse_errors() {
+        // zero children
+        assert!(Expr::parse(&serde_json::json!([["NOT"]])).is_err());
+        // two children
+        assert!(Expr::parse(&serde_json::json!([[
+            "NOT",
+            ["http_a", "present"],
+            ["http_b", "present"]
+        ]]))
+        .is_err());
     }
 }
