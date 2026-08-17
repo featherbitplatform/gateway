@@ -8,7 +8,7 @@
  * Idioms reused from var-suggestions.spec.ts / templates.spec.ts: build a
  * throwaway policy + route via the admin API (`PUT` policy, `POST` route),
  * drive real HTTP traffic, then delete both. `validate.denied -> client.in`
- * is the same graph semantic as `key-auth.denied -> client.in`
+ * is the same graph semantic as `api-key.denied -> client.in`
  * (data-plane.spec.ts): the plugin sets `rejected_code` on the context and
  * exits its own `denied` port, so that edge is what carries the status to
  * the caller.
@@ -39,44 +39,51 @@ async function save(page: Page) {
   await page.getByRole('button', {name: 'Save Policy'}).click();
 }
 
+/**
+ * The seed policy payload: listener -> validate (request-validation,
+ * conditions) -> echo backend -> client. conditions: authorization present
+ * AND a Bearer scheme AND (an email OR a non-null id) -- mirrors
+ * request_validation.rs's own test_request_validation_conditions_accept
+ * fixture. A fresh object per call, since E2E-VC-06 mutates its own copy of
+ * the `conditions` array in the browser -- reusing one shared object here
+ * would risk aliasing bugs if a future edit mutated it in place.
+ */
+function seedPolicy() {
+  return {
+    name: POLICY,
+    nodes: [
+      {id: 'listener', type: 'listener', config: {}},
+      {
+        id: 'validate',
+        type: 'request-validation',
+        config: {
+          rejected_code: 401,
+          conditions: [
+            ['http_authorization', 'present'],
+            ['http_authorization', 'contains', 'Bearer'],
+            ['OR', ['$.user.email', 'present'], ['NOT', ['$.user.id', 'is_null']]],
+          ],
+        },
+      },
+      {id: 'echo-backend', type: 'upstream', config: {targets: [{host: '127.0.0.1', port: 3010}]}},
+      {id: 'client', type: 'client'},
+    ],
+    edges: [
+      {from: 'listener.out', to: 'validate.in'},
+      {from: 'validate.success', to: 'echo-backend.in'},
+      {from: 'validate.denied', to: 'client.in'},
+      {from: 'echo-backend.success', to: 'client.in'},
+    ],
+  };
+}
+
 test.describe('Validation conditions', () => {
   test.beforeAll(async () => {
     const api = await adminApi();
     await deleteRouteIfPresent(api, ROUTE);
     await api.delete(`/api/policies/${POLICY}`);
 
-    // listener -> validate (request-validation, conditions) -> echo backend -> client.
-    // conditions: authorization present AND a Bearer scheme AND (an email OR a
-    // non-null id) -- mirrors request_validation.rs's own
-    // test_request_validation_conditions_accept fixture.
-    const policyRes = await api.put(`/api/policies/${POLICY}`, {
-      data: {
-        name: POLICY,
-        nodes: [
-          {id: 'listener', type: 'listener', config: {}},
-          {
-            id: 'validate',
-            type: 'request-validation',
-            config: {
-              rejected_code: 401,
-              conditions: [
-                ['http_authorization', 'present'],
-                ['http_authorization', 'contains', 'Bearer'],
-                ['OR', ['$.user.email', 'present'], ['NOT', ['$.user.id', 'is_null']]],
-              ],
-            },
-          },
-          {id: 'echo-backend', type: 'upstream', config: {targets: [{host: '127.0.0.1', port: 3010}]}},
-          {id: 'client', type: 'client'},
-        ],
-        edges: [
-          {from: 'listener.out', to: 'validate.in'},
-          {from: 'validate.success', to: 'echo-backend.in'},
-          {from: 'validate.denied', to: 'client.in'},
-          {from: 'echo-backend.success', to: 'client.in'},
-        ],
-      },
-    });
+    const policyRes = await api.put(`/api/policies/${POLICY}`, {data: seedPolicy()});
     expect(policyRes.ok(), `policy save failed: ${policyRes.status()} ${await policyRes.text()}`).toBeTruthy();
 
     const routeRes = await api.post('/api/routes', {
@@ -84,6 +91,18 @@ test.describe('Validation conditions', () => {
     });
     expect(routeRes.ok(), `route save failed: ${routeRes.status()} ${await routeRes.text()}`).toBeTruthy();
 
+    await api.dispose();
+  });
+
+  // E2E-VC-06 mutates vc-policy's `contains` rule (Bearer -> Token) through the
+  // UI. Reset to the seed before every test -- as editor-roundtrip.spec.ts
+  // does for its own shared policy -- so the suite is order-independent and,
+  // critically, so a retried E2E-VC-06 (CI's `retries: 1`) doesn't re-enter
+  // with the builder already showing 'Token' and fail its own `toHaveValue('Bearer')`
+  // precondition with a misleading error.
+  test.beforeEach(async () => {
+    const api = await adminApi();
+    await api.put(`/api/policies/${POLICY}`, {data: seedPolicy()});
     await api.dispose();
   });
 

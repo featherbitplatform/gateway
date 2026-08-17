@@ -393,7 +393,7 @@ fixed `{"error":"validation_failed","message":"request conditions not
 satisfied"}` body), and the `ConditionBuilder` UI that edits it
 (`ui/src/components/ConditionBuilder.tsx`). A throwaway `vc-policy`/`vc-route`
 wires `listener → validate (request-validation) → echo backend → client`,
-with `validate.denied → client.in` — the same graph semantic as `key-auth`'s
+with `validate.denied → client.in` — the same graph semantic as `api-key`'s
 own dedicated outcome port (see "Data plane" above) — and a single
 `conditions` expression: authorization present AND a Bearer scheme AND
 (an email present OR a non-null id).
