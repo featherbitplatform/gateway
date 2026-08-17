@@ -237,7 +237,12 @@ function RuleRow({
   };
 
   return (
-    <div className="flex items-center flex-wrap" style={{ gap: 6 }}>
+    <div
+      className="flex items-center flex-wrap"
+      style={{ gap: 6 }}
+      data-testid="condition-node"
+      data-depth={path.length}
+    >
       <select
         aria-label="Condition subject"
         value={rule.subject}
@@ -352,6 +357,8 @@ function GroupCard({
         border: '1px solid var(--border-subtle)',
         background: 'var(--surface-sunken)',
       }}
+      data-testid="condition-node"
+      data-depth={depth}
     >
       <div className="flex items-center justify-between" style={{ marginBottom: 8, gap: 8 }}>
         <div className="flex items-center" style={{ gap: 8 }}>
