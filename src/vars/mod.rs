@@ -15,7 +15,9 @@
 //! negated `[var, "!", op, value]`; nested logic uses `["AND", rule...]` /
 //! `["OR", rule...]`. Supported operators: `==`, `~=`, `>`, `>=`, `<`, `<=`,
 //! `~~` (regex), `~*` (case-insensitive regex), `in` (value array), `has`
-//! (var array contains value), `ipmatch` (value is a list of IPs/CIDRs).
+//! (var array contains value), `ipmatch` (value is a list of IPs/CIDRs),
+//! `present`, `absent`, `is_null` (unary, no value), `contains` (substring
+//! or array-element match).
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -217,6 +219,10 @@ enum Op {
     In(Vec<serde_json::Value>),
     Has(serde_json::Value),
     IpMatch(Vec<IpNet>),
+    Present,
+    Absent,
+    IsNull,
+    Contains(serde_json::Value),
 }
 
 /// Stringifies a scalar config value the way the legacy parser did
@@ -326,6 +332,33 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         .get(op_idx)
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("rule for '{}' is missing an operator", var))?;
+
+    let is_unary = matches!(op_str, "present" | "absent" | "is_null");
+    if is_unary {
+        if arr.len() > op_idx + 1 {
+            return Err(format!("rule for '{}': '{}' takes no value", var, op_str));
+        }
+        let op = match op_str {
+            "present" => Op::Present,
+            "absent" => Op::Absent,
+            "is_null" => {
+                if matches!(subject, Subject::Var(_)) {
+                    return Err(format!(
+                        "rule for '{}': 'is_null' requires a JSONPath subject — headers and vars cannot be null (use 'absent')",
+                        var
+                    ));
+                }
+                Op::IsNull
+            }
+            _ => unreachable!(),
+        };
+        return Ok(Node::Rule {
+            subject,
+            negate,
+            op,
+        });
+    }
+
     let value = arr
         .get(op_idx + 1)
         .ok_or_else(|| format!("rule for '{}' is missing a value", var))?;
@@ -384,6 +417,7 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
             Op::In(items.clone())
         }
         "has" => Op::Has(scalar()?),
+        "contains" => Op::Contains(scalar()?),
         "ipmatch" => {
             let nets = string_list()?
                 .iter()
@@ -401,7 +435,7 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         }
         other => {
             return Err(format!(
-                "unknown operator '{}' — supported: ==, ~=, >, >=, <, <=, ~~, ~*, in, has, ipmatch",
+                "unknown operator '{}' — supported: ==, ~=, >, >=, <, <=, ~~, ~*, in, has, ipmatch, present, absent, is_null, contains",
                 other
             ));
         }
@@ -462,12 +496,25 @@ fn eval_op(op: &Op, value: Option<&str>) -> bool {
         Op::IpMatch(nets) => value
             .and_then(|v| v.parse::<IpAddr>().ok())
             .is_some_and(|ip| nets.iter().any(|net| net.contains(&ip))),
+        Op::Present => value.is_some(),
+        Op::Absent => value.is_none(),
+        Op::IsNull => false, // parse-time guarded; a flat var is never null
+        Op::Contains(needle) => {
+            value.is_some_and(|v| scalar_str(needle).is_some_and(|n| v.contains(&n)))
+        }
     }
 }
 
 /// ANY-match: the rule holds if at least one matched node passes.
+/// `Present`/`Absent`/`IsNull` are match-set operators, evaluated over the
+/// whole node set rather than per-node.
 fn eval_op_json(op: &Op, nodes: &[&serde_json::Value]) -> bool {
-    nodes.iter().any(|n| eval_op_json_node(op, n))
+    match op {
+        Op::Present => !nodes.is_empty(),
+        Op::Absent => nodes.is_empty(),
+        Op::IsNull => nodes.iter().any(|n| n.is_null()),
+        _ => nodes.iter().any(|n| eval_op_json_node(op, n)),
+    }
 }
 
 fn eval_op_json_node(op: &Op, node: &serde_json::Value) -> bool {
@@ -487,6 +534,12 @@ fn eval_op_json_node(op: &Op, node: &serde_json::Value) -> bool {
             .as_str()
             .and_then(|s| s.parse::<IpAddr>().ok())
             .is_some_and(|ip| nets.iter().any(|net| net.contains(&ip))),
+        Op::Contains(v) => match node {
+            serde_json::Value::String(s) => scalar_str(v).is_some_and(|needle| s.contains(&needle)),
+            serde_json::Value::Array(arr) => arr.iter().any(|e| json_scalar_eq(e, v)),
+            _ => false,
+        },
+        Op::Present | Op::Absent | Op::IsNull => unreachable!("handled in eval_op_json"),
     }
 }
 
@@ -902,5 +955,93 @@ mod tests {
             interpolate(&ctx, "h=$sent_http_x_id b=$request_body"),
             "h=42 b=B"
         );
+    }
+
+    #[test]
+    fn test_expr_present_absent() {
+        // ctx() has header x-api-version (adapt to the module's factory);
+        // build one with a known header + JSON body:
+        let mut ctx = json_body_ctx(r#"{"a": null, "b": 1}"#);
+        ctx.request
+            .headers
+            .insert("x-empty".to_string(), vec!["".to_string()]);
+
+        let truthy = [
+            serde_json::json!([["http_x_empty", "present"]]), // empty value still present
+            serde_json::json!([["http_x_missing", "absent"]]),
+            serde_json::json!([["http_x_missing", "!", "present"]]),
+            serde_json::json!([["$.a", "present"]]), // null node counts as present
+            serde_json::json!([["$.missing", "absent"]]),
+            serde_json::json!([["$.a", "is_null"]]),
+            serde_json::json!([["$.b", "!", "is_null"]]),
+        ];
+        for case in &truthy {
+            assert!(
+                Expr::parse(case).unwrap().eval(&ctx),
+                "should be true: {case}"
+            );
+        }
+
+        let falsy = [
+            serde_json::json!([["http_x_empty", "absent"]]),
+            serde_json::json!([["$.missing", "present"]]),
+            serde_json::json!([["$.missing", "is_null"]]), // absent is NOT null
+            serde_json::json!([["$.b", "is_null"]]),
+        ];
+        for case in &falsy {
+            assert!(
+                !Expr::parse(case).unwrap().eval(&ctx),
+                "should be false: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_expr_contains() {
+        let mut ctx = json_body_ctx(r#"{"tags":["a","b"],"nums":[1,2],"name":"hello world"}"#);
+        ctx.request.headers.insert(
+            "authorization".to_string(),
+            vec!["Bearer abc123".to_string()],
+        );
+
+        let truthy = [
+            serde_json::json!([["http_authorization", "contains", "Bearer"]]),
+            serde_json::json!([["$.name", "contains", "lo wo"]]),
+            serde_json::json!([["$.tags", "contains", "a"]]), // array element equality
+            serde_json::json!([["$.nums", "contains", 2]]),
+        ];
+        for case in &truthy {
+            assert!(
+                Expr::parse(case).unwrap().eval(&ctx),
+                "should be true: {case}"
+            );
+        }
+        let falsy = [
+            serde_json::json!([["http_authorization", "contains", "Basic"]]),
+            serde_json::json!([["http_x_missing", "contains", "x"]]), // absent -> false
+            serde_json::json!([["$.nums", "contains", "2"]]),         // "2" != 2 in arrays
+            serde_json::json!([["$.nums", "contains", 3]]),
+        ];
+        for case in &falsy {
+            assert!(
+                !Expr::parse(case).unwrap().eval(&ctx),
+                "should be false: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_expr_new_operator_parse_errors() {
+        let cases = [
+            // is_null on a flat var
+            serde_json::json!([["http_x", "is_null"]]),
+            // unary op given a value
+            serde_json::json!([["http_x", "present", "y"]]),
+            // binary op missing a value (already an error; pin it stays one)
+            serde_json::json!([["http_x", "contains"]]),
+        ];
+        for case in &cases {
+            assert!(Expr::parse(case).is_err(), "should fail to parse: {case}");
+        }
     }
 }
