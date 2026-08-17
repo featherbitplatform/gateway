@@ -25,7 +25,8 @@ export type FieldType =
   | 'textarea'
   | 'list'
   | 'objects'
-  | 'conditions';
+  | 'conditions'
+  | 'object';
 
 /**
  * A radio/select option whose stored value differs from its display label.
@@ -710,6 +711,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
         { key: 'scope', label: 'Scope', type: 'radio', options: ['once', 'global'], default: 'once' },
         { key: 'options', label: 'Options', type: 'select', options: [{ value: '', label: 'none' }, { value: 'i', label: 'i (case-insensitive)' }], default: '' },
       ] },
+    { key: 'vars', label: 'Conditions', type: 'conditions', shape: 'expr',
+      hint: 'gate — the rewrite applies only when the conditions hold' },
   ],
   gzip: [
     { key: 'types', label: 'Content types', type: 'list', addLabel: 'Type', item: { type: 'text', placeholder: 'text/html' }, hint: 'defaults to text/html; "*" (YAML) matches any' },
@@ -728,8 +731,21 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'always', label: 'Scope', type: 'switch', switchLabel: 'Apply to all responses, not just gateway exits', default: false },
   ],
   'fault-injection': [
-    { key: 'abort', label: 'Abort', type: 'textarea', rows: 6, placeholder: '{"http_status": 503, "body": "injected", "percentage": 10}', hint: 'JSON object: http_status (required), body, headers, percentage 0-100, vars', template: 'full', legacyDollar: true },
-    { key: 'delay', label: 'Delay', type: 'textarea', rows: 4, placeholder: '{"duration": 0.5, "percentage": 30}', hint: 'JSON object: duration seconds (required), percentage, vars' },
+    { key: 'abort', label: 'Abort', type: 'object', itemLabel: 'Abort rule',
+      fields: [
+        { key: 'http_status', label: 'HTTP status', type: 'number', default: 503 },
+        { key: 'body', label: 'Body', type: 'text', placeholder: 'injected fault', template: 'full', legacyDollar: true },
+        { key: 'percentage', label: 'Percentage', type: 'number', hint: '0-100; empty = always' },
+        { key: 'vars', label: 'Conditions', type: 'conditions', shape: 'or-of-exprs',
+          hint: 'condition sets are OR-ed; the abort only triggers when one matches (headers stay YAML-only)' },
+      ] },
+    { key: 'delay', label: 'Delay', type: 'object', itemLabel: 'Delay rule',
+      fields: [
+        { key: 'duration', label: 'Duration (s)', type: 'number', default: 0.5 },
+        { key: 'percentage', label: 'Percentage', type: 'number', hint: '0-100; empty = always' },
+        { key: 'vars', label: 'Conditions', type: 'conditions', shape: 'or-of-exprs',
+          hint: 'condition sets are OR-ed; the delay only applies when one matches' },
+      ] },
   ],
   workflow: [
     { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"case": [["uri", "~~", "^/admin"]], "actions": [["return", {"code": 403}]]}]', hint: 'JSON array; actions: ["return", {code}] or ["limit-count", {count, time_window, key, rejected_code}]', template: 'full', legacyDollar: true },

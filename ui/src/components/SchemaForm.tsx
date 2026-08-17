@@ -283,6 +283,9 @@ function Switch({
  *   represent); serializes to the triple-array condition dialect from
  *   `conditions.ts` (`field.shape` picks `'expr'` vs `'or-of-exprs'`), or to
  *   `undefined` when the root has no children (the field is optional).
+ * - `object` — optional single nested record; absent renders an Add button,
+ *   present renders sub-fields in a card and serializes as one object;
+ *   unknown keys in the object are preserved.
  *
  * Every field shows its `label` above the input and optional `hint` text below.
  *
@@ -546,6 +549,46 @@ export function SchemaForm({ schema, value, onChange, varContext }: SchemaFormPr
             onChange={(v) => set(field.key, v)}
           />
         );
+
+      case 'object': {
+        const obj = (current ?? undefined) as Record<string, unknown> | undefined;
+        if (obj === undefined) {
+          return (
+            <AddButton
+              label={field.itemLabel ?? field.label}
+              onClick={() => set(field.key, Object.fromEntries(
+                (field.fields ?? [])
+                  .filter((f) => f.default !== undefined)
+                  .map((f) => [f.key, f.default])
+              ))}
+            />
+          );
+        }
+        return (
+          <div
+            style={{
+              padding: 10,
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--border-subtle)',
+              background: 'var(--surface-sunken)',
+            }}
+          >
+            <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+              <span className="eyebrow">{field.itemLabel ?? field.label}</span>
+              <RemoveButton
+                label={`Remove ${field.itemLabel ?? field.label}`}
+                onClick={() => set(field.key, undefined)}
+              />
+            </div>
+            <SchemaForm
+              schema={field.fields ?? []}
+              value={obj}
+              onChange={(v) => set(field.key, v)}
+              varContext={varContext}
+            />
+          </div>
+        );
+      }
     }
   };
 
