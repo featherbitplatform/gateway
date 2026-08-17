@@ -384,6 +384,29 @@ time).
 | E2E-TPL-04 | `GET /api/env-vars` | `200`; names sorted; a canary env **name** set on the gateway's own launch env is present, but its **value** never appears in the body, and neither does a bare `=` |
 | E2E-TPL-05 | Trace a request carrying a long custom header (`x-a-very-long-custom-header-name-for-modal`), open the expanded `TemplateEditorModal` (`button[aria-label="Expand template editor"]`) from an `add_headers` **Value** field | The suggestion panel (`template-editor-suggestions`) renders the header's full `request.headers.<name>` path (exact-string match, no ellipsis truncation) and its live value, still visible after scrolling the panel; typing the path's prefix into the modal's own input (`template-editor-input`) filters to that row; Enter inserts the full `{{path}}`; **Apply** carries it into the inspector's field; reopening the modal via **Ctrl+Space**, editing the draft, then **Escape** discards the edit — the field is unchanged |
 
+## Validation conditions — `tests/validation-conditions.spec.ts`
+
+`request-validation`'s `conditions` config key (`src/vars/mod.rs`'s `Expr`
+triple-array dialect: rules ANDed at top level, nested `AND`/`OR`/`NOT`
+groups, JSONPath body subjects — failure rejects with `rejected_code` and a
+fixed `{"error":"validation_failed","message":"request conditions not
+satisfied"}` body), and the `ConditionBuilder` UI that edits it
+(`ui/src/components/ConditionBuilder.tsx`). A throwaway `vc-policy`/`vc-route`
+wires `listener → validate (request-validation) → echo backend → client`,
+with `validate.denied → client.in` — the same graph semantic as `key-auth`'s
+own dedicated outcome port (see "Data plane" above) — and a single
+`conditions` expression: authorization present AND a Bearer scheme AND
+(an email present OR a non-null id).
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-VC-01 | `POST /conditions/*` with `authorization: Bearer tok` and `{"user":{"email":"a@b.c"}}` | `200`; the echo backend confirms the request reached the upstream |
+| E2E-VC-02 | `POST /conditions/*` with no `authorization` header | `401`; body `{"error":"validation_failed","message":"request conditions not satisfied"}` |
+| E2E-VC-03 | `authorization: Basic xyz` | `401` — the `contains "Bearer"` rule fails |
+| E2E-VC-04 | Bearer auth, body `{"user":{"id":null}}` | `401` — email absent AND `id` null, so the `OR` arm is false |
+| E2E-VC-05 | Bearer auth, body `{"user":{"id":7}}` | `200` — `NOT is_null` holds |
+| E2E-VC-06 | Open `vc-policy`'s `validate` node; the builder shows 3 top-level entries (2 rules + 1 `OR` group, via `data-testid="condition-node"`/`data-depth`); change the `contains` rule's value from `Bearer` to `Token` and save | `authorization: Bearer tok` now `401`, `authorization: Token tok` (+ a passing body) `200` — the UI edit round-trips through the admin API and changes live traffic |
+
 ## Deliberately out of scope
 
 Covered by the Rust suite with real sockets, or unreachable from Playwright:
