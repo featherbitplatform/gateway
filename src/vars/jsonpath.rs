@@ -6,12 +6,14 @@
 use serde_json_path::JsonPath;
 
 /// Which body a JSONPath subject queries.
+#[derive(Debug)]
 pub enum BodyTarget {
     Request,
     Response,
 }
 
 /// A compiled JSONPath subject.
+#[derive(Debug)]
 pub struct JsonSubject {
     pub target: BodyTarget,
     pub path: JsonPath,
