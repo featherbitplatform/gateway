@@ -87,6 +87,13 @@ A rule's subject (the first array element) is either:
   zero nodes means for a given operator is exactly the three-state semantics
   below.
 
+> **Migration note:** subjects beginning with `$`, `request_body:`, or
+> `response_body:`, and rules whose subject string is literally `not` (matched
+> case-insensitively, same as the `AND`/`OR`/`NOT` group heads), are now
+> claimed by this extended dialect. A config that previously used one of these
+> strings as a flat context-var name will now fail policy compilation instead
+> of resolving that var.
+
 ## Operators
 
 All 15 operators, and how each behaves against a flat-var subject (a single
@@ -183,5 +190,10 @@ other:
 | [`traffic-split`](./plugins/traffic-split.md) | `rules[].match` | One expression per rule; first matching rule selects the weighted upstream set |
 
 The web UI's `ConditionBuilder` (a visual AND/OR/NOT tree of subject/op/value
-rows, with a raw-JSON fallback for shapes it can't yet render) is the schema
-form for every one of these config keys.
+rows, with a raw-JSON fallback for shapes it can't represent) is the schema
+form for `request-validation`'s `conditions`, `fault-injection`'s
+`abort.vars`/`delay.vars`, and `response-rewrite`'s `vars`. The
+`workflow`/`traffic-label`/`traffic-split` `rules` keys are still edited as
+raw JSON textareas — those plugins' `rules[].case`/`rules[].match` conditions
+are only one part of a larger structure (actions, weights, ...) that has no
+schema-form editor yet.
