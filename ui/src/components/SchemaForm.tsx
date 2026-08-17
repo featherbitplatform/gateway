@@ -10,6 +10,7 @@ import { Plus, X } from 'lucide-react';
 import type { FieldOption, FieldSchema } from '../pluginConfig';
 import type { Availability, Suggestion } from '../varSuggestions';
 import { VarInput } from './VarInput';
+import { ConditionBuilder } from './ConditionBuilder';
 
 /** Trace-derived `$var`/`{{path}}` suggestions threaded down to every templated field. */
 interface VarContext {
@@ -90,8 +91,12 @@ function normalizeOptions(options: (string | FieldOption)[] = []): FieldOption[]
   return options.map((o) => (typeof o === 'string' ? { value: o, label: o } : o));
 }
 
-/** Dashed full-width "Add …" button used by list/objects fields to append a row. */
-function AddButton({ label, onClick }: { label: string; onClick: () => void }) {
+/**
+ * Dashed full-width "Add …" button used by list/objects fields to append a
+ * row. Exported so other field-like controls (e.g. {@link ConditionBuilder})
+ * reuse the same visual/behavioral pattern instead of duplicating it.
+ */
+export function AddButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
@@ -120,8 +125,11 @@ function AddButton({ label, onClick }: { label: string; onClick: () => void }) {
   );
 }
 
-/** Small "x" button that deletes one row from a list/objects field; `label` is the aria-label. */
-function RemoveButton({ onClick, label }: { onClick: () => void; label: string }) {
+/**
+ * Small "x" button that deletes one row from a list/objects field; `label`
+ * is the aria-label. Exported for reuse by {@link ConditionBuilder}.
+ */
+export function RemoveButton({ onClick, label }: { onClick: () => void; label: string }) {
   return (
     <button
       onClick={onClick}
@@ -136,15 +144,21 @@ function RemoveButton({ onClick, label }: { onClick: () => void; label: string }
   );
 }
 
-/** Segmented single-choice control for small enums that should stay visible. */
-function RadioGroup({
+/**
+ * Segmented single-choice control for small enums that should stay visible.
+ * Exported for reuse by {@link ConditionBuilder} (AND/OR group-logic toggle).
+ */
+export function RadioGroup({
   options,
   value,
   onChange,
+  ariaLabel,
 }: {
   options: FieldOption[];
   value: string;
   onChange: (v: string) => void;
+  /** Accessible name for the radiogroup, when no visible label precedes it. */
+  ariaLabel?: string;
 }) {
   return (
     <div
@@ -157,6 +171,7 @@ function RadioGroup({
         border: '1px solid var(--border-subtle)',
       }}
       role="radiogroup"
+      aria-label={ariaLabel}
     >
       {options.map((opt) => {
         const active = value === opt.value;
@@ -263,6 +278,11 @@ function Switch({
  *   → `[{ username, password }]`). New cards are pre-filled from each sub-field's
  *   `default`, else `0`/`''` by sub-field type; a numeric sub-field cleared to
  *   empty serializes as `undefined`.
+ * - `conditions` — {@link ConditionBuilder}: a visual AND/OR/NOT tree of
+ *   subject/op/value rules (with a raw-JSON fallback for expressions it can't
+ *   represent); serializes to the triple-array condition dialect from
+ *   `conditions.ts` (`field.shape` picks `'expr'` vs `'or-of-exprs'`), or to
+ *   `undefined` when the root has no children (the field is optional).
  *
  * Every field shows its `label` above the input and optional `hint` text below.
  *
@@ -517,6 +537,15 @@ export function SchemaForm({ schema, value, onChange, varContext }: SchemaFormPr
           </div>
         );
       }
+
+      case 'conditions':
+        return (
+          <ConditionBuilder
+            value={current}
+            shape={field.shape ?? 'expr'}
+            onChange={(v) => set(field.key, v)}
+          />
+        );
     }
   };
 

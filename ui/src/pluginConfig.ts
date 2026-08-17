@@ -24,7 +24,8 @@ export type FieldType =
   | 'switch'
   | 'textarea'
   | 'list'
-  | 'objects';
+  | 'objects'
+  | 'conditions';
 
 /**
  * A radio/select option whose stored value differs from its display label.
@@ -73,6 +74,8 @@ export interface FieldSchema {
   };
   /** Sub-fields of each record for `objects` fields. */
   fields?: FieldSchema[];
+  /** For `conditions` fields: single expression or an OR-ed list of them. */
+  shape?: 'expr' | 'or-of-exprs';
   /**
    * Which template-suggestion groups this field's control offers, enabling
    * context autocomplete (`VarInput`) in the first place.
@@ -763,6 +766,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'body_schema', label: 'Body schema (JSON)', type: 'textarea', rows: 8, placeholder: '{"type":"object","required":["name"]}', hint: 'JSON Schema; at least one schema is required', template: 'env-only' },
     { key: 'rejected_code', label: 'Rejected status', type: 'number', default: 400 },
     { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'invalid payload', hint: 'fixed message instead of validator detail', template: 'full' },
+    { key: 'conditions', label: 'Conditions', type: 'conditions', shape: 'expr',
+      hint: 'boolean predicates over headers, vars, and JSONPath body queries; all must hold or the request is rejected' },
   ],
   'body-transformer': [
     { key: 'request', label: 'Request transform', type: 'objects', addLabel: 'Transform', itemLabel: 'Request',
