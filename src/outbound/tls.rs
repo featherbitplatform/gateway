@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 #[derive(Debug)]
@@ -58,7 +59,7 @@ impl UpstreamTls {
                     .map_err(|e| format!("client_key_path '{}': {}", key_path, e))?;
                 cert_pem.hash(&mut hasher);
                 key_pem.hash(&mut hasher);
-                let certs = rustls_pemfile::certs(&mut std::io::BufReader::new(&cert_pem[..]))
+                let certs = CertificateDer::pem_slice_iter(&cert_pem)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| format!("client_cert_path '{}': {}", cert_path, e))?;
                 if certs.is_empty() {
@@ -67,11 +68,18 @@ impl UpstreamTls {
                         cert_path
                     ));
                 }
-                let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(&key_pem[..]))
-                    .map_err(|e| format!("client_key_path '{}': {}", key_path, e))?
-                    .ok_or_else(|| {
-                        format!("client_key_path '{}': no private key found", key_path)
-                    })?;
+                let key = match PrivateKeyDer::pem_slice_iter(&key_pem).next() {
+                    Some(Ok(key)) => key,
+                    Some(Err(e)) => {
+                        return Err(format!("client_key_path '{}': {}", key_path, e))
+                    }
+                    None => {
+                        return Err(format!(
+                            "client_key_path '{}': no private key found",
+                            key_path
+                        ))
+                    }
+                };
                 Some((certs, key))
             }
             None => None,
@@ -82,7 +90,7 @@ impl UpstreamTls {
                 let pem =
                     std::fs::read(path).map_err(|e| format!("ca_cert_path '{}': {}", path, e))?;
                 pem.hash(&mut hasher);
-                let certs = rustls_pemfile::certs(&mut std::io::BufReader::new(&pem[..]))
+                let certs = CertificateDer::pem_slice_iter(&pem)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| format!("ca_cert_path '{}': {}", path, e))?;
                 if certs.is_empty() {

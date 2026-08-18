@@ -62,7 +62,10 @@ rustls = { version = "0.23.41", default-features = false, features = ["ring", "l
 # TLS termination on the data-plane/admin listeners. tokio-rustls 0.26 pairs with
 # rustls 0.23; pinned to the ring provider (no aws-lc-rs) like the rest of the tree.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
-rustls-pemfile = "2"
+# PEM parsing for certs/keys (replaces the unmaintained rustls-pemfile;
+# RUSTSEC-2025-0134). Already in the tree via rustls — the direct dep pins
+# a floor where PEM support ships in the default `alloc` feature (>= 1.12).
+rustls-pki-types = "1.12"
 # Native root store for verifying upstream TLS (wss/https to backends).
 rustls-native-certs = "0.8"
 # X.509 parsing for mTLS client identity (CN/SAN); already in the tree via ldap3.
