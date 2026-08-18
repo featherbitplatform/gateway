@@ -15,6 +15,7 @@ pub mod brotli;
 pub mod cas_auth;
 pub mod clickhouse_logger;
 pub mod client;
+pub mod condition;
 pub mod consumer_restriction;
 pub mod cors;
 pub mod csrf;

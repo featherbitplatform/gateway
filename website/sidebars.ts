@@ -54,6 +54,7 @@ const sidebars: SidebarsConfig = {
               label: 'Structural & core proxy',
               items: [
                 'reference/plugins/listener-client',
+                'reference/plugins/condition',
                 'reference/plugins/upstream',
                 'reference/plugins/proxy-rewrite',
                 'reference/plugins/response-rewrite',

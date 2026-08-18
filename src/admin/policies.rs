@@ -176,6 +176,10 @@ fn plugin_catalog() -> Vec<serde_json::Value> {
         // Structural & core proxy
         ("listener", "Route entry point — receives incoming request"),
         ("client", "Route exit point — sends response to client"),
+        (
+            "condition",
+            "Branch the policy on boolean conditions (true/false ports)",
+        ),
         ("upstream", "Forward to a load-balanced backend pool"),
         ("proxy-rewrite", "Rewrite path, add/remove headers"),
         (
