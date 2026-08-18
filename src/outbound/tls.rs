@@ -70,9 +70,7 @@ impl UpstreamTls {
                 }
                 let key = match PrivateKeyDer::pem_slice_iter(&key_pem).next() {
                     Some(Ok(key)) => key,
-                    Some(Err(e)) => {
-                        return Err(format!("client_key_path '{}': {}", key_path, e))
-                    }
+                    Some(Err(e)) => return Err(format!("client_key_path '{}': {}", key_path, e)),
                     None => {
                         return Err(format!(
                             "client_key_path '{}': no private key found",
