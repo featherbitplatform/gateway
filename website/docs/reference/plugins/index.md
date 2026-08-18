@@ -17,6 +17,7 @@ featherbit expresses the classic proxy phase model (rewrite/access/header_filter
 | Type | Description |
 |---|---|
 | [`listener`](listener-client.md) / [`client`](listener-client.md) | Fixed graph entry and exit nodes (no config) |
+| [`condition`](condition.md) | Branch the policy on boolean conditions (`true`/`false` ports) |
 | [`upstream`](upstream.md) | Forward to a backend pool with round-robin, least-connections, or IP-hash balancing |
 | [`proxy-rewrite`](proxy-rewrite.md) | Rewrite request path and headers |
 | [`response-rewrite`](response-rewrite.md) | Rewrite response status, headers, and body (regex filters, encoding-aware) |

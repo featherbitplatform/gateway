@@ -88,7 +88,7 @@ pub trait Plugin: Send + Sync {
     ///   `success` port, and [`PluginOutput::on_port`] takes a named
     ///   **outcome** port — the node did its job and chose a deliberate
     ///   alternate route (`denied`, `redirect`, `limited`, `broken`,
-    ///   `preflight`, `abort`, `routed`, `hit`), normally with the
+    ///   `preflight`, `abort`, `routed`, `hit`, `true`/`false`), normally with the
     ///   client-facing response already prepared. The named port must be one
     ///   this type declares in its `PortSpec`, or the policy would not have
     ///   compiled; nothing is appended to `ctx.errors`.
@@ -175,6 +175,7 @@ pub const KNOWN_PLUGIN_TYPES: &[&str] = &[
     "echo",
     "fault-injection",
     "workflow",
+    "condition",
     "traffic-label",
     "traffic-split",
     "mocking",
@@ -432,6 +433,9 @@ pub fn create_plugin(
         "request-validation" => Ok(Box::new(
             native::request_validation::RequestValidationPlugin::from_config(config)?,
         )),
+        "condition" => Ok(Box::new(native::condition::ConditionPlugin::from_config(
+            config,
+        )?)),
         "body-transformer" => Ok(Box::new(
             native::body_transformer::BodyTransformerPlugin::from_config(config)?,
         )),
@@ -483,6 +487,7 @@ pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
         "rate-limit" | "limit-conn" | "limit-count" => Some(&ports::LIMIT_SPEC),
         "api-breaker" => Some(&ports::BREAKER_SPEC),
         "workflow" => Some(&ports::WORKFLOW_SPEC),
+        "condition" => Some(&ports::CONDITION_SPEC),
         "traffic-split" => Some(&ports::TRAFFIC_SPLIT_SPEC),
         "proxy-cache" => Some(&ports::PROXY_CACHE_SPEC),
         _ if KNOWN_PLUGIN_TYPES.contains(&plugin_type) => Some(&ports::DEFAULT_SPEC),
