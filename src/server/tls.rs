@@ -23,6 +23,7 @@ use hyper::{Request, Response};
 use hyper_util::rt::TokioExecutor;
 use hyper_util::server::conn::auto;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
@@ -114,8 +115,7 @@ pub fn install_crypto_provider() {
 pub fn load_cert_chain(path: &str) -> Result<Vec<CertificateDer<'static>>, TlsError> {
     let data =
         std::fs::read(path).map_err(|e| TlsError::CertRead(path.to_string(), e.to_string()))?;
-    let mut reader = std::io::BufReader::new(&data[..]);
-    let certs = rustls_pemfile::certs(&mut reader)
+    let certs = CertificateDer::pem_slice_iter(&data)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| TlsError::CertRead(path.to_string(), e.to_string()))?;
     if certs.is_empty() {
@@ -129,10 +129,11 @@ pub fn load_cert_chain(path: &str) -> Result<Vec<CertificateDer<'static>>, TlsEr
 pub fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>, TlsError> {
     let data =
         std::fs::read(path).map_err(|e| TlsError::KeyRead(path.to_string(), e.to_string()))?;
-    let mut reader = std::io::BufReader::new(&data[..]);
-    rustls_pemfile::private_key(&mut reader)
-        .map_err(|e| TlsError::KeyRead(path.to_string(), e.to_string()))?
-        .ok_or_else(|| TlsError::NoKey(path.to_string()))
+    match PrivateKeyDer::pem_slice_iter(&data).next() {
+        Some(Ok(key)) => Ok(key),
+        Some(Err(e)) => Err(TlsError::KeyRead(path.to_string(), e.to_string())),
+        None => Err(TlsError::NoKey(path.to_string())),
+    }
 }
 
 /// Loads a PEM CA bundle at `path` into a [`RootCertStore`] for verifying
@@ -141,8 +142,7 @@ pub fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>, TlsError> 
 fn load_client_ca_roots(path: &str) -> Result<rustls::RootCertStore, TlsError> {
     let data =
         std::fs::read(path).map_err(|e| TlsError::ClientCaRead(path.to_string(), e.to_string()))?;
-    let mut reader = std::io::BufReader::new(&data[..]);
-    let certs = rustls_pemfile::certs(&mut reader)
+    let certs = CertificateDer::pem_slice_iter(&data)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| TlsError::ClientCaRead(path.to_string(), e.to_string()))?;
     let mut roots = rustls::RootCertStore::empty();

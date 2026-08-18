@@ -9,10 +9,6 @@ all-features = true
 # RustSec advisory DB (same data cargo-audit uses). Errors fail the scan;
 # unmaintained/unsound advisories surface as warnings.
 ignore = [
-    # rustls-pemfile is unmaintained (superseded by rustls-pki-types' own PEM
-    # parsing). Direct dep used only to load PEM certs/keys at startup;
-    # migrating is tracked work, not a vulnerability.
-    "RUSTSEC-2025-0134",
     # smartstring is unmaintained (repo archived 2026-05-03); pulled in via
     # casbin -> rhai. No safe upgrade exists; revisit when casbin/rhai move
     # off it or when bumping casbin.
