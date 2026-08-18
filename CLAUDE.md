@@ -60,7 +60,7 @@ tool configs at the repo root are the shared source of truth):
 A high-performance API gateway delivered as a single Rust binary. (The original `REQUIREMENTS.md` specification no longer exists in the repo; the closest current equivalents are the docs site under `website/docs/` and the honest-state ledger at `website/docs/reference/roadmap.md`.)
 
 Core features:
-- **Node-graph routing policies** — request/response pipelines declared in YAML with declared-port routing (success/outcome/error); 37 node types exit deliberate rejections, redirects, throttles, and cache/split short-circuits on dedicated outcome ports (`denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`, `routed`, `hit`) instead of the `error` port, and the compiler rejects any policy that leaves a `success`/outcome port unwired
+- **Node-graph routing policies** — request/response pipelines declared in YAML with declared-port routing (success/outcome/error); 38 node types exit deliberate rejections, redirects, throttles, cache/split short-circuits, and conditional branches on dedicated outcome ports (`denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`, `routed`, `hit`, `true`/`false`) instead of the `error` port, and the compiler rejects any policy that leaves a `success`/outcome port unwired
 - **Two-tier plugin system** — 80+ native Rust node types (structural nodes, proxy/transform, security, auth & authz incl. interactive SSO, traffic control, 17 loggers, tracing, metrics, serverless/FaaS — most ported from Apache APISIX 3.17) + scripted plugins in Lua (mlua, Luau runtime)
 - **Context object** — `request`, `response`, `message`, `errors` flowing through every node
 - **Admin API** — axum-based REST API on separate port with Basic Auth, CRUD for routes/policies, health/ready/metrics endpoints
@@ -85,7 +85,7 @@ Core features:
 
 **Plugin contract**: `async fn execute(&self, ctx: Context) -> Result<PluginOutput, PluginExecutionError>` (no `named_inputs` — removed as dead plumbing when named output ports landed). `PluginOutput.port: Option<&'static str>` names the declared output port the result leaves on (`None` = `success`); it must match a port of kind `outcome` in the node type's static `PortSpec` (`src/plugins/ports.rs`). Errors include the context so the graph engine can route through the node's error edge (or the policy catch-all).
 
-**Edge format in YAML**: `from: node_id.port` / `to: node_id.port`. Ports: `out` (alias for `success`), `success`, plugin-declared `outcome` ports (e.g. `denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`, `routed`, `hit`), `error`, `in`. Every `success`/`outcome` port must be wired or policy compilation fails; `error` alone keeps its fallback chain.
+**Edge format in YAML**: `from: node_id.port` / `to: node_id.port`. Ports: `out` (alias for `success`), `success`, plugin-declared `outcome` ports (e.g. `denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`, `routed`, `hit`, `condition`'s `true`/`false`), `error`, `in`. Every `success`/`outcome` port must be wired or policy compilation fails; `error` alone keeps its fallback chain.
 
 ## Configuration
 
