@@ -24,7 +24,9 @@ export type FieldType =
   | 'switch'
   | 'textarea'
   | 'list'
-  | 'objects';
+  | 'objects'
+  | 'conditions'
+  | 'object';
 
 /**
  * A radio/select option whose stored value differs from its display label.
@@ -73,6 +75,8 @@ export interface FieldSchema {
   };
   /** Sub-fields of each record for `objects` fields. */
   fields?: FieldSchema[];
+  /** For `conditions` fields: single expression or an OR-ed list of them. */
+  shape?: 'expr' | 'or-of-exprs';
   /**
    * Which template-suggestion groups this field's control offers, enabling
    * context autocomplete (`VarInput`) in the first place.
@@ -707,6 +711,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
         { key: 'scope', label: 'Scope', type: 'radio', options: ['once', 'global'], default: 'once' },
         { key: 'options', label: 'Options', type: 'select', options: [{ value: '', label: 'none' }, { value: 'i', label: 'i (case-insensitive)' }], default: '' },
       ] },
+    { key: 'vars', label: 'Conditions', type: 'conditions', shape: 'expr',
+      hint: 'gate — the rewrite applies only when the conditions hold' },
   ],
   gzip: [
     { key: 'types', label: 'Content types', type: 'list', addLabel: 'Type', item: { type: 'text', placeholder: 'text/html' }, hint: 'defaults to text/html; "*" (YAML) matches any' },
@@ -725,8 +731,21 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'always', label: 'Scope', type: 'switch', switchLabel: 'Apply to all responses, not just gateway exits', default: false },
   ],
   'fault-injection': [
-    { key: 'abort', label: 'Abort', type: 'textarea', rows: 6, placeholder: '{"http_status": 503, "body": "injected", "percentage": 10}', hint: 'JSON object: http_status (required), body, headers, percentage 0-100, vars', template: 'full', legacyDollar: true },
-    { key: 'delay', label: 'Delay', type: 'textarea', rows: 4, placeholder: '{"duration": 0.5, "percentage": 30}', hint: 'JSON object: duration seconds (required), percentage, vars' },
+    { key: 'abort', label: 'Abort', type: 'object', itemLabel: 'Abort rule',
+      fields: [
+        { key: 'http_status', label: 'HTTP status', type: 'number', default: 503 },
+        { key: 'body', label: 'Body', type: 'text', placeholder: 'injected fault', template: 'full', legacyDollar: true },
+        { key: 'percentage', label: 'Percentage', type: 'number', hint: '0-100; empty = always' },
+        { key: 'vars', label: 'Conditions', type: 'conditions', shape: 'or-of-exprs',
+          hint: 'condition sets are OR-ed; the abort only triggers when one matches (headers stay YAML-only)' },
+      ] },
+    { key: 'delay', label: 'Delay', type: 'object', itemLabel: 'Delay rule',
+      fields: [
+        { key: 'duration', label: 'Duration (s)', type: 'number', default: 0.5 },
+        { key: 'percentage', label: 'Percentage', type: 'number', hint: '0-100; empty = always' },
+        { key: 'vars', label: 'Conditions', type: 'conditions', shape: 'or-of-exprs',
+          hint: 'condition sets are OR-ed; the delay only applies when one matches' },
+      ] },
   ],
   workflow: [
     { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"case": [["uri", "~~", "^/admin"]], "actions": [["return", {"code": 403}]]}]', hint: 'JSON array; actions: ["return", {code}] or ["limit-count", {count, time_window, key, rejected_code}]', template: 'full', legacyDollar: true },
@@ -763,6 +782,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'body_schema', label: 'Body schema (JSON)', type: 'textarea', rows: 8, placeholder: '{"type":"object","required":["name"]}', hint: 'JSON Schema; at least one schema is required', template: 'env-only' },
     { key: 'rejected_code', label: 'Rejected status', type: 'number', default: 400 },
     { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'invalid payload', hint: 'fixed message instead of validator detail', template: 'full' },
+    { key: 'conditions', label: 'Conditions', type: 'conditions', shape: 'expr',
+      hint: 'boolean predicates over headers, vars, and JSONPath body queries; all must hold or the request is rejected' },
   ],
   'body-transformer': [
     { key: 'request', label: 'Request transform', type: 'objects', addLabel: 'Transform', itemLabel: 'Request',

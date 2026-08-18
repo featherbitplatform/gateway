@@ -11,21 +11,28 @@
 //!   - ["http_user_agent", "~~", "Mozilla.+"]
 //! ```
 //!
-//! Rules in a top-level list are ANDed. A rule is `[var, op, value]` or the
-//! negated `[var, "!", op, value]`; nested logic uses `["AND", rule...]` /
-//! `["OR", rule...]`. Supported operators: `==`, `~=`, `>`, `>=`, `<`, `<=`,
-//! `~~` (regex), `~*` (case-insensitive regex), `in` (value array), `has`
-//! (var array contains value), `ipmatch` (value is a list of IPs/CIDRs).
+//! Rules in a top-level list are ANDed. A rule is `[subject, op, value]`,
+//! the negated `[subject, "!", op, value]`, or unary `[subject, "present"|"absent"|"is_null"]`.
+//! Nested logic uses `["AND", rule...]`, `["OR", rule...]`, and `["NOT", rule-or-group]`
+//! (NOT is a featherbit extension over APISIX's dialect). Subjects are var
+//! names or JSONPath queries over JSON bodies: `$.user.name` (request body),
+//! `request_body:$...`, `response_body:$...` — multi-node matches use
+//! ANY-semantics. Operators: `==`, `~=`, `>`, `>=`, `<`, `<=`, `~~` (regex),
+//! `~*` (case-insensitive regex), `in`, `has`, `ipmatch`, `present`,
+//! `absent`, `is_null` (JSONPath only), `contains`.
 
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::net::IpAddr;
 
 use ipnet::IpNet;
 use regex::Regex;
 
 use crate::context::Context;
+use crate::vars::jsonpath::{BodyTarget, JsonSubject};
 
 pub mod catalog;
+pub mod jsonpath;
 pub mod template;
 
 /// Resolves a variable name against the context.
@@ -182,27 +189,58 @@ pub fn interpolate(ctx: &Context, template: &str) -> String {
 ///
 /// Parsed once at config load ([`Expr::parse`]); regexes are compiled at
 /// parse time so evaluation is allocation-light.
+#[derive(Debug)]
 pub struct Expr {
     root: Node,
 }
 
+#[derive(Debug)]
 enum Node {
     And(Vec<Node>),
     Or(Vec<Node>),
-    Rule { var: String, negate: bool, op: Op },
+    Not(Box<Node>),
+    Rule {
+        subject: Subject,
+        negate: bool,
+        op: Op,
+    },
 }
 
+/// What a rule's condition is evaluated against: a flat named var, or a
+/// JSONPath query over a request/response body.
+#[derive(Debug)]
+enum Subject {
+    Var(String),
+    Json(JsonSubject),
+}
+
+#[derive(Debug)]
 enum Op {
-    Eq(String),
-    Ne(String),
+    Eq(serde_json::Value),
+    Ne(serde_json::Value),
     Gt(f64),
     Ge(f64),
     Lt(f64),
     Le(f64),
     Regex(Regex),
-    In(Vec<String>),
-    Has(String),
+    In(Vec<serde_json::Value>),
+    Has(serde_json::Value),
     IpMatch(Vec<IpNet>),
+    Present,
+    Absent,
+    IsNull,
+    Contains(serde_json::Value),
+}
+
+/// Stringifies a scalar config value the way the legacy parser did
+/// (String as-is, Number/Bool via to_string). None for null/array/object.
+fn scalar_str(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
 }
 
 impl Expr {
@@ -225,9 +263,40 @@ impl Expr {
 
     /// Evaluates the expression against the context. Rules referencing absent
     /// variables evaluate as if the variable were the empty string, except
-    /// `ipmatch`, which is false for an absent/unparsable address.
+    /// `ipmatch`, which is false for an absent/unparsable address. JSONPath
+    /// subjects match zero nodes (rule is false) when the body is empty or
+    /// not valid JSON.
     pub fn eval(&self, ctx: &Context) -> bool {
-        eval_node(&self.root, ctx)
+        let state = EvalState::new(ctx);
+        eval_node(&self.root, &state)
+    }
+}
+
+/// Per-evaluation state: the context plus lazily-parsed JSON bodies, so a
+/// multi-rule expression parses each body at most once per eval.
+struct EvalState<'a> {
+    ctx: &'a Context,
+    request_json: OnceCell<Option<serde_json::Value>>,
+    response_json: OnceCell<Option<serde_json::Value>>,
+}
+
+impl<'a> EvalState<'a> {
+    fn new(ctx: &'a Context) -> Self {
+        Self {
+            ctx,
+            request_json: OnceCell::new(),
+            response_json: OnceCell::new(),
+        }
+    }
+
+    /// The parsed JSON body, or None when empty/not valid JSON.
+    fn body_json(&self, target: &BodyTarget) -> Option<&serde_json::Value> {
+        let (cell, bytes) = match target {
+            BodyTarget::Request => (&self.request_json, &self.ctx.request.body),
+            BodyTarget::Response => (&self.response_json, &self.ctx.response.body),
+        };
+        cell.get_or_init(|| serde_json::from_slice(bytes).ok())
+            .as_ref()
     }
 }
 
@@ -237,7 +306,7 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         return Err("empty rule".to_string());
     }
 
-    // Nested logic: ["AND"|"OR", rule...]
+    // Nested logic: ["AND"|"OR", rule...] or ["NOT", rule-or-group]
     if let Some(first) = arr[0].as_str() {
         if first.eq_ignore_ascii_case("and") || first.eq_ignore_ascii_case("or") {
             let children = arr[1..]
@@ -250,6 +319,12 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
                 Node::Or(children)
             });
         }
+        if first.eq_ignore_ascii_case("not") {
+            if arr.len() != 2 {
+                return Err("NOT takes exactly one rule or group".to_string());
+            }
+            return Ok(Node::Not(Box::new(parse_node(&arr[1])?)));
+        }
     }
 
     // [var, op, value] or [var, "!", op, value]
@@ -257,6 +332,10 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         .as_str()
         .ok_or("rule variable must be a string")?
         .to_string();
+    let subject = match jsonpath::parse_json_subject(&var) {
+        None => Subject::Var(var.clone()),
+        Some(compiled) => Subject::Json(compiled?),
+    };
     let (negate, op_idx) = if arr.get(1).and_then(|v| v.as_str()) == Some("!") {
         (true, 2)
     } else {
@@ -266,17 +345,41 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         .get(op_idx)
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("rule for '{}' is missing an operator", var))?;
+
+    let is_unary = matches!(op_str, "present" | "absent" | "is_null");
+    if is_unary {
+        if arr.len() > op_idx + 1 {
+            return Err(format!("rule for '{}': '{}' takes no value", var, op_str));
+        }
+        let op = match op_str {
+            "present" => Op::Present,
+            "absent" => Op::Absent,
+            "is_null" => {
+                if matches!(subject, Subject::Var(_)) {
+                    return Err(format!(
+                        "rule for '{}': 'is_null' requires a JSONPath subject — headers and vars cannot be null (use 'absent')",
+                        var
+                    ));
+                }
+                Op::IsNull
+            }
+            _ => unreachable!(),
+        };
+        return Ok(Node::Rule {
+            subject,
+            negate,
+            op,
+        });
+    }
+
     let value = arr
         .get(op_idx + 1)
         .ok_or_else(|| format!("rule for '{}' is missing a value", var))?;
 
-    let scalar = || -> Result<String, String> {
-        match value {
-            serde_json::Value::String(s) => Ok(s.clone()),
-            serde_json::Value::Number(n) => Ok(n.to_string()),
-            serde_json::Value::Bool(b) => Ok(b.to_string()),
-            _ => Err(format!("rule for '{}' needs a scalar value", var)),
-        }
+    let scalar = || -> Result<serde_json::Value, String> {
+        scalar_str(value)
+            .map(|_| value.clone())
+            .ok_or_else(|| format!("rule for '{}' needs a scalar value", var))
     };
     let number = || -> Result<f64, String> {
         value
@@ -297,6 +400,9 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
             })
             .collect()
     };
+    let pattern = || -> Result<String, String> {
+        scalar_str(value).ok_or_else(|| format!("rule for '{}' needs a scalar value", var))
+    };
 
     let op = match op_str {
         "==" => Op::Eq(scalar()?),
@@ -306,14 +412,25 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         "<" => Op::Lt(number()?),
         "<=" => Op::Le(number()?),
         "~~" => Op::Regex(
-            Regex::new(&scalar()?).map_err(|e| format!("invalid regex for '{}': {}", var, e))?,
+            Regex::new(&pattern()?).map_err(|e| format!("invalid regex for '{}': {}", var, e))?,
         ),
         "~*" => Op::Regex(
-            Regex::new(&format!("(?i){}", scalar()?))
+            Regex::new(&format!("(?i){}", pattern()?))
                 .map_err(|e| format!("invalid regex for '{}': {}", var, e))?,
         ),
-        "in" => Op::In(string_list()?),
+        "in" => {
+            let items = value
+                .as_array()
+                .ok_or_else(|| format!("rule for '{}' (in) needs an array value", var))?;
+            for item in items {
+                if scalar_str(item).is_none() {
+                    return Err(format!("rule for '{}': array items must be scalars", var));
+                }
+            }
+            Op::In(items.clone())
+        }
         "has" => Op::Has(scalar()?),
+        "contains" => Op::Contains(scalar()?),
         "ipmatch" => {
             let nets = string_list()?
                 .iter()
@@ -331,22 +448,39 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
         }
         other => {
             return Err(format!(
-                "unknown operator '{}' — supported: ==, ~=, >, >=, <, <=, ~~, ~*, in, has, ipmatch",
+                "unknown operator '{}' — supported: ==, ~=, >, >=, <, <=, ~~, ~*, in, has, ipmatch, present, absent, is_null, contains",
                 other
             ));
         }
     };
 
-    Ok(Node::Rule { var, negate, op })
+    Ok(Node::Rule {
+        subject,
+        negate,
+        op,
+    })
 }
 
-fn eval_node(node: &Node, ctx: &Context) -> bool {
+fn eval_node(node: &Node, state: &EvalState) -> bool {
     match node {
-        Node::And(children) => children.iter().all(|c| eval_node(c, ctx)),
-        Node::Or(children) => children.iter().any(|c| eval_node(c, ctx)),
-        Node::Rule { var, negate, op } => {
-            let value = resolve(ctx, var);
-            let result = eval_op(op, value.as_deref());
+        Node::And(children) => children.iter().all(|c| eval_node(c, state)),
+        Node::Or(children) => children.iter().any(|c| eval_node(c, state)),
+        Node::Not(child) => !eval_node(child, state),
+        Node::Rule {
+            subject,
+            negate,
+            op,
+        } => {
+            let result = match subject {
+                Subject::Var(name) => eval_op(op, resolve(state.ctx, name).as_deref()),
+                Subject::Json(js) => {
+                    let nodes: Vec<&serde_json::Value> = match state.body_json(&js.target) {
+                        Some(doc) => js.path.query(doc).all(),
+                        None => Vec::new(),
+                    };
+                    eval_op_json(op, &nodes)
+                }
+            };
             if *negate {
                 !result
             } else {
@@ -359,18 +493,79 @@ fn eval_node(node: &Node, ctx: &Context) -> bool {
 fn eval_op(op: &Op, value: Option<&str>) -> bool {
     let v = value.unwrap_or("");
     match op {
-        Op::Eq(expected) => v == expected,
-        Op::Ne(expected) => v != expected,
+        Op::Eq(expected) => scalar_str(expected).as_deref() == Some(v),
+        Op::Ne(expected) => scalar_str(expected).as_deref() != Some(v),
         Op::Gt(n) => v.parse::<f64>().is_ok_and(|x| x > *n),
         Op::Ge(n) => v.parse::<f64>().is_ok_and(|x| x >= *n),
         Op::Lt(n) => v.parse::<f64>().is_ok_and(|x| x < *n),
         Op::Le(n) => v.parse::<f64>().is_ok_and(|x| x <= *n),
         Op::Regex(re) => re.is_match(v),
-        Op::In(list) => list.iter().any(|item| item == v),
-        Op::Has(needle) => v.split(',').map(str::trim).any(|part| part == needle),
+        Op::In(list) => list
+            .iter()
+            .any(|item| scalar_str(item).as_deref() == Some(v)),
+        Op::Has(needle) => {
+            let needle = scalar_str(needle).unwrap_or_default();
+            v.split(',').map(str::trim).any(|part| part == needle)
+        }
         Op::IpMatch(nets) => value
             .and_then(|v| v.parse::<IpAddr>().ok())
             .is_some_and(|ip| nets.iter().any(|net| net.contains(&ip))),
+        Op::Present => value.is_some(),
+        Op::Absent => value.is_none(),
+        Op::IsNull => false, // parse-time guarded; a flat var is never null
+        Op::Contains(needle) => {
+            value.is_some_and(|v| scalar_str(needle).is_some_and(|n| v.contains(&n)))
+        }
+    }
+}
+
+/// ANY-match: the rule holds if at least one matched node passes.
+/// `Present`/`Absent`/`IsNull` are match-set operators, evaluated over the
+/// whole node set rather than per-node.
+fn eval_op_json(op: &Op, nodes: &[&serde_json::Value]) -> bool {
+    match op {
+        Op::Present => !nodes.is_empty(),
+        Op::Absent => nodes.is_empty(),
+        Op::IsNull => nodes.iter().any(|n| n.is_null()),
+        _ => nodes.iter().any(|n| eval_op_json_node(op, n)),
+    }
+}
+
+fn eval_op_json_node(op: &Op, node: &serde_json::Value) -> bool {
+    match op {
+        Op::Eq(expected) => json_scalar_eq(node, expected),
+        Op::Ne(expected) => !json_scalar_eq(node, expected),
+        Op::Gt(n) => node.as_f64().is_some_and(|x| x > *n),
+        Op::Ge(n) => node.as_f64().is_some_and(|x| x >= *n),
+        Op::Lt(n) => node.as_f64().is_some_and(|x| x < *n),
+        Op::Le(n) => node.as_f64().is_some_and(|x| x <= *n),
+        Op::Regex(re) => node.as_str().is_some_and(|s| re.is_match(s)),
+        Op::In(list) => list.iter().any(|e| json_scalar_eq(node, e)),
+        Op::Has(v) => node
+            .as_array()
+            .is_some_and(|arr| arr.iter().any(|e| json_scalar_eq(e, v))),
+        Op::IpMatch(nets) => node
+            .as_str()
+            .and_then(|s| s.parse::<IpAddr>().ok())
+            .is_some_and(|ip| nets.iter().any(|net| net.contains(&ip))),
+        Op::Contains(v) => match node {
+            serde_json::Value::String(s) => scalar_str(v).is_some_and(|needle| s.contains(&needle)),
+            serde_json::Value::Array(arr) => arr.iter().any(|e| json_scalar_eq(e, v)),
+            _ => false,
+        },
+        Op::Present | Op::Absent | Op::IsNull => unreachable!("handled in eval_op_json"),
+    }
+}
+
+/// Native scalar equality: string↔string, number↔number, bool↔bool.
+/// null, arrays, and objects never equal a scalar config value.
+fn json_scalar_eq(node: &serde_json::Value, expected: &serde_json::Value) -> bool {
+    use serde_json::Value as V;
+    match (node, expected) {
+        (V::String(a), V::String(b)) => a == b,
+        (V::Number(a), V::Number(b)) => a.as_f64() == b.as_f64(),
+        (V::Bool(a), V::Bool(b)) => a == b,
+        _ => false,
     }
 }
 
@@ -633,6 +828,30 @@ mod tests {
     }
 
     #[test]
+    fn test_expr_in_accepts_bool_items() {
+        // widened on purpose: `in` items may be any scalar, including bools;
+        // flat vars compare against their stringified form.
+        let e = Expr::parse(&serde_json::json!([["arg_flag", "in", [true]]]))
+            .expect("should parse bool in list");
+        let mut ctx = test_ctx();
+        ctx.request
+            .query_params
+            .insert("flag".to_string(), vec!["true".to_string()]);
+        assert!(e.eval(&ctx), "flag=true should match in [true]");
+
+        ctx.request
+            .query_params
+            .insert("flag".to_string(), vec!["false".to_string()]);
+        assert!(!e.eval(&ctx), "flag=false should not match in [true]");
+
+        // Also verify non-scalar items still fail to parse
+        assert!(
+            Expr::parse(&serde_json::json!([["arg_x", "in", [[1]]]])).is_err(),
+            "array items in in-list should fail"
+        );
+    }
+
+    #[test]
     fn test_split_remote_addr_forms() {
         assert_eq!(split_remote_addr("1.2.3.4:80"), ("1.2.3.4", Some("80")));
         assert_eq!(split_remote_addr("1.2.3.4"), ("1.2.3.4", None));
@@ -668,6 +887,77 @@ mod tests {
         assert_eq!(resolve(&ctx, "request_body").as_deref(), Some("\u{fffd}a"));
     }
 
+    fn json_body_ctx(body: &str) -> Context {
+        let mut ctx = test_ctx();
+        ctx.request.body = Bytes::from(body.to_string());
+        ctx
+    }
+
+    #[test]
+    fn test_expr_jsonpath_subjects() {
+        let ctx = json_body_ctx(
+            r#"{"user":{"name":"jack","age":30,"tags":["a","b"],"admin":true},"items":[{"price":5},{"price":0}]}"#,
+        );
+
+        let truthy = [
+            serde_json::json!([["$.user.name", "==", "jack"]]),
+            serde_json::json!([["request_body:$.user.name", "==", "jack"]]),
+            serde_json::json!([["$.user.age", ">", 18]]),
+            serde_json::json!([["$.user.admin", "==", true]]),
+            serde_json::json!([["$.user.name", "~~", "^ja"]]),
+            serde_json::json!([["$.user.age", "in", [30, 40]]]),
+            serde_json::json!([["$.user.tags", "has", "a"]]),
+            // ANY-match: one item has price > 1
+            serde_json::json!([["$.items[*].price", ">", 1]]),
+            // ALL via negation: NOT(any price < 0)
+            serde_json::json!([["$.items[*].price", "!", "<", 0]]),
+        ];
+        for case in &truthy {
+            assert!(
+                Expr::parse(case).unwrap().eval(&ctx),
+                "should be true: {case}"
+            );
+        }
+
+        let falsy = [
+            // number node never equals a string scalar
+            serde_json::json!([["$.user.age", "==", "30"]]),
+            serde_json::json!([["$.user.name", "==", "jill"]]),
+            // absent path matches nothing -> comparison false
+            serde_json::json!([["$.missing", "==", "x"]]),
+            // object node never equals a scalar
+            serde_json::json!([["$.user", "==", "jack"]]),
+        ];
+        for case in &falsy {
+            assert!(
+                !Expr::parse(case).unwrap().eval(&ctx),
+                "should be false: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_expr_jsonpath_response_body_and_non_json() {
+        let mut ctx = test_ctx();
+        ctx.response.body = Bytes::from(r#"{"ok":true}"#.to_string());
+        assert!(
+            Expr::parse(&serde_json::json!([["response_body:$.ok", "==", true]]))
+                .unwrap()
+                .eval(&ctx)
+        );
+
+        // non-JSON request body: every request-body path matches zero nodes
+        let ctx = json_body_ctx("plain text");
+        assert!(!Expr::parse(&serde_json::json!([["$.a", "==", "x"]]))
+            .unwrap()
+            .eval(&ctx));
+    }
+
+    #[test]
+    fn test_expr_jsonpath_parse_errors() {
+        assert!(Expr::parse(&serde_json::json!([["$.[", "==", "x"]])).is_err());
+    }
+
     #[test]
     fn test_interpolate_sent_http_and_request_body() {
         let mut ctx = test_ctx();
@@ -679,5 +969,144 @@ mod tests {
             interpolate(&ctx, "h=$sent_http_x_id b=$request_body"),
             "h=42 b=B"
         );
+    }
+
+    #[test]
+    fn test_expr_present_absent() {
+        // ctx() has header x-api-version (adapt to the module's factory);
+        // build one with a known header + JSON body:
+        let mut ctx = json_body_ctx(r#"{"a": null, "b": 1}"#);
+        ctx.request
+            .headers
+            .insert("x-empty".to_string(), vec!["".to_string()]);
+
+        let truthy = [
+            serde_json::json!([["http_x_empty", "present"]]), // empty value still present
+            serde_json::json!([["http_x_missing", "absent"]]),
+            serde_json::json!([["http_x_missing", "!", "present"]]),
+            serde_json::json!([["$.a", "present"]]), // null node counts as present
+            serde_json::json!([["$.missing", "absent"]]),
+            serde_json::json!([["$.a", "is_null"]]),
+            serde_json::json!([["$.b", "!", "is_null"]]),
+        ];
+        for case in &truthy {
+            assert!(
+                Expr::parse(case).unwrap().eval(&ctx),
+                "should be true: {case}"
+            );
+        }
+
+        let falsy = [
+            serde_json::json!([["http_x_empty", "absent"]]),
+            serde_json::json!([["$.missing", "present"]]),
+            serde_json::json!([["$.missing", "is_null"]]), // absent is NOT null
+            serde_json::json!([["$.b", "is_null"]]),
+        ];
+        for case in &falsy {
+            assert!(
+                !Expr::parse(case).unwrap().eval(&ctx),
+                "should be false: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_expr_contains() {
+        let mut ctx = json_body_ctx(r#"{"tags":["a","b"],"nums":[1,2],"name":"hello world"}"#);
+        ctx.request.headers.insert(
+            "authorization".to_string(),
+            vec!["Bearer abc123".to_string()],
+        );
+
+        let truthy = [
+            serde_json::json!([["http_authorization", "contains", "Bearer"]]),
+            serde_json::json!([["$.name", "contains", "lo wo"]]),
+            serde_json::json!([["$.tags", "contains", "a"]]), // array element equality
+            serde_json::json!([["$.nums", "contains", 2]]),
+        ];
+        for case in &truthy {
+            assert!(
+                Expr::parse(case).unwrap().eval(&ctx),
+                "should be true: {case}"
+            );
+        }
+        let falsy = [
+            serde_json::json!([["http_authorization", "contains", "Basic"]]),
+            serde_json::json!([["http_x_missing", "contains", "x"]]), // absent -> false
+            serde_json::json!([["$.nums", "contains", "2"]]),         // "2" != 2 in arrays
+            serde_json::json!([["$.nums", "contains", 3]]),
+        ];
+        for case in &falsy {
+            assert!(
+                !Expr::parse(case).unwrap().eval(&ctx),
+                "should be false: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_expr_new_operator_parse_errors() {
+        let cases = [
+            // is_null on a flat var
+            serde_json::json!([["http_x", "is_null"]]),
+            // unary op given a value
+            serde_json::json!([["http_x", "present", "y"]]),
+            // binary op missing a value (already an error; pin it stays one)
+            serde_json::json!([["http_x", "contains"]]),
+        ];
+        for case in &cases {
+            assert!(Expr::parse(case).is_err(), "should fail to parse: {case}");
+        }
+    }
+
+    #[test]
+    fn test_expr_not_group() {
+        let mut ctx = json_body_ctx(r#"{"user":{"id":null}}"#);
+        ctx.request
+            .headers
+            .insert("authorization".to_string(), vec!["Bearer tok".to_string()]);
+
+        // NOT over a rule
+        assert!(!Expr::parse(&serde_json::json!([[
+            "NOT",
+            ["http_authorization", "present"]
+        ]]))
+        .unwrap()
+        .eval(&ctx));
+
+        // NOT over a group, nested logic (spec example shape)
+        let e = Expr::parse(&serde_json::json!([
+            ["http_authorization", "present"],
+            ["http_authorization", "contains", "Bearer"],
+            [
+                "OR",
+                ["$.user.email", "present"],
+                ["NOT", ["$.user.id", "is_null"]]
+            ]
+        ]))
+        .unwrap();
+        // email absent AND id is null -> OR arm: (false OR NOT(true)) = false
+        assert!(!e.eval(&ctx));
+
+        // nested NOT(NOT(x)) == x
+        assert!(Expr::parse(&serde_json::json!([[
+            "NOT",
+            ["NOT", ["http_authorization", "present"]]
+        ]]))
+        .unwrap()
+        .eval(&ctx));
+    }
+
+    #[test]
+    fn test_expr_not_parse_errors() {
+        // zero children
+        assert!(Expr::parse(&serde_json::json!([["NOT"]])).is_err());
+        // two children
+        assert!(Expr::parse(&serde_json::json!([[
+            "NOT",
+            ["http_a", "present"],
+            ["http_b", "present"]
+        ]]))
+        .is_err());
     }
 }

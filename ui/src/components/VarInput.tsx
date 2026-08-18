@@ -27,6 +27,14 @@ interface VarInputProps {
   onChange: (v: string) => void;
   /** Placeholder text for the empty field. */
   placeholder?: string;
+  /**
+   * Accessible name for the underlying `<input>`/`<textarea>`. Optional
+   * because most callers rely on an adjacent `<label>` instead; passed
+   * straight through as `aria-label` when set (e.g. ConditionBuilder's
+   * "Condition name" rule-row field, whose plain-`<input>` fallback also
+   * carries this label).
+   */
+  ariaLabel?: string;
   /** Render a `<textarea>` instead of a single-line `<input>`. */
   multiline?: boolean;
   /** Visible rows when `multiline`; ignored otherwise (defaults to 4). */
@@ -89,6 +97,7 @@ export function VarInput({
   value,
   onChange,
   placeholder,
+  ariaLabel,
   multiline,
   rows,
   suggestions,
@@ -175,6 +184,7 @@ export function VarInput({
     ref: setRef,
     value,
     placeholder,
+    'aria-label': ariaLabel,
     onChange: handleChange,
     onSelect: handleSelect,
     onKeyDown: handleKeyDown,

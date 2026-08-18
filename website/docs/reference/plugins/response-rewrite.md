@@ -25,7 +25,7 @@ All keys are optional.
 | `headers.remove` | array of strings | `[]` | Header names to delete. |
 | `headers` (flat map) | map | — | Deprecated shape, accepted for config compatibility: a plain `{name: value}` map is treated as `set`. |
 | `filters` | array | — | Regex substitutions applied to the response body (see below). Mutually exclusive with `body`. |
-| `vars` | array | — | Triple-array condition expression, e.g. `[["status", "==", "500"]]` (rules are ANDed; operators: `==`, `~=`, `>`, `>=`, `<`, `<=`, `~~`, `~*`, `in`, `has`, `ipmatch`). When present and false at execution time, the node is a pure passthrough. |
+| `vars` | array | — | A [condition expression](../conditions.md), e.g. `[["status", "==", "500"]]` (rules ANDed at the top level; nested `AND`/`OR`/`NOT` groups and JSONPath body subjects — including `response_body:$...` — are supported, with all 15 operators). When present and false at execution time, the node is a pure passthrough. |
 
 Each `filters` entry:
 
