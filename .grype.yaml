@@ -20,12 +20,6 @@ exclude:
 
 # Accepted findings, each with a comment explaining why.
 ignore:
-  # brace-expansion DoS (unbounded expansion OOM). Every release <= 5.0.7 is
-  # vulnerable and the only patched version (5.0.8) is unreachable from the
-  # minimatch 3.x range pinned by docusaurus' serve-handler. Build-time
-  # tooling only — never in the shipped binary/image. Revisit when the
-  # minimatch/serve-handler chain moves to brace-expansion >= 5.0.8.
-  - vulnerability: GHSA-mh99-v99m-4gvg
   # image-size infinite-loop DoS on crafted ICNS/JXL/HEIF images. No patched
   # release exists (2.0.2 is latest and flagged); pulled in via
   # @docusaurus/mdx-loader, which only parses images checked into this repo
