@@ -1,6 +1,6 @@
 ---
 title: condition
-description: Branch the policy graph on a boolean condition expression — the request exits on the true or false port, and conditions that cannot be checked exit on error.
+description: Branch the policy graph on a boolean condition expression — the request exits on the true or false port.
 ---
 
 <span className="plugin-chip" style={{'--chip-color': '#f59e0b'}}>condition</span>
@@ -24,20 +24,18 @@ config:
 
 ## Behavior
 
-The expression grammar and operators are shared with [`request-validation`](request-validation.md), but evaluation is **strict** where `request-validation` is lenient: a condition that cannot actually be checked exits through the `error` port instead of silently counting as false. A rule is uncheckable when:
+The expression grammar, operators, and evaluation semantics are shared with [`request-validation`](request-validation.md) and every other node that takes a condition expression — evaluation is **lenient**:
 
-- its variable subject is absent (e.g. `http_x_tier` with no `x-tier` header) under a comparison operator — the existence tests `present` / `absent` legitimately ask about absence and still branch normally;
-- its JSONPath subject targets a body that is empty or not valid JSON (existence tests included — there is no document to ask about).
+- an absent variable subject (e.g. `arg_interactive` with no `?interactive=` query param) evaluates as the empty string, so a positive comparison over it is simply `false` (and `!=` is `true`); use the existence tests `present` / `absent` to branch on absence explicitly;
+- a JSONPath subject over a body that is empty, not valid JSON, or whose path matches nothing, matches zero nodes — comparison rules are `false`, `absent` is `true`.
 
-A JSONPath rule over a **valid** JSON body whose path matches nothing is a checked `false` (ANY-match over zero nodes), same as everywhere else conditions are used.
-
-Evaluation is left-to-right with short-circuiting, so an uncheckable rule only errors when it is reached before the group's outcome is decided. On error the plugin fails with code `CONDITION_UNCHECKABLE` (appended to `context.errors`) and the graph engine routes the node's `error` edge, the policy catch-all, or the default 500.
+Evaluation is left-to-right with short-circuiting. The node itself never fails: the request always leaves on `true` or `false`.
 
 The plugin does not write to `context.message`.
 
 ## Ports
 
-`condition` declares three output ports and no `success` port — the request always leaves on `true` or `false`, both mandatory: the policy compiler rejects any policy that leaves either unwired. `error` is optional, with the usual fallback chain.
+`condition` declares three output ports and no `success` port — the request always leaves on `true` or `false`, both mandatory: the policy compiler rejects any policy that leaves either unwired. `error` remains declared (so existing policies that wired it still compile) but the node never emits on it.
 
 ```yaml
 nodes:
@@ -54,6 +52,4 @@ edges:
     to: premium-upstream.in
   - from: tier-check.false
     to: standard-upstream.in
-  - from: tier-check.error
-    to: error-handler.in
 ```
