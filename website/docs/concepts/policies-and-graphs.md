@@ -93,12 +93,15 @@ The standard outcome vocabulary — no plugin invents a synonym:
 | `abort` | Injected fault response | configurable |
 | `routed` | Steered to and served by an alternate weighted target | backend-defined |
 | `hit` | Served from cache | cached status |
+| `true` / `false` | Boolean branch of the [`condition`](../reference/plugins/condition.md) waypoint | n/a (pure routing) |
 
 Outcome ports typically carry a response that's already fully prepared, so
 they're almost always wired straight to `client` — routing one through
 `upstream` would let it overwrite the prepared response, and routing it
 through `error-handler` would replace the prepared body with the handler's
-template. A handful of node types (`limit-conn`, `api-breaker`,
+template. The exception is `condition`'s `true`/`false` pair, which carries
+an untouched request and is wired onward into the branch's remaining
+pipeline. A handful of node types (`limit-conn`, `api-breaker`,
 `proxy-cache`) are expressed as a pair of nodes sharing one type and
 therefore one port declaration, so the role that never actually emits the
 outcome (e.g. `limit-conn`'s release node) still has to have it wired.
