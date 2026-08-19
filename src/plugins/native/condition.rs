@@ -1,8 +1,10 @@
 //! The `condition` node — a pure branching waypoint. Evaluates a boolean
 //! condition expression against the context and routes the request through
-//! the `true` or `false` outcome port; a condition that cannot actually be
-//! checked (absent variable under a comparison, JSONPath over a non-JSON
-//! body) exits through `error` instead of guessing.
+//! the `true` or `false` outcome port. Evaluation is lenient, matching every
+//! other expression consumer in the gateway: an absent variable evaluates as
+//! the empty string (so a positive comparison over it is simply false) and a
+//! JSONPath subject over an empty or non-JSON body matches zero nodes; use
+//! the `present`/`absent` operators to test existence explicitly.
 //!
 //! The expression grammar is shared with `request-validation`
 //! ([`crate::vars::Expr`]): top-level rules ANDed, nested `AND`/`OR`/`NOT`
@@ -12,12 +14,11 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 
-use crate::context::{Context, GatewayError};
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::context::Context;
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 /// Routes the context through `true` or `false` depending on a compiled
-/// condition expression; an uncheckable condition becomes a
-/// `CONDITION_UNCHECKABLE` execution error routed along the `error` edge.
+/// condition expression.
 #[derive(Debug)]
 pub struct ConditionPlugin {
     conditions: crate::vars::Expr,
@@ -57,19 +58,12 @@ impl Plugin for ConditionPlugin {
     }
 
     async fn execute(&self, ctx: Context) -> PluginResult {
-        match self.conditions.try_eval(&ctx) {
-            Ok(true) => Ok(PluginOutput::on_port(ctx, "true")),
-            Ok(false) => Ok(PluginOutput::on_port(ctx, "false")),
-            Err(reason) => Err(PluginExecutionError {
-                context: ctx,
-                error: GatewayError {
-                    node_id: String::new(),
-                    code: "CONDITION_UNCHECKABLE".to_string(),
-                    message: format!("condition could not be checked: {}", reason),
-                    metadata: HashMap::new(),
-                },
-            }),
-        }
+        let port = if self.conditions.eval(&ctx) {
+            "true"
+        } else {
+            "false"
+        };
+        Ok(PluginOutput::on_port(ctx, port))
     }
 }
 
@@ -143,29 +137,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_condition_uncheckable_var_is_error() {
-        let p = plugin(serde_json::json!([["http_missing", "==", "x"]]));
-        let err = p.execute(test_context("")).await.unwrap_err();
-        assert_eq!(err.error.code, "CONDITION_UNCHECKABLE");
-        assert!(
-            err.error.message.contains("http_missing"),
-            "{}",
-            err.error.message
-        );
-        // the context comes back untouched for the error edge
-        assert_eq!(err.context.request.path, "/api");
+    async fn test_condition_absent_var_comparison_is_false() {
+        // an absent variable evaluates as the empty string, so a positive
+        // comparison is simply false — not an error
+        let p = plugin(serde_json::json!([["arg_interactive", "==", "true"]]));
+        let out = p.execute(test_context("")).await.unwrap();
+        assert_eq!(out.port, Some("false"));
+        assert!(out.context.errors.is_empty());
     }
 
     #[tokio::test]
-    async fn test_condition_uncheckable_body_is_error() {
+    async fn test_condition_absent_var_ne_is_true() {
+        // empty-string semantics: an absent param is indeed "not equal"
+        let p = plugin(serde_json::json!([["arg_interactive", "!=", "true"]]));
+        let out = p.execute(test_context("")).await.unwrap();
+        assert_eq!(out.port, Some("true"));
+    }
+
+    #[tokio::test]
+    async fn test_condition_non_json_body_jsonpath_is_false() {
+        // a JSONPath subject over a non-JSON body matches zero nodes
         let p = plugin(serde_json::json!([["$.user.tier", "==", "premium"]]));
-        let err = p.execute(test_context("not json")).await.unwrap_err();
-        assert_eq!(err.error.code, "CONDITION_UNCHECKABLE");
-        assert!(
-            err.error.message.contains("request body"),
-            "{}",
-            err.error.message
-        );
+        let out = p.execute(test_context("not json")).await.unwrap();
+        assert_eq!(out.port, Some("false"));
+        assert!(out.context.errors.is_empty());
     }
 
     #[tokio::test]

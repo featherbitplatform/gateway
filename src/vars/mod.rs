@@ -268,22 +268,7 @@ impl Expr {
     /// not valid JSON.
     pub fn eval(&self, ctx: &Context) -> bool {
         let state = EvalState::new(ctx);
-        eval_node(&self.root, &state, false).expect("lenient eval is infallible")
-    }
-
-    /// Strict evaluation: errors instead of guessing when a condition cannot
-    /// actually be checked. A rule is uncheckable when its variable subject
-    /// is absent (except under the existence tests `present`/`absent`, which
-    /// legitimately ask about absence), or when a JSONPath subject targets a
-    /// body that is empty or not valid JSON (existence tests included — there
-    /// is no document to ask about).
-    ///
-    /// Evaluation is left-to-right with short-circuiting, so an uncheckable
-    /// rule only errors when it is reached before the group's outcome is
-    /// decided.
-    pub fn try_eval(&self, ctx: &Context) -> Result<bool, String> {
-        let state = EvalState::new(ctx);
-        eval_node(&self.root, &state, true)
+        eval_node(&self.root, &state)
     }
 }
 
@@ -476,29 +461,14 @@ fn parse_node(v: &serde_json::Value) -> Result<Node, String> {
     })
 }
 
-/// Evaluates a node left-to-right with short-circuiting. `strict: false`
-/// never returns `Err` (absent vars evaluate as empty string / absent
-/// address, an unparsable body matches zero nodes); `strict: true` turns
-/// those uncheckable rules into errors instead.
-fn eval_node(node: &Node, state: &EvalState, strict: bool) -> Result<bool, String> {
+/// Evaluates a node left-to-right with short-circuiting. Absent vars
+/// evaluate as empty string (absent address for `ipmatch`), and a JSONPath
+/// subject over an empty or unparsable body matches zero nodes.
+fn eval_node(node: &Node, state: &EvalState) -> bool {
     match node {
-        Node::And(children) => {
-            for c in children {
-                if !eval_node(c, state, strict)? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }
-        Node::Or(children) => {
-            for c in children {
-                if eval_node(c, state, strict)? {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
-        Node::Not(child) => Ok(!eval_node(child, state, strict)?),
+        Node::And(children) => children.iter().all(|c| eval_node(c, state)),
+        Node::Or(children) => children.iter().any(|c| eval_node(c, state)),
+        Node::Not(child) => !eval_node(child, state),
         Node::Rule {
             subject,
             negate,
@@ -507,31 +477,21 @@ fn eval_node(node: &Node, state: &EvalState, strict: bool) -> Result<bool, Strin
             let result = match subject {
                 Subject::Var(name) => {
                     let value = resolve(state.ctx, name);
-                    if strict && value.is_none() && !matches!(op, Op::Present | Op::Absent) {
-                        return Err(format!("variable '{}' is not resolvable", name));
-                    }
                     eval_op(op, value.as_deref())
                 }
                 Subject::Json(js) => {
                     let nodes: Vec<&serde_json::Value> = match state.body_json(&js.target) {
                         Some(doc) => js.path.query(doc).all(),
-                        None => {
-                            if strict {
-                                return Err(format!(
-                                    "{} body is empty or not valid JSON",
-                                    match js.target {
-                                        BodyTarget::Request => "request",
-                                        BodyTarget::Response => "response",
-                                    }
-                                ));
-                            }
-                            Vec::new()
-                        }
+                        None => Vec::new(),
                     };
                     eval_op_json(op, &nodes)
                 }
             };
-            Ok(if *negate { !result } else { result })
+            if *negate {
+                !result
+            } else {
+                result
+            }
         }
     }
 }
@@ -1144,127 +1104,12 @@ mod tests {
     }
 
     #[test]
-    fn test_expr_try_eval_resolvable_rules() {
-        let ctx = test_ctx();
-        assert_eq!(
-            expr(serde_json::json!([["arg_name", "==", "jack"]])).try_eval(&ctx),
-            Ok(true)
-        );
-        assert_eq!(
-            expr(serde_json::json!([["arg_name", "==", "jill"]])).try_eval(&ctx),
-            Ok(false)
-        );
-    }
-
-    #[test]
-    fn test_expr_try_eval_absent_var_errors() {
-        let ctx = test_ctx();
-        let err = expr(serde_json::json!([["arg_missing", "==", "x"]]))
-            .try_eval(&ctx)
-            .unwrap_err();
-        assert!(err.contains("arg_missing"), "{err}");
-
-        // negation doesn't rescue an unresolvable subject
-        assert!(expr(serde_json::json!([["arg_missing", "!", "==", "x"]]))
-            .try_eval(&ctx)
-            .is_err());
-    }
-
-    #[test]
-    fn test_expr_try_eval_existence_ops_never_error() {
-        let ctx = test_ctx();
-        assert_eq!(
-            expr(serde_json::json!([["arg_missing", "absent"]])).try_eval(&ctx),
-            Ok(true)
-        );
-        assert_eq!(
-            expr(serde_json::json!([["arg_missing", "present"]])).try_eval(&ctx),
-            Ok(false)
-        );
-        assert_eq!(
-            expr(serde_json::json!([["arg_missing", "!", "present"]])).try_eval(&ctx),
-            Ok(true)
-        );
-    }
-
-    #[test]
-    fn test_expr_try_eval_jsonpath_body() {
-        // valid JSON: absent paths are a checked false (ANY-match over zero
-        // nodes), same as lenient eval
-        let ctx = json_body_ctx(r#"{"user":{"name":"jack"}}"#);
-        assert_eq!(
-            expr(serde_json::json!([["$.user.name", "==", "jack"]])).try_eval(&ctx),
-            Ok(true)
-        );
-        assert_eq!(
-            expr(serde_json::json!([["$.missing", "==", "x"]])).try_eval(&ctx),
-            Ok(false)
-        );
-        assert_eq!(
-            expr(serde_json::json!([["$.missing", "absent"]])).try_eval(&ctx),
-            Ok(true)
-        );
-
-        // empty or non-JSON body: every JSONPath rule (existence ops included)
-        // is uncheckable
-        let plain = json_body_ctx("plain text");
-        let err = expr(serde_json::json!([["$.a", "==", "x"]]))
-            .try_eval(&plain)
-            .unwrap_err();
-        assert!(err.contains("request body"), "{err}");
-        assert!(expr(serde_json::json!([["$.a", "absent"]]))
-            .try_eval(&plain)
-            .is_err());
-        let empty = json_body_ctx("");
-        assert!(expr(serde_json::json!([["$.a", "present"]]))
-            .try_eval(&empty)
-            .is_err());
-    }
-
-    #[test]
-    fn test_expr_try_eval_short_circuit_and_propagation() {
-        let ctx = test_ctx();
-        // left-to-right: a decisive false short-circuits before the
-        // uncheckable rule is reached
-        assert_eq!(
-            expr(serde_json::json!([
-                ["arg_name", "==", "jill"],
-                ["arg_missing", "==", "x"]
-            ]))
-            .try_eval(&ctx),
-            Ok(false)
-        );
-        // ...but an uncheckable rule reached first propagates as an error
-        assert!(expr(serde_json::json!([
-            ["arg_missing", "==", "x"],
-            ["arg_name", "==", "jill"]
-        ]))
-        .try_eval(&ctx)
-        .is_err());
-
-        // OR short-circuits on true
-        assert_eq!(
-            expr(serde_json::json!([[
-                "OR",
-                ["arg_name", "==", "jack"],
-                ["arg_missing", "==", "x"]
-            ]]))
-            .try_eval(&ctx),
-            Ok(true)
-        );
-        // NOT propagates the error
-        assert!(
-            expr(serde_json::json!([["NOT", ["arg_missing", "==", "x"]]]))
-                .try_eval(&ctx)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn test_expr_lenient_eval_unchanged_by_try_eval() {
-        // the exact cases that error strictly still evaluate leniently
+    fn test_expr_eval_absent_subjects_are_lenient() {
+        // absent var = empty string: positive comparison false, != true
         let ctx = test_ctx();
         assert!(!expr(serde_json::json!([["arg_missing", "==", "x"]])).eval(&ctx));
+        assert!(expr(serde_json::json!([["arg_missing", "!=", "x"]])).eval(&ctx));
+        // a JSONPath over a non-JSON body matches zero nodes
         let plain = json_body_ctx("plain text");
         assert!(!expr(serde_json::json!([["$.a", "==", "x"]])).eval(&plain));
         assert!(expr(serde_json::json!([["$.a", "absent"]])).eval(&plain));
