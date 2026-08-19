@@ -141,8 +141,7 @@ policies:
         // time — so secret values never leak into API responses or UI
         // exports of the config.
         std::env::set_var("TEST_STORE_SECRET", "actual-secret-value");
-        let path =
-            std::env::temp_dir().join(format!("fb_store_raw_{}.yaml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("fb_store_raw_{}.yaml", std::process::id()));
         std::fs::write(
             &path,
             r#"
