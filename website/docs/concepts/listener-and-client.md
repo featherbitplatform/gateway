@@ -34,7 +34,7 @@ edges:
 The client node represents the requesting client. It is recorded as a **terminal** at compile time: when the Context reaches a client node, graph execution stops and the gateway sends `context.response` back to the caller (a `status_code` of `0` becomes `200`).
 
 - The client node is a **passthrough** — it does not modify the Context.
-- Unlike regular inputs, a client node's `in` port may have **multiple incoming edges**. Validation enforces at most one edge per input port for ordinary nodes, but explicitly exempts `client` (and `error-handler`) nodes — so the happy path and any error-handler paths can all deliver the final response through the same client node:
+- Like any input port, a client node's `in` port may have **multiple incoming edges** (fan-in is unrestricted) — so the happy path and any error-handler paths can all deliver the final response through the same client node:
 
 ```yaml
 edges:

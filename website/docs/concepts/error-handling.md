@@ -84,7 +84,7 @@ Every policy is validated before compilation — at startup, on hot-reload, and 
 | Listener required | The policy must contain a `listener` node |
 | Client required | The policy must contain a `client` node |
 | Edges resolve | Every edge's `from` and `to` must reference an existing node |
-| One edge per input | Each input port accepts at most one incoming edge — **except** inputs of `client` and `error-handler` nodes, which accept multiple (several paths can deliver the response or route errors to the same handler) |
+| Fan-in unrestricted | Any number of edges may converge on the same input port — several paths can deliver the response or route errors to the same node (fan-out and cycles are rejected later, at compile time) |
 | No orphans | Every node must have at least one incoming or outgoing edge; being named as the policy-level `error_handler` counts as connected |
 | Catch-all resolves | `error_handler`, if set, must reference an existing node |
 
