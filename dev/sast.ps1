@@ -11,10 +11,11 @@
 .EXAMPLE
     ./dev/sast.ps1                 # all scans except the image scan
     ./dev/sast.ps1 semgrep         # a single tool
-    ./dev/sast.ps1 image           # docker build + grype/trivy on the image
+    ./dev/sast.ps1 image           # docker build + grype/trivy + SBOM on the image
+    ./dev/sast.ps1 sbom            # CycloneDX SBOMs into sast-out/sbom/
     ./dev/sast.ps1 semgrep deny    # any subset
 
-    Targets: semgrep deny grype hadolint gitleaks npm-audit image all
+    Targets: semgrep deny grype hadolint gitleaks npm-audit sbom image all
 #>
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -31,6 +32,7 @@ $HadolintImage = 'hadolint/hadolint:latest-alpine'
 $GitleaksImage = 'zricethezav/gitleaks:latest'
 $TrivyImage    = 'aquasec/trivy:latest'
 $NodeImage     = 'node:22-alpine'
+$SyftImage     = 'anchore/syft:latest'
 
 # Semgrep registry rulesets — keep in sync with the semgrep job in security.yml.
 $SemgrepRulesets = @('p/default', 'p/rust', 'p/typescript', 'p/dockerfile')
@@ -39,8 +41,13 @@ $SemgrepRulesets = @('p/default', 'p/rust', 'p/typescript', 'p/dockerfile')
 $SemgrepExcludedRules = @('javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket')
 
 if ($Targets -contains 'all') {
-    $Targets = @('semgrep', 'deny', 'grype', 'hadolint', 'gitleaks', 'npm-audit')
+    $Targets = @('semgrep', 'deny', 'grype', 'hadolint', 'gitleaks', 'npm-audit', 'sbom')
 }
+
+# The product version stamped into every SBOM (ui/website package.json
+# versions are placeholders; the components version together).
+$GatewayVersion = (Select-String -Path "$RepoRoot/Cargo.toml" -Pattern '^version = "(.+)"' |
+    Select-Object -First 1).Matches[0].Groups[1].Value
 
 $Results = [ordered]@{}
 
@@ -112,6 +119,25 @@ foreach ($target in $Targets) {
             }
         }
 
+        'sbom' {
+            # CycloneDX SBOMs, one per source component — same generator (syft)
+            # and file names as docs.yml / docker.yml, so local output matches
+            # what CI publishes. The image SBOM comes from the `image` target.
+            New-Item -ItemType Directory -Force "$RepoRoot/sast-out/sbom" | Out-Null
+            foreach ($component in @(
+                @{ Name = 'featherbit-gateway'; Source = 'file:/src/Cargo.lock' },
+                @{ Name = 'featherbit-ui';      Source = 'file:/src/ui/package-lock.json' },
+                @{ Name = 'featherbit-website'; Source = 'file:/src/website/package-lock.json' }
+            )) {
+                Invoke-Scan "sbom ($($component.Name))" {
+                    docker run --rm -v "${RepoRoot}:/src:ro" -v "${RepoRoot}/sast-out/sbom:/out" `
+                        $SyftImage scan $component.Source `
+                        --source-name $component.Name --source-version $GatewayVersion `
+                        -o "cyclonedx-json=/out/$($component.Name).cdx.json"
+                }.GetNewClosure()
+            }
+        }
+
         'image' {
             if (-not (Test-Path "$RepoRoot/ui/dist/index.html")) {
                 Write-Host 'ui/dist is missing (the Dockerfile embeds it). Build it first: cd ui && npm ci && npm run build' -ForegroundColor Yellow
@@ -142,10 +168,17 @@ foreach ($target in $Targets) {
                     $TrivyImage image --config /src/trivy.yaml --exit-code 1 `
                     --input /src/sast-out/featherbit-image.tar
             }
+            New-Item -ItemType Directory -Force "$RepoRoot/sast-out/sbom" | Out-Null
+            Invoke-Scan 'sbom (featherbit-image)' {
+                docker run --rm -v "${RepoRoot}:/src:ro" -v "${RepoRoot}/sast-out/sbom:/out" `
+                    $SyftImage scan docker-archive:/src/sast-out/featherbit-image.tar `
+                    --source-name featherbit-image --source-version $GatewayVersion `
+                    -o cyclonedx-json=/out/featherbit-image.cdx.json
+            }
         }
 
         default {
-            Write-Host "Unknown target '$target'. Targets: semgrep deny grype hadolint gitleaks npm-audit image all" -ForegroundColor Red
+            Write-Host "Unknown target '$target'. Targets: semgrep deny grype hadolint gitleaks npm-audit sbom image all" -ForegroundColor Red
             exit 2
         }
     }

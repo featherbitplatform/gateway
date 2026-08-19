@@ -51,6 +51,30 @@ jobs:
         working-directory: ui
         run: npm run docs
 
+      - name: Install syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      # CycloneDX SBOMs served by the site (see website/docs/reference/sbom.md),
+      # one per source component so each file states which part of the product
+      # it covers. All are stamped with the gateway version — the components
+      # version together (ui/website package.json versions are placeholders).
+      # The image SBOM is published as a release asset instead (docker.yml).
+      - name: Generate SBOMs
+        run: |
+          mkdir -p website/static/sbom
+          syft="${{ steps.syft.outputs.cmd }}"
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          "$syft" scan file:Cargo.lock \
+            --source-name featherbit-gateway --source-version "$version" \
+            -o cyclonedx-json=website/static/sbom/featherbit-gateway.cdx.json
+          "$syft" scan file:ui/package-lock.json \
+            --source-name featherbit-ui --source-version "$version" \
+            -o cyclonedx-json=website/static/sbom/featherbit-ui.cdx.json
+          "$syft" scan file:website/package-lock.json \
+            --source-name featherbit-website --source-version "$version" \
+            -o cyclonedx-json=website/static/sbom/featherbit-website.cdx.json
+
       - name: Build site
         working-directory: website
         run: |
