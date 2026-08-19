@@ -1,10 +1,14 @@
 //! Configuration loading and schema types for the gateway's two YAML files:
 //! `system.yaml` (process-level settings: listener, timeouts, admin, logging)
 //! and `gateway.yaml` (routes and node-graph policies). All values support
-//! `${ENV_VAR:-default}` interpolation: raw YAML file text is interpolated by
-//! [`load_yaml_with_env`], and structured plugin config authored through the
-//! Admin API / Web UI (or delivered over etcd) is interpolated at graph-compile
-//! time by [`interpolate_env_json`].
+//! `${ENV_VAR:-default}` interpolation, resolved at different times by file:
+//! `system.yaml` is text-interpolated at load by [`load_yaml_with_env`];
+//! `gateway.yaml` is loaded **raw** by [`load_yaml`] — placeholders stay in
+//! the stored config (which the Admin API serves to the Web UI, so resolved
+//! secrets never leak there) and are resolved at the point of consumption:
+//! plugin node config at graph-compile time ([`interpolate_env_json`]), route
+//! match rules when the route table is built, consumer credentials when the
+//! consumer store is built.
 
 mod gateway;
 mod loader;
@@ -12,7 +16,7 @@ mod resolve;
 mod system;
 mod warnings;
 
-pub use loader::{interpolate_env_json, load_yaml_with_env};
+pub use loader::{interpolate_env, interpolate_env_json, load_yaml, load_yaml_with_env};
 // featherbit is a binary crate, so `pub` exports nothing externally: re-exports
 // consumed only by `#[cfg(test)]` code read as unused in the bin build.
 #[allow(unused_imports)]
