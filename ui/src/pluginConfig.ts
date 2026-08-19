@@ -777,6 +777,10 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
       ] },
     { key: 'max_body_size', label: 'Max body size (bytes)', type: 'number', default: 1048576, hint: 'larger bodies skip body rules' },
   ],
+  condition: [
+    { key: 'conditions', label: 'Conditions', type: 'conditions', shape: 'expr',
+      hint: 'boolean predicates over headers, vars, and JSONPath body queries; the result picks the true/false branch, uncheckable rules exit on error' },
+  ],
   'request-validation': [
     { key: 'header_schema', label: 'Header schema (JSON)', type: 'textarea', rows: 6, placeholder: '{"type":"object","required":["x-api-version"]}', hint: 'JSON Schema; headers seen as {name: first_value}, lowercase names', template: 'env-only' },
     { key: 'body_schema', label: 'Body schema (JSON)', type: 'textarea', rows: 8, placeholder: '{"type":"object","required":["name"]}', hint: 'JSON Schema; at least one schema is required', template: 'env-only' },

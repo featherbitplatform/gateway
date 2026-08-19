@@ -30,6 +30,7 @@ export const PLUGIN_CATEGORIES: PluginCategory[] = [
     label: 'Structural & core proxy',
     types: [
       'client',
+      'condition',
       'upstream',
       'proxy-rewrite',
       'response-rewrite',

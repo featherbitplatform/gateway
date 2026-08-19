@@ -182,6 +182,7 @@ other:
 
 | Plugin | Config key | Shape |
 |---|---|---|
+| [`condition`](./plugins/condition.md) | `conditions` | One expression; branches the graph through `true`/`false` ports — the only **strict** evaluator: an uncheckable rule (absent variable under a comparison, JSONPath over a non-JSON body) exits on `error` instead of counting as false |
 | [`request-validation`](./plugins/request-validation.md) | `conditions` | One expression (the top-level list is itself ANDed); evaluated after schema validation, rejects through `denied` |
 | [`fault-injection`](./plugins/fault-injection.md) | `abort.vars` / `delay.vars` | An **array of expressions, OR-ed across items, AND-ed within each item** — a flat single-expression list is also accepted as a convenience |
 | [`response-rewrite`](./plugins/response-rewrite.md) | `vars` | One expression; gates the whole node — false means an untouched passthrough |
