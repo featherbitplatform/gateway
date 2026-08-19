@@ -214,7 +214,8 @@ Before serving traffic, each policy is validated (see the rules in [Error handli
 
 - instantiates each node's plugin from its `type` and `config`;
 - records every `client` node as a **terminal** — execution stops when the context reaches one;
-- indexes edges by their **source port**, normalizing `out` to `success`; an edge naming a port the node's type doesn't declare is a compile error, and two edges leaving the same `node.port` (fan-out) is also a compile error;
+- indexes edges by their **source port**, normalizing `out` to `success`; an edge naming a port the node's type doesn't declare is a compile error, and two edges leaving the same `node.port` (fan-out) is also a compile error — any number of edges may *arrive* at the same node (fan-in);
+- rejects **cycles**: the runtime walk follows edges with no step limit, so a graph whose edges loop back on themselves (through any port, error edges included) fails compilation naming a node on the loop;
 - enforces the **mandatory-wiring rule**: every `success` or `outcome` port of every node must have an outgoing edge, or compilation fails naming the missing edge (`error` ports are exempt — see [Error handling](error-handling.md));
 - determines the **entry node** as the target of the listener's `success`/`out` edge — this is the first node executed for each request;
 - fails if the policy has no `listener` node or a plugin cannot be constructed from its config.
