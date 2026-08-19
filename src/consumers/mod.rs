@@ -86,15 +86,39 @@ impl ConsumerStore {
     pub fn from_config(consumers: &[ConsumerConfig]) -> Result<Self, String> {
         let mut store = Self::default();
 
+        // Consumer declarations arrive with `${VAR}` placeholders intact
+        // (gateway config is loaded raw so the Admin API never serves
+        // resolved secrets); the store is where they resolve, so credential
+        // lookups index the actual values.
+        let resolve = |s: &str| -> String {
+            if s.contains("${") {
+                crate::config::interpolate_env(s)
+            } else {
+                s.to_string()
+            }
+        };
         for config in consumers {
             if config.name.trim().is_empty() {
                 return Err("consumer with empty name".to_string());
             }
+            let credentials = config
+                .credentials
+                .iter()
+                .map(|(auth_type, credential)| {
+                    let mut credential = credential.clone();
+                    crate::config::interpolate_env_json(&mut credential);
+                    (auth_type.clone(), credential)
+                })
+                .collect();
             let consumer = Arc::new(Consumer {
-                name: config.name.clone(),
-                group: config.group.clone(),
-                labels: config.labels.clone(),
-                credentials: config.credentials.clone(),
+                name: resolve(&config.name),
+                group: config.group.as_deref().map(resolve),
+                labels: config
+                    .labels
+                    .iter()
+                    .map(|(k, v)| (k.clone(), resolve(v)))
+                    .collect(),
+                credentials,
             });
 
             if store
@@ -105,7 +129,7 @@ impl ConsumerStore {
                 return Err(format!("duplicate consumer name '{}'", consumer.name));
             }
 
-            for (auth_type, credential) in &config.credentials {
+            for (auth_type, credential) in &consumer.credentials {
                 let field = primary_credential_field(auth_type);
                 let value = credential
                     .get(field)
@@ -201,6 +225,33 @@ mod tests {
 
     fn config(json: serde_json::Value) -> Vec<ConsumerConfig> {
         serde_json::from_value(json).expect("valid consumer config")
+    }
+
+    #[test]
+    fn test_consumer_credentials_resolve_env_placeholders() {
+        // gateway.yaml is loaded with `${VAR}` placeholders intact (so the
+        // Admin API never serves resolved secrets); the store must resolve
+        // them when it builds, or env-provided credentials stop matching.
+        std::env::set_var("TEST_CONSUMER_KEY", "k-resolved-123");
+        let store = ConsumerStore::from_config(&config(serde_json::json!([
+            {
+                "name": "alice",
+                "labels": { "tier": "${TEST_CONSUMER_TIER:-gold}" },
+                "credentials": { "key-auth": { "key": "${TEST_CONSUMER_KEY}" } }
+            }
+        ])))
+        .unwrap();
+
+        let alice = store
+            .find_by_credential("key-auth", "k-resolved-123")
+            .expect("credential indexed under the resolved value");
+        assert_eq!(alice.name, "alice");
+        assert_eq!(
+            alice.credentials["key-auth"]["key"],
+            serde_json::json!("k-resolved-123")
+        );
+        assert_eq!(alice.labels["tier"], "gold");
+        std::env::remove_var("TEST_CONSUMER_KEY");
     }
 
     #[test]
