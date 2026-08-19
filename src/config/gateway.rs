@@ -77,6 +77,33 @@ pub struct MatchRule {
     pub host: Option<String>,
 }
 
+impl MatchRule {
+    /// Resolves `${ENV_VAR:-default}` placeholders in every matchable field.
+    ///
+    /// Called on the route-table copy when routes are compiled; the stored
+    /// config keeps the placeholder form (gateway config is loaded raw so
+    /// the Admin API never serves resolved values).
+    pub fn interpolate_env(&mut self) {
+        let resolve = |s: &mut String| {
+            if s.contains("${") {
+                *s = super::loader::interpolate_env(s);
+            }
+        };
+        if let Some(path) = &mut self.path {
+            resolve(path);
+        }
+        if let Some(host) = &mut self.host {
+            resolve(host);
+        }
+        for method in &mut self.methods {
+            resolve(method);
+        }
+        for value in self.headers.values_mut() {
+            resolve(value);
+        }
+    }
+}
+
 /// A node-graph policy: a named pipeline of plugin nodes wired by edges.
 ///
 /// Compiled into a `CompiledGraph` at load/reload time; execution starts at

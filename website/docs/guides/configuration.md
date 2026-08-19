@@ -102,7 +102,7 @@ policies:
 
 ## Environment variable interpolation
 
-All configuration values support shell-style interpolation. It runs on the raw file text **before** YAML parsing, so `${VAR}` works anywhere in the file — keys, values, and free-form plugin config alike.
+All configuration values support shell-style interpolation:
 
 | Pattern | Result |
 |---|---|
@@ -123,27 +123,51 @@ Rules:
 - There is **no escape syntax** for a literal `${...}`.
 - Multiple references in one value are all expanded, e.g. `bind: ${GW_HOST}:${GW_PORT}`.
 
-### Plugin node config authored through the Admin API / Web UI
+**When resolution happens differs by file.** `system.yaml` is interpolated on
+the raw file text before YAML parsing, so `${VAR}` works anywhere in it — keys
+and values alike.
 
-Config that arrives as structured data rather than raw YAML text — a plugin node
-created or edited through the [Admin API](./admin-api.md) or the Web UI node
-editor, or delivered over etcd — is **also** interpolated, but at a different
-point: each string value in a node's `config` is resolved when the policy graph
-is compiled, not by the file-text pass above. So a node field set to
-`client_id: ${CLIENT_ID}` in the UI resolves from the environment exactly as the
-same value would in `gateway.yaml`.
+`gateway.yaml` (and everything authored through the [Admin API](./admin-api.md)
+/ Web UI or delivered over etcd) is loaded with placeholders **preserved**: the
+stored configuration — what the Admin API serves, the UI displays, and config
+exports contain — always keeps the literal `${VAR}` form, so a secret like
+`client_secret: ${CLIENT_SECRET}` never appears resolved in an API response or
+an exported file. Values are resolved from the gateway process's environment at
+the point of use instead:
 
-- Interpolation applies to string leaves of a node's `config` (including strings
-  nested in arrays and objects). Non-string values are untouched.
-- The **stored** value keeps the `${VAR}` template — the UI shows `${CLIENT_ID}`,
-  while the running plugin sees the resolved value. Env vars are resolved fresh on
-  every (re)compile, so changing the variable and reloading picks up the new value
-  without rewriting the config.
-- The env var must be set in the **gateway process's** environment. A value only
-  present in your shell or the browser is not visible to the gateway.
-- Because an authenticated Admin API caller can read a resolved value back (e.g.
-  by echoing it into a response header), only expose environment holding secrets
-  to operators you trust with the Admin API.
+- **plugin node config** (including `plugin_configs` profiles and supernode
+  inner nodes) — when the policy graph is compiled;
+- **route `match` rules** (path, host, methods, header values) — when the route
+  table is built;
+- **consumer fields and credentials** — when the consumer store is built.
+
+Resolution is fresh on every (re)compile, so changing a variable and reloading
+picks up the new value without rewriting any config.
+
+Because gateway config is parsed before resolution, a placeholder is a YAML
+*string* at load time. A value that is **exactly one** `${...}` placeholder is
+typed after resolution the way YAML would type the same unquoted scalar:
+`port: ${ECHO_PORT:-3010}` yields the number `3010`, `enabled: ${FLAG:-false}`
+yields a boolean. A resolved value that does not parse as a number or boolean —
+and any placeholder embedded in wider text, like `${GW_HOST}:${GW_PORT}` —
+stays a string. Two consequences to be aware of:
+
+- YAML quoting cannot force a string: a full-placeholder value whose resolution
+  *looks* numeric or boolean (say an all-digits API key) is typed as a number or
+  boolean even if the YAML value was quoted. If that happens the plugin rejects
+  the config loudly at compile time (a string field reads a number as missing) —
+  the fix is a value that doesn't parse as a scalar, or setting the literal value
+  directly instead of via `${...}`;
+- `${VAR}` in gateway.yaml **keys** or in structural fields (node ids, edge
+  endpoints, policy/config_ref names) is no longer interpolated — placeholders
+  belong in values that are matched or handed to plugins.
+
+The env var must be set in the **gateway process's** environment; a value only
+present in your shell or the browser is not visible to the gateway. And while
+the Admin API never serves resolved values, an authenticated caller can still
+arrange to read one back through the data plane (e.g. by echoing it into a
+response header) — only expose environment holding secrets to operators you
+trust with the Admin API.
 
 ## Hot-reload
 
@@ -151,7 +175,7 @@ same value would in `gateway.yaml`.
 
 **File watcher.** The gateway watches the config file's parent directory (recursively) for modify/create events. Events are debounced: after the first event the reloader waits 500 ms and drains any further events, so a burst of filesystem notifications (as editors typically produce) results in a single reload.
 
-**Admin API.** `POST /api/config/reload` re-reads `gateway.yaml` from disk (with env interpolation), recompiles all route graphs, and swaps them in. See [Admin API](./admin-api.md).
+**Admin API.** `POST /api/config/reload` re-reads `gateway.yaml` from disk (placeholders preserved; env vars resolve as the route graphs compile), recompiles all route graphs, and swaps them in. See [Admin API](./admin-api.md).
 
 **Last-good-config guarantee.** Every reload path validates and recompiles the full configuration before swapping anything. If the new file fails to parse, validate, or compile, the failure is logged (or returned as an error by the reload endpoint) and the previously loaded configuration stays active — traffic keeps flowing on the last good config.
 
