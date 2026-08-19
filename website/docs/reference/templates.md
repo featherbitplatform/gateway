@@ -50,8 +50,9 @@ they can't drift.
 ## Load-time vs request-time resolution
 
 - **`env.<NAME>`** is substituted once, when the template is parsed — the same moment
-  `gateway.yaml`'s own `${ENV_VAR:-default}` interpolation runs, i.e. at config load or
-  hot-reload. A rendered template never sees the literal text `env.NAME` — by the time
+  `gateway.yaml`'s own `${ENV_VAR:-default}` interpolation runs, i.e. when policies
+  compile (config load, hot-reload, or an Admin API commit). A rendered template never
+  sees the literal text `env.NAME` — by the time
   requests are served, it has already become the environment variable's value (or, if
   unset, a passed-through literal — see below). **Reload the gateway to pick up an
   environment variable change**; a running process does not re-read `env.*` references.

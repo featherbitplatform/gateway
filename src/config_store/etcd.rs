@@ -403,7 +403,10 @@ pub async fn build_source(
 
     let mut gateway = store.load_all().await?;
     if is_empty(&gateway) {
-        if let Ok(local) = crate::config::load_yaml_with_env::<GatewayConfig>(seed_path) {
+        // Raw load: seeding must publish the `${VAR}` placeholder form, never
+        // locally-resolved secrets — every cluster node resolves its own env
+        // at compile time.
+        if let Ok(local) = crate::config::load_yaml::<GatewayConfig>(seed_path) {
             if !is_empty(&local) {
                 // Never publish a config the cluster cannot apply: compile it
                 // locally first and skip the seed on failure, so the prefix

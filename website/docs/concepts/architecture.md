@@ -74,6 +74,6 @@ This runs at startup (the process exits on invalid config — fail fast), after 
 - `system.yaml` — listener bind/port, timeouts, logging, admin API settings. Loaded once at startup.
 - `gateway.yaml` — routes and policies. Hot-reloaded on change.
 
-All YAML values in both files support `${ENV_VAR:-default}` interpolation, resolved at load time.
+All YAML values in both files support `${ENV_VAR:-default}` interpolation — `system.yaml` resolves at load time, `gateway.yaml` keeps the placeholders in the stored config (so the Admin API and UI never see resolved secrets) and resolves them as policies compile. See [Configuration](../guides/configuration.md#environment-variable-interpolation).
 
 TLS termination (with hot-reloaded certs, mTLS, and SNI), HTTP/2, WebSocket proxying, L4 TCP/UDP stream proxying, etcd-backed clustering, and graceful shutdown are all implemented — see the [TLS](../guides/tls.md), [stream](../guides/stream.md), and [deployment](../guides/deployment.md) guides. The remaining gaps are tracked honestly on the [roadmap](../reference/roadmap.md).

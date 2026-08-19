@@ -91,7 +91,7 @@ Core features:
 
 - `config/system.yaml` — listeners, TLS, HTTP/2, timeouts, admin API, logging
 - `config/gateway.yaml` — routes (match rules + policy reference), policies (nodes + edges)
-- All YAML values support `${ENV_VAR:-default}` interpolation
+- All YAML values support `${ENV_VAR:-default}` interpolation — `system.yaml` resolves on the raw file text at load; `gateway.yaml` is loaded raw (placeholders stay in the stored config so the Admin API/UI never serve resolved secrets) and resolves at the point of use: plugin config at graph-compile time, route match rules at route-table build, consumer fields at consumer-store build
 
 ## Available Plugin Types
 
