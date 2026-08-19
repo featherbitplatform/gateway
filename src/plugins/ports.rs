@@ -238,6 +238,27 @@ pub const TRAFFIC_SPLIT_SPEC: PortSpec = PortSpec {
     ],
 };
 
+/// `condition`: a pure branching waypoint — no `success` port, the request
+/// always leaves on `true` or `false`. An uncheckable condition (absent
+/// variable under a comparison, JSONPath over a non-JSON body) exits on
+/// `error`.
+pub const CONDITION_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        PortDecl {
+            name: "true",
+            kind: PortKind::Outcome,
+            description: "The conditions evaluated to true.",
+        },
+        PortDecl {
+            name: "false",
+            kind: PortKind::Outcome,
+            description: "The conditions evaluated to false.",
+        },
+        ERROR,
+    ],
+};
+
 /// `proxy-cache` (lookup phase): a cache hit exits on `hit`. `success`
 /// covers a miss or a non-cacheable method/bypass — the request continues to
 /// the upstream.
