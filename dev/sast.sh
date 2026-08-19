@@ -6,9 +6,10 @@
 # Usage:
 #   ./dev/sast.sh                 # all scans except the image scan
 #   ./dev/sast.sh semgrep         # a single tool
-#   ./dev/sast.sh image           # docker build + grype/trivy on the image
+#   ./dev/sast.sh image           # docker build + grype/trivy + SBOM on the image
+#   ./dev/sast.sh sbom            # CycloneDX SBOMs into sast-out/sbom/
 #
-# Targets: semgrep deny grype hadolint gitleaks npm-audit image all
+# Targets: semgrep deny grype hadolint gitleaks npm-audit sbom image all
 set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,6 +21,7 @@ HADOLINT_IMAGE='hadolint/hadolint:latest-alpine'
 GITLEAKS_IMAGE='zricethezav/gitleaks:latest'
 TRIVY_IMAGE='aquasec/trivy:latest'
 NODE_IMAGE='node:22-alpine'
+SYFT_IMAGE='anchore/syft:latest'
 
 # Semgrep registry rulesets — keep in sync with the semgrep job in security.yml.
 SEMGREP_RULESETS='--config p/default --config p/rust --config p/typescript --config p/dockerfile'
@@ -30,8 +32,12 @@ SEMGREP_EXCLUDES='--exclude-rule javascript.lang.security.detect-insecure-websoc
 TARGETS=("$@")
 [ ${#TARGETS[@]} -eq 0 ] && TARGETS=(all)
 if [ "${TARGETS[0]}" = all ]; then
-    TARGETS=(semgrep deny grype hadolint gitleaks npm-audit)
+    TARGETS=(semgrep deny grype hadolint gitleaks npm-audit sbom)
 fi
+
+# The product version stamped into every SBOM (ui/website package.json
+# versions are placeholders; the components version together).
+GATEWAY_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -n1)"
 
 NAMES=()
 CODES=()
@@ -92,6 +98,24 @@ for target in "${TARGETS[@]}"; do
         done
         ;;
 
+    sbom)
+        # CycloneDX SBOMs, one per source component — same generator (syft)
+        # and file names as docs.yml / docker.yml, so local output matches
+        # what CI publishes. The image SBOM comes from the `image` target.
+        mkdir -p "$REPO_ROOT/sast-out/sbom"
+        for entry in \
+            'featherbit-gateway file:/src/Cargo.lock' \
+            'featherbit-ui file:/src/ui/package-lock.json' \
+            'featherbit-website file:/src/website/package-lock.json'; do
+            name="${entry%% *}"
+            source="${entry#* }"
+            run_scan "sbom ($name)" docker run --rm -v "$REPO_ROOT:/src:ro" \
+                -v "$REPO_ROOT/sast-out/sbom:/out" "$SYFT_IMAGE" \
+                scan "$source" --source-name "$name" --source-version "$GATEWAY_VERSION" \
+                -o "cyclonedx-json=/out/$name.cdx.json"
+        done
+        ;;
+
     image)
         if [ ! -f "$REPO_ROOT/ui/dist/index.html" ]; then
             echo 'ui/dist is missing (the Dockerfile embeds it). Build it first: cd ui && npm ci && npm run build'
@@ -116,10 +140,17 @@ for target in "${TARGETS[@]}"; do
             -v featherbit-trivy-cache:/root/.cache/trivy \
             "$TRIVY_IMAGE" image --config /src/trivy.yaml --exit-code 1 \
             --input /src/sast-out/featherbit-image.tar
+
+        mkdir -p "$REPO_ROOT/sast-out/sbom"
+        run_scan 'sbom (featherbit-image)' docker run --rm -v "$REPO_ROOT:/src:ro" \
+            -v "$REPO_ROOT/sast-out/sbom:/out" "$SYFT_IMAGE" \
+            scan docker-archive:/src/sast-out/featherbit-image.tar \
+            --source-name featherbit-image --source-version "$GATEWAY_VERSION" \
+            -o cyclonedx-json=/out/featherbit-image.cdx.json
         ;;
 
     *)
-        echo "Unknown target '$target'. Targets: semgrep deny grype hadolint gitleaks npm-audit image all"
+        echo "Unknown target '$target'. Targets: semgrep deny grype hadolint gitleaks npm-audit sbom image all"
         exit 2
         ;;
     esac
