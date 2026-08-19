@@ -84,8 +84,8 @@ Every policy is validated before compilation — at startup, on hot-reload, and 
 | Listener required | The policy must contain a `listener` node |
 | Client required | The policy must contain a `client` node |
 | Edges resolve | Every edge's `from` and `to` must reference an existing node |
-| One edge per input | Each input port accepts at most one incoming edge — **except** inputs of `client` and `error-handler` nodes, which accept multiple (several paths can deliver the response or route errors to the same handler) |
+| Fan-in unrestricted | Any number of edges may converge on the same input port — several paths can deliver the response or route errors to the same node (fan-out and cycles are rejected later, at compile time) |
 | No orphans | Every node must have at least one incoming or outgoing edge; being named as the policy-level `error_handler` counts as connected |
 | Catch-all resolves | `error_handler`, if set, must reference an existing node |
 
-These structural checks collect **all** violations rather than stopping at the first, and a failed validation on reload leaves the previous configuration serving traffic — see [Architecture](architecture.md). The port checks that run afterwards, at compile time (unknown port name, fan-out, [mandatory outcome wiring](policies-and-graphs.md#outcome-ports-and-the-mandatory-wiring-rule)), report the first violation and stop.
+These structural checks collect **all** violations rather than stopping at the first, and a failed validation on reload leaves the previous configuration serving traffic — see [Architecture](architecture.md). The port checks that run afterwards, at compile time (unknown port name, fan-out, [mandatory outcome wiring](policies-and-graphs.md#outcome-ports-and-the-mandatory-wiring-rule), cycles), report the first violation and stop.

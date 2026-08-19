@@ -315,12 +315,10 @@ export function GraphCanvas({
   const onConnect = useCallback(
     (connection: Connection) => {
       setEdges((eds) => {
-        // Cardinality rules (connectionRules.ts): an occupied single-input
-        // target rejects the edge; an occupied source port is rewired so a
-        // port never fans out — the compiler would reject the save anyway.
-        const targetNode = nodes.find((n) => n.id === connection.target);
-        const targetType = (targetNode?.data as unknown as PluginNodeData)?.pluginType;
-        const base = edgesAfterConnect(eds, connection, targetType);
+        // Connection rules (connectionRules.ts): an occupied source port is
+        // rewired so a port never fans out, and an edge that would close a
+        // cycle is rejected — the compiler would bounce the save anyway.
+        const base = edgesAfterConnect(eds, connection);
         if (base === null) {
           return eds;
         }

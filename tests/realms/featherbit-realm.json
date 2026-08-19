@@ -529,7 +529,7 @@
     "alwaysDisplayInConsole" : false,
     "clientAuthenticatorType" : "client-secret",
     "secret" : "BETqxvxQa7X5xkYSbDqkv8K9KFwqn8S3",
-    "redirectUris" : [ "https://localhost/*" ],
+    "redirectUris" : [ "http://localhost:8080/*" ],
     "webOrigins" : [ "" ],
     "notBefore" : 0,
     "bearerOnly" : false,
@@ -548,7 +548,7 @@
       "backchannel.logout.session.required" : "true",
       "oauth2.jwt.authorization.grant.enabled" : "false",
       "standard.token.exchange.enabled" : "false",
-      "post.logout.redirect.uris" : "https://localhost/*",
+      "post.logout.redirect.uris" : "http://localhost:8080/*",
       "oauth2.device.authorization.grant.enabled" : "false",
       "backchannel.logout.revoke.offline.tokens" : "false",
       "dpop.bound.access.tokens" : "false"
