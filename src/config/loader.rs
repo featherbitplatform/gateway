@@ -1,6 +1,13 @@
-//! YAML loading with shell-style environment variable interpolation, applied
-//! to the raw file text before deserialization so every config value —
-//! including nested plugin config — supports `${ENV_VAR:-default}`.
+//! YAML loading and shell-style `${ENV_VAR:-default}` interpolation.
+//!
+//! Two loading modes: [`load_yaml_with_env`] interpolates the raw file text
+//! before parsing (used for `system.yaml`, which is never served back to
+//! clients), while [`load_yaml`] preserves placeholders verbatim (used for
+//! `gateway.yaml`, whose contents the Admin API serves to the Web UI —
+//! resolved secrets must never appear there). Placeholders in gateway config
+//! are resolved at the point of consumption instead: plugin node config at
+//! graph-compile time via [`interpolate_env_json`], route match rules and
+//! consumer credentials when the route table / consumer store are built.
 
 use regex::Regex;
 use serde::de::DeserializeOwned;
@@ -31,21 +38,25 @@ pub fn interpolate_env(input: &str) -> String {
 /// of a JSON value — object values, array elements, and nested combinations —
 /// leaving numbers, booleans, and null untouched.
 ///
-/// This brings the same `${ENV_VAR}` substitution that [`load_yaml_with_env`]
-/// applies to raw YAML *text* to config that arrives as already-parsed
-/// structured data — i.e. plugin node config authored through the Admin API /
-/// Web UI or delivered over etcd, which never passes through the file-text
-/// interpolation path. Applied at graph-compile time it is source-agnostic: a
-/// `client_id: ${CLIENT_ID}` set in the UI resolves exactly as it would in
-/// `gateway.yaml`. File-loaded values were already interpolated before parsing,
-/// so on them this is a no-op (the `${` fast-path guard skips them).
+/// This is the single resolution point for structured plugin config from
+/// every source — `gateway.yaml` (loaded raw by [`load_yaml`]), the Admin
+/// API / Web UI, and etcd. Applied at graph-compile time it is
+/// source-agnostic: a `client_id: ${CLIENT_ID}` resolves identically however
+/// it was authored, and the stored config keeps the placeholder form (so the
+/// Admin API never serves resolved secrets).
+///
+/// A string that is exactly one `${...}` placeholder is **typed like the
+/// YAML scalar it stands in for**: a resolved value of `true`/`false`
+/// becomes a boolean and a value parsing as a number becomes a number
+/// (`port: ${PORT:-3010}` yields `3010`, not `"3010"`); anything else,
+/// including the empty string, stays a string. A placeholder embedded in
+/// wider text always resolves to a string.
 pub fn interpolate_env_json(value: &mut serde_json::Value) {
+    if let Some(resolved) = interpolated_replacement(value) {
+        *value = resolved;
+        return;
+    }
     match value {
-        serde_json::Value::String(s) => {
-            if s.contains("${") {
-                *s = interpolate_env(s);
-            }
-        }
         serde_json::Value::Array(items) => {
             for item in items {
                 interpolate_env_json(item);
@@ -57,6 +68,44 @@ pub fn interpolate_env_json(value: &mut serde_json::Value) {
             }
         }
         _ => {}
+    }
+}
+
+/// The replacement for a string leaf containing `${...}`, `None` for
+/// everything else (the `${` fast-path guard included).
+fn interpolated_replacement(value: &serde_json::Value) -> Option<serde_json::Value> {
+    let s = value.as_str()?;
+    if !s.contains("${") {
+        return None;
+    }
+    let whole = Regex::new(r"^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-((?:[^}\\]|\\.)*)?)?\}$")
+        .unwrap()
+        .is_match(s);
+    let resolved = interpolate_env(s);
+    Some(if whole {
+        coerce_scalar(&resolved).unwrap_or(serde_json::Value::String(resolved))
+    } else {
+        serde_json::Value::String(resolved)
+    })
+}
+
+/// Types a resolved full-placeholder value the way YAML types the same
+/// unquoted scalar: booleans and finite numbers; everything else `None`.
+fn coerce_scalar(s: &str) -> Option<serde_json::Value> {
+    match s {
+        "true" => Some(serde_json::Value::Bool(true)),
+        "false" => Some(serde_json::Value::Bool(false)),
+        _ => {
+            if let Ok(i) = s.parse::<i64>() {
+                return Some(serde_json::Value::Number(i.into()));
+            }
+            if let Ok(f) = s.parse::<f64>() {
+                if f.is_finite() {
+                    return serde_json::Number::from_f64(f).map(serde_json::Value::Number);
+                }
+            }
+            None
+        }
     }
 }
 
@@ -72,6 +121,20 @@ pub fn load_yaml_with_env<T: DeserializeOwned>(
     let raw = fs::read_to_string(path)?;
     let interpolated = interpolate_env(&raw);
     let config: T = serde_yaml::from_str(&interpolated)?;
+    Ok(config)
+}
+
+/// Loads a YAML file and deserializes into `T` **without** resolving
+/// `${ENV_VAR}` placeholders — they are preserved verbatim in the parsed
+/// structure.
+///
+/// Used for `gateway.yaml`: its contents are served back to the Web UI by
+/// the Admin API, so resolving placeholders at load time would leak secret
+/// values into API responses and config exports. Resolution happens at the
+/// point of consumption instead (see [`interpolate_env_json`]).
+pub fn load_yaml<T: DeserializeOwned>(path: &Path) -> Result<T, Box<dyn std::error::Error>> {
+    let raw = fs::read_to_string(path)?;
+    let config: T = serde_yaml::from_str(&raw)?;
     Ok(config)
 }
 
@@ -133,6 +196,37 @@ mod tests {
             serde_json::json!("featherbit-app:fallback")
         );
         env::remove_var("TEST_CLIENT_ID");
+    }
+
+    #[test]
+    fn test_interpolate_json_coerces_full_placeholder_scalars() {
+        // A gateway.yaml author writes `port: ${PORT:-3010}` unquoted; loaded
+        // raw that is a JSON string. The resolved value must come back typed
+        // the way the old file-text interpolation produced it: numbers and
+        // booleans become numbers and booleans when the string is exactly one
+        // `${...}` placeholder.
+        env::set_var("TEST_COERCE_PORT", "3010");
+        env::set_var("TEST_COERCE_FLAG", "true");
+        let mut value = serde_json::json!({
+            "port": "${TEST_COERCE_PORT}",
+            "flag": "${TEST_COERCE_FLAG}",
+            "ratio": "${MISSING_COERCE_RATIO:-0.25}",
+            "name": "${MISSING_COERCE_NAME:-plain}",
+            "mixed": "${TEST_COERCE_PORT}:${TEST_COERCE_PORT}",
+            "unset": "${MISSING_COERCE_UNSET}"
+        });
+        interpolate_env_json(&mut value);
+        assert_eq!(value["port"], serde_json::json!(3010));
+        assert_eq!(value["flag"], serde_json::json!(true));
+        assert_eq!(value["ratio"], serde_json::json!(0.25));
+        // Non-scalar-looking values stay strings.
+        assert_eq!(value["name"], serde_json::json!("plain"));
+        // A placeholder embedded in wider text always stays a string.
+        assert_eq!(value["mixed"], serde_json::json!("3010:3010"));
+        // Unset without default resolves to the empty string, no coercion.
+        assert_eq!(value["unset"], serde_json::json!(""));
+        env::remove_var("TEST_COERCE_PORT");
+        env::remove_var("TEST_COERCE_FLAG");
     }
 
     #[test]

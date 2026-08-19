@@ -135,8 +135,9 @@ impl SharedState {
         Ok(())
     }
 
-    /// Reloads from disk (re-reads `gateway.yaml` with env interpolation),
-    /// recompiles, and swaps in the new config.
+    /// Reloads from disk (re-reads `gateway.yaml` raw, keeping `${VAR}`
+    /// placeholders — resolution happens at compile/build time), recompiles,
+    /// and swaps in the new config.
     ///
     /// Invoked by the hot-reload file watcher. Fails without side effects if
     /// `config_path` is unset, the file cannot be parsed, or compilation fails.
@@ -145,8 +146,7 @@ impl SharedState {
             .config_path
             .as_ref()
             .ok_or("No config path set for hot-reload")?;
-        let new_gw: GatewayConfig =
-            crate::config::load_yaml_with_env(path).map_err(|e| e.to_string())?;
+        let new_gw: GatewayConfig = crate::config::load_yaml(path).map_err(|e| e.to_string())?;
         self.apply_gateway(new_gw).await
     }
 
@@ -206,7 +206,11 @@ impl SharedState {
                     route.name, route.policy
                 ))?
                 .clone();
-            routes.push((route.clone(), graph));
+            // Resolve `${VAR}` in the route-table copy only; the stored
+            // config keeps the placeholder form (the Admin API serves it).
+            let mut route = route.clone();
+            route.match_rule.interpolate_env();
+            routes.push((route, graph));
         }
         Ok(routes)
     }
@@ -273,6 +277,45 @@ policies:
     #[test]
     fn test_policy_with_supernode_compiles() {
         assert_eq!(state_from_yaml(SUPERNODE_GATEWAY), Ok(()));
+    }
+
+    #[test]
+    fn test_route_match_resolves_env_placeholders_in_route_table() {
+        // gateway.yaml is loaded raw (placeholders intact, so the Admin API
+        // never serves resolved values); the compiled route table is where
+        // `${VAR}` in match rules must resolve.
+        std::env::set_var("TEST_ROUTE_PREFIX", "/env-api");
+        let gw: crate::config::GatewayConfig = serde_yaml::from_str(
+            r#"
+routes:
+  - name: r
+    match:
+      path: "${TEST_ROUTE_PREFIX}/*"
+      host: "${TEST_ROUTE_HOST:-api.example.com}"
+      headers: { x-tier: "${TEST_ROUTE_TIER:-gold}" }
+    policy: p
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: client.in }
+"#,
+        )
+        .unwrap();
+
+        let routes = SharedState::compile_routes(&gw, &PluginResources::new(None)).unwrap();
+        let rule = &routes[0].0.match_rule;
+        assert_eq!(rule.path.as_deref(), Some("/env-api/*"));
+        assert_eq!(rule.host.as_deref(), Some("api.example.com"));
+        assert_eq!(rule.headers["x-tier"], "gold");
+        // The stored config keeps the placeholder form.
+        assert_eq!(
+            gw.routes[0].match_rule.path.as_deref(),
+            Some("${TEST_ROUTE_PREFIX}/*")
+        );
+        std::env::remove_var("TEST_ROUTE_PREFIX");
     }
 
     /// I5: the etcd seeder's pre-write gate. It must reach the same verdict as

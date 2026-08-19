@@ -303,10 +303,11 @@ pub fn compile_policy(
             node_config.config
         );
         // Interpolate `${ENV_VAR}` in the node config before instantiating the
-        // plugin. This is the source-agnostic choke point: config authored in the
-        // Web UI / Admin API (or delivered over etcd) arrives as parsed JSON and
-        // never sees the file-text interpolation in `load_yaml_with_env`, so we
-        // resolve env vars here. File-loaded values are already resolved (no-op).
+        // plugin. This is the source-agnostic choke point for every config
+        // source — gateway.yaml (loaded raw), the Web UI / Admin API, and etcd
+        // all deliver placeholder-form config; only the compiled graph ever
+        // holds resolved values, so the stored config the Admin API serves
+        // never contains resolved secrets.
         let mut config = node_config.config.clone();
         for value in config.values_mut() {
             crate::config::interpolate_env_json(value);
