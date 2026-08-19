@@ -13,8 +13,6 @@ use crate::config::{PolicyConfig, SupernodeConfig};
 /// - no two nodes share an id;
 /// - the policy has a `listener` node (entry) and a `client` node (exit);
 /// - every edge endpoint references an existing node;
-/// - each input port has at most one incoming edge, except inputs of
-///   `client` and `error-handler` nodes, which accept multiple;
 /// - no orphan nodes (a node with neither incoming nor outgoing edges;
 ///   being named as the policy-level `error_handler` counts as connected);
 /// - `error_handler`, if set, references an existing node that is not a
@@ -85,37 +83,9 @@ pub fn validate_policy(policy: &PolicyConfig) -> Result<(), Vec<String>> {
         }
     }
 
-    // Check for multiple edges into the same input port.
-    // Exceptions: client nodes (multiple paths can deliver the response) and
-    // error-handler nodes (can receive errors from multiple nodes).
-    let client_ids: HashSet<&str> = policy
-        .nodes
-        .iter()
-        .filter(|n| n.node_type == "client")
-        .map(|n| n.id.as_str())
-        .collect();
-    let error_handler_ids: HashSet<&str> = policy
-        .nodes
-        .iter()
-        .filter(|n| n.node_type == "error-handler")
-        .map(|n| n.id.as_str())
-        .collect();
-
-    let mut input_targets: HashSet<String> = HashSet::new();
-    for edge in &policy.edges {
-        let target = &edge.to;
-        let to_node = target.split('.').next().unwrap_or("");
-
-        let is_client = client_ids.contains(to_node);
-        let is_error_handler = error_handler_ids.contains(to_node);
-
-        if !is_client && !is_error_handler && !input_targets.insert(target.clone()) {
-            errors.push(format!(
-                "Node '{}' input '{}' has multiple incoming edges — each input accepts only one edge",
-                to_node, target
-            ));
-        }
-    }
+    // Fan-in is unrestricted: any number of edges may converge on the same
+    // input port. The engine indexes edges by source port only (fan-out and
+    // cycles are compile-time errors in engine.rs).
 
     // Check for orphan nodes (no incoming or outgoing edges)
     let mut connected_nodes: HashSet<&str> = HashSet::new();
@@ -171,8 +141,6 @@ pub fn validate_policy(policy: &PolicyConfig) -> Result<(), Vec<String>> {
 /// - exactly one edge leaves `input`; no edges into `input` or out of
 ///   `output`/`error`;
 /// - every edge endpoint references an existing node;
-/// - one incoming edge per input port, except `output`/`error` boundaries
-///   and `error-handler`-typed inner nodes (fan-in allowed);
 /// - no orphan inner nodes (unconnected `output`/`error` boundaries are
 ///   fine — not every subgraph uses both exits);
 /// - every inner edge leaves a port its source node's type actually declares
@@ -276,25 +244,8 @@ pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
         ));
     }
 
-    // One incoming edge per input port; boundary exits and error-handlers fan in.
-    let fan_in_ok: HashSet<&str> = sn
-        .nodes
-        .iter()
-        .filter(|n| {
-            n.node_type == "error-handler" || n.node_type == "output" || n.node_type == "error"
-        })
-        .map(|n| n.id.as_str())
-        .collect();
-    let mut input_targets: HashSet<String> = HashSet::new();
-    for edge in &sn.edges {
-        let (to_node, _) = split_endpoint(&edge.to);
-        if !fan_in_ok.contains(to_node) && !input_targets.insert(edge.to.clone()) {
-            errors.push(format!(
-                "Supernode '{}': node '{}' input '{}' has multiple incoming edges",
-                sn.name, to_node, edge.to
-            ));
-        }
-    }
+    // Fan-in is unrestricted here too: any number of inner edges may converge
+    // on the same input port or boundary exit.
 
     // Port hygiene on inner nodes. Boundary pseudo-nodes have no plugin type
     // (and no PortSpec), so they are exempt; an unknown inner type is left to
@@ -544,9 +495,57 @@ mod tests {
         assert!(validate_policy(&policy).is_ok());
     }
 
+    /// Fan-in is legal on every node, not just client/error-handler: the
+    /// engine indexes edges by source port only, so any number of edges may
+    /// converge on the same input.
+    #[test]
+    fn test_any_node_allows_multiple_inputs() {
+        let mut second = upstream_node();
+        second.id = "backend2".to_string();
+        let policy = PolicyConfig {
+            name: "test".to_string(),
+            error_handler: None,
+            nodes: vec![listener_node(), upstream_node(), second, client_node()],
+            edges: vec![
+                EdgeConfig {
+                    from: "listener.out".to_string(),
+                    to: "backend2.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "backend2.success".to_string(),
+                    to: "backend.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "backend2.error".to_string(),
+                    to: "backend.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "backend.success".to_string(),
+                    to: "client.in".to_string(),
+                },
+            ],
+        };
+        assert!(validate_policy(&policy).is_ok());
+    }
+
     #[test]
     fn test_valid_supernode_passes() {
         assert!(validate_supernode(&valid_supernode()).is_ok());
+    }
+
+    /// Fan-in converges on inner nodes too, not only boundary exits.
+    #[test]
+    fn test_supernode_fan_in_into_inner_node_ok() {
+        let mut sn = valid_supernode();
+        sn.nodes.push(inner("up2", "upstream"));
+        sn.edges = vec![
+            sn_edge("input.out", "up2.in"),
+            sn_edge("up2.success", "up.in"),
+            sn_edge("up2.error", "up.in"),
+            sn_edge("up.success", "output.in"),
+            sn_edge("up.error", "error.in"),
+        ];
+        assert!(validate_supernode(&sn).is_ok());
     }
 
     #[test]
