@@ -18,7 +18,8 @@ use crate::plugins::{Plugin, PluginOutput, PluginResult};
 use crate::vars::template::Template;
 
 /// Validates `context.request` headers and body against compiled JSON
-/// Schemas. On failure the request is rejected through the `denied` port
+/// Schemas, and optionally evaluates boolean condition predicates on the
+/// request. On failure the request is rejected through the `denied` port
 /// with a JSON response using `rejected_code`.
 ///
 /// Headers are validated as a single-value object (first value per header,
@@ -26,9 +27,11 @@ use crate::vars::template::Template;
 /// After a successful JSON-body validation the body is re-serialized from the
 /// parsed document, so the JSON that was validated is exactly the JSON the
 /// upstream receives (guards against JSON-interoperability smuggling).
+#[derive(Debug)]
 pub struct RequestValidationPlugin {
     header_schema: Option<jsonschema::Validator>,
     body_schema: Option<jsonschema::Validator>,
+    conditions: Option<crate::vars::Expr>,
     rejected_code: u16,
     /// Fixed message returned instead of the validator's error description.
     /// Supports `{{namespace.path}}` references (no legacy `$var`
@@ -128,14 +131,19 @@ impl RequestValidationPlugin {
     ///   seen as `{name: first_value}` with lowercase names.
     /// - `body_schema` (object): JSON Schema applied to the parsed request
     ///   body (JSON, or urlencoded decoded to a flat object).
+    /// - `conditions` (array): a condition expression (see [`crate::vars::Expr`])
+    ///   — rules ANDed at top level, nested `AND`/`OR`/`NOT` groups, JSONPath
+    ///   body subjects. Evaluated after the schemas; failure rejects like a
+    ///   schema failure with message "request conditions not satisfied".
     /// - `rejected_code` (integer 200–599, default `400`): response status
     ///   for rejected requests.
     /// - `rejected_msg` (string): fixed message returned instead of the
     ///   validator's error description. Supports `{{namespace.path}}`
     ///   references.
     ///
-    /// At least one of `header_schema` / `body_schema` is required; both are
-    /// compiled here so malformed schemas fail at config load.
+    /// At least one of `header_schema`, `body_schema`, or `conditions` is
+    /// required; schemas are compiled here so malformed schemas fail at config
+    /// load.
     ///
     /// ```yaml
     /// type: request-validation
@@ -151,9 +159,17 @@ impl RequestValidationPlugin {
         let header_schema = compile_schema(config, "header_schema")?;
         let body_schema = compile_schema(config, "body_schema")?;
 
-        if header_schema.is_none() && body_schema.is_none() {
+        let conditions = match config.get("conditions") {
+            None => None,
+            Some(v) => Some(
+                crate::vars::Expr::parse(v)
+                    .map_err(|e| format!("request-validation: invalid 'conditions': {}", e))?,
+            ),
+        };
+
+        if header_schema.is_none() && body_schema.is_none() && conditions.is_none() {
             return Err(
-                "request-validation: at least one of 'header_schema' or 'body_schema' is required"
+                "request-validation: at least one of 'header_schema', 'body_schema', or 'conditions' is required"
                     .to_string(),
             );
         }
@@ -179,6 +195,7 @@ impl RequestValidationPlugin {
         Ok(Self {
             header_schema,
             body_schema,
+            conditions,
             rejected_code,
             rejected_msg,
         })
@@ -265,6 +282,12 @@ impl Plugin for RequestValidationPlugin {
                 // Body-mutation convention: drop the stale content-length.
                 ctx.request.body = Bytes::from(serde_json::to_vec(&parsed).unwrap_or_default());
                 ctx.request.headers.remove("content-length");
+            }
+        }
+
+        if let Some(expr) = &self.conditions {
+            if !expr.eval(&ctx) {
+                return self.reject(ctx, "request conditions not satisfied".to_string());
             }
         }
 
@@ -482,5 +505,89 @@ mod tests {
         assert_eq!(v["a"], serde_json::json!(["1", "2"]));
         assert_eq!(v["flag"], serde_json::json!(true));
         assert_eq!(v["note"], serde_json::json!("hello world"));
+    }
+
+    fn conditions_plugin(conditions: serde_json::Value) -> RequestValidationPlugin {
+        let mut config = HashMap::new();
+        config.insert("conditions".to_string(), conditions);
+        RequestValidationPlugin::from_config(&config).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_request_validation_conditions_accept() {
+        let p = conditions_plugin(serde_json::json!([
+            ["http_authorization", "present"],
+            ["http_authorization", "contains", "Bearer"],
+            [
+                "OR",
+                ["$.user.email", "present"],
+                ["NOT", ["$.user.id", "is_null"]]
+            ]
+        ]));
+        let mut ctx = test_context(r#"{"user":{"email":"a@b.c"}}"#, Some("application/json"));
+        ctx.request
+            .headers
+            .insert("authorization".to_string(), vec!["Bearer tok".to_string()]);
+        let out = p.execute(ctx).await.unwrap();
+        assert!(out.port.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_request_validation_conditions_reject() {
+        let p = conditions_plugin(serde_json::json!([[
+            "http_authorization",
+            "contains",
+            "Bearer"
+        ]]));
+        let out = p.execute(test_context("", None)).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 400);
+        let body: serde_json::Value = serde_json::from_slice(&out.context.response.body).unwrap();
+        assert_eq!(body["error"], "validation_failed");
+        assert_eq!(body["message"], "request conditions not satisfied");
+    }
+
+    #[tokio::test]
+    async fn test_request_validation_conditions_after_schema() {
+        // both body_schema and conditions: schema normalizes, conditions still run
+        let mut config = HashMap::new();
+        config.insert(
+            "body_schema".to_string(),
+            serde_json::json!({ "type": "object" }),
+        );
+        config.insert(
+            "conditions".to_string(),
+            serde_json::json!([["$.name", "==", "jack"]]),
+        );
+        let p = RequestValidationPlugin::from_config(&config).unwrap();
+
+        let ctx = test_context(r#"{"name": "jack"}"#, Some("application/json"));
+        assert!(p.execute(ctx).await.unwrap().port.is_none());
+
+        let ctx = test_context(r#"{"name": "jill"}"#, Some("application/json"));
+        assert_eq!(p.execute(ctx).await.unwrap().port, Some("denied"));
+    }
+
+    #[test]
+    fn test_request_validation_conditions_config() {
+        // conditions alone satisfies the at-least-one requirement
+        let mut config = HashMap::new();
+        config.insert(
+            "conditions".to_string(),
+            serde_json::json!([["http_x", "present"]]),
+        );
+        assert!(RequestValidationPlugin::from_config(&config).is_ok());
+
+        // malformed conditions fail at config load, with plugin-prefixed message
+        let mut config = HashMap::new();
+        config.insert(
+            "conditions".to_string(),
+            serde_json::json!([["$.a", "bogus_op", 1]]),
+        );
+        let err = RequestValidationPlugin::from_config(&config).unwrap_err();
+        assert!(
+            err.starts_with("request-validation: invalid 'conditions'"),
+            "{err}"
+        );
     }
 }
