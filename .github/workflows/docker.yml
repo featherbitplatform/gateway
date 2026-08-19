@@ -182,6 +182,53 @@ jobs:
       - name: Inspect manifest
         run: docker buildx imagetools inspect "$(head -n1 <<< "$DOCKER_METADATA_OUTPUT_TAGS")"
 
+  # CycloneDX SBOMs as release assets: one per source component plus the
+  # published image (its FROM scratch filesystem is inventoried through the
+  # crate list cargo-auditable embeds in the binary). The docs site serves the
+  # source SBOMs for latest main (docs.yml); releases archive them per version.
+  sbom:
+    name: sbom (release assets)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    needs: merge
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      # All four SBOMs carry the release version. The image is scanned from the
+      # registry after `merge` pushes the manifest; one platform is enough —
+      # the crate inventory is identical across architectures.
+      - name: Generate SBOMs
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p sbom-out
+          syft="${{ steps.syft.outputs.cmd }}"
+          version="${TAG#v}"
+          "$syft" scan file:Cargo.lock \
+            --source-name featherbit-gateway --source-version "$version" \
+            -o cyclonedx-json=sbom-out/featherbit-gateway.cdx.json
+          "$syft" scan file:ui/package-lock.json \
+            --source-name featherbit-ui --source-version "$version" \
+            -o cyclonedx-json=sbom-out/featherbit-ui.cdx.json
+          "$syft" scan file:website/package-lock.json \
+            --source-name featherbit-website --source-version "$version" \
+            -o cyclonedx-json=sbom-out/featherbit-website.cdx.json
+          "$syft" scan "registry:${IMAGE}:${version}" --platform linux/amd64 \
+            --source-name featherbit-image --source-version "$version" \
+            -o cyclonedx-json=sbom-out/featherbit-image.cdx.json
+
+      # Creates the release for the tag if none exists yet.
+      - name: Attach to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sbom-out/*.cdx.json
+
   readme-sync:
     name: sync Docker Hub description
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
