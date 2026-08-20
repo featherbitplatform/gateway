@@ -74,14 +74,6 @@ export function extractSupernode(
     throw new Error('The selection needs at least one non-error exit edge');
   }
 
-  // One error exit target at most.
-  const errorTargets = new Set(outError.map((e) => e.to));
-  if (errorTargets.size > 1) {
-    throw new Error(
-      `All error exits must share one target (an instance has a single error port) — found: ${[...errorTargets].join(', ')}`
-    );
-  }
-
   // Output boundaries: one per non-error exit edge, named after its source
   // port (`success`/`out` -> the `output` boundary = instance port `success`).
   const takenIds = new Set(selectedNodes.map((n) => n.id));
@@ -101,6 +93,25 @@ export function extractSupernode(
     return { edge: e, boundaryId, port: boundaryId === 'output' ? 'success' : boundaryId };
   });
 
+  // Error exits group by outer target (edge order): the first group is the
+  // default `error` boundary (black-box exit), each further distinct target
+  // gets its own named error boundary (`error-2`, ... — renamable later).
+  // All derived error-kind ports are wired by construction; optional wiring
+  // only matters for ports added later in the editor.
+  const errorGroups: { target: string; boundaryId: string; edges: PolicyEdge[] }[] = [];
+  for (const e of outError) {
+    let group = errorGroups.find((g) => g.target === e.to);
+    if (!group) {
+      group = {
+        target: e.to,
+        boundaryId: errorGroups.length === 0 ? 'error' : uniquify('error'),
+        edges: [],
+      };
+      errorGroups.push(group);
+    }
+    group.edges.push(e);
+  }
+
   // Geometry for the boundary pseudo-nodes.
   const pos = (n: PolicyNode) => n.position ?? { x: 0, y: 0 };
   const xs = selectedNodes.map((n) => pos(n).x);
@@ -117,14 +128,21 @@ export function extractSupernode(
         id: x.boundaryId, type: 'output', config: {},
         position: { x: maxX + 250, y: minY + i * 100 },
       })),
-      { id: 'error', type: 'error', config: {}, position: { x: maxX + 250, y: maxY + 180 } },
+      ...(errorGroups.length > 0 ? errorGroups : [{ target: '', boundaryId: 'error', edges: [] as PolicyEdge[] }]).map(
+        (g, i) => ({
+          id: g.boundaryId,
+          type: 'error',
+          config: {},
+          position: { x: maxX + 250, y: maxY + 180 + i * 100 },
+        })
+      ),
       ...selectedNodes.map((n) => ({ ...n })),
     ],
     edges: [
       { from: 'input.out', to: `${entryId}.in` },
       ...inner,
       ...exits.map((x) => ({ from: x.edge.from, to: `${x.boundaryId}.in` })),
-      ...outError.map((e) => ({ from: e.from, to: 'error.in' })),
+      ...errorGroups.flatMap((g) => g.edges.map((e) => ({ from: e.from, to: `${g.boundaryId}.in` }))),
     ],
   };
 
@@ -149,9 +167,7 @@ export function extractSupernode(
     ...outside,
     ...inbound.map((e) => ({ from: e.from, to: `${instanceId}.in` })),
     ...exits.map((x) => ({ from: `${instanceId}.${x.port}`, to: x.edge.to })),
-    ...(outError.length > 0
-      ? [{ from: `${instanceId}.error`, to: outError[0].to }]
-      : []),
+    ...errorGroups.map((g) => ({ from: `${instanceId}.${g.boundaryId}`, to: g.target })),
   ];
 
   return {

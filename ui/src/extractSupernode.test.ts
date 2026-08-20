@@ -105,13 +105,36 @@ describe('extractSupernode', () => {
     expect(() => extractSupernode(fixture(), ['up', 'eh'], 'x')).toThrow(/single entry/i);
   });
 
-  it('rejects conflicting outer error targets', () => {
+  it('gives each distinct error target its own error port', () => {
     const p = fixture();
     p.nodes.push({ id: 'eh2', type: 'error-handler', config: {}, position: { x: 700, y: 300 } });
     // rl's error goes somewhere other than auth's error target
     p.edges.push({ from: 'rl.error', to: 'eh2.in' });
     p.edges.push({ from: 'eh2.success', to: 'client.in' });
-    expect(() => extractSupernode(p, ['auth', 'rl'], 'x')).toThrow(/error exits/i);
+    const { definition, policy: rewritten, instanceId } = extractSupernode(p, ['auth', 'rl'], 'guard');
+    const errorBoundaries = definition.nodes.filter((n) => n.type === 'error').map((n) => n.id).sort();
+    expect(errorBoundaries).toEqual(['error', 'error-2']);
+    const defEdges = definition.edges.map((e) => `${e.from}->${e.to}`);
+    expect(defEdges).toContain('auth.error->error.in');
+    expect(defEdges).toContain('rl.error->error-2.in');
+    const polEdges = rewritten.edges.map((e) => `${e.from}->${e.to}`);
+    expect(polEdges).toContain(`${instanceId}.error->eh.in`);
+    expect(polEdges).toContain(`${instanceId}.error-2->eh2.in`);
+  });
+
+  it('collapses multiple error exits to the same target into one error port', () => {
+    const p = fixture();
+    // both auth and rl error to the same eh
+    p.edges.push({ from: 'rl.error', to: 'eh.in' });
+    const { definition, policy: rewritten, instanceId } = extractSupernode(p, ['auth', 'rl'], 'guard');
+    const errorBoundaries = definition.nodes.filter((n) => n.type === 'error').map((n) => n.id).sort();
+    expect(errorBoundaries).toEqual(['error']);
+    const defEdges = definition.edges.map((e) => `${e.from}->${e.to}`);
+    expect(defEdges).toContain('auth.error->error.in');
+    expect(defEdges).toContain('rl.error->error.in');
+    const polEdges = rewritten.edges.map((e) => `${e.from}->${e.to}`);
+    const errorPolicyEdges = polEdges.filter((e) => e.includes('.error->'));
+    expect(errorPolicyEdges).toEqual([`${instanceId}.error->eh.in`]);
   });
 
   it('rejects selections whose exits are all error edges', () => {
