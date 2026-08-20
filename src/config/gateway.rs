@@ -166,11 +166,11 @@ pub struct EdgeConfig {
     pub to: String,
 }
 
-/// A reusable named subgraph with a boundary of exactly one `input` and one
-/// `error` pseudo-node plus one or more `output` pseudo-nodes; each output
-/// node's id is an instance port name (`output` = the `success` port)
-/// (declared in `nodes` like a policy declares `listener`/`client`, so the
-/// UI can persist positions).
+/// A reusable named subgraph with a boundary of one `input`, one or more
+/// `output`, and one or more `error` pseudo-nodes; each output/error node's
+/// id is an instance port name (`output` = the `success` port; `error` =
+/// the default error port) (declared in `nodes` like a policy declares
+/// `listener`/`client`, so the UI can persist positions).
 ///
 /// Instances appear in policies as nodes of `type: supernode` with
 /// `config: { name: <this name> }` and are inlined at compile time —
@@ -183,7 +183,9 @@ pub struct SupernodeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Inner plugin nodes plus the boundary pseudo-nodes: one `input`, one
-    /// `error`, and one or more `output` pseudo-nodes.
+    /// or more `output`, and one or more `error` pseudo-nodes; each
+    /// output/error node's id is an instance port name (`output` = the
+    /// `success` port; `error` = the default error port).
     #[serde(default)]
     pub nodes: Vec<NodeConfig>,
     /// Directed connections; boundary edges use `input.out`, `output.in`,
