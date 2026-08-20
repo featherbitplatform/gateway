@@ -56,6 +56,13 @@ interface NodeInspectorProps {
   debugConfig: DebugConfig | null;
   /** Whether the canvas is editing a policy or a supernode definition. */
   kind: 'policy' | 'supernode';
+  /**
+   * Opens GraphCanvas's rename dialog for this node id. Only supplied in
+   * supernode-definition mode; the inspector merely opens the dialog —
+   * validation lives in GraphCanvas's `submitPortDialog`, the one path
+   * shared with adding a new output-port boundary.
+   */
+  onRenameNode?: (nodeId: string) => void;
 }
 
 /** Plugin types with no configuration of their own — fixed pipeline endpoints and supernode boundary pseudo-nodes. */
@@ -187,6 +194,7 @@ export function NodeInspector({
   predecessorId,
   debugConfig,
   kind,
+  onRenameNode,
 }: NodeInspectorProps) {
   // Computed ahead of the `!node` early return below so the hooks that
   // follow (useState, useContextSuggestions) run unconditionally on every
@@ -327,21 +335,40 @@ export function NodeInspector({
         {/* Node ID */}
         <div>
           <label style={labelStyle}>Node ID</label>
-          <input
-            type="text"
-            value={node.id}
-            readOnly
-            className="w-full"
-            style={{
-              padding: '6px 10px',
-              borderRadius: 'var(--radius-sm)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 'var(--text-sm)',
-              background: 'var(--surface-input)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border)',
-            }}
-          />
+          <div className="flex items-center" style={{ gap: 6 }}>
+            <input
+              type="text"
+              value={node.id}
+              readOnly
+              className="w-full"
+              style={{
+                padding: '6px 10px',
+                borderRadius: 'var(--radius-sm)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--text-sm)',
+                background: 'var(--surface-input)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border)',
+              }}
+            />
+            {kind === 'supernode' && data.pluginType === 'output' && onRenameNode && (
+              <button
+                onClick={() => onRenameNode(node.id)}
+                className="shrink-0 transition-colors"
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: 500,
+                  background: 'var(--surface-raised)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border)',
+                }}
+              >
+                Rename
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Shared config picker */}
