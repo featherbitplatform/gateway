@@ -23,7 +23,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { Command, GitFork, Plus, Save, Trash2 } from 'lucide-react';
+import { Boxes, Command, GitFork, Plus, Save, Trash2 } from 'lucide-react';
 import { PluginNode, type PluginNodeData } from './PluginNode';
 import { PluginDrawer } from './PluginDrawer';
 import { NodeInspector } from './NodeInspector';
@@ -39,6 +39,7 @@ import type {
   Supernode,
 } from '../types';
 import { edgesAfterConnect } from '../connectionRules';
+import { extractSupernode, type ExtractionResult } from '../extractSupernode';
 import { buildPortSpecs, type PortSpecLookup } from '../portSpecs';
 import { resolveOutputs } from '../nodeKinds';
 import {
@@ -108,6 +109,15 @@ interface GraphCanvasProps {
   showPortNames: boolean;
   /** Opens the App-level command palette; omitted renders no toolbar button. */
   onOpenPalette?: () => void;
+  /**
+   * Persists a supernode definition extracted from a multi-node selection
+   * (see `extractSupernode`); resolves `true` on success. Omitted (or the
+   * eligibility conditions in `extractEligible` unmet) hides the Extract
+   * Supernode toolbar button, disables it in the context menu, and leaves
+   * the `extract-supernode` editor action unregistered as far as the
+   * palette's `when()` guard is concerned.
+   */
+  onCreateSupernodeDef?: (sn: Supernode) => Promise<boolean>;
 }
 
 /** ReactFlow custom node-type registry; every policy node renders as a {@link PluginNode}. */
@@ -250,6 +260,7 @@ export function GraphCanvas({
   debugConfig,
   showPortNames,
   onOpenPalette,
+  onCreateSupernodeDef,
 }: GraphCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -263,6 +274,17 @@ export function GraphCanvas({
   );
   const [portName, setPortName] = useState('');
   const [portError, setPortError] = useState<string | null>(null);
+
+  // Extract-selection-into-supernode dialog (Task 6). One dialog shared by
+  // the toolbar button, palette command, and context-menu entry — see
+  // handleExtract/submitExtract below.
+  const [extractDialogOpen, setExtractDialogOpen] = useState(false);
+  const [extractName, setExtractName] = useState('');
+  const [extractError, setExtractError] = useState<string | null>(null);
+
+  // Fixed-position right-click menu opened from a selected node/selection;
+  // currently offers only the Extract Supernode entry.
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
 
   // Ids of supernode instances currently expanded to their inline preview.
   // Canvas-session-only by design: held here (not in anything nodesToPolicy
@@ -402,6 +424,68 @@ export function GraphCanvas({
   }, [selectedEdgeId, setEdges]);
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
+
+  // Eligibility for the Extract Supernode action (Task 6): policy mode, a
+  // handler to persist the resulting definition, at least two nodes
+  // selected, and none of them an endpoint/supernode type (mirrors
+  // extractSupernode's own FORBIDDEN_TYPES check, but surfaced up front so
+  // the toolbar/menu/palette entry can explain itself before the user opens
+  // the dialog).
+  const selectedNodes = nodes.filter((n) => n.selected);
+  const extractEligible =
+    kind === 'policy' &&
+    !!onCreateSupernodeDef &&
+    selectedNodes.length >= 2 &&
+    selectedNodes.every(
+      (n) => !['listener', 'client', 'supernode'].includes(
+        (n.data as unknown as PluginNodeData).pluginType
+      )
+    );
+
+  const handleExtract = useCallback(() => {
+    if (!extractEligible) {
+      onSaveWarning?.(
+        'Extract selection',
+        'Select two or more nodes (no listener/client/supernode) to extract.'
+      );
+      return;
+    }
+    setExtractName('');
+    setExtractError(null);
+    setExtractDialogOpen(true);
+  }, [extractEligible, onSaveWarning]);
+
+  const submitExtract = async () => {
+    const name = extractName.trim();
+    if (!name) {
+      setExtractError('A supernode name is required');
+      return;
+    }
+    if (supernodes.some((s) => s.name === name)) {
+      setExtractError(`Supernode '${name}' already exists`);
+      return;
+    }
+    if (!policy || !onCreateSupernodeDef) return;
+    let result: ExtractionResult;
+    try {
+      result = extractSupernode(
+        nodesToPolicy(policy.name, nodes, edges, policy.error_handler),
+        selectedNodes.map((n) => n.id),
+        name
+      );
+    } catch (e) {
+      setExtractError(e instanceof Error ? e.message : `${e}`);
+      return;
+    }
+    setExtractDialogOpen(false);
+    if (!(await onCreateSupernodeDef(result.definition))) return;
+    // Rebuild canvas state from the rewritten policy; include the fresh
+    // definition so the instance renders its derived ports immediately.
+    const defs = [...supernodes, result.definition];
+    setNodes(policyToNodes(result.policy, handleSelect, portSpecs, showPortNames, defs));
+    setEdges(policyToEdges(result.policy, portSpecs, defs));
+    setSelectedNodeId(result.instanceId);
+  };
 
   // Predecessor lookup for the var-suggestion hook (NodeInspector): the
   // incoming edge feeding the selected node's `in` handle, preferring the
@@ -639,6 +723,7 @@ export function GraphCanvas({
     }, [])
   );
   useRegisterEditorAction('save-graph', handleSave);
+  useRegisterEditorAction('extract-supernode', handleExtract);
 
   if (!policy) {
     return (
@@ -698,7 +783,13 @@ export function GraphCanvas({
         fitView
         snapToGrid
         snapGrid={[20, 20]}
-        onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null); }}
+        onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null); setCtxMenu(null); }}
+        onSelectionContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY }); }}
+        onNodeContextMenu={(e, node) => {
+          if (!node.selected) return;
+          e.preventDefault();
+          setCtxMenu({ x: e.clientX, y: e.clientY });
+        }}
       >
         <Background gap={20} size={1} color="var(--grid-dot)" />
         <Controls />
@@ -754,6 +845,21 @@ export function GraphCanvas({
               <Plus size={13} />
               Add Node
             </button>
+            {extractEligible && (
+              <button
+                onClick={handleExtract}
+                style={{
+                  ...toolbarButtonStyle('var(--surface-input)'),
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border)',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+                onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+              >
+                <Boxes size={13} />
+                Extract Supernode
+              </button>
+            )}
             {selectedEdgeId && (
               <button
                 onClick={handleDeleteEdge}
@@ -777,6 +883,29 @@ export function GraphCanvas({
           </div>
         </Panel>
       </ReactFlow>
+
+      {ctxMenu && (
+        <div
+          style={{
+            position: 'fixed', left: ctxMenu.x, top: ctxMenu.y, zIndex: 100,
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)', boxShadow: 'var(--shadow-md)', padding: 4,
+          }}
+          onMouseLeave={() => setCtxMenu(null)}
+        >
+          <button
+            onClick={() => { setCtxMenu(null); handleExtract(); }}
+            disabled={!extractEligible}
+            style={{
+              display: 'block', padding: '6px 12px', fontSize: 'var(--text-sm)',
+              color: extractEligible ? 'var(--text-primary)' : 'var(--text-muted)',
+              background: 'transparent', width: '100%', textAlign: 'left',
+            }}
+          >
+            Extract selection as supernode…
+          </button>
+        </div>
+      )}
 
       <PluginDrawer
         plugins={drawerPlugins}
@@ -836,6 +965,37 @@ export function GraphCanvas({
         {portError && (
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--error)', margin: 0 }}>
             {portError}
+          </p>
+        )}
+      </Dialog>
+
+      <Dialog
+        open={extractDialogOpen}
+        title="Extract selection as supernode"
+        onClose={() => setExtractDialogOpen(false)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setExtractDialogOpen(false)}>
+              Cancel
+            </DialogButton>
+            <DialogButton onClick={submitExtract}>Extract</DialogButton>
+          </>
+        }
+      >
+        <DialogField
+          label="Supernode name"
+          value={extractName}
+          onChange={(v) => {
+            setExtractName(v);
+            if (extractError) setExtractError(null);
+          }}
+          placeholder="auth-guard"
+          mono
+          autoFocus
+        />
+        {extractError && (
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--error)', margin: 0 }}>
+            {extractError}
           </p>
         )}
       </Dialog>
