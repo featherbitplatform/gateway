@@ -266,12 +266,15 @@ export function GraphCanvas({
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  // Add/rename dialog for named output-port boundary nodes (supernode-
-  // definition mode only). One dialog, one validation path (validatePortName)
-  // for both flows — see submitPortDialog below.
-  const [portDialog, setPortDialog] = useState<{ mode: 'add' } | { mode: 'rename'; nodeId: string } | null>(
-    null
-  );
+  // Add/rename dialog for named output- and error-port boundary nodes
+  // (supernode-definition mode only). One dialog, one validation path
+  // (validatePortName) for both flows and both kinds — see
+  // submitPortDialog below.
+  const [portDialog, setPortDialog] = useState<
+    | { mode: 'add'; kind: 'output' | 'error' }
+    | { mode: 'rename'; nodeId: string; kind: 'output' | 'error' }
+    | null
+  >(null);
   const [portName, setPortName] = useState('');
   const [portError, setPortError] = useState<string | null>(null);
 
@@ -424,6 +427,20 @@ export function GraphCanvas({
   }, [selectedEdgeId, setEdges]);
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
+
+  // Boundary delete guard: the Delete button shows for output/error boundary
+  // nodes in supernode mode, but is disabled on the last one of its kind —
+  // validate_supernode requires at least one of each (server stays authority;
+  // keyboard delete can bypass and the save then fails with a clear message).
+  const boundaryDeleteBlocked = (() => {
+    if (kind !== 'supernode' || !selectedNode) return undefined;
+    const t = (selectedNode.data as unknown as PluginNodeData).pluginType;
+    if (t !== 'output' && t !== 'error') return undefined;
+    const count = nodes.filter(
+      (n) => (n.data as unknown as PluginNodeData).pluginType === t
+    ).length;
+    return count <= 1 ? `A supernode needs at least one ${t} boundary` : undefined;
+  })();
 
   // Eligibility for the Extract Supernode action (Task 6): policy mode, a
   // handler to persist the resulting definition, at least two nodes
@@ -583,31 +600,38 @@ export function GraphCanvas({
     setDrawerOpen(false);
   };
 
-  // Opens the add/rename dialog in "add" mode (drawer's "Output port" entry).
-  const handleAddOutputPort = () => {
+  // Opens the add/rename dialog in "add" mode (drawer's "Output port"/"Error
+  // port" entries).
+  const handleAddBoundaryPort = (kind: 'output' | 'error') => {
     setPortName('');
     setPortError(null);
-    setPortDialog({ mode: 'add' });
+    setPortDialog({ mode: 'add', kind });
   };
 
   // Opens the same dialog in "rename" mode (NodeInspector's Rename button on
-  // an output boundary). The inspector only opens the dialog; validation
-  // happens on submit below, same as the add flow.
-  const handleRenameOutputPort = (nodeId: string) => {
+  // an output or error boundary). Reads the node's pluginType to fill the
+  // kind; refuses to open for any other node type. The inspector only opens
+  // the dialog; validation happens on submit below, same as the add flow.
+  const handleRenameBoundaryPort = (nodeId: string) => {
+    const n = nodes.find((n) => n.id === nodeId);
+    const t = (n?.data as unknown as PluginNodeData | undefined)?.pluginType;
+    if (t !== 'output' && t !== 'error') return;
     setPortName(nodeId);
     setPortError(null);
-    setPortDialog({ mode: 'rename', nodeId });
+    setPortDialog({ mode: 'rename', nodeId, kind: t });
   };
 
-  // Single validation + apply path for both adding a new output-port
+  // Single validation + apply path for both adding a new output/error-port
   // boundary and renaming an existing one, per validatePortName
-  // (ui/src/portNameValidation.ts, mirroring src/graph/validation.rs::RESERVED_OUTPUT_IDS).
+  // (ui/src/portNameValidation.ts, mirroring
+  // src/graph/validation.rs::RESERVED_OUTPUT_IDS / RESERVED_ERROR_IDS).
   const submitPortDialog = () => {
     if (!portDialog) return;
     const name = portName.trim();
     const err = validatePortName(
       name,
       nodes.map((n) => n.id),
+      portDialog.kind,
       portDialog.mode === 'rename' ? portDialog.nodeId : undefined
     );
     if (err) {
@@ -623,7 +647,7 @@ export function GraphCanvas({
           position: { x: 300, y: 200 + nds.length * 80 },
           data: {
             label: name,
-            pluginType: 'output',
+            pluginType: portDialog.kind,
             config: {},
             ports: undefined,
             onSelect: handleSelect,
@@ -919,7 +943,7 @@ export function GraphCanvas({
         onAddPlugin={handleAddPlugin}
         onAddScript={handleAddScript}
         onAddSupernode={handleAddSupernode}
-        onAddOutputPort={kind === 'supernode' ? handleAddOutputPort : undefined}
+        onAddBoundaryPort={kind === 'supernode' ? handleAddBoundaryPort : undefined}
         isOpen={drawerOpen}
         onClose={() => setDrawerOpen(false)}
       />
@@ -937,13 +961,14 @@ export function GraphCanvas({
           predecessorId={predecessorId}
           debugConfig={debugConfig}
           kind={kind}
-          onRenameNode={kind === 'supernode' ? handleRenameOutputPort : undefined}
+          onRenameNode={kind === 'supernode' ? handleRenameBoundaryPort : undefined}
+          boundaryDeleteBlocked={boundaryDeleteBlocked}
         />
       )}
 
       <Dialog
         open={portDialog !== null}
-        title="Output port name"
+        title={`${portDialog?.kind === 'error' ? 'Error' : 'Output'} port name`}
         onClose={() => setPortDialog(null)}
         footer={
           <>

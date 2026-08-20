@@ -59,12 +59,15 @@ export function portKindFor(
 
 /**
  * Derives the port spec a supernode INSTANCE exposes from its definition's
- * output boundary nodes — the UI mirror of the id↔port mapping in
- * src/graph/expand.rs::port_for_output_boundary: the boundary with id
- * `output` is the `success` port; any other `type: output` boundary is a
- * named outcome port; `error` is always present (optional wiring).
- * Returns undefined when the definition is unresolved so callers fall back
- * to the default success+error pair, matching today's dangling-ref render.
+ * output and error boundary nodes — the UI mirror of the id↔port mapping in
+ * src/graph/expand.rs::port_for_output_boundary / port_for_error_boundary:
+ * the boundary with id `output` is the `success` port; any other
+ * `type: output` boundary is a named outcome port; each `type: error`
+ * boundary is its own error-kind port (`error` is the default/black-box
+ * port when present; any other id is a named error exit) — all optional
+ * wiring. Returns undefined when the definition is unresolved so callers
+ * fall back to the default success+error pair, matching today's
+ * dangling-ref render.
  *
  * @param def - Resolved supernode definition, or undefined for a dangling
  *   `config.name` reference.
@@ -88,11 +91,16 @@ export function supernodePortSpec(def: Supernode | undefined): PortSpec | undefi
       description: `Exit through the '${n.id}' output boundary of '${def.name}'.`,
     });
   }
-  outputs.push({
-    name: 'error',
-    kind: 'error',
-    description: `Error exit of '${def.name}' (optional wiring).`,
-  });
+  for (const n of def.nodes.filter((n) => n.type === 'error')) {
+    outputs.push({
+      name: n.id,
+      kind: 'error',
+      description:
+        n.id === 'error'
+          ? `Default error exit of '${def.name}' (optional; unhandled inner errors leave here).`
+          : `Error exit through the '${n.id}' boundary of '${def.name}' (optional wiring).`,
+    });
+  }
   return { input: `Request enters '${def.name}'.`, outputs };
 }
 

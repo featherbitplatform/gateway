@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, it, test } from 'vitest';
 
 import { policyToEdges, policyToNodes, splitEdge, supernodePortSpec } from './policyGraph';
 import type { PortSpecLookup } from './portSpecs';
@@ -116,6 +116,29 @@ describe('supernodePortSpec', () => {
 
   test('returns undefined for a missing definition', () => {
     expect(supernodePortSpec(undefined)).toBeUndefined();
+  });
+
+  it('derives one error-kind port per error boundary, default first per definition order', () => {
+    const multiError: Supernode = {
+      ...gateDef,
+      nodes: [...gateDef.nodes, { id: 'auth-error', type: 'error', config: {} }],
+    };
+    const spec = supernodePortSpec(multiError)!;
+    expect(spec.outputs.map((p) => [p.name, p.kind])).toEqual([
+      ['success', 'success'],
+      ['denied', 'outcome'],
+      ['error', 'error'],
+      ['auth-error', 'error'],
+    ]);
+  });
+
+  it('renamed-only error boundary yields no `error` port', () => {
+    const renamed: Supernode = {
+      ...gateDef,
+      nodes: gateDef.nodes.map((n) => (n.id === 'error' ? { ...n, id: 'oops' } : n)),
+    };
+    const spec = supernodePortSpec(renamed)!;
+    expect(spec.outputs.map((p) => p.name)).toEqual(['success', 'denied', 'oops']);
   });
 });
 
