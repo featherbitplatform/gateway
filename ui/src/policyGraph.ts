@@ -15,7 +15,7 @@ import { MarkerType, type Edge, type Node } from '@xyflow/react';
 import type { PluginNodeData } from './components/PluginNode';
 import { resolveOutputs } from './nodeKinds';
 import type { PortSpecLookup } from './portSpecs';
-import type { PortDecl, Policy } from './types';
+import type { PortDecl, PortSpec, Policy, Supernode } from './types';
 
 /** Stroke color for each port kind, used for both edges and connection previews. */
 export const PORT_STROKE: Record<PortDecl['kind'], string> = {
@@ -40,15 +40,60 @@ export const PORT_STROKE: Record<PortDecl['kind'], string> = {
  * @param port - Source port name (already normalized; `out` should be
  *   resolved to `success` by the caller).
  * @param portSpecs - Catalog-derived lookup from `buildPortSpecs`.
+ * @param portsOverride - When given, resolved instead of `portSpecs[sourceType]`
+ *   — used for a supernode instance, whose actual ports come from
+ *   {@link supernodePortSpec} rather than the type catalog.
  */
 export function portKindFor(
   sourceType: string | undefined,
   port: string,
-  portSpecs: PortSpecLookup
+  portSpecs: PortSpecLookup,
+  portsOverride?: PortSpec
 ): PortDecl['kind'] {
-  const outputs = sourceType ? resolveOutputs(sourceType, portSpecs[sourceType]) : undefined;
+  const outputs = sourceType
+    ? resolveOutputs(sourceType, portsOverride ?? portSpecs[sourceType])
+    : undefined;
   const decl = outputs?.find((p) => p.name === port);
   return decl?.kind ?? (port === 'error' ? 'error' : 'success');
+}
+
+/**
+ * Derives the port spec a supernode INSTANCE exposes from its definition's
+ * output boundary nodes — the UI mirror of the id↔port mapping in
+ * src/graph/expand.rs::port_for_output_boundary: the boundary with id
+ * `output` is the `success` port; any other `type: output` boundary is a
+ * named outcome port; `error` is always present (optional wiring).
+ * Returns undefined when the definition is unresolved so callers fall back
+ * to the default success+error pair, matching today's dangling-ref render.
+ *
+ * @param def - Resolved supernode definition, or undefined for a dangling
+ *   `config.name` reference.
+ */
+export function supernodePortSpec(def: Supernode | undefined): PortSpec | undefined {
+  if (!def) return undefined;
+  const outputs: PortDecl[] = [];
+  const outputNodes = def.nodes.filter((n) => n.type === 'output');
+  if (outputNodes.some((n) => n.id === 'output')) {
+    outputs.push({
+      name: 'success',
+      kind: 'success',
+      description: `Exit through the 'output' boundary of '${def.name}'.`,
+    });
+  }
+  for (const n of outputNodes) {
+    if (n.id === 'output') continue;
+    outputs.push({
+      name: n.id,
+      kind: 'outcome',
+      description: `Exit through the '${n.id}' output boundary of '${def.name}'.`,
+    });
+  }
+  outputs.push({
+    name: 'error',
+    kind: 'error',
+    description: `Error exit of '${def.name}' (optional wiring).`,
+  });
+  return { input: `Request enters '${def.name}'.`, outputs };
 }
 
 /**
@@ -69,13 +114,17 @@ export function portKindFor(
  *   PluginNode synthesizes the default success+error pair.
  * @param showPortNames - Current value of the persisted port-names
  *   preference, threaded into every node's {@link PluginNodeData.showPortNames}.
+ * @param supernodes - Resolved supernode definitions, used to derive a
+ *   supernode instance's actual ports via {@link supernodePortSpec} rather
+ *   than the (non-existent) catalog entry for the `supernode` type.
  * @returns ReactFlow nodes of type `pluginNode` carrying {@link PluginNodeData}.
  */
 export function policyToNodes(
   policy: Policy,
   onSelect: (id: string) => void,
   portSpecs: PortSpecLookup,
-  showPortNames: boolean
+  showPortNames: boolean,
+  supernodes: Supernode[] = []
 ): Node[] {
   const positions = new Map<string, { x: number; y: number }>();
 
@@ -117,23 +166,30 @@ export function policyToNodes(
     }
   }
 
-  return policy.nodes.map((node) => ({
-    id: node.id,
-    type: 'pluginNode',
-    position: node.position || positions.get(node.id) || { x: 0, y: 0 },
-    data: {
-      label:
-        node.type === 'supernode' && typeof node.config?.name === 'string'
-          ? `⬡ ${node.config.name}`
-          : node.id,
-      pluginType: node.type,
-      config: node.config || {},
-      configRef: node.config_ref,
-      ports: portSpecs[node.type],
-      onSelect: onSelect,
-      showPortNames,
-    } satisfies PluginNodeData,
-  }));
+  return policy.nodes.map((node) => {
+    let ports = portSpecs[node.type];
+    if (node.type === 'supernode') {
+      const def = supernodes.find((s) => s.name === node.config?.name);
+      ports = supernodePortSpec(def) ?? portSpecs[node.type];
+    }
+    return {
+      id: node.id,
+      type: 'pluginNode',
+      position: node.position || positions.get(node.id) || { x: 0, y: 0 },
+      data: {
+        label:
+          node.type === 'supernode' && typeof node.config?.name === 'string'
+            ? `⬡ ${node.config.name}`
+            : node.id,
+        pluginType: node.type,
+        config: node.config || {},
+        configRef: node.config_ref,
+        ports,
+        onSelect: onSelect,
+        showPortNames,
+      } satisfies PluginNodeData,
+    };
+  });
 }
 
 /**
@@ -150,6 +206,9 @@ export function policyToNodes(
  * @param policy - Policy whose edges use the `node_id.port` endpoint format.
  * @param portSpecs - Catalog-derived lookup used to resolve each source
  *   port's kind.
+ * @param supernodes - Resolved supernode definitions, used to derive a
+ *   supernode source node's actual ports via {@link supernodePortSpec}
+ *   rather than the (non-existent) catalog entry for the `supernode` type.
  * @returns ReactFlow edges targeting each node's `in` handle.
  *
  * @remarks
@@ -158,13 +217,22 @@ export function policyToNodes(
  * error-routing table used by CompiledGraph::execute and outcome-port edges
  * feed the named-port routing table.
  */
-export function policyToEdges(policy: Policy, portSpecs: PortSpecLookup): Edge[] {
+export function policyToEdges(
+  policy: Policy,
+  portSpecs: PortSpecLookup,
+  supernodes: Supernode[] = []
+): Edge[] {
   return policy.edges.map((edge, i) => {
     const [fromNode, fromPort] = splitEdge(edge.from);
     const [toNode] = splitEdge(edge.to);
     const sourceHandle = fromPort === 'out' ? 'success' : fromPort;
-    const sourceType = policy.nodes.find((n) => n.id === fromNode)?.type;
-    const kind = portKindFor(sourceType, sourceHandle, portSpecs);
+    const sourceNode = policy.nodes.find((n) => n.id === fromNode);
+    const sourceType = sourceNode?.type;
+    const portsOverride =
+      sourceType === 'supernode'
+        ? supernodePortSpec(supernodes.find((s) => s.name === sourceNode?.config?.name))
+        : undefined;
+    const kind = portKindFor(sourceType, sourceHandle, portSpecs, portsOverride);
     const color = PORT_STROKE[kind];
 
     return {
