@@ -325,6 +325,23 @@ export default function App() {
     }
   };
 
+  /**
+   * Persists a shared config extracted from a policy node (the inspector's
+   * "Save as shared config" flow). Returns whether the save succeeded so the
+   * inspector only re-links the node to the new config on success.
+   */
+  const handleExtractPluginConfig = async (def: PluginConfigDef): Promise<boolean> => {
+    try {
+      await api.updatePluginConfig(def.name, def);
+      await loadData();
+      setToast({ tone: 'success', title: 'Shared config saved', message: `${def.name} · ${def.type}` });
+      return true;
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to save shared config', message: `${e}` });
+      return false;
+    }
+  };
+
   const handleSavePluginConfig = async (def: PluginConfigDef) => {
     try {
       await api.updatePluginConfig(def.name, def);
@@ -640,6 +657,7 @@ export default function App() {
           kind={selectedSupernodeDef ? 'supernode' : 'policy'}
           supernodes={supernodes}
           pluginConfigs={pluginConfigs}
+          onExtractPluginConfig={handleExtractPluginConfig}
           debugConfig={debugConfig}
           showPortNames={showPortNames}
           onOpenPalette={() => setPaletteOpen(true)}
