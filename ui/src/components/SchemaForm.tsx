@@ -6,9 +6,10 @@
  *
  * @module components/SchemaForm
  */
-import { Plus, X } from 'lucide-react';
+import { Plus, RotateCcw, X } from 'lucide-react';
 import type { FieldOption, FieldSchema } from '../pluginConfig';
 import type { Availability, Suggestion } from '../varSuggestions';
+import { applyEdit, classifyKey, displayValue } from '../configInheritance';
 import { VarInput } from './VarInput';
 import { ConditionBuilder } from './ConditionBuilder';
 
@@ -39,6 +40,16 @@ interface SchemaFormProps {
    * which has no node selected to derive suggestions from.
    */
   varContext?: VarContext;
+  /**
+   * Config inherited from the node's `config_ref` shared config. When set,
+   * fields display the inherited value when no local key shadows it, edits
+   * that land exactly on the inherited value auto-drop out of `value` (the
+   * key stays inherited), and locally-set keys are flagged — "overrides
+   * shared" when they shadow an inherited key, "added" otherwise — with a
+   * reset control that removes the local key. Omit when the node has no
+   * `config_ref` (or for editors of the shared config itself).
+   */
+  inherited?: Record<string, unknown>;
 }
 
 /**
@@ -299,12 +310,13 @@ function Switch({
  * The emitted config object is what the admin API persists as the node's
  * `config` block in gateway.yaml.
  */
-export function SchemaForm({ schema, value, onChange, varContext }: SchemaFormProps) {
-  const set = (key: string, v: unknown) => onChange({ ...value, [key]: v });
+export function SchemaForm({ schema, value, onChange, varContext, inherited }: SchemaFormProps) {
+  const inh = inherited ?? {};
+  const set = (key: string, v: unknown) => onChange(applyEdit(value, inh, key, v));
 
   /** Renders the input control for one field, switching on `field.type` as documented above. */
   const renderField = (field: FieldSchema) => {
-    const current = value[field.key];
+    const current = displayValue(value, inh, field.key);
 
     switch (field.type) {
       case 'text': {
@@ -599,13 +611,53 @@ export function SchemaForm({ schema, value, onChange, varContext }: SchemaFormPr
 
   return (
     <div className="space-y-4">
-      {schema.map((field) => (
-        <div key={field.key}>
-          <label style={labelStyle}>{field.label}</label>
-          {renderField(field)}
-          {field.hint && <p style={hintStyle}>{field.hint}</p>}
-        </div>
-      ))}
+      {schema.map((field) => {
+        // Origin flags only make sense when layering over a shared config.
+        const origin = inherited ? classifyKey(value, inh, field.key) : undefined;
+        const flagged = origin === 'override' || origin === 'added';
+        return (
+          <div
+            key={field.key}
+            style={flagged ? { borderLeft: '2px solid var(--accent)', paddingLeft: 8 } : undefined}
+          >
+            <div className="flex items-center justify-between">
+              <label style={labelStyle}>{field.label}</label>
+              {flagged && (
+                <span className="flex items-center" style={{ gap: 4, marginBottom: 4 }}>
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 'var(--text-2xs)',
+                      color: 'var(--accent-hover)',
+                      background: 'var(--accent-soft)',
+                      border: '1px solid var(--accent-ring)',
+                      borderRadius: 'var(--radius-pill)',
+                      padding: '0 6px',
+                    }}
+                  >
+                    {origin === 'override' ? 'overrides shared' : 'added'}
+                  </span>
+                  <button
+                    onClick={() => onChange(applyEdit(value, inh, field.key, undefined))}
+                    className="flex items-center justify-center rounded transition-colors"
+                    style={{ width: 18, height: 18, color: 'var(--text-muted)' }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent-hover)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+                    aria-label={`Reset ${field.label} to inherited`}
+                    title={
+                      origin === 'override' ? 'Reset to inherited value' : 'Remove local value'
+                    }
+                  >
+                    <RotateCcw size={11} />
+                  </button>
+                </span>
+              )}
+            </div>
+            {renderField(field)}
+            {field.hint && <p style={hintStyle}>{field.hint}</p>}
+          </div>
+        );
+      })}
     </div>
   );
 }

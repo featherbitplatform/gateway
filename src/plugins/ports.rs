@@ -239,9 +239,10 @@ pub const TRAFFIC_SPLIT_SPEC: PortSpec = PortSpec {
 };
 
 /// `condition`: a pure branching waypoint — no `success` port, the request
-/// always leaves on `true` or `false`. An uncheckable condition (absent
-/// variable under a comparison, JSONPath over a non-JSON body) exits on
-/// `error`.
+/// always leaves on `true` or `false`. Evaluation is lenient (absent
+/// variables compare as empty, a JSONPath over a non-JSON body matches
+/// nothing), so the node itself never errors; `error` stays declared for
+/// compatibility with policies that wired it.
 pub const CONDITION_SPEC: PortSpec = PortSpec {
     input: Some("Request context from the previous node."),
     outputs: &[

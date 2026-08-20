@@ -17,7 +17,7 @@ The node itself is a passthrough — the actual listener logic (accepting connec
 
 The graph's terminal point, representing the requesting client. When the Context reaches a `client` node's `in` port, graph execution stops and the gateway sends whatever `context.response` holds at that moment back to the caller. The node is a passthrough and does not modify the Context.
 
-Unlike regular inputs, a `client` node's input may have **multiple incoming edges** — the happy path and error-handler paths can all deliver the final response through the same node:
+Like any input port, a `client` node's input may have **multiple incoming edges** (fan-in is unrestricted) — the happy path and error-handler paths can all deliver the final response through the same node:
 
 ```yaml
 edges:
@@ -34,5 +34,5 @@ edges:
 Policy validation (run at config load and on Admin API writes) enforces both nodes structurally:
 
 - Every policy **must** contain a `listener` node and a `client` node; a policy missing either is rejected.
-- Each input port accepts only one incoming edge, **except** the inputs of `client` and `error-handler` nodes, which accept multiple.
+- Input ports accept any number of incoming edges (fan-in); output ports carry exactly one (fan-out and cycles are compile errors).
 - Like all nodes, they must not be orphans — each needs at least one connected edge.

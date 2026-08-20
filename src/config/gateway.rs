@@ -77,6 +77,33 @@ pub struct MatchRule {
     pub host: Option<String>,
 }
 
+impl MatchRule {
+    /// Resolves `${ENV_VAR:-default}` placeholders in every matchable field.
+    ///
+    /// Called on the route-table copy when routes are compiled; the stored
+    /// config keeps the placeholder form (gateway config is loaded raw so
+    /// the Admin API never serves resolved values).
+    pub fn interpolate_env(&mut self) {
+        let resolve = |s: &mut String| {
+            if s.contains("${") {
+                *s = super::loader::interpolate_env(s);
+            }
+        };
+        if let Some(path) = &mut self.path {
+            resolve(path);
+        }
+        if let Some(host) = &mut self.host {
+            resolve(host);
+        }
+        for method in &mut self.methods {
+            resolve(method);
+        }
+        for value in self.headers.values_mut() {
+            resolve(value);
+        }
+    }
+}
+
 /// A node-graph policy: a named pipeline of plugin nodes wired by edges.
 ///
 /// Compiled into a `CompiledGraph` at load/reload time; execution starts at
@@ -139,9 +166,11 @@ pub struct EdgeConfig {
     pub to: String,
 }
 
-/// A reusable named subgraph with a fixed boundary: exactly one `input`,
-/// one `output`, and one `error` pseudo-node (declared in `nodes` like a
-/// policy declares `listener`/`client`, so the UI can persist positions).
+/// A reusable named subgraph with a boundary of one `input`, one or more
+/// `output`, and one or more `error` pseudo-nodes; each output/error node's
+/// id is an instance port name (`output` = the `success` port; `error` =
+/// the default error port) (declared in `nodes` like a policy declares
+/// `listener`/`client`, so the UI can persist positions).
 ///
 /// Instances appear in policies as nodes of `type: supernode` with
 /// `config: { name: <this name> }` and are inlined at compile time —
@@ -153,7 +182,10 @@ pub struct SupernodeConfig {
     /// Optional human-readable description (shown in the UI library).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Inner plugin nodes plus the three boundary pseudo-nodes.
+    /// Inner plugin nodes plus the boundary pseudo-nodes: one `input`, one
+    /// or more `output`, and one or more `error` pseudo-nodes; each
+    /// output/error node's id is an instance port name (`output` = the
+    /// `success` port; `error` = the default error port).
     #[serde(default)]
     pub nodes: Vec<NodeConfig>,
     /// Directed connections; boundary edges use `input.out`, `output.in`,
