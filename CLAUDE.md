@@ -66,7 +66,7 @@ Core features:
 - **Admin API** — axum-based REST API on separate port with Basic Auth, CRUD for routes/policies, health/ready/metrics endpoints
 - **Hot-reload** — file watcher (notify) triggers config reload on gateway.yaml changes
 - **Prometheus metrics** — per-route and per-node counters/histograms at `/metrics`
-- **Supernodes** — reusable named subgraphs inlined into policies at compile time; a definition may declare any number of `type: output` boundary nodes, each becoming a mandatory-wired named instance port (the `output`-id boundary maps to `success`/`out`)
+- **Supernodes** — reusable named subgraphs inlined into policies at compile time; a definition may declare any number of `type: output` boundary nodes, each becoming a mandatory-wired named instance port (the `output`-id boundary maps to `success`/`out`), and any number of `type: error` boundary nodes, each becoming an optional-wiring named error-kind instance port (the `error`-id boundary is the default and the sole target of the black-box implicit-error-wiring rule; renaming it away removes that default)
 - **Shared plugin configs** — named, typed config profiles referenced by nodes via config_ref, resolved at compile time
 - **Context var autocomplete** — $var suggestions with live value preview from debug traces, plus GET /api/vars catalog
 - **Universal config templates** — {{namespace.path}} rendering in all traffic-bound plugin config, with env vars and live-preview suggestions everywhere
