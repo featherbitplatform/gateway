@@ -201,8 +201,11 @@ pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
     // output: one or more; each id is an instance port name (`output` -> the
     // `success` port), so reserved ids that collide with fixed port names are
     // rejected.
-    let output_nodes: Vec<&crate::config::NodeConfig> =
-        sn.nodes.iter().filter(|n| n.node_type == "output").collect();
+    let output_nodes: Vec<&crate::config::NodeConfig> = sn
+        .nodes
+        .iter()
+        .filter(|n| n.node_type == "output")
+        .collect();
     if output_nodes.is_empty() {
         errors.push(format!(
             "Supernode '{}' must declare at least one 'output' boundary node",
@@ -1043,7 +1046,9 @@ mod tests {
         sn.nodes.push(inner("denied", "output"));
         let errors = validate_supernode(&sn).unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("duplicate node id 'denied'")),
+            errors
+                .iter()
+                .any(|e| e.contains("duplicate node id 'denied'")),
             "{errors:?}"
         );
     }
