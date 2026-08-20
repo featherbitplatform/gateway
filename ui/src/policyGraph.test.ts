@@ -118,7 +118,7 @@ describe('supernodePortSpec', () => {
     expect(supernodePortSpec(undefined)).toBeUndefined();
   });
 
-  it('derives one error-kind port per error boundary, default first per definition order', () => {
+  it('derives one error-kind port per error boundary, in definition order', () => {
     const multiError: Supernode = {
       ...gateDef,
       nodes: [...gateDef.nodes, { id: 'auth-error', type: 'error', config: {} }],
