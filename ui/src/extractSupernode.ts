@@ -20,6 +20,13 @@ export function extractSupernode(
   }
 
   const selected = new Set(selectedIds);
+
+  if (policy.error_handler && selected.has(policy.error_handler)) {
+    throw new Error(
+      `Node '${policy.error_handler}' is the policy's error handler — reassign it before extracting`
+    );
+  }
+
   const selectedNodes = policy.nodes.filter((n) => selected.has(n.id));
 
   for (const n of selectedNodes) {
