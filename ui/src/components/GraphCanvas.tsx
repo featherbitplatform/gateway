@@ -84,6 +84,12 @@ interface GraphCanvasProps {
   supernodes: Supernode[];
   /** Named shared plugin configs offered by the inspector's picker (from GET /api/plugin-configs). */
   pluginConfigs: PluginConfigDef[];
+  /**
+   * Persists a shared config extracted from a node via the inspector's
+   * "Save as shared config" flow; resolves `true` on success. Threaded to
+   * {@link NodeInspector}.
+   */
+  onExtractPluginConfig: (def: PluginConfigDef) => Promise<boolean>;
   /** Debug settings (enabled/capture_bodies/...), threaded to the inspector's var-suggestion hook. */
   debugConfig: DebugConfig | null;
   /**
@@ -220,6 +226,7 @@ export function GraphCanvas({
   kind,
   supernodes,
   pluginConfigs,
+  onExtractPluginConfig,
   debugConfig,
   showPortNames,
   onOpenPalette,
@@ -684,6 +691,7 @@ export function GraphCanvas({
           pluginConfigs={pluginConfigs}
           onUpdateConfig={handleUpdateConfig}
           onUpdateConfigRef={handleUpdateConfigRef}
+          onExtractPluginConfig={onExtractPluginConfig}
           onDeleteNode={handleDeleteNode}
           onClose={() => setSelectedNodeId(null)}
           policyName={policy?.name ?? null}
