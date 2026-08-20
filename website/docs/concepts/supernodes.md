@@ -14,7 +14,7 @@ A supernode definition declares three kinds of structural node, the same way a p
 | Node | `id` | Ports |
 |---|---|---|
 | `input` | must be `input` | one `out` edge only |
-| `output` | any number of `type: output` nodes; each id becomes an instance port name — see [Named output ports](#named-output-ports) | `in` only (fan-in allowed) |
+| `output` (one or more) | each id becomes an instance port name — see [Named output ports](#named-output-ports) | `in` only (fan-in allowed) |
 | `error` | must be `error` | `in` only (fan-in allowed) |
 
 `input` is where the context enters when the supernode instance runs; each `output` boundary and the `error` boundary are its exits, corresponding to the instance's own output ports once it's dropped into a policy.
