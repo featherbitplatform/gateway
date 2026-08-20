@@ -140,4 +140,10 @@ describe('extractSupernode', () => {
     p.nodes[4].id = 'error'; // rename eh to error
     expect(() => extractSupernode(p, ['error', 'rl'], 'x')).toThrow(/reserved for supernode boundary/);
   });
+
+  it('rejects selections containing the policy error handler', () => {
+    const p = fixture();
+    p.error_handler = 'rl';
+    expect(() => extractSupernode(p, ['auth', 'rl'], 'x')).toThrow(/error handler/);
+  });
 });

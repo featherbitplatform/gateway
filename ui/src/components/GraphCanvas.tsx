@@ -446,14 +446,16 @@ export function GraphCanvas({
     if (!extractEligible) {
       onSaveWarning?.(
         'Extract selection',
-        'Select two or more nodes (no listener/client/supernode) to extract.'
+        kind !== 'policy'
+          ? "Extraction works in the policy editor — open a route's policy and select two or more nodes."
+          : 'Select two or more nodes (no listener/client/supernode) to extract.'
       );
       return;
     }
     setExtractName('');
     setExtractError(null);
     setExtractDialogOpen(true);
-  }, [extractEligible, onSaveWarning]);
+  }, [extractEligible, onSaveWarning, kind]);
 
   const submitExtract = async () => {
     const name = extractName.trim();
@@ -485,6 +487,9 @@ export function GraphCanvas({
     setNodes(policyToNodes(result.policy, handleSelect, portSpecs, showPortNames, defs));
     setEdges(policyToEdges(result.policy, portSpecs, defs));
     setSelectedNodeId(result.instanceId);
+    // Edge ids are positional (`e-<i>`); after the rebuild above a
+    // pre-extraction edge selection would point at the wrong edge.
+    setSelectedEdgeId(null);
   };
 
   // Predecessor lookup for the var-suggestion hook (NodeInspector): the
