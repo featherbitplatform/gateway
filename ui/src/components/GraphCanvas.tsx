@@ -28,6 +28,7 @@ import { PluginNode, type PluginNodeData } from './PluginNode';
 import { PluginDrawer } from './PluginDrawer';
 import { NodeInspector } from './NodeInspector';
 import { ThemeToggle } from './ThemeToggle';
+import { Dialog, DialogButton, DialogField } from './Dialog';
 import { useRegisterEditorAction } from '../editorActions';
 import type {
   DebugConfig,
@@ -47,6 +48,7 @@ import {
   portKindFor,
   supernodePortSpec,
 } from '../policyGraph';
+import { validatePortName } from '../portNameValidation';
 
 /**
  * Builds the shared inline style for floating-toolbar buttons.
@@ -252,6 +254,15 @@ export function GraphCanvas({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Add/rename dialog for named output-port boundary nodes (supernode-
+  // definition mode only). One dialog, one validation path (validatePortName)
+  // for both flows — see submitPortDialog below.
+  const [portDialog, setPortDialog] = useState<{ mode: 'add' } | { mode: 'rename'; nodeId: string } | null>(
+    null
+  );
+  const [portName, setPortName] = useState('');
+  const [portError, setPortError] = useState<string | null>(null);
 
   // Ids of supernode instances currently expanded to their inline preview.
   // Canvas-session-only by design: held here (not in anything nodesToPolicy
@@ -483,6 +494,72 @@ export function GraphCanvas({
     setDrawerOpen(false);
   };
 
+  // Opens the add/rename dialog in "add" mode (drawer's "Output port" entry).
+  const handleAddOutputPort = () => {
+    setPortName('');
+    setPortError(null);
+    setPortDialog({ mode: 'add' });
+  };
+
+  // Opens the same dialog in "rename" mode (NodeInspector's Rename button on
+  // an output boundary). The inspector only opens the dialog; validation
+  // happens on submit below, same as the add flow.
+  const handleRenameOutputPort = (nodeId: string) => {
+    setPortName(nodeId);
+    setPortError(null);
+    setPortDialog({ mode: 'rename', nodeId });
+  };
+
+  // Single validation + apply path for both adding a new output-port
+  // boundary and renaming an existing one, per validatePortName
+  // (ui/src/portNameValidation.ts, mirroring src/graph/validation.rs::RESERVED_OUTPUT_IDS).
+  const submitPortDialog = () => {
+    if (!portDialog) return;
+    const name = portName.trim();
+    const err = validatePortName(
+      name,
+      nodes.map((n) => n.id),
+      portDialog.mode === 'rename' ? portDialog.nodeId : undefined
+    );
+    if (err) {
+      setPortError(err);
+      return;
+    }
+    if (portDialog.mode === 'add') {
+      setNodes((nds) => [
+        ...nds,
+        {
+          id: name,
+          type: 'pluginNode',
+          position: { x: 300, y: 200 + nds.length * 80 },
+          data: {
+            label: name,
+            pluginType: 'output',
+            config: {},
+            ports: undefined,
+            onSelect: handleSelect,
+            showPortNames,
+          } satisfies PluginNodeData,
+        },
+      ]);
+      setSelectedNodeId(name);
+    } else {
+      const oldId = portDialog.nodeId;
+      setNodes((nds) =>
+        nds.map((n) => (n.id === oldId ? { ...n, id: name, data: { ...n.data, label: name } } : n))
+      );
+      setEdges((eds) =>
+        eds.map((e) => ({
+          ...e,
+          source: e.source === oldId ? name : e.source,
+          target: e.target === oldId ? name : e.target,
+        }))
+      );
+      setSelectedNodeId(name);
+    }
+    setPortDialog(null);
+  };
+
   const handleUpdateConfig = (nodeId: string, config: Record<string, unknown>) => {
     setNodes((nds) =>
       nds.map((n) =>
@@ -707,6 +784,7 @@ export function GraphCanvas({
         onAddPlugin={handleAddPlugin}
         onAddScript={handleAddScript}
         onAddSupernode={handleAddSupernode}
+        onAddOutputPort={kind === 'supernode' ? handleAddOutputPort : undefined}
         isOpen={drawerOpen}
         onClose={() => setDrawerOpen(false)}
       />
@@ -724,8 +802,42 @@ export function GraphCanvas({
           predecessorId={predecessorId}
           debugConfig={debugConfig}
           kind={kind}
+          onRenameNode={kind === 'supernode' ? handleRenameOutputPort : undefined}
         />
       )}
+
+      <Dialog
+        open={portDialog !== null}
+        title="Output port name"
+        onClose={() => setPortDialog(null)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setPortDialog(null)}>
+              Cancel
+            </DialogButton>
+            <DialogButton onClick={submitPortDialog}>
+              {portDialog?.mode === 'rename' ? 'Rename' : 'Create'}
+            </DialogButton>
+          </>
+        }
+      >
+        <DialogField
+          label="Port name"
+          value={portName}
+          onChange={(v) => {
+            setPortName(v);
+            if (portError) setPortError(null);
+          }}
+          placeholder="denied"
+          mono
+          autoFocus
+        />
+        {portError && (
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--error)', margin: 0 }}>
+            {portError}
+          </p>
+        )}
+      </Dialog>
     </div>
   );
 }
