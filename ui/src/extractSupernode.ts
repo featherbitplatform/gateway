@@ -102,6 +102,8 @@ export function extractSupernode(
   for (const e of outError) {
     let group = errorGroups.find((g) => g.target === e.to);
     if (!group) {
+      // The hardcoded first 'error' is never added to takenIds — collision safety relies on
+      // RESERVED unconditionally containing 'error', so uniquify can never emit bare 'error' for a later group.
       group = {
         target: e.to,
         boundaryId: errorGroups.length === 0 ? 'error' : uniquify('error'),

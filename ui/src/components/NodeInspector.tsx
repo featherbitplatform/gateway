@@ -253,6 +253,8 @@ export function NodeInspector({
     : undefined;
   const effectiveConfig = mergeEffective(inheritedConfig ?? {}, data.config ?? {});
 
+  const deleteDisabled = isBoundaryPort && !!boundaryDeleteBlocked;
+
   const openExtract = () => {
     setExtractName('');
     setExtractDesc('');
@@ -516,7 +518,7 @@ export function NodeInspector({
         <div style={{ padding: 16, borderTop: '1px solid var(--border)' }}>
           <button
             onClick={() => onDeleteNode(node.id)}
-            disabled={isBoundaryPort && !!boundaryDeleteBlocked}
+            disabled={deleteDisabled}
             title={isBoundaryPort ? boundaryDeleteBlocked : undefined}
             className="w-full transition-colors"
             style={{
@@ -526,8 +528,8 @@ export function NodeInspector({
               fontWeight: 500,
               background: 'var(--error)',
               color: '#fff',
-              opacity: isBoundaryPort && boundaryDeleteBlocked ? 0.5 : 1,
-              cursor: isBoundaryPort && boundaryDeleteBlocked ? 'not-allowed' : 'pointer',
+              opacity: deleteDisabled ? 0.5 : 1,
+              cursor: deleteDisabled ? 'not-allowed' : 'pointer',
             }}
           >
             Delete Node

@@ -602,10 +602,10 @@ export function GraphCanvas({
 
   // Opens the add/rename dialog in "add" mode (drawer's "Output port"/"Error
   // port" entries).
-  const handleAddBoundaryPort = (kind: 'output' | 'error') => {
+  const handleAddBoundaryPort = (boundaryKind: 'output' | 'error') => {
     setPortName('');
     setPortError(null);
-    setPortDialog({ mode: 'add', kind });
+    setPortDialog({ mode: 'add', kind: boundaryKind });
   };
 
   // Opens the same dialog in "rename" mode (NodeInspector's Rename button on
