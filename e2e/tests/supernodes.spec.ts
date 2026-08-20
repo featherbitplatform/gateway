@@ -3,7 +3,7 @@
  */
 import {test, expect} from '@playwright/test';
 
-import {adminApi, dataPlane, deleteRouteIfPresent} from '../helpers/admin';
+import {adminApi, dataPlane, deleteRouteIfPresent, waitForDataPlane} from '../helpers/admin';
 
 /** Header that opts a single request into debug tracing (see debug.spec.ts). */
 const DEBUG_HEADER = {'x-featherbit-debug': '1'};
@@ -282,6 +282,217 @@ test.describe('Supernodes', () => {
 
     await api.delete('/api/routes/sn-orphan-route');
     await api.delete('/api/policies/sn-orphan-policy');
+    await api.dispose();
+  });
+
+  /**
+   * Named output ports (Task 1-6): a supernode may declare more than one
+   * `type: output` boundary. Boundary id `output` becomes instance port
+   * `success`; any other boundary id (here `blocked`) becomes an
+   * instance port of that same name, and -- like `success` -- it is
+   * mandatory-wired: expansion must fail if a policy leaves it dangling,
+   * and that failure must surface through the Admin API on policy save.
+   */
+  test('E2E-SN-05: named output ports route end-to-end, and unwired ports reject at save', async () => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'gate-route');
+    await api.delete('/api/policies/gate-policy');
+    await api.delete('/api/supernodes/header-gate');
+
+    // `cond` branches on header presence: `true` exits through the `output`
+    // boundary (-> instance port `success`), `false` through the second
+    // `type: output` boundary `blocked` (-> instance port `blocked`). A
+    // definition must always declare an `error` boundary node, but -- unlike
+    // `output`-derived ports -- it is never mandatory-wired, so it stays
+    // unconnected here.
+    const headerGate = {
+      name: 'header-gate',
+      nodes: [
+        {id: 'input', type: 'input', config: {}},
+        {id: 'output', type: 'output', config: {}},
+        {id: 'blocked', type: 'output', config: {}},
+        {id: 'error', type: 'error', config: {}},
+        {id: 'cond', type: 'condition', config: {conditions: [['http_x_e2e_gate', 'present']]}},
+      ],
+      edges: [
+        {from: 'input.out', to: 'cond.in'},
+        {from: 'cond.true', to: 'output.in'},
+        {from: 'cond.false', to: 'blocked.in'},
+      ],
+    };
+    expect((await api.put('/api/supernodes/header-gate', {data: headerGate})).ok()).toBeTruthy();
+
+    // Reuse the seeded echo upstream's live config, same as echoSupernode() above.
+    const echoPolicy = (await (await api.get('/api/policies/echo-policy')).json()) as {
+      nodes: {id: string; type: string; config: Record<string, unknown>}[];
+    };
+    const upstreamConfig = echoPolicy.nodes.find((n) => n.type === 'upstream')!.config;
+
+    const wiredPolicy = {
+      name: 'gate-policy',
+      nodes: [
+        {id: 'listener', type: 'listener', config: {}},
+        {id: 'gate', type: 'supernode', config: {name: 'header-gate'}},
+        {id: 'up', type: 'upstream', config: upstreamConfig},
+        {id: 'deny', type: 'response-rewrite', config: {status_code: 403, body: '{"error":"blocked"}'}},
+        {id: 'client', type: 'client', config: {}},
+      ],
+      edges: [
+        {from: 'listener.out', to: 'gate.in'},
+        {from: 'gate.success', to: 'up.in'},
+        {from: 'gate.blocked', to: 'deny.in'},
+        {from: 'up.success', to: 'client.in'},
+        {from: 'deny.success', to: 'client.in'},
+      ],
+    };
+    expect((await api.put('/api/policies/gate-policy', {data: wiredPolicy})).ok()).toBeTruthy();
+    expect(
+      (
+        await api.post('/api/routes', {
+          data: {name: 'gate-route', match: {path: '/gate/*', methods: ['GET']}, policy: 'gate-policy'},
+        })
+      ).ok(),
+    ).toBeTruthy();
+
+    const dp = await dataPlane();
+
+    // With the header: cond.true -> output -> gate.success -> the echo backend.
+    const withHeader = await dp.get('/gate/ping', {headers: {'x-e2e-gate': '1'}});
+    expect(withHeader.status()).toBe(200);
+    const echo = (await withHeader.json()) as {path: string};
+    expect(echo.path).toBe('/gate/ping');
+
+    // Without the header: cond.false -> blocked -> gate.blocked -> deny's fixed 403.
+    const withoutHeader = await dp.get('/gate/ping');
+    expect(withoutHeader.status()).toBe(403);
+    expect(await withoutHeader.text()).toContain('blocked');
+
+    // Leaving `gate.blocked` unwired is a hard rejection at save time, naming
+    // the instance and port (src/graph/expand.rs's mandatory-port check).
+    const unwiredPolicy = {
+      ...wiredPolicy,
+      edges: wiredPolicy.edges.filter((e) => e.from !== 'gate.blocked'),
+    };
+    const rejected = await api.put('/api/policies/gate-policy', {data: unwiredPolicy});
+    expect(rejected.ok()).toBeFalsy();
+    expect(rejected.status()).toBeGreaterThanOrEqual(400);
+    expect(rejected.status()).toBeLessThan(500);
+    const body = await rejected.text();
+    expect(body).toContain("output port 'blocked' of supernode instance");
+    expect(body).toContain("add an edge from 'gate.blocked'");
+
+    // Last-good guarantee: the rejected save never swapped the route table.
+    const stillGood = await dp.get('/gate/ping', {headers: {'x-e2e-gate': '1'}});
+    expect(stillGood.status()).toBe(200);
+
+    await dp.dispose();
+    await api.delete('/api/routes/gate-route');
+    await api.delete('/api/policies/gate-policy');
+    await api.delete('/api/supernodes/header-gate');
+    await api.dispose();
+  });
+
+  /**
+   * Editor extraction flow (Task 6): select two adjacent middle nodes on the
+   * policy canvas, "Extract Supernode" from the toolbar, name it, confirm.
+   * Multi-select here uses click + Ctrl-click rather than a box-select drag
+   * -- @xyflow/react's default `multiSelectionKeyCode` is `Control` on
+   * non-mac platforms (the suite runs on ubuntu-latest in CI), and a
+   * click-based selection is far more reliable under Playwright than
+   * reproducing a rubber-band drag over ~10px node hit areas.
+   */
+  test('E2E-SN-06: extract two selected nodes into a new supernode from the editor', async ({page}) => {
+    const api = await adminApi();
+    const snName = 'e2e-extracted-mid';
+    await deleteRouteIfPresent(api, 'sn-extract-route');
+    await api.delete('/api/policies/sn-extract-policy');
+    await api.delete(`/api/supernodes/${snName}`);
+
+    const echoPolicy = (await (await api.get('/api/policies/echo-policy')).json()) as {
+      nodes: {id: string; type: string; config: Record<string, unknown>}[];
+    };
+    const upstreamConfig = echoPolicy.nodes.find((n) => n.type === 'upstream')!.config;
+
+    // listener -> mid1 -> mid2 -> up -> client: mid1/mid2 are the two
+    // adjacent, extraction-eligible middle nodes (no listener/client/
+    // supernode in the selection).
+    const policy = {
+      name: 'sn-extract-policy',
+      nodes: [
+        {id: 'listener', type: 'listener', config: {}},
+        {id: 'mid1', type: 'proxy-rewrite', config: {add_headers: {'x-mid1': '1'}}},
+        {id: 'mid2', type: 'proxy-rewrite', config: {add_headers: {'x-mid2': '1'}}},
+        {id: 'up', type: 'upstream', config: upstreamConfig},
+        {id: 'client', type: 'client', config: {}},
+      ],
+      edges: [
+        {from: 'listener.out', to: 'mid1.in'},
+        {from: 'mid1.success', to: 'mid2.in'},
+        {from: 'mid2.success', to: 'up.in'},
+        {from: 'up.success', to: 'client.in'},
+      ],
+    };
+    expect((await api.put('/api/policies/sn-extract-policy', {data: policy})).ok()).toBeTruthy();
+    expect(
+      (
+        await api.post('/api/routes', {
+          data: {
+            name: 'sn-extract-route',
+            match: {path: '/sn-extract/*', methods: ['GET']},
+            policy: 'sn-extract-policy',
+          },
+        })
+      ).ok(),
+    ).toBeTruthy();
+
+    await page.goto('/');
+    await page.getByText('sn-extract-route', {exact: true}).click();
+    await page.waitForSelector('.react-flow__node');
+
+    // Select mid1, then Ctrl-click mid2 to add it to the selection. Each
+    // click also opens the inspector (PluginNode's onSelect), which sits in
+    // a right-hand panel overlapping the top-right toolbar and would
+    // intercept the click below; close it via its own Close button, which
+    // only clears the inspector's local selectedNodeId, not the canvas's
+    // multi-node ReactFlow selection (unlike a pane click, which clears
+    // both -- see the empty-pane click further down, used once the
+    // selection no longer matters).
+    await page.locator('.react-flow__node', {hasText: 'mid1'}).first().click();
+    await page.locator('.react-flow__node', {hasText: 'mid2'}).first().click({modifiers: ['Control']});
+    await page.getByRole('button', {name: 'Close', exact: true}).click();
+
+    await page.getByRole('button', {name: 'Extract Supernode'}).click();
+    const dialog = page.getByRole('dialog', {name: 'Extract selection as supernode'});
+    await expect(dialog).toBeVisible();
+    await dialog.locator('input').fill(snName);
+    await dialog.getByRole('button', {name: 'Extract', exact: true}).click();
+
+    // Extraction replaces the selection with one instance node labeled
+    // `⬡ <name>` and auto-selects it, which opens the inspector -- close it
+    // (empty-pane click, same test-only timing fix as E2E-SN-04) so the
+    // instance's own name text in the inspector doesn't collide with the
+    // sidebar library row below. The "Supernode created" success toast also
+    // echoes the bare name as its message; dismiss it too so exactly one
+    // element matches the exact-text sidebar assertion.
+    await expect(page.getByText(`⬡ ${snName}`, {exact: true})).toBeVisible();
+    await page.getByRole('button', {name: 'Dismiss'}).click();
+    await page.locator('.react-flow__pane').first().click({position: {x: 5, y: 5}});
+    await expect(page.getByText(snName, {exact: true})).toBeVisible();
+
+    await page.getByRole('button', {name: 'Save Policy'}).click();
+    await expect(page.getByText('Policy saved')).toBeVisible();
+    await expect(page.getByText('Failed to save policy')).toHaveCount(0);
+
+    const dp = await dataPlane();
+    const res = await waitForDataPlane(dp, '/sn-extract/ping', (status) => status === 200);
+    expect(res.status).toBe(200);
+    const echo = JSON.parse(res.body) as {path: string};
+    expect(echo.path).toBe('/sn-extract/ping');
+    await dp.dispose();
+
+    await api.delete('/api/routes/sn-extract-route');
+    await api.delete('/api/policies/sn-extract-policy');
+    await api.delete(`/api/supernodes/${snName}`);
     await api.dispose();
   });
 });
