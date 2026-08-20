@@ -11,6 +11,11 @@ use crate::config::{PolicyConfig, SupernodeConfig};
 /// names (spec §1). `output` is the one special id: it maps to `success`.
 pub(crate) const RESERVED_OUTPUT_IDS: [&str; 5] = ["input", "error", "in", "out", "success"];
 
+/// Error-boundary ids that would collide with an instance's fixed port
+/// names (spec §1). `error` is the one special id: it is both the port
+/// name and the black-box default exit.
+pub(crate) const RESERVED_ERROR_IDS: [&str; 5] = ["input", "output", "in", "out", "success"];
+
 /// Validates a policy's node graph structure, collecting all violations.
 ///
 /// Enforced rules:
@@ -138,11 +143,12 @@ pub fn validate_policy(policy: &PolicyConfig) -> Result<(), Vec<String>> {
 /// Validates a supernode definition's structure, collecting all violations.
 ///
 /// Enforced rules (spec §3):
-/// - exactly one boundary node each of type `input`/`error`, with id equal to
-///   its type;
-/// - one or more boundary nodes of type `output` (each id becoming an instance
-///   port name); output ids must not be in RESERVED_OUTPUT_IDS (collide with
-///   fixed instance port names like `success`, `error`, `input`, etc.);
+/// - exactly one boundary node of type `input`, id `input`; one or more
+///   `output` boundaries (id = port name, `output` = the `success` port);
+///   one or more `error` boundaries (id = error-kind port name, `error` =
+///   the default the black-box rule targets);
+/// - output/error ids must not be in RESERVED_OUTPUT_IDS/RESERVED_ERROR_IDS
+///   (collide with fixed instance port names like `success`, `input`, etc.);
 /// - no two nodes share an id (duplicate ids would create ambiguous output ports);
 /// - inner nodes must not be `listener`/`client`/`supernode`, must not use
 ///   reserved ids, and must not contain `/`;
@@ -177,8 +183,9 @@ pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
         }
     }
 
-    // input/error: exactly one each, id == type (unchanged rule).
-    for ty in ["input", "error"] {
+    // input: exactly one, id == type (unchanged rule).
+    {
+        let ty = "input";
         let matching: Vec<&crate::config::NodeConfig> =
             sn.nodes.iter().filter(|n| n.node_type == ty).collect();
         match matching.as_slice() {
@@ -195,6 +202,27 @@ pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
                 "Supernode '{}' declares more than one '{}' node",
                 sn.name, ty
             )),
+        }
+    }
+
+    // error: one or more; each id is an error-kind instance port name (`error`
+    // is the default the black-box rule targets), so reserved ids that collide
+    // with fixed port names are rejected.
+    let error_nodes: Vec<&crate::config::NodeConfig> =
+        sn.nodes.iter().filter(|n| n.node_type == "error").collect();
+    if error_nodes.is_empty() {
+        errors.push(format!(
+            "Supernode '{}' must declare at least one 'error' boundary node",
+            sn.name
+        ));
+    }
+    for e in &error_nodes {
+        if RESERVED_ERROR_IDS.contains(&e.id.as_str()) {
+            errors.push(format!(
+                "Supernode '{}': error boundary id '{}' is reserved — it would \
+                 collide with a fixed instance port name",
+                sn.name, e.id
+            ));
         }
     }
 
@@ -1066,5 +1094,56 @@ mod tests {
                 .any(|e| e.contains("'denied'") && e.contains("cannot have outgoing")),
             "{errors:?}"
         );
+    }
+
+    /// Named error ports: any number of `type: error` boundary nodes (spec §1-2).
+    #[test]
+    fn test_supernode_multiple_error_boundaries_accepted() {
+        let mut sn = valid_supernode();
+        sn.nodes.push(inner("auth-error", "error"));
+        // `up.error` already exits via the default `error` boundary; the extra
+        // named error boundary may stay unconnected (boundaries are orphan-exempt).
+        assert_eq!(validate_supernode(&sn), Ok(()));
+    }
+
+    /// A definition whose only error boundary is renamed away from `error` is
+    /// legal — the instance then has no default black-box exit.
+    #[test]
+    fn test_supernode_renamed_only_error_boundary_accepted() {
+        let mut sn = valid_supernode();
+        sn.nodes
+            .iter_mut()
+            .find(|n| n.node_type == "error")
+            .unwrap()
+            .id = "oops".into();
+        sn.edges.iter_mut().find(|e| e.to == "error.in").unwrap().to = "oops.in".into();
+        assert_eq!(validate_supernode(&sn), Ok(()));
+    }
+
+    #[test]
+    fn test_supernode_zero_error_boundaries_rejected() {
+        let mut sn = valid_supernode();
+        sn.nodes.retain(|n| n.node_type != "error");
+        sn.edges.retain(|e| !e.to.starts_with("error."));
+        let errors = validate_supernode(&sn).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("at least one 'error' boundary")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_supernode_reserved_error_ids_rejected() {
+        for id in ["input", "output", "in", "out", "success"] {
+            let mut sn = valid_supernode();
+            sn.nodes.push(inner(id, "error"));
+            let errors = validate_supernode(&sn).unwrap_err();
+            assert!(
+                errors.iter().any(|e| e.contains("reserved")),
+                "id {id}: {errors:?}"
+            );
+        }
     }
 }
