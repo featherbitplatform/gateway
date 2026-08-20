@@ -88,20 +88,32 @@ A definition may likewise declare any number of `type: error` boundary nodes —
 supernodes:
   - name: auth-gate
     nodes:
-      - { id: input,   type: input }
-      - { id: output,  type: output }
-      - { id: error,   type: error }    # default — black-box target for unwired inner errors
-      - { id: timeout, type: error }     # named — only reachable via an explicit edge
-      - { id: auth,    type: key-auth }
+      - { id: input,       type: input }
+      - { id: output,      type: output }
+      - { id: error,       type: error }    # default — black-box target for unwired inner errors
+      - { id: auth-error,  type: error }    # named — only reachable via an explicit edge
+      - { id: auth,        type: key-auth }
+      - { id: up,          type: upstream, config: { targets: [ { host: "svc", port: 80 } ] } }
     edges:
       - { from: input.out,     to: auth.in }
-      - { from: auth.success,  to: output.in }
-      - { from: auth.timeout,  to: timeout.in }
-      # auth.error is left unwired: it exits through the default `error`
+      - { from: auth.success,  to: up.in }
+      - { from: auth.error,    to: auth-error.in }   # auth's real error port, routed explicitly
+      - { from: up.success,    to: output.in }
+      # up.error is left unwired: it exits through the default `error`
       # boundary via the black-box rule, if the policy wired `gate.error`.
+
+policies:
+  - name: p
+    nodes:
+      - { id: gate, type: supernode, config: { name: auth-gate } }
+      # ... listener, upstream, reject, auth-error-handler, client ...
+    edges:
+      - { from: gate.success,    to: upstream.in }
+      - { from: gate.error,      to: reject.in }             # up's black-box exit
+      - { from: gate.auth-error, to: auth-error-handler.in }  # auth's own error, routed separately
 ```
 
-Unlike output-derived ports, **every error-kind instance port stays optional-wiring** — the paradigm named error ports inherit unchanged from the single `error` port that came before them. A policy that instantiates `auth-gate` and never wires `gate.timeout` (or `gate.error`) compiles fine; the routes down that unwired exit simply don't happen. What renaming the default boundary away from `error` changes is covered next.
+Unlike output-derived ports, **every error-kind instance port stays optional-wiring** — the paradigm named error ports inherit unchanged from the single `error` port that came before them. A policy that instantiates `auth-gate` and never wires `gate.auth-error` (or `gate.error`) compiles fine; the routes down that unwired exit simply don't happen. What renaming the default boundary away from `error` changes is covered next.
 
 ## Using a supernode from a policy
 
@@ -132,7 +144,7 @@ An instance exposes one outer port per `type: output` boundary in its definition
 policy 'p': unknown port 'denied' on supernode instance 'sec' — supernode 'secured-call' exposes: success, error
 ```
 
-(that message assumes `sec` references a definition with only the default `output`/`error` boundaries; a definition that also declares a `denied` output boundary makes `sec.denied` valid — and, per the mandatory-wiring rule above, required — and a definition that also declares a named error boundary such as `timeout` makes `sec.timeout` valid, optional to wire, just like `sec.error`.)
+(that message assumes `sec` references a definition with only the default `output`/`error` boundaries; a definition that also declares a `denied` output boundary makes `sec.denied` valid — and, per the mandatory-wiring rule above, required — and a definition that also declares a named error boundary such as `auth-error` makes `sec.auth-error` valid, optional to wire, just like `sec.error`.)
 
 Correspondingly, **every `success`/outcome port of every inner node must be wired inside the definition** — to another inner node, or to one of its output boundaries or one of its error boundaries. This is checked when you save the definition, so the error names the definition rather than surfacing later as a puzzling compile failure on whichever policy happens to instantiate it. All such violations are reported together. Inner `error` ports stay exempt — the black-box rule below covers them.
 
@@ -140,7 +152,7 @@ Correspondingly, **every `success`/outcome port of every inner node must be wire
 
 Only the **default** error boundary — the `type: error` node with id `error` — carries the black-box guarantee. `auth.error -> error.in` above is an explicit edge the definition itself wires — nothing implicit about it. The implicit case is `up`: its `error` port is left unwired inside the definition entirely. At expansion time, any inner node with no error edge of its own gets an implicit edge straight to wherever the policy connected the instance's default `error` port — but only if the policy wired that port. If it didn't, those unhandled inner errors aren't silently swallowed; they fall through to the policy's `error_handler`, or a 500 if there isn't one.
 
-Any *other* named error boundary (a `timeout` boundary, say) gets no such default: an inner node's error only lands there via an explicit inner edge (`some_node.error -> timeout.in`). And if a definition renames its default boundary away from `error` entirely — so every error boundary has a non-`error` id — the black-box default disappears along with it: every inner node's error port must then be wired explicitly, to one of the definition's (now all explicitly-targeted) error boundaries, or that error falls through to the policy's `error_handler`/500 once expanded, the same as an unwired default would. Either way, the policy wiring the instance only ever sees as many error exits as the definition declares boundaries for, no matter how many inner nodes could fail.
+Any *other* named error boundary (an `auth-error` boundary, say) gets no such default: an inner node's error only lands there via an explicit inner edge (`some_node.error -> auth-error.in`). And if a definition renames its default boundary away from `error` entirely — so every error boundary has a non-`error` id — the black-box default disappears along with it: every inner node's error port must then be wired explicitly, to one of the definition's (now all explicitly-targeted) error boundaries, or that error falls through to the policy's `error_handler`/500 once expanded, the same as an unwired default would. Either way, the policy wiring the instance only ever sees as many error exits as the definition declares boundaries for, no matter how many inner nodes could fail.
 
 ## Compile-time expansion
 
