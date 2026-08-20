@@ -5,7 +5,9 @@
  * `config` override either schema-driven (SchemaForm, showing inherited
  * values inline with override/added flags when a shared config is selected)
  * or as raw JSON (JsonConfigEditor fallback, with the inherited config shown
- * read-only above it), and offers node deletion for non-fixed nodes.
+ * read-only above it), and offers node deletion for non-fixed nodes (plus,
+ * in supernode-definition mode, output/error boundary nodes — guarded
+ * against deleting the last of a kind via `boundaryDeleteBlocked`).
  *
  * @module components/NodeInspector
  */
@@ -57,12 +59,22 @@ interface NodeInspectorProps {
   /** Whether the canvas is editing a policy or a supernode definition. */
   kind: 'policy' | 'supernode';
   /**
-   * Opens GraphCanvas's rename dialog for this node id. Only supplied in
-   * supernode-definition mode; the inspector merely opens the dialog —
-   * validation lives in GraphCanvas's `submitPortDialog`, the one path
-   * shared with adding a new output-port boundary.
+   * Opens GraphCanvas's rename dialog for this node id (fired for output
+   * and error boundaries alike). Only supplied in supernode-definition
+   * mode; the inspector merely opens the dialog — validation lives in
+   * GraphCanvas's `submitPortDialog`, the one path shared with adding a
+   * new output/error-port boundary.
    */
   onRenameNode?: (nodeId: string) => void;
+  /**
+   * When set, the Delete Node button for the selected output/error boundary
+   * is disabled with this tooltip — GraphCanvas computes it from the count
+   * of boundaries sharing the node's kind (a supernode needs at least one of
+   * each; the server enforces this too, so a keyboard delete that bypasses
+   * this guard fails on save with a clear message). Undefined for non-
+   * boundary nodes and whenever deleting is safe.
+   */
+  boundaryDeleteBlocked?: string;
 }
 
 /** Plugin types with no configuration of their own — fixed pipeline endpoints and supernode boundary pseudo-nodes. */
@@ -195,6 +207,7 @@ export function NodeInspector({
   debugConfig,
   kind,
   onRenameNode,
+  boundaryDeleteBlocked,
 }: NodeInspectorProps) {
   // Computed ahead of the `!node` early return below so the hooks that
   // follow (useState, useContextSuggestions) run unconditionally on every
@@ -229,6 +242,8 @@ export function NodeInspector({
   const schema = getPluginConfigSchema(data.pluginType);
   const isFixed = isFixedNode;
   const isSupernode = isSupernodeNode;
+  const isBoundaryPort =
+    kind === 'supernode' && (data.pluginType === 'output' || data.pluginType === 'error');
 
   // Config inherited from the selected shared config (undefined without a
   // ref), and the node's effective config — what "Save as shared config"
@@ -351,7 +366,9 @@ export function NodeInspector({
                 border: '1px solid var(--border)',
               }}
             />
-            {kind === 'supernode' && data.pluginType === 'output' && onRenameNode && (
+            {kind === 'supernode' &&
+              (data.pluginType === 'output' || data.pluginType === 'error') &&
+              onRenameNode && (
               <button
                 onClick={() => onRenameNode(node.id)}
                 className="shrink-0 transition-colors"
@@ -495,10 +512,12 @@ export function NodeInspector({
       </div>
 
       {/* Delete */}
-      {!isFixed && (
+      {(!isFixed || isBoundaryPort) && (
         <div style={{ padding: 16, borderTop: '1px solid var(--border)' }}>
           <button
             onClick={() => onDeleteNode(node.id)}
+            disabled={isBoundaryPort && !!boundaryDeleteBlocked}
+            title={isBoundaryPort ? boundaryDeleteBlocked : undefined}
             className="w-full transition-colors"
             style={{
               padding: '7px 0',
@@ -507,6 +526,8 @@ export function NodeInspector({
               fontWeight: 500,
               background: 'var(--error)',
               color: '#fff',
+              opacity: isBoundaryPort && boundaryDeleteBlocked ? 0.5 : 1,
+              cursor: isBoundaryPort && boundaryDeleteBlocked ? 'not-allowed' : 'pointer',
             }}
           >
             Delete Node
