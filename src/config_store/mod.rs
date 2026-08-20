@@ -11,7 +11,7 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-use crate::config::{load_yaml_with_env, GatewayConfig};
+use crate::config::{load_yaml, GatewayConfig};
 use crate::state::SharedState;
 
 pub mod etcd;
@@ -50,7 +50,10 @@ impl FileConfigStore {
 #[async_trait]
 impl ConfigStore for FileConfigStore {
     async fn load_all(&self) -> Result<GatewayConfig, String> {
-        load_yaml_with_env(&self.path).map_err(|e| e.to_string())
+        // Raw load: `${VAR}` placeholders stay in the stored config (the
+        // Admin API serves it to the UI); env resolution happens at
+        // compile/build time.
+        load_yaml(&self.path).map_err(|e| e.to_string())
     }
 
     async fn commit(&self, state: &SharedState, candidate: GatewayConfig) -> Result<(), String> {
@@ -129,6 +132,39 @@ policies:
     edges:
       - { from: listener.out, to: client.in }
 "#;
+
+    #[tokio::test]
+    async fn test_load_all_preserves_env_placeholders() {
+        // The loaded config is what the Admin API serves to the Web UI: a
+        // `${VAR}` written in gateway.yaml must survive loading as the
+        // literal placeholder — env resolution happens at graph-compile
+        // time — so secret values never leak into API responses or UI
+        // exports of the config.
+        std::env::set_var("TEST_STORE_SECRET", "actual-secret-value");
+        let path = std::env::temp_dir().join(format!("fb_store_raw_{}.yaml", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"
+policies:
+  - name: p
+    nodes:
+      - id: auth
+        type: openid-connect
+        config:
+          client_secret: ${TEST_STORE_SECRET}
+"#,
+        )
+        .unwrap();
+
+        let gw = FileConfigStore::new(path.clone()).load_all().await.unwrap();
+        assert_eq!(
+            gw.policies[0].nodes[0].config["client_secret"],
+            serde_json::json!("${TEST_STORE_SECRET}")
+        );
+
+        std::fs::remove_file(&path).ok();
+        std::env::remove_var("TEST_STORE_SECRET");
+    }
 
     #[tokio::test]
     async fn test_file_commit_applies_valid_config() {

@@ -194,6 +194,7 @@ const sidebars: SidebarsConfig = {
         'reference/templates',
         'reference/context-vars',
         'reference/conditions',
+        'reference/sbom',
         'reference/roadmap',
       ],
     },

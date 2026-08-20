@@ -303,10 +303,11 @@ pub fn compile_policy(
             node_config.config
         );
         // Interpolate `${ENV_VAR}` in the node config before instantiating the
-        // plugin. This is the source-agnostic choke point: config authored in the
-        // Web UI / Admin API (or delivered over etcd) arrives as parsed JSON and
-        // never sees the file-text interpolation in `load_yaml_with_env`, so we
-        // resolve env vars here. File-loaded values are already resolved (no-op).
+        // plugin. This is the source-agnostic choke point for every config
+        // source — gateway.yaml (loaded raw), the Web UI / Admin API, and etcd
+        // all deliver placeholder-form config; only the compiled graph ever
+        // holds resolved values, so the stored config the Admin API serves
+        // never contains resolved secrets.
         let mut config = node_config.config.clone();
         for value in config.values_mut() {
             crate::config::interpolate_env_json(value);
@@ -383,6 +384,33 @@ pub fn compile_policy(
                     "policy '{}': output port '{}' of node '{}' (type '{}') must be wired — add an edge from '{}.{}'",
                     policy.name, p.name, node_config.id, node_config.node_type, node_config.id, p.name
                 ));
+            }
+        }
+    }
+
+    // Reject cycles: the runtime walk (`run`) follows edges with no step
+    // limit, so a loop anywhere in the graph — through any port, error edges
+    // included — would never terminate. Checking each declared node for
+    // self-reachability keeps the reported node independent of HashMap
+    // iteration order.
+    for node_config in &policy.nodes {
+        let start = &node_config.id;
+        let mut stack: Vec<&String> = edges
+            .get(start)
+            .map(|m| m.values().collect())
+            .unwrap_or_default();
+        let mut seen: HashSet<&String> = HashSet::new();
+        while let Some(next) = stack.pop() {
+            if next == start {
+                return Err(format!(
+                    "policy '{}': policy graph contains a cycle through node '{}' — policies must be acyclic",
+                    policy.name, start
+                ));
+            }
+            if seen.insert(next) {
+                if let Some(m) = edges.get(next) {
+                    stack.extend(m.values());
+                }
             }
         }
     }
@@ -1193,6 +1221,92 @@ mod tests {
             err,
             "policy 'p': node 'rw' (type 'proxy-rewrite') has no output port 'banana'"
         );
+    }
+
+    /// A fully-wired graph whose edges loop back on themselves must not
+    /// compile: the runtime walk has no step limit, so a cycle would spin
+    /// forever on the first matching request.
+    #[test]
+    fn test_compile_rejects_cycle() {
+        let mut policy = policy_missing_success_edge();
+        policy.nodes.push(NodeConfig {
+            id: "rw2".to_string(),
+            node_type: "proxy-rewrite".to_string(),
+            config: HashMap::new(),
+            config_ref: None,
+            position: None,
+        });
+        policy.edges.push(EdgeConfig {
+            from: "rw.success".to_string(),
+            to: "rw2.in".to_string(),
+        });
+        policy.edges.push(EdgeConfig {
+            from: "rw2.success".to_string(),
+            to: "rw.in".to_string(),
+        });
+        let err = compile_policy(&policy, PluginResources::empty()).unwrap_err();
+        assert_eq!(
+            err,
+            "policy 'p': policy graph contains a cycle through node 'rw' — policies must be acyclic"
+        );
+    }
+
+    /// An error edge is still an edge the walk can follow, so it closes a
+    /// cycle like any other: rw errors back into itself via rw2.
+    #[test]
+    fn test_compile_rejects_cycle_through_error_edge() {
+        let mut policy = policy_missing_success_edge();
+        policy.nodes.push(NodeConfig {
+            id: "rw2".to_string(),
+            node_type: "proxy-rewrite".to_string(),
+            config: HashMap::new(),
+            config_ref: None,
+            position: None,
+        });
+        policy.edges.push(EdgeConfig {
+            from: "rw.success".to_string(),
+            to: "client.in".to_string(),
+        });
+        policy.edges.push(EdgeConfig {
+            from: "rw.error".to_string(),
+            to: "rw2.in".to_string(),
+        });
+        policy.edges.push(EdgeConfig {
+            from: "rw2.success".to_string(),
+            to: "rw.in".to_string(),
+        });
+        let err = compile_policy(&policy, PluginResources::empty()).unwrap_err();
+        assert_eq!(
+            err,
+            "policy 'p': policy graph contains a cycle through node 'rw' — policies must be acyclic"
+        );
+    }
+
+    /// Fan-in stays legal: two nodes converging on the same target is not a
+    /// cycle and must compile.
+    #[test]
+    fn test_compile_allows_fan_in() {
+        let mut policy = policy_missing_success_edge();
+        policy.nodes.push(NodeConfig {
+            id: "rw2".to_string(),
+            node_type: "proxy-rewrite".to_string(),
+            config: HashMap::new(),
+            config_ref: None,
+            position: None,
+        });
+        policy.edges.push(EdgeConfig {
+            from: "rw.success".to_string(),
+            to: "rw2.in".to_string(),
+        });
+        policy.edges.push(EdgeConfig {
+            from: "rw.error".to_string(),
+            to: "client.in".to_string(),
+        });
+        policy.edges.push(EdgeConfig {
+            from: "rw2.success".to_string(),
+            to: "client.in".to_string(),
+        });
+        assert!(compile_policy(&policy, PluginResources::empty()).is_ok());
     }
 
     /// error port stays optional: policy with no error edges still compiles.

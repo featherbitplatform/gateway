@@ -39,6 +39,8 @@ paths = [
     '''src/plugins/native/openid_connect\.rs''',
     '''src/plugins/native/csrf\.rs''',
     '''src/plugins/native/jwe_decrypt\.rs''',
+    # Fake consumer credentials in the consumer-store unit tests.
+    '''src/consumers/mod\.rs''',
 ]
 
 [[allowlists]]

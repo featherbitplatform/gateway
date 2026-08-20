@@ -5,6 +5,11 @@ FROM rust:alpine AS builder
 # hadolint ignore=DL3018
 RUN apk add --no-cache musl-dev g++ make
 
+# cargo-auditable embeds the crate dependency list into the binary; without it
+# an SBOM of the FROM scratch runtime image would be nearly empty, and syft/
+# grype/trivy could not inventory the shipped image (see docs.yml/docker.yml).
+RUN cargo install cargo-auditable --locked
+
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
 COPY src/ src/
@@ -13,7 +18,7 @@ COPY ui/dist/ ui/dist/
 # Headless variant: CARGO_FLAGS=--no-default-features compiles the UI out
 # (word-splitting of the flags is intentional).
 ARG CARGO_FLAGS=""
-RUN cargo build --release ${CARGO_FLAGS}
+RUN cargo auditable build --release ${CARGO_FLAGS}
 
 FROM scratch
 
