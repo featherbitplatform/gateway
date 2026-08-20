@@ -275,6 +275,22 @@ export default function App() {
     }
   };
 
+  // Creates a supernode definition extracted from the policy canvas (see
+  // GraphCanvas's submitExtract); passed down as onCreateSupernodeDef. Unlike
+  // submitCreateSupernode above, the definition already exists in full (the
+  // extraction helper built it), so this is a straight persist-and-refresh.
+  const handleCreateSupernodeDef = useCallback(async (sn: Supernode): Promise<boolean> => {
+    try {
+      await api.updateSupernode(sn.name, sn);
+      await loadData();
+      setToast({ tone: 'success', title: 'Supernode created', message: sn.name });
+      return true;
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to create supernode', message: `${e}` });
+      return false;
+    }
+  }, [loadData]);
+
   const submitDeleteSupernode = async () => {
     const name = deleteSupernodeTarget;
     setDeleteSupernodeTarget(null);
@@ -322,6 +338,23 @@ export default function App() {
       setToast({ tone: 'success', title: 'Plugin config deleted', message: name });
     } catch (e) {
       setToast({ tone: 'error', title: 'Failed to delete plugin config', message: `${e}` });
+    }
+  };
+
+  /**
+   * Persists a shared config extracted from a policy node (the inspector's
+   * "Save as shared config" flow). Returns whether the save succeeded so the
+   * inspector only re-links the node to the new config on success.
+   */
+  const handleExtractPluginConfig = async (def: PluginConfigDef): Promise<boolean> => {
+    try {
+      await api.updatePluginConfig(def.name, def);
+      await loadData();
+      setToast({ tone: 'success', title: 'Shared config saved', message: `${def.name} · ${def.type}` });
+      return true;
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to save shared config', message: `${e}` });
+      return false;
     }
   };
 
@@ -640,9 +673,11 @@ export default function App() {
           kind={selectedSupernodeDef ? 'supernode' : 'policy'}
           supernodes={supernodes}
           pluginConfigs={pluginConfigs}
+          onExtractPluginConfig={handleExtractPluginConfig}
           debugConfig={debugConfig}
           showPortNames={showPortNames}
           onOpenPalette={() => setPaletteOpen(true)}
+          onCreateSupernodeDef={handleCreateSupernodeDef}
         />
       )}
 

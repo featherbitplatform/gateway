@@ -1,10 +1,13 @@
 /**
  * Right-hand inspector panel for the node selected on the policy canvas.
- * For regular plugin nodes, offers a shared-config picker (`configRef`) that
- * shows the inherited config read-only above the editor, then edits the
- * node's local `config` override either schema-driven (SchemaForm, when the
- * plugin type declares a config schema) or as raw JSON (JsonConfigEditor
- * fallback), and offers node deletion for non-fixed nodes.
+ * For regular plugin nodes, offers a shared-config picker (`configRef`), a
+ * "Save as shared config" extraction flow, and edits the node's local
+ * `config` override either schema-driven (SchemaForm, showing inherited
+ * values inline with override/added flags when a shared config is selected)
+ * or as raw JSON (JsonConfigEditor fallback, with the inherited config shown
+ * read-only above it), and offers node deletion for non-fixed nodes (plus,
+ * in supernode-definition mode, output/error boundary nodes — guarded
+ * against deleting the last of a kind via `boundaryDeleteBlocked`).
  *
  * @module components/NodeInspector
  */
@@ -15,6 +18,8 @@ import type { PluginNodeData } from './PluginNode';
 import type { DebugConfig, PluginConfigDef } from '../types';
 import { getPluginMeta } from '../pluginMeta';
 import { getPluginConfigSchema } from '../pluginConfig';
+import { mergeEffective } from '../configInheritance';
+import { Dialog, DialogButton, DialogField } from './Dialog';
 import { SchemaForm } from './SchemaForm';
 import { VarLegend } from './VarLegend';
 import { useContextSuggestions } from '../varSuggestions';
@@ -29,6 +34,12 @@ interface NodeInspectorProps {
   onUpdateConfig: (nodeId: string, config: Record<string, unknown>) => void;
   /** Fires with the node id and the selected shared config name (or `undefined` to clear it). */
   onUpdateConfigRef: (nodeId: string, ref: string | undefined) => void;
+  /**
+   * Persists a new shared plugin config extracted from the selected node
+   * ("Save as shared config"); resolves `true` on success (the inspector then
+   * re-links the node to it via `onUpdateConfigRef`/`onUpdateConfig`).
+   */
+  onExtractPluginConfig: (def: PluginConfigDef) => Promise<boolean>;
   /** Fires with the node id when the Delete Node button is clicked. */
   onDeleteNode: (nodeId: string) => void;
   /** Fires when the close (X) button is clicked. */
@@ -47,6 +58,23 @@ interface NodeInspectorProps {
   debugConfig: DebugConfig | null;
   /** Whether the canvas is editing a policy or a supernode definition. */
   kind: 'policy' | 'supernode';
+  /**
+   * Opens GraphCanvas's rename dialog for this node id (fired for output
+   * and error boundaries alike). Only supplied in supernode-definition
+   * mode; the inspector merely opens the dialog — validation lives in
+   * GraphCanvas's `submitPortDialog`, the one path shared with adding a
+   * new output/error-port boundary.
+   */
+  onRenameNode?: (nodeId: string) => void;
+  /**
+   * When set, the Delete Node button for the selected output/error boundary
+   * is disabled with this tooltip — GraphCanvas computes it from the count
+   * of boundaries sharing the node's kind (a supernode needs at least one of
+   * each; the server enforces this too, so a keyboard delete that bypasses
+   * this guard fails on save with a clear message). Undefined for non-
+   * boundary nodes and whenever deleting is safe.
+   */
+  boundaryDeleteBlocked?: string;
 }
 
 /** Plugin types with no configuration of their own — fixed pipeline endpoints and supernode boundary pseudo-nodes. */
@@ -145,16 +173,20 @@ function JsonConfigEditor({
  * Shows the plugin type and read-only node id. For regular (non-fixed,
  * non-supernode) nodes, first renders a "Shared config" picker sourced from
  * `pluginConfigs` (filtered to the node's plugin type) that calls
- * `onUpdateConfigRef`; when a config is selected, its full definition is
- * shown read-only beneath the picker as the inherited base. Then picks the
- * config editor: `listener` and `client` are fixed pipeline endpoints — no
- * configuration and no Delete Node button; types with a schema from
- * getPluginConfigSchema get a {@link SchemaForm} that calls `onUpdateConfig`
- * on every field change; all other types fall back to `JsonConfigEditor`,
- * which updates only on explicit apply. Updates replace the node's entire
- * local `config` object (the overrides layered on top of the inherited
- * config, if any), which is what gets serialized into the policy YAML on
- * save.
+ * `onUpdateConfigRef`, plus a "Save as shared config" button (shown whenever
+ * the node's effective config is non-empty) that extracts the effective
+ * config into a new shared config via `onExtractPluginConfig` and re-links
+ * the node to it. Then picks the config editor: `listener` and `client` are
+ * fixed pipeline endpoints — no configuration and no Delete Node button;
+ * types with a schema from getPluginConfigSchema get a {@link SchemaForm}
+ * that calls `onUpdateConfig` on every field change and, when a shared
+ * config is selected, shows its values inline as the inherited layer with
+ * override/added flags (see SchemaForm's `inherited` prop); all other types
+ * fall back to `JsonConfigEditor`, which updates only on explicit apply and
+ * keeps the read-only inherited-config blob above it. Updates replace the
+ * node's entire local `config` object (the overrides layered on top of the
+ * inherited config, if any), which is what gets serialized into the policy
+ * YAML on save.
  *
  * @remarks
  * The edited config is the same `config` block the Rust plugins deserialize
@@ -167,12 +199,15 @@ export function NodeInspector({
   pluginConfigs,
   onUpdateConfig,
   onUpdateConfigRef,
+  onExtractPluginConfig,
   onDeleteNode,
   onClose,
   policyName,
   predecessorId,
   debugConfig,
   kind,
+  onRenameNode,
+  boundaryDeleteBlocked,
 }: NodeInspectorProps) {
   // Computed ahead of the `!node` early return below so the hooks that
   // follow (useState, useContextSuggestions) run unconditionally on every
@@ -186,6 +221,11 @@ export function NodeInspector({
   const skipFetch = !node || isFixedNode || isSupernodeNode;
 
   const [legendOpen, setLegendOpen] = useState(false);
+  // "Save as shared config" dialog state.
+  const [extractOpen, setExtractOpen] = useState(false);
+  const [extractName, setExtractName] = useState('');
+  const [extractDesc, setExtractDesc] = useState('');
+  const [extractError, setExtractError] = useState('');
   const { suggestions, availability, catalog } = useContextSuggestions({
     policyName,
     nodeId: !skipFetch && node ? node.id : null,
@@ -202,6 +242,46 @@ export function NodeInspector({
   const schema = getPluginConfigSchema(data.pluginType);
   const isFixed = isFixedNode;
   const isSupernode = isSupernodeNode;
+  const isBoundaryPort =
+    kind === 'supernode' && (data.pluginType === 'output' || data.pluginType === 'error');
+
+  // Config inherited from the selected shared config (undefined without a
+  // ref), and the node's effective config — what "Save as shared config"
+  // captures, matching the gateway's shallow compile-time merge.
+  const inheritedConfig = data.configRef
+    ? (pluginConfigs.find((p) => p.name === data.configRef)?.config ?? {})
+    : undefined;
+  const effectiveConfig = mergeEffective(inheritedConfig ?? {}, data.config ?? {});
+
+  const deleteDisabled = isBoundaryPort && !!boundaryDeleteBlocked;
+
+  const openExtract = () => {
+    setExtractName('');
+    setExtractDesc('');
+    setExtractError('');
+    setExtractOpen(true);
+  };
+
+  const submitExtract = async () => {
+    const name = extractName.trim();
+    if (!name) return;
+    if (pluginConfigs.some((p) => p.name === name)) {
+      setExtractError(`A shared config named "${name}" already exists`);
+      return;
+    }
+    const saved = await onExtractPluginConfig({
+      name,
+      type: data.pluginType,
+      description: extractDesc.trim() || undefined,
+      config: effectiveConfig,
+    });
+    if (saved) {
+      // Re-link the node: same effective config, now inherited from the ref.
+      onUpdateConfigRef(node.id, name);
+      onUpdateConfig(node.id, {});
+      setExtractOpen(false);
+    }
+  };
 
   return (
     <div
@@ -272,21 +352,42 @@ export function NodeInspector({
         {/* Node ID */}
         <div>
           <label style={labelStyle}>Node ID</label>
-          <input
-            type="text"
-            value={node.id}
-            readOnly
-            className="w-full"
-            style={{
-              padding: '6px 10px',
-              borderRadius: 'var(--radius-sm)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 'var(--text-sm)',
-              background: 'var(--surface-input)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border)',
-            }}
-          />
+          <div className="flex items-center" style={{ gap: 6 }}>
+            <input
+              type="text"
+              value={node.id}
+              readOnly
+              className="w-full"
+              style={{
+                padding: '6px 10px',
+                borderRadius: 'var(--radius-sm)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--text-sm)',
+                background: 'var(--surface-input)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border)',
+              }}
+            />
+            {kind === 'supernode' &&
+              (data.pluginType === 'output' || data.pluginType === 'error') &&
+              onRenameNode && (
+              <button
+                onClick={() => onRenameNode(node.id)}
+                className="shrink-0 transition-colors"
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: 500,
+                  background: 'var(--surface-raised)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border)',
+                }}
+              >
+                Rename
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Shared config picker */}
@@ -316,7 +417,9 @@ export function NodeInspector({
                   </option>
                 ))}
             </select>
-            {data.configRef && (
+            {/* Schema-driven forms show inherited values inline (with override
+                flags), so the raw blob is only needed for the JSON fallback. */}
+            {data.configRef && schema.length === 0 && (
               <div style={{ marginTop: 8 }}>
                 <label style={labelStyle}>
                   Inherited from {data.configRef} (local keys below override)
@@ -335,13 +438,35 @@ export function NodeInspector({
                     whiteSpace: 'pre',
                   }}
                 >
-                  {JSON.stringify(
-                    pluginConfigs.find((p) => p.name === data.configRef)?.config ?? {},
-                    null,
-                    2
-                  )}
+                  {JSON.stringify(inheritedConfig ?? {}, null, 2)}
                 </div>
               </div>
+            )}
+            {Object.keys(effectiveConfig).length > 0 && (
+              <button
+                onClick={openExtract}
+                className="w-full transition-colors"
+                style={{
+                  marginTop: 8,
+                  padding: '6px 0',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: 500,
+                  background: 'transparent',
+                  color: 'var(--accent-hover)',
+                  border: '1px dashed var(--border-strong)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--accent-ring)';
+                  e.currentTarget.style.background = 'var(--accent-soft)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--border-strong)';
+                  e.currentTarget.style.background = 'transparent';
+                }}
+              >
+                Save as shared config
+              </button>
             )}
           </div>
         )}
@@ -377,6 +502,7 @@ export function NodeInspector({
             value={data.config || {}}
             onChange={(config) => onUpdateConfig(node.id, config)}
             varContext={{ suggestions, availability, onOpenLegend: () => setLegendOpen(true) }}
+            inherited={inheritedConfig}
           />
         ) : (
           <JsonConfigEditor
@@ -388,10 +514,12 @@ export function NodeInspector({
       </div>
 
       {/* Delete */}
-      {!isFixed && (
+      {(!isFixed || isBoundaryPort) && (
         <div style={{ padding: 16, borderTop: '1px solid var(--border)' }}>
           <button
             onClick={() => onDeleteNode(node.id)}
+            disabled={deleteDisabled}
+            title={isBoundaryPort ? boundaryDeleteBlocked : undefined}
             className="w-full transition-colors"
             style={{
               padding: '7px 0',
@@ -400,6 +528,8 @@ export function NodeInspector({
               fontWeight: 500,
               background: 'var(--error)',
               color: '#fff',
+              opacity: deleteDisabled ? 0.5 : 1,
+              cursor: deleteDisabled ? 'not-allowed' : 'pointer',
             }}
           >
             Delete Node
@@ -414,6 +544,49 @@ export function NodeInspector({
         suggestions={suggestions}
         availability={availability}
       />
+
+      <Dialog
+        open={extractOpen}
+        title="Save as shared config"
+        onClose={() => setExtractOpen(false)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setExtractOpen(false)}>
+              Cancel
+            </DialogButton>
+            <DialogButton onClick={submitExtract} disabled={!extractName.trim()}>
+              Save shared config
+            </DialogButton>
+          </>
+        }
+      >
+        <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', margin: '0 0 12px' }}>
+          Saves this node&apos;s current configuration as a shared <code>{data.pluginType}</code>{' '}
+          config and links the node to it. Other nodes can then reference it too.
+        </p>
+        <DialogField
+          label="Config name"
+          value={extractName}
+          onChange={(v) => {
+            setExtractName(v);
+            if (extractError) setExtractError('');
+          }}
+          placeholder="my-shared-config"
+          mono
+          autoFocus
+        />
+        <DialogField
+          label="Description (optional)"
+          value={extractDesc}
+          onChange={setExtractDesc}
+          placeholder="What this profile is for"
+        />
+        {extractError && (
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--error)', margin: 0 }}>
+            {extractError}
+          </p>
+        )}
+      </Dialog>
     </div>
   );
 }

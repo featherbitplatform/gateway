@@ -23,11 +23,12 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { Command, GitFork, Plus, Save, Trash2 } from 'lucide-react';
+import { Boxes, Command, GitFork, Plus, Save, Trash2 } from 'lucide-react';
 import { PluginNode, type PluginNodeData } from './PluginNode';
 import { PluginDrawer } from './PluginDrawer';
 import { NodeInspector } from './NodeInspector';
 import { ThemeToggle } from './ThemeToggle';
+import { Dialog, DialogButton, DialogField } from './Dialog';
 import { useRegisterEditorAction } from '../editorActions';
 import type {
   DebugConfig,
@@ -38,9 +39,17 @@ import type {
   Supernode,
 } from '../types';
 import { edgesAfterConnect } from '../connectionRules';
+import { extractSupernode, type ExtractionResult } from '../extractSupernode';
 import { buildPortSpecs, type PortSpecLookup } from '../portSpecs';
 import { resolveOutputs } from '../nodeKinds';
-import { PORT_STROKE, policyToEdges, policyToNodes, portKindFor } from '../policyGraph';
+import {
+  PORT_STROKE,
+  policyToEdges,
+  policyToNodes,
+  portKindFor,
+  supernodePortSpec,
+} from '../policyGraph';
+import { validatePortName } from '../portNameValidation';
 
 /**
  * Builds the shared inline style for floating-toolbar buttons.
@@ -84,6 +93,12 @@ interface GraphCanvasProps {
   supernodes: Supernode[];
   /** Named shared plugin configs offered by the inspector's picker (from GET /api/plugin-configs). */
   pluginConfigs: PluginConfigDef[];
+  /**
+   * Persists a shared config extracted from a node via the inspector's
+   * "Save as shared config" flow; resolves `true` on success. Threaded to
+   * {@link NodeInspector}.
+   */
+  onExtractPluginConfig: (def: PluginConfigDef) => Promise<boolean>;
   /** Debug settings (enabled/capture_bodies/...), threaded to the inspector's var-suggestion hook. */
   debugConfig: DebugConfig | null;
   /**
@@ -94,6 +109,15 @@ interface GraphCanvasProps {
   showPortNames: boolean;
   /** Opens the App-level command palette; omitted renders no toolbar button. */
   onOpenPalette?: () => void;
+  /**
+   * Persists a supernode definition extracted from a multi-node selection
+   * (see `extractSupernode`); resolves `true` on success. Omitted (or the
+   * eligibility conditions in `extractEligible` unmet) hides the Extract
+   * Supernode toolbar button, disables it in the context menu, and leaves
+   * the `extract-supernode` editor action unregistered as far as the
+   * palette's `when()` guard is concerned.
+   */
+  onCreateSupernodeDef?: (sn: Supernode) => Promise<boolean>;
 }
 
 /** ReactFlow custom node-type registry; every policy node renders as a {@link PluginNode}. */
@@ -122,13 +146,25 @@ const nodeTypes = { pluginNode: PluginNode };
  *   is already the exact `node_id.port` string to match against).
  * @param portSpecs - Catalog-derived lookup used to enumerate each node
  *   type's declared outputs.
+ * @param supernodes - Resolved supernode definitions, used to derive a
+ *   supernode instance's actual ports via `supernodePortSpec` rather than
+ *   the (non-existent) catalog entry for the `supernode` type.
  * @returns `node_id.port` strings for every unwired mandatory port, in node order.
  */
-function findUnwiredPorts(policy: Policy, portSpecs: PortSpecLookup): string[] {
+function findUnwiredPorts(
+  policy: Policy,
+  portSpecs: PortSpecLookup,
+  supernodes: Supernode[]
+): string[] {
   const wired = new Set(policy.edges.map((e) => e.from));
   const missing: string[] = [];
   for (const node of policy.nodes) {
-    const outputs = resolveOutputs(node.type, portSpecs[node.type]);
+    const spec =
+      node.type === 'supernode'
+        ? supernodePortSpec(supernodes.find((s) => s.name === node.config?.name)) ??
+          portSpecs[node.type]
+        : portSpecs[node.type];
+    const outputs = resolveOutputs(node.type, spec);
     for (const port of outputs) {
       if (port.kind === 'error') continue;
       const key = `${node.id}.${port.name}`;
@@ -220,13 +256,38 @@ export function GraphCanvas({
   kind,
   supernodes,
   pluginConfigs,
+  onExtractPluginConfig,
   debugConfig,
   showPortNames,
   onOpenPalette,
+  onCreateSupernodeDef,
 }: GraphCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Add/rename dialog for named output- and error-port boundary nodes
+  // (supernode-definition mode only). One dialog, one validation path
+  // (validatePortName) for both flows and both kinds — see
+  // submitPortDialog below.
+  const [portDialog, setPortDialog] = useState<
+    | { mode: 'add'; kind: 'output' | 'error' }
+    | { mode: 'rename'; nodeId: string; kind: 'output' | 'error' }
+    | null
+  >(null);
+  const [portName, setPortName] = useState('');
+  const [portError, setPortError] = useState<string | null>(null);
+
+  // Extract-selection-into-supernode dialog (Task 6). One dialog shared by
+  // the toolbar button, palette command, and context-menu entry — see
+  // handleExtract/submitExtract below.
+  const [extractDialogOpen, setExtractDialogOpen] = useState(false);
+  const [extractName, setExtractName] = useState('');
+  const [extractError, setExtractError] = useState<string | null>(null);
+
+  // Fixed-position right-click menu opened from a selected node/selection;
+  // currently offers only the Extract Supernode entry.
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
 
   // Ids of supernode instances currently expanded to their inline preview.
   // Canvas-session-only by design: held here (not in anything nodesToPolicy
@@ -268,12 +329,13 @@ export function GraphCanvas({
   // remounts the canvas and nodes/edges/selection all start fresh from the
   // prop. Refetches of the same policy keep the local (unsaved) graph state.
   const initialNodes = useMemo(
-    () => (policy ? policyToNodes(policy, handleSelect, portSpecs, showPortNames) : []),
-    [policy, handleSelect, portSpecs, showPortNames]
+    () =>
+      policy ? policyToNodes(policy, handleSelect, portSpecs, showPortNames, supernodes) : [],
+    [policy, handleSelect, portSpecs, showPortNames, supernodes]
   );
   const initialEdges = useMemo(
-    () => (policy ? policyToEdges(policy, portSpecs) : []),
-    [policy, portSpecs]
+    () => (policy ? policyToEdges(policy, portSpecs, supernodes) : []),
+    [policy, portSpecs, supernodes]
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
@@ -303,6 +365,9 @@ export function GraphCanvas({
           data: {
             ...data,
             supernodeDef: refName ? supernodes.find((s) => s.name === refName) : undefined,
+            ports:
+              supernodePortSpec(refName ? supernodes.find((s) => s.name === refName) : undefined) ??
+              portSpecs['supernode'],
             portSpecs,
             expanded,
             onToggleExpand: handleToggleExpand,
@@ -315,19 +380,22 @@ export function GraphCanvas({
   const onConnect = useCallback(
     (connection: Connection) => {
       setEdges((eds) => {
-        // Cardinality rules (connectionRules.ts): an occupied single-input
-        // target rejects the edge; an occupied source port is rewired so a
-        // port never fans out — the compiler would reject the save anyway.
-        const targetNode = nodes.find((n) => n.id === connection.target);
-        const targetType = (targetNode?.data as unknown as PluginNodeData)?.pluginType;
-        const base = edgesAfterConnect(eds, connection, targetType);
+        // Connection rules (connectionRules.ts): an occupied source port is
+        // rewired so a port never fans out, and an edge that would close a
+        // cycle is rejected — the compiler would bounce the save anyway.
+        const base = edgesAfterConnect(eds, connection);
         if (base === null) {
           return eds;
         }
 
         const sourceNode = nodes.find((n) => n.id === connection.source);
         const sourceType = (sourceNode?.data as unknown as PluginNodeData)?.pluginType;
-        const kind = portKindFor(sourceType, connection.sourceHandle || 'success', portSpecs);
+        const kind = portKindFor(
+          sourceType,
+          connection.sourceHandle || 'success',
+          portSpecs,
+          (sourceNode?.data as unknown as PluginNodeData)?.ports
+        );
         const color = PORT_STROKE[kind];
         return addEdge(
           {
@@ -359,6 +427,87 @@ export function GraphCanvas({
   }, [selectedEdgeId, setEdges]);
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
+
+  // Boundary delete guard: the Delete button shows for output/error boundary
+  // nodes in supernode mode, but is disabled on the last one of its kind —
+  // validate_supernode requires at least one of each (server stays authority;
+  // keyboard delete can bypass and the save then fails with a clear message).
+  const boundaryDeleteBlocked = (() => {
+    if (kind !== 'supernode' || !selectedNode) return undefined;
+    const t = (selectedNode.data as unknown as PluginNodeData).pluginType;
+    if (t !== 'output' && t !== 'error') return undefined;
+    const count = nodes.filter(
+      (n) => (n.data as unknown as PluginNodeData).pluginType === t
+    ).length;
+    return count <= 1 ? `A supernode needs at least one ${t} boundary` : undefined;
+  })();
+
+  // Eligibility for the Extract Supernode action (Task 6): policy mode, a
+  // handler to persist the resulting definition, at least two nodes
+  // selected, and none of them an endpoint/supernode type (mirrors
+  // extractSupernode's own FORBIDDEN_TYPES check, but surfaced up front so
+  // the toolbar/menu/palette entry can explain itself before the user opens
+  // the dialog).
+  const selectedNodes = nodes.filter((n) => n.selected);
+  const extractEligible =
+    kind === 'policy' &&
+    !!onCreateSupernodeDef &&
+    selectedNodes.length >= 2 &&
+    selectedNodes.every(
+      (n) => !['listener', 'client', 'supernode'].includes(
+        (n.data as unknown as PluginNodeData).pluginType
+      )
+    );
+
+  const handleExtract = useCallback(() => {
+    if (!extractEligible) {
+      onSaveWarning?.(
+        'Extract selection',
+        kind !== 'policy'
+          ? "Extraction works in the policy editor — open a route's policy and select two or more nodes."
+          : 'Select two or more nodes (no listener/client/supernode) to extract.'
+      );
+      return;
+    }
+    setExtractName('');
+    setExtractError(null);
+    setExtractDialogOpen(true);
+  }, [extractEligible, onSaveWarning, kind]);
+
+  const submitExtract = async () => {
+    const name = extractName.trim();
+    if (!name) {
+      setExtractError('A supernode name is required');
+      return;
+    }
+    if (supernodes.some((s) => s.name === name)) {
+      setExtractError(`Supernode '${name}' already exists`);
+      return;
+    }
+    if (!policy || !onCreateSupernodeDef) return;
+    let result: ExtractionResult;
+    try {
+      result = extractSupernode(
+        nodesToPolicy(policy.name, nodes, edges, policy.error_handler),
+        selectedNodes.map((n) => n.id),
+        name
+      );
+    } catch (e) {
+      setExtractError(e instanceof Error ? e.message : `${e}`);
+      return;
+    }
+    setExtractDialogOpen(false);
+    if (!(await onCreateSupernodeDef(result.definition))) return;
+    // Rebuild canvas state from the rewritten policy; include the fresh
+    // definition so the instance renders its derived ports immediately.
+    const defs = [...supernodes, result.definition];
+    setNodes(policyToNodes(result.policy, handleSelect, portSpecs, showPortNames, defs));
+    setEdges(policyToEdges(result.policy, portSpecs, defs));
+    setSelectedNodeId(result.instanceId);
+    // Edge ids are positional (`e-<i>`); after the rebuild above a
+    // pre-extraction edge selection would point at the wrong edge.
+    setSelectedEdgeId(null);
+  };
 
   // Predecessor lookup for the var-suggestion hook (NodeInspector): the
   // incoming edge feeding the selected node's `in` handle, preferring the
@@ -435,10 +584,9 @@ export function GraphCanvas({
         pluginType: 'supernode',
         config: { name: sn.name },
         // 'supernode' has no catalog entry (it's not a src/plugins/mod.rs
-        // type); portSpecs lookup misses and PluginNode falls back to the
-        // default success+error pair, matching a supernode instance's fixed
-        // output/error boundary exits (src/graph/expand.rs).
-        ports: portSpecs['supernode'],
+        // type); ports are derived from the definition's own output
+        // boundaries via supernodePortSpec (src/graph/expand.rs).
+        ports: supernodePortSpec(sn),
         onSelect: handleSelect,
         showPortNames,
         supernodeDef: sn,
@@ -450,6 +598,80 @@ export function GraphCanvas({
     setNodes((nds) => [...nds, newNode]);
     setSelectedNodeId(id);
     setDrawerOpen(false);
+  };
+
+  // Opens the add/rename dialog in "add" mode (drawer's "Output port"/"Error
+  // port" entries).
+  const handleAddBoundaryPort = (boundaryKind: 'output' | 'error') => {
+    setPortName('');
+    setPortError(null);
+    setPortDialog({ mode: 'add', kind: boundaryKind });
+  };
+
+  // Opens the same dialog in "rename" mode (NodeInspector's Rename button on
+  // an output or error boundary). Reads the node's pluginType to fill the
+  // kind; refuses to open for any other node type. The inspector only opens
+  // the dialog; validation happens on submit below, same as the add flow.
+  const handleRenameBoundaryPort = (nodeId: string) => {
+    const n = nodes.find((n) => n.id === nodeId);
+    const t = (n?.data as unknown as PluginNodeData | undefined)?.pluginType;
+    if (t !== 'output' && t !== 'error') return;
+    setPortName(nodeId);
+    setPortError(null);
+    setPortDialog({ mode: 'rename', nodeId, kind: t });
+  };
+
+  // Single validation + apply path for both adding a new output/error-port
+  // boundary and renaming an existing one, per validatePortName
+  // (ui/src/portNameValidation.ts, mirroring
+  // src/graph/validation.rs::RESERVED_OUTPUT_IDS / RESERVED_ERROR_IDS).
+  const submitPortDialog = () => {
+    if (!portDialog) return;
+    const name = portName.trim();
+    const err = validatePortName(
+      name,
+      nodes.map((n) => n.id),
+      portDialog.kind,
+      portDialog.mode === 'rename' ? portDialog.nodeId : undefined
+    );
+    if (err) {
+      setPortError(err);
+      return;
+    }
+    if (portDialog.mode === 'add') {
+      setNodes((nds) => [
+        ...nds,
+        {
+          id: name,
+          type: 'pluginNode',
+          position: { x: 300, y: 200 + nds.length * 80 },
+          data: {
+            label: name,
+            pluginType: portDialog.kind,
+            config: {},
+            ports: undefined,
+            onSelect: handleSelect,
+            showPortNames,
+          } satisfies PluginNodeData,
+        },
+      ]);
+      setSelectedNodeId(name);
+      setDrawerOpen(false);
+    } else {
+      const oldId = portDialog.nodeId;
+      setNodes((nds) =>
+        nds.map((n) => (n.id === oldId ? { ...n, id: name, data: { ...n.data, label: name } } : n))
+      );
+      setEdges((eds) =>
+        eds.map((e) => ({
+          ...e,
+          source: e.source === oldId ? name : e.source,
+          target: e.target === oldId ? name : e.target,
+        }))
+      );
+      setSelectedNodeId(name);
+    }
+    setPortDialog(null);
   };
 
   const handleUpdateConfig = (nodeId: string, config: Record<string, unknown>) => {
@@ -504,7 +726,7 @@ export function GraphCanvas({
     // save outright with a "must be wired — add an edge from ..." message,
     // which the existing error toast already surfaces), so this warns without
     // blocking the attempt.
-    const unwired = findUnwiredPorts(updated, portSpecs);
+    const unwired = findUnwiredPorts(updated, portSpecs, supernodes);
     if (unwired.length > 0) {
       onSaveWarning?.(
         'Unwired ports',
@@ -514,7 +736,7 @@ export function GraphCanvas({
 
     console.log('Saving policy:', JSON.stringify(updated, null, 2));
     onSavePolicy(updated);
-  }, [policy, nodes, edges, portSpecs, onSaveWarning, onSavePolicy]);
+  }, [policy, nodes, edges, portSpecs, supernodes, onSaveWarning, onSavePolicy]);
 
   // Exposes canvas-owned actions to the App-level command palette (see
   // editorActions.tsx) for as long as this canvas is mounted. These hook
@@ -530,6 +752,7 @@ export function GraphCanvas({
     }, [])
   );
   useRegisterEditorAction('save-graph', handleSave);
+  useRegisterEditorAction('extract-supernode', handleExtract);
 
   if (!policy) {
     return (
@@ -589,7 +812,13 @@ export function GraphCanvas({
         fitView
         snapToGrid
         snapGrid={[20, 20]}
-        onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null); }}
+        onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null); setCtxMenu(null); }}
+        onSelectionContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY }); }}
+        onNodeContextMenu={(e, node) => {
+          if (!node.selected) return;
+          e.preventDefault();
+          setCtxMenu({ x: e.clientX, y: e.clientY });
+        }}
       >
         <Background gap={20} size={1} color="var(--grid-dot)" />
         <Controls />
@@ -645,6 +874,21 @@ export function GraphCanvas({
               <Plus size={13} />
               Add Node
             </button>
+            {extractEligible && (
+              <button
+                onClick={handleExtract}
+                style={{
+                  ...toolbarButtonStyle('var(--surface-input)'),
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border)',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+                onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+              >
+                <Boxes size={13} />
+                Extract Supernode
+              </button>
+            )}
             {selectedEdgeId && (
               <button
                 onClick={handleDeleteEdge}
@@ -669,6 +913,29 @@ export function GraphCanvas({
         </Panel>
       </ReactFlow>
 
+      {ctxMenu && (
+        <div
+          style={{
+            position: 'fixed', left: ctxMenu.x, top: ctxMenu.y, zIndex: 100,
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)', boxShadow: 'var(--shadow-md)', padding: 4,
+          }}
+          onMouseLeave={() => setCtxMenu(null)}
+        >
+          <button
+            onClick={() => { setCtxMenu(null); handleExtract(); }}
+            disabled={!extractEligible}
+            style={{
+              display: 'block', padding: '6px 12px', fontSize: 'var(--text-sm)',
+              color: extractEligible ? 'var(--text-primary)' : 'var(--text-muted)',
+              background: 'transparent', width: '100%', textAlign: 'left',
+            }}
+          >
+            Extract selection as supernode…
+          </button>
+        </div>
+      )}
+
       <PluginDrawer
         plugins={drawerPlugins}
         scripts={scripts}
@@ -676,6 +943,7 @@ export function GraphCanvas({
         onAddPlugin={handleAddPlugin}
         onAddScript={handleAddScript}
         onAddSupernode={handleAddSupernode}
+        onAddBoundaryPort={kind === 'supernode' ? handleAddBoundaryPort : undefined}
         isOpen={drawerOpen}
         onClose={() => setDrawerOpen(false)}
       />
@@ -686,14 +954,81 @@ export function GraphCanvas({
           pluginConfigs={pluginConfigs}
           onUpdateConfig={handleUpdateConfig}
           onUpdateConfigRef={handleUpdateConfigRef}
+          onExtractPluginConfig={onExtractPluginConfig}
           onDeleteNode={handleDeleteNode}
           onClose={() => setSelectedNodeId(null)}
           policyName={policy?.name ?? null}
           predecessorId={predecessorId}
           debugConfig={debugConfig}
           kind={kind}
+          onRenameNode={kind === 'supernode' ? handleRenameBoundaryPort : undefined}
+          boundaryDeleteBlocked={boundaryDeleteBlocked}
         />
       )}
+
+      <Dialog
+        open={portDialog !== null}
+        title={`${portDialog?.kind === 'error' ? 'Error' : 'Output'} port name`}
+        onClose={() => setPortDialog(null)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setPortDialog(null)}>
+              Cancel
+            </DialogButton>
+            <DialogButton onClick={submitPortDialog}>
+              {portDialog?.mode === 'rename' ? 'Rename' : 'Create'}
+            </DialogButton>
+          </>
+        }
+      >
+        <DialogField
+          label="Port name"
+          value={portName}
+          onChange={(v) => {
+            setPortName(v);
+            if (portError) setPortError(null);
+          }}
+          placeholder="denied"
+          mono
+          autoFocus
+        />
+        {portError && (
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--error)', margin: 0 }}>
+            {portError}
+          </p>
+        )}
+      </Dialog>
+
+      <Dialog
+        open={extractDialogOpen}
+        title="Extract selection as supernode"
+        onClose={() => setExtractDialogOpen(false)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setExtractDialogOpen(false)}>
+              Cancel
+            </DialogButton>
+            <DialogButton onClick={submitExtract}>Extract</DialogButton>
+          </>
+        }
+      >
+        <DialogField
+          label="Supernode name"
+          value={extractName}
+          onChange={(v) => {
+            setExtractName(v);
+            if (extractError) setExtractError(null);
+          }}
+          placeholder="auth-guard"
+          mono
+          autoFocus
+        />
+        {extractError && (
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--error)', margin: 0 }}>
+            {extractError}
+          </p>
+        )}
+      </Dialog>
     </div>
   );
 }

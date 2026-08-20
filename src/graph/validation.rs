@@ -7,14 +7,21 @@ use std::collections::HashSet;
 use super::expand::{split_endpoint, BOUNDARY_TYPES};
 use crate::config::{PolicyConfig, SupernodeConfig};
 
+/// Output-boundary ids that would collide with an instance's fixed port
+/// names (spec §1). `output` is the one special id: it maps to `success`.
+pub(crate) const RESERVED_OUTPUT_IDS: [&str; 5] = ["input", "error", "in", "out", "success"];
+
+/// Error-boundary ids that would collide with an instance's fixed port
+/// names (spec §1). `error` is the one special id: it is both the port
+/// name and the black-box default exit.
+pub(crate) const RESERVED_ERROR_IDS: [&str; 5] = ["input", "output", "in", "out", "success"];
+
 /// Validates a policy's node graph structure, collecting all violations.
 ///
 /// Enforced rules:
 /// - no two nodes share an id;
 /// - the policy has a `listener` node (entry) and a `client` node (exit);
 /// - every edge endpoint references an existing node;
-/// - each input port has at most one incoming edge, except inputs of
-///   `client` and `error-handler` nodes, which accept multiple;
 /// - no orphan nodes (a node with neither incoming nor outgoing edges;
 ///   being named as the policy-level `error_handler` counts as connected);
 /// - `error_handler`, if set, references an existing node that is not a
@@ -85,37 +92,9 @@ pub fn validate_policy(policy: &PolicyConfig) -> Result<(), Vec<String>> {
         }
     }
 
-    // Check for multiple edges into the same input port.
-    // Exceptions: client nodes (multiple paths can deliver the response) and
-    // error-handler nodes (can receive errors from multiple nodes).
-    let client_ids: HashSet<&str> = policy
-        .nodes
-        .iter()
-        .filter(|n| n.node_type == "client")
-        .map(|n| n.id.as_str())
-        .collect();
-    let error_handler_ids: HashSet<&str> = policy
-        .nodes
-        .iter()
-        .filter(|n| n.node_type == "error-handler")
-        .map(|n| n.id.as_str())
-        .collect();
-
-    let mut input_targets: HashSet<String> = HashSet::new();
-    for edge in &policy.edges {
-        let target = &edge.to;
-        let to_node = target.split('.').next().unwrap_or("");
-
-        let is_client = client_ids.contains(to_node);
-        let is_error_handler = error_handler_ids.contains(to_node);
-
-        if !is_client && !is_error_handler && !input_targets.insert(target.clone()) {
-            errors.push(format!(
-                "Node '{}' input '{}' has multiple incoming edges — each input accepts only one edge",
-                to_node, target
-            ));
-        }
-    }
+    // Fan-in is unrestricted: any number of edges may converge on the same
+    // input port. The engine indexes edges by source port only (fan-out and
+    // cycles are compile-time errors in engine.rs).
 
     // Check for orphan nodes (no incoming or outgoing edges)
     let mut connected_nodes: HashSet<&str> = HashSet::new();
@@ -164,15 +143,18 @@ pub fn validate_policy(policy: &PolicyConfig) -> Result<(), Vec<String>> {
 /// Validates a supernode definition's structure, collecting all violations.
 ///
 /// Enforced rules (spec §3):
-/// - exactly one boundary node each of type `input`/`output`/`error`, with
-///   id equal to its type;
+/// - exactly one boundary node of type `input`, id `input`; one or more
+///   `output` boundaries (id = port name, `output` = the `success` port);
+///   one or more `error` boundaries (id = error-kind port name, `error` =
+///   the default the black-box rule targets);
+/// - output/error ids must not be in RESERVED_OUTPUT_IDS/RESERVED_ERROR_IDS
+///   (collide with fixed instance port names like `success`, `input`, etc.);
+/// - no two nodes share an id (duplicate ids would create ambiguous output ports);
 /// - inner nodes must not be `listener`/`client`/`supernode`, must not use
 ///   reserved ids, and must not contain `/`;
 /// - exactly one edge leaves `input`; no edges into `input` or out of
-///   `output`/`error`;
+///   `output`/`error` boundaries;
 /// - every edge endpoint references an existing node;
-/// - one incoming edge per input port, except `output`/`error` boundaries
-///   and `error-handler`-typed inner nodes (fan-in allowed);
 /// - no orphan inner nodes (unconnected `output`/`error` boundaries are
 ///   fine — not every subgraph uses both exits);
 /// - every inner edge leaves a port its source node's type actually declares
@@ -189,7 +171,21 @@ pub fn validate_policy(policy: &PolicyConfig) -> Result<(), Vec<String>> {
 pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
 
-    for ty in BOUNDARY_TYPES {
+    // Duplicate ids: two output boundaries sharing an id would be one
+    // ambiguous instance port; inner-node duplicates collapse in compile.
+    let mut seen_ids: HashSet<&str> = HashSet::new();
+    for n in &sn.nodes {
+        if !seen_ids.insert(n.id.as_str()) {
+            errors.push(format!(
+                "Supernode '{}': duplicate node id '{}'",
+                sn.name, n.id
+            ));
+        }
+    }
+
+    // input: exactly one, id == type (unchanged rule).
+    {
+        let ty = "input";
         let matching: Vec<&crate::config::NodeConfig> =
             sn.nodes.iter().filter(|n| n.node_type == ty).collect();
         match matching.as_slice() {
@@ -206,6 +202,51 @@ pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
                 "Supernode '{}' declares more than one '{}' node",
                 sn.name, ty
             )),
+        }
+    }
+
+    // error: one or more; each id is an error-kind instance port name (`error`
+    // is the default the black-box rule targets), so reserved ids that collide
+    // with fixed port names are rejected.
+    let error_nodes: Vec<&crate::config::NodeConfig> =
+        sn.nodes.iter().filter(|n| n.node_type == "error").collect();
+    if error_nodes.is_empty() {
+        errors.push(format!(
+            "Supernode '{}' must declare at least one 'error' boundary node",
+            sn.name
+        ));
+    }
+    for e in &error_nodes {
+        if RESERVED_ERROR_IDS.contains(&e.id.as_str()) {
+            errors.push(format!(
+                "Supernode '{}': error boundary id '{}' is reserved — it would \
+                 collide with a fixed instance port name",
+                sn.name, e.id
+            ));
+        }
+    }
+
+    // output: one or more; each id is an instance port name (`output` -> the
+    // `success` port), so reserved ids that collide with fixed port names are
+    // rejected.
+    let output_nodes: Vec<&crate::config::NodeConfig> = sn
+        .nodes
+        .iter()
+        .filter(|n| n.node_type == "output")
+        .collect();
+    if output_nodes.is_empty() {
+        errors.push(format!(
+            "Supernode '{}' must declare at least one 'output' boundary node",
+            sn.name
+        ));
+    }
+    for o in &output_nodes {
+        if RESERVED_OUTPUT_IDS.contains(&o.id.as_str()) {
+            errors.push(format!(
+                "Supernode '{}': output boundary id '{}' is reserved — it would \
+                 collide with a fixed instance port name",
+                sn.name, o.id
+            ));
         }
     }
 
@@ -235,6 +276,15 @@ pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
     }
 
     let node_ids: HashSet<&str> = sn.nodes.iter().map(|n| n.id.as_str()).collect();
+
+    // Build a set of exit-boundary ids once, above the edge loop
+    let exit_boundary_ids: HashSet<&str> = sn
+        .nodes
+        .iter()
+        .filter(|n| n.node_type == "output" || n.node_type == "error")
+        .map(|n| n.id.as_str())
+        .collect();
+
     for edge in &sn.edges {
         let (from_node, _) = split_endpoint(&edge.from);
         let (to_node, _) = split_endpoint(&edge.to);
@@ -256,7 +306,7 @@ pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
                 sn.name
             ));
         }
-        if from_node == "output" || from_node == "error" {
+        if exit_boundary_ids.contains(from_node) {
             errors.push(format!(
                 "Supernode '{}': the '{}' boundary cannot have outgoing edges",
                 sn.name, from_node
@@ -276,25 +326,8 @@ pub fn validate_supernode(sn: &SupernodeConfig) -> Result<(), Vec<String>> {
         ));
     }
 
-    // One incoming edge per input port; boundary exits and error-handlers fan in.
-    let fan_in_ok: HashSet<&str> = sn
-        .nodes
-        .iter()
-        .filter(|n| {
-            n.node_type == "error-handler" || n.node_type == "output" || n.node_type == "error"
-        })
-        .map(|n| n.id.as_str())
-        .collect();
-    let mut input_targets: HashSet<String> = HashSet::new();
-    for edge in &sn.edges {
-        let (to_node, _) = split_endpoint(&edge.to);
-        if !fan_in_ok.contains(to_node) && !input_targets.insert(edge.to.clone()) {
-            errors.push(format!(
-                "Supernode '{}': node '{}' input '{}' has multiple incoming edges",
-                sn.name, to_node, edge.to
-            ));
-        }
-    }
+    // Fan-in is unrestricted here too: any number of inner edges may converge
+    // on the same input port or boundary exit.
 
     // Port hygiene on inner nodes. Boundary pseudo-nodes have no plugin type
     // (and no PortSpec), so they are exempt; an unknown inner type is left to
@@ -544,9 +577,57 @@ mod tests {
         assert!(validate_policy(&policy).is_ok());
     }
 
+    /// Fan-in is legal on every node, not just client/error-handler: the
+    /// engine indexes edges by source port only, so any number of edges may
+    /// converge on the same input.
+    #[test]
+    fn test_any_node_allows_multiple_inputs() {
+        let mut second = upstream_node();
+        second.id = "backend2".to_string();
+        let policy = PolicyConfig {
+            name: "test".to_string(),
+            error_handler: None,
+            nodes: vec![listener_node(), upstream_node(), second, client_node()],
+            edges: vec![
+                EdgeConfig {
+                    from: "listener.out".to_string(),
+                    to: "backend2.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "backend2.success".to_string(),
+                    to: "backend.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "backend2.error".to_string(),
+                    to: "backend.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "backend.success".to_string(),
+                    to: "client.in".to_string(),
+                },
+            ],
+        };
+        assert!(validate_policy(&policy).is_ok());
+    }
+
     #[test]
     fn test_valid_supernode_passes() {
         assert!(validate_supernode(&valid_supernode()).is_ok());
+    }
+
+    /// Fan-in converges on inner nodes too, not only boundary exits.
+    #[test]
+    fn test_supernode_fan_in_into_inner_node_ok() {
+        let mut sn = valid_supernode();
+        sn.nodes.push(inner("up2", "upstream"));
+        sn.edges = vec![
+            sn_edge("input.out", "up2.in"),
+            sn_edge("up2.success", "up.in"),
+            sn_edge("up2.error", "up.in"),
+            sn_edge("up.success", "output.in"),
+            sn_edge("up.error", "error.in"),
+        ];
+        assert!(validate_supernode(&sn).is_ok());
     }
 
     #[test]
@@ -909,5 +990,160 @@ mod tests {
                 .any(|e| e.contains("Duplicate node id 'backend'")),
             "{errors:?}"
         );
+    }
+
+    /// Named output ports: any number of `type: output` boundary nodes, each
+    /// id becoming an instance port name (spec §1-2).
+    #[test]
+    fn test_supernode_multiple_output_boundaries_accepted() {
+        let mut nodes = boundary_nodes(); // input/output/error
+        nodes.push(inner("denied", "output"));
+        nodes.push(inner("auth", "key-auth"));
+        let sn = SupernodeConfig {
+            name: "gate".to_string(),
+            description: None,
+            nodes,
+            edges: vec![
+                sn_edge("input.out", "auth.in"),
+                sn_edge("auth.success", "output.in"),
+                sn_edge("auth.denied", "denied.in"),
+            ],
+        };
+        assert_eq!(validate_supernode(&sn), Ok(()));
+    }
+
+    /// A definition may have only named outputs (no `output`-id node): the
+    /// instance then has no `success` port.
+    #[test]
+    fn test_supernode_only_named_outputs_accepted() {
+        let nodes: Vec<NodeConfig> = vec![
+            inner("input", "input"),
+            inner("done", "output"),
+            inner("error", "error"),
+            inner("up", "upstream"),
+        ];
+        let sn = SupernodeConfig {
+            name: "named-only".to_string(),
+            description: None,
+            nodes,
+            edges: vec![
+                sn_edge("input.out", "up.in"),
+                sn_edge("up.success", "done.in"),
+            ],
+        };
+        assert_eq!(validate_supernode(&sn), Ok(()));
+    }
+
+    /// Reserved ids collide with fixed instance port names.
+    #[test]
+    fn test_supernode_reserved_output_ids_rejected() {
+        for id in ["input", "error", "in", "out", "success"] {
+            let mut sn = valid_supernode();
+            sn.nodes.push(inner(id, "output"));
+            let errors = validate_supernode(&sn).unwrap_err();
+            assert!(
+                errors.iter().any(|e| e.contains("reserved")),
+                "id {id}: {errors:?}"
+            );
+        }
+    }
+
+    /// Zero output boundaries is still an error.
+    #[test]
+    fn test_supernode_zero_output_boundaries_rejected() {
+        let mut sn = valid_supernode();
+        sn.nodes.retain(|n| n.node_type != "output");
+        sn.edges.retain(|e| !e.to.starts_with("output."));
+        // keep `up` connected so only the output complaint fires
+        sn.edges.push(sn_edge("up.success", "error.in"));
+        let errors = validate_supernode(&sn).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("at least one 'output' boundary")),
+            "{errors:?}"
+        );
+    }
+
+    /// Duplicate node ids inside a definition are rejected (two outputs with
+    /// the same id would otherwise be one ambiguous port).
+    #[test]
+    fn test_supernode_duplicate_node_ids_rejected() {
+        let mut sn = valid_supernode();
+        sn.nodes.push(inner("denied", "output"));
+        sn.nodes.push(inner("denied", "output"));
+        let errors = validate_supernode(&sn).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("duplicate node id 'denied'")),
+            "{errors:?}"
+        );
+    }
+
+    /// Named output boundaries obey the no-outgoing-edges rule like `output`/`error`.
+    #[test]
+    fn test_supernode_named_output_boundary_no_outgoing_edges() {
+        let mut sn = valid_supernode();
+        sn.nodes.push(inner("denied", "output"));
+        sn.edges.push(sn_edge("denied.out", "up.in"));
+        let errors = validate_supernode(&sn).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("'denied'") && e.contains("cannot have outgoing")),
+            "{errors:?}"
+        );
+    }
+
+    /// Named error ports: any number of `type: error` boundary nodes (spec §1-2).
+    #[test]
+    fn test_supernode_multiple_error_boundaries_accepted() {
+        let mut sn = valid_supernode();
+        sn.nodes.push(inner("auth-error", "error"));
+        // `up.error` already exits via the default `error` boundary; the extra
+        // named error boundary may stay unconnected (boundaries are orphan-exempt).
+        assert_eq!(validate_supernode(&sn), Ok(()));
+    }
+
+    /// A definition whose only error boundary is renamed away from `error` is
+    /// legal — the instance then has no default black-box exit.
+    #[test]
+    fn test_supernode_renamed_only_error_boundary_accepted() {
+        let mut sn = valid_supernode();
+        sn.nodes
+            .iter_mut()
+            .find(|n| n.node_type == "error")
+            .unwrap()
+            .id = "oops".into();
+        sn.edges.iter_mut().find(|e| e.to == "error.in").unwrap().to = "oops.in".into();
+        assert_eq!(validate_supernode(&sn), Ok(()));
+    }
+
+    #[test]
+    fn test_supernode_zero_error_boundaries_rejected() {
+        let mut sn = valid_supernode();
+        sn.nodes.retain(|n| n.node_type != "error");
+        sn.edges.retain(|e| !e.to.starts_with("error."));
+        let errors = validate_supernode(&sn).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("at least one 'error' boundary")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_supernode_reserved_error_ids_rejected() {
+        for id in ["input", "output", "in", "out", "success"] {
+            let mut sn = valid_supernode();
+            sn.nodes.push(inner(id, "error"));
+            let errors = validate_supernode(&sn).unwrap_err();
+            assert!(
+                errors.iter().any(|e| e.contains("reserved")),
+                "id {id}: {errors:?}"
+            );
+        }
     }
 }
