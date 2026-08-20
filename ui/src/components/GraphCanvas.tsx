@@ -40,7 +40,13 @@ import type {
 import { edgesAfterConnect } from '../connectionRules';
 import { buildPortSpecs, type PortSpecLookup } from '../portSpecs';
 import { resolveOutputs } from '../nodeKinds';
-import { PORT_STROKE, policyToEdges, policyToNodes, portKindFor } from '../policyGraph';
+import {
+  PORT_STROKE,
+  policyToEdges,
+  policyToNodes,
+  portKindFor,
+  supernodePortSpec,
+} from '../policyGraph';
 
 /**
  * Builds the shared inline style for floating-toolbar buttons.
@@ -128,13 +134,25 @@ const nodeTypes = { pluginNode: PluginNode };
  *   is already the exact `node_id.port` string to match against).
  * @param portSpecs - Catalog-derived lookup used to enumerate each node
  *   type's declared outputs.
+ * @param supernodes - Resolved supernode definitions, used to derive a
+ *   supernode instance's actual ports via `supernodePortSpec` rather than
+ *   the (non-existent) catalog entry for the `supernode` type.
  * @returns `node_id.port` strings for every unwired mandatory port, in node order.
  */
-function findUnwiredPorts(policy: Policy, portSpecs: PortSpecLookup): string[] {
+function findUnwiredPorts(
+  policy: Policy,
+  portSpecs: PortSpecLookup,
+  supernodes: Supernode[]
+): string[] {
   const wired = new Set(policy.edges.map((e) => e.from));
   const missing: string[] = [];
   for (const node of policy.nodes) {
-    const outputs = resolveOutputs(node.type, portSpecs[node.type]);
+    const spec =
+      node.type === 'supernode'
+        ? supernodePortSpec(supernodes.find((s) => s.name === node.config?.name)) ??
+          portSpecs[node.type]
+        : portSpecs[node.type];
+    const outputs = resolveOutputs(node.type, spec);
     for (const port of outputs) {
       if (port.kind === 'error') continue;
       const key = `${node.id}.${port.name}`;
@@ -275,12 +293,13 @@ export function GraphCanvas({
   // remounts the canvas and nodes/edges/selection all start fresh from the
   // prop. Refetches of the same policy keep the local (unsaved) graph state.
   const initialNodes = useMemo(
-    () => (policy ? policyToNodes(policy, handleSelect, portSpecs, showPortNames) : []),
-    [policy, handleSelect, portSpecs, showPortNames]
+    () =>
+      policy ? policyToNodes(policy, handleSelect, portSpecs, showPortNames, supernodes) : [],
+    [policy, handleSelect, portSpecs, showPortNames, supernodes]
   );
   const initialEdges = useMemo(
-    () => (policy ? policyToEdges(policy, portSpecs) : []),
-    [policy, portSpecs]
+    () => (policy ? policyToEdges(policy, portSpecs, supernodes) : []),
+    [policy, portSpecs, supernodes]
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
@@ -310,6 +329,9 @@ export function GraphCanvas({
           data: {
             ...data,
             supernodeDef: refName ? supernodes.find((s) => s.name === refName) : undefined,
+            ports:
+              supernodePortSpec(refName ? supernodes.find((s) => s.name === refName) : undefined) ??
+              portSpecs['supernode'],
             portSpecs,
             expanded,
             onToggleExpand: handleToggleExpand,
@@ -332,7 +354,12 @@ export function GraphCanvas({
 
         const sourceNode = nodes.find((n) => n.id === connection.source);
         const sourceType = (sourceNode?.data as unknown as PluginNodeData)?.pluginType;
-        const kind = portKindFor(sourceType, connection.sourceHandle || 'success', portSpecs);
+        const kind = portKindFor(
+          sourceType,
+          connection.sourceHandle || 'success',
+          portSpecs,
+          (sourceNode?.data as unknown as PluginNodeData)?.ports
+        );
         const color = PORT_STROKE[kind];
         return addEdge(
           {
@@ -440,10 +467,9 @@ export function GraphCanvas({
         pluginType: 'supernode',
         config: { name: sn.name },
         // 'supernode' has no catalog entry (it's not a src/plugins/mod.rs
-        // type); portSpecs lookup misses and PluginNode falls back to the
-        // default success+error pair, matching a supernode instance's fixed
-        // output/error boundary exits (src/graph/expand.rs).
-        ports: portSpecs['supernode'],
+        // type); ports are derived from the definition's own output
+        // boundaries via supernodePortSpec (src/graph/expand.rs).
+        ports: supernodePortSpec(sn),
         onSelect: handleSelect,
         showPortNames,
         supernodeDef: sn,
@@ -509,7 +535,7 @@ export function GraphCanvas({
     // save outright with a "must be wired — add an edge from ..." message,
     // which the existing error toast already surfaces), so this warns without
     // blocking the attempt.
-    const unwired = findUnwiredPorts(updated, portSpecs);
+    const unwired = findUnwiredPorts(updated, portSpecs, supernodes);
     if (unwired.length > 0) {
       onSaveWarning?.(
         'Unwired ports',
@@ -519,7 +545,7 @@ export function GraphCanvas({
 
     console.log('Saving policy:', JSON.stringify(updated, null, 2));
     onSavePolicy(updated);
-  }, [policy, nodes, edges, portSpecs, onSaveWarning, onSavePolicy]);
+  }, [policy, nodes, edges, portSpecs, supernodes, onSaveWarning, onSavePolicy]);
 
   // Exposes canvas-owned actions to the App-level command palette (see
   // editorActions.tsx) for as long as this canvas is mounted. These hook
