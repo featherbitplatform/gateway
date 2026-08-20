@@ -65,6 +65,15 @@ export function buildCommands(): Command[] {
       when: (c) => c.editorOpen && c.hasEditorAction('save-graph'),
       run: (c) => c.invokeEditorAction('save-graph'),
     },
+    {
+      id: 'extract-supernode',
+      title: 'Extract selection as supernode',
+      // Same editorOpen guard as add-plugin above; eligibility (2+ nodes
+      // selected, policy mode) is checked by the canvas handler, which
+      // explains itself via a toast when the selection doesn't qualify.
+      when: (c) => c.editorOpen && c.hasEditorAction('extract-supernode'),
+      run: (c) => c.invokeEditorAction('extract-supernode'),
+    },
     { id: 'view-yaml', title: 'View YAML', shortcut: 'Y', when: (c) => c.hasSelection, run: (c) => c.viewYaml() },
     { id: 'reload-config', title: 'Reload gateway config', run: (c) => c.reloadConfig() },
     { id: 'toggle-theme', title: 'Toggle theme', run: (c) => c.toggleTheme() },

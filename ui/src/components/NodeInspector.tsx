@@ -5,7 +5,9 @@
  * `config` override either schema-driven (SchemaForm, showing inherited
  * values inline with override/added flags when a shared config is selected)
  * or as raw JSON (JsonConfigEditor fallback, with the inherited config shown
- * read-only above it), and offers node deletion for non-fixed nodes.
+ * read-only above it), and offers node deletion for non-fixed nodes (plus,
+ * in supernode-definition mode, output/error boundary nodes — guarded
+ * against deleting the last of a kind via `boundaryDeleteBlocked`).
  *
  * @module components/NodeInspector
  */
@@ -56,6 +58,23 @@ interface NodeInspectorProps {
   debugConfig: DebugConfig | null;
   /** Whether the canvas is editing a policy or a supernode definition. */
   kind: 'policy' | 'supernode';
+  /**
+   * Opens GraphCanvas's rename dialog for this node id (fired for output
+   * and error boundaries alike). Only supplied in supernode-definition
+   * mode; the inspector merely opens the dialog — validation lives in
+   * GraphCanvas's `submitPortDialog`, the one path shared with adding a
+   * new output/error-port boundary.
+   */
+  onRenameNode?: (nodeId: string) => void;
+  /**
+   * When set, the Delete Node button for the selected output/error boundary
+   * is disabled with this tooltip — GraphCanvas computes it from the count
+   * of boundaries sharing the node's kind (a supernode needs at least one of
+   * each; the server enforces this too, so a keyboard delete that bypasses
+   * this guard fails on save with a clear message). Undefined for non-
+   * boundary nodes and whenever deleting is safe.
+   */
+  boundaryDeleteBlocked?: string;
 }
 
 /** Plugin types with no configuration of their own — fixed pipeline endpoints and supernode boundary pseudo-nodes. */
@@ -187,6 +206,8 @@ export function NodeInspector({
   predecessorId,
   debugConfig,
   kind,
+  onRenameNode,
+  boundaryDeleteBlocked,
 }: NodeInspectorProps) {
   // Computed ahead of the `!node` early return below so the hooks that
   // follow (useState, useContextSuggestions) run unconditionally on every
@@ -221,6 +242,8 @@ export function NodeInspector({
   const schema = getPluginConfigSchema(data.pluginType);
   const isFixed = isFixedNode;
   const isSupernode = isSupernodeNode;
+  const isBoundaryPort =
+    kind === 'supernode' && (data.pluginType === 'output' || data.pluginType === 'error');
 
   // Config inherited from the selected shared config (undefined without a
   // ref), and the node's effective config — what "Save as shared config"
@@ -229,6 +252,8 @@ export function NodeInspector({
     ? (pluginConfigs.find((p) => p.name === data.configRef)?.config ?? {})
     : undefined;
   const effectiveConfig = mergeEffective(inheritedConfig ?? {}, data.config ?? {});
+
+  const deleteDisabled = isBoundaryPort && !!boundaryDeleteBlocked;
 
   const openExtract = () => {
     setExtractName('');
@@ -327,21 +352,42 @@ export function NodeInspector({
         {/* Node ID */}
         <div>
           <label style={labelStyle}>Node ID</label>
-          <input
-            type="text"
-            value={node.id}
-            readOnly
-            className="w-full"
-            style={{
-              padding: '6px 10px',
-              borderRadius: 'var(--radius-sm)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 'var(--text-sm)',
-              background: 'var(--surface-input)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border)',
-            }}
-          />
+          <div className="flex items-center" style={{ gap: 6 }}>
+            <input
+              type="text"
+              value={node.id}
+              readOnly
+              className="w-full"
+              style={{
+                padding: '6px 10px',
+                borderRadius: 'var(--radius-sm)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--text-sm)',
+                background: 'var(--surface-input)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border)',
+              }}
+            />
+            {kind === 'supernode' &&
+              (data.pluginType === 'output' || data.pluginType === 'error') &&
+              onRenameNode && (
+              <button
+                onClick={() => onRenameNode(node.id)}
+                className="shrink-0 transition-colors"
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: 500,
+                  background: 'var(--surface-raised)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border)',
+                }}
+              >
+                Rename
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Shared config picker */}
@@ -468,10 +514,12 @@ export function NodeInspector({
       </div>
 
       {/* Delete */}
-      {!isFixed && (
+      {(!isFixed || isBoundaryPort) && (
         <div style={{ padding: 16, borderTop: '1px solid var(--border)' }}>
           <button
             onClick={() => onDeleteNode(node.id)}
+            disabled={deleteDisabled}
+            title={isBoundaryPort ? boundaryDeleteBlocked : undefined}
             className="w-full transition-colors"
             style={{
               padding: '7px 0',
@@ -480,6 +528,8 @@ export function NodeInspector({
               fontWeight: 500,
               background: 'var(--error)',
               color: '#fff',
+              opacity: deleteDisabled ? 0.5 : 1,
+              cursor: deleteDisabled ? 'not-allowed' : 'pointer',
             }}
           >
             Delete Node

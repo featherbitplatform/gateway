@@ -29,6 +29,12 @@ interface PluginDrawerProps {
   onAddScript: (script: ScriptFile) => void;
   /** Fires with the supernode definition when a supernode entry is clicked. */
   onAddSupernode: (sn: Supernode) => void;
+  /**
+   * Fires with the boundary kind when the "Output port" or "Error port"
+   * boundary entry is clicked. Only set by GraphCanvas in
+   * supernode-definition mode; the section is hidden when this is undefined.
+   */
+  onAddBoundaryPort?: (kind: 'output' | 'error') => void;
   /** Whether the drawer is visible; when false the component renders nothing. */
   isOpen: boolean;
   /** Fires when the close (X) button is clicked. */
@@ -140,6 +146,7 @@ export function PluginDrawer({
   onAddPlugin,
   onAddScript,
   onAddSupernode,
+  onAddBoundaryPort,
   isOpen,
   onClose,
 }: PluginDrawerProps) {
@@ -190,8 +197,15 @@ export function PluginDrawer({
       return next;
     });
 
+  const outputPortMatches = !searching || 'output port'.includes(q);
+  const errorPortMatches = !searching || 'error port'.includes(q);
+
   const nothingMatches =
-    searching && groups.length === 0 && matchedScripts.length === 0 && matchedSupernodes.length === 0;
+    searching &&
+    groups.length === 0 &&
+    matchedScripts.length === 0 &&
+    matchedSupernodes.length === 0 &&
+    !(onAddBoundaryPort && (outputPortMatches || errorPortMatches));
 
   return (
     <div
@@ -278,6 +292,31 @@ export function PluginDrawer({
           >
             No plugins match “{query}”.
           </p>
+        )}
+
+        {/* Output/error port boundaries (supernode-definition mode only) */}
+        {onAddBoundaryPort && (outputPortMatches || errorPortMatches) && (
+          <>
+            <div className="eyebrow px-1 pb-2">Boundary</div>
+            {outputPortMatches && (
+              <NodeRow
+                onClick={() => onAddBoundaryPort('output')}
+                color={getPluginMeta('output').color}
+                icon={(() => { const I = getPluginMeta('output').icon; return <I size={15} strokeWidth={1.75} />; })()}
+                title="Output port"
+                subtitle="Named exit — becomes a port on every instance"
+              />
+            )}
+            {errorPortMatches && (
+              <NodeRow
+                onClick={() => onAddBoundaryPort('error')}
+                color={getPluginMeta('error').color}
+                icon={(() => { const I = getPluginMeta('error').icon; return <I size={15} strokeWidth={1.75} />; })()}
+                title="Error port"
+                subtitle="Named error exit — optional wiring on every instance"
+              />
+            )}
+          </>
         )}
 
         {/* Supernodes */}
