@@ -47,6 +47,32 @@ The static assets themselves are served **without** authentication; the SPA's ow
 
 Node positions on the canvas are stored in each node's `position` field in the policy; the graph engine ignores them, and they are omitted from serialized output when unset.
 
+## Building supernode definitions
+
+Opening a [supernode](../concepts/supernodes.md) from the Supernodes section of the sidebar puts the canvas into definition mode: the plugin drawer hides `listener`, `client`, and `supernode` (a definition can't nest any of those) and adds an **Output port** entry and an **Error port** entry under a "Boundary" heading instead. Dropping either prompts for a port name in a small dialog, validated per-kind against the reserved boundary ids ([output](../concepts/supernodes.md#named-output-ports)/[error](../concepts/supernodes.md#named-error-ports): output ids may not be `input`/`error`/`in`/`out`/`success`; error ids may not be `input`/`output`/`in`/`out`/`success`) and the definition's existing node ids — each drop adds one more `type: output` or `type: error` boundary, so a definition can carry as many named exits and named error exits as it needs.
+
+An output or error boundary's Node ID field is editable — click it and the inspector shows a **Rename** button (`input` stays fixed, as the sole boundary of its kind). Renaming a boundary renames the port itself, since the node's id *is* the port name; the canvas rewrites every edge that referenced the old id to match. Renaming or deleting the error boundary named `error` removes it as the [black-box default](../concepts/supernodes.md#black-box-error-routing) — inner nodes that relied on an implicit error edge now need one wired explicitly (or to a different named error boundary if one remains).
+
+The inspector's **Delete Node** button also appears for output and error boundary nodes (`input` still has none — it's fixed). Deleting one removes the boundary and any edges into it; the button is disabled with an explanatory tooltip ("A supernode needs at least one output/error boundary") on the last boundary of its kind, mirroring the server-side rule that a definition must keep at least one of each.
+
+Back on a policy canvas, a supernode instance node renders one port row per port its definition exposes — `success` (if the definition has an `output`-id boundary), then named outcome ports in definition order, then the error-kind ports in the order their boundaries appear in the definition — instead of the fixed success/error pair from before named ports existed.
+
+## Extracting a selection into a supernode
+
+Instead of building a definition from scratch, a group of existing policy nodes can be lifted straight into a new supernode. Multi-select two or more nodes on a policy canvas (Ctrl/Cmd-click each node, or drag a box with Shift held to select everything inside it), then trigger extraction one of three ways: the toolbar's **Extract Supernode** button, **Extract selection as supernode…** on the right-click context menu, or the same entry in the Ctrl+K command palette. The toolbar button is hidden until the selection is eligible, the context-menu entry is grayed out, and the palette entry stays available and explains itself via a toast if the selection isn't eligible yet.
+
+**Eligibility:**
+- No `listener`, `client`, or `supernode` node in the selection (a definition can't nest any of those).
+- Exactly one **entry** node — every edge coming in from outside the selection must land on the same node.
+- At least one non-error exit edge leaving the selection.
+- No node in the selection has the id `input`, `output`, or `error` — those ids are reserved for supernode boundary nodes, and extraction refuses a selection that has one: "Rename node 'output' before extracting — that id is reserved for supernode boundary nodes".
+
+A selection that fails any of these shows an error toast naming the problem instead of extracting. There is no requirement that error exits share a single outer target — see below.
+
+**What gets derived:** the entry node is wired from a new `input` boundary; each non-error exit edge becomes its own `output`-type boundary named after its source port (`success`/`out` exits map to the `output`-id boundary, i.e. the instance's `success` port), with duplicate names deduped by a numeric suffix. Error exits are grouped **by outer target**, in edge order: the first target found gets the default `error` boundary, and each further *distinct* target gets its own named error boundary (`error-2`, `error-3`, …) — so a selection whose error edges fan out to two different outer nodes produces two error boundaries on the new definition, both wired by construction, and both renamable afterwards like any other named error port. (The old rule requiring every error exit to share one target is gone.) Internal edges and node configs carry over unchanged.
+
+One dialog asks for the new definition's name. On confirm, the definition is created immediately through the Admin API and the selected nodes on the canvas are replaced by a single wired instance — the policy itself is not saved automatically, same as any other canvas edit, so **Save Policy** is still required to deploy it. If creating the definition fails, nothing on the canvas changes.
+
 ## Headless mode
 
 The UI is optional. It is only a client of the admin API, and it edits exactly the same data that lives in `gateway.yaml` — a policy saved from the canvas and a policy written by hand in YAML are interchangeable. Everything the UI does can be done with the YAML files plus hot-reload, or with the [Admin API](./admin-api.md) directly.
