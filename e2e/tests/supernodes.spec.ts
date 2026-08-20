@@ -304,7 +304,9 @@ test.describe('Supernodes', () => {
     // `type: output` boundary `blocked` (-> instance port `blocked`). A
     // definition must always declare an `error` boundary node, but -- unlike
     // `output`-derived ports -- it is never mandatory-wired, so it stays
-    // unconnected here.
+    // unconnected here. A second `type: error` boundary, `oops`, is declared
+    // with no inner edges at all, proving error-kind instance ports stay
+    // optional-wiring even when there's more than one.
     const headerGate = {
       name: 'header-gate',
       nodes: [
@@ -312,6 +314,7 @@ test.describe('Supernodes', () => {
         {id: 'output', type: 'output', config: {}},
         {id: 'blocked', type: 'output', config: {}},
         {id: 'error', type: 'error', config: {}},
+        {id: 'oops', type: 'error', config: {}},
         {id: 'cond', type: 'condition', config: {conditions: [['http_x_e2e_gate', 'present']]}},
       ],
       edges: [
