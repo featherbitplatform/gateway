@@ -57,7 +57,7 @@ Back on a policy canvas, a supernode instance node renders one port row per port
 
 ## Extracting a selection into a supernode
 
-Instead of building a definition from scratch, a group of existing policy nodes can be lifted straight into a new supernode. Multi-select two or more nodes on a policy canvas (shift-click or box-select), then trigger extraction one of three ways: the toolbar's **Extract Supernode** button, **Extract selection as supernode…** on the right-click context menu, or the same entry in the Ctrl+K command palette. All three are disabled until the selection is eligible.
+Instead of building a definition from scratch, a group of existing policy nodes can be lifted straight into a new supernode. Multi-select two or more nodes on a policy canvas (Ctrl/Cmd-click each node, or drag a box with Shift held to select everything inside it), then trigger extraction one of three ways: the toolbar's **Extract Supernode** button, **Extract selection as supernode…** on the right-click context menu, or the same entry in the Ctrl+K command palette. The toolbar button is hidden until the selection is eligible, the context-menu entry is grayed out, and the palette entry stays available and explains itself via a toast if the selection isn't eligible yet.
 
 **Eligibility:**
 - No `listener`, `client`, or `supernode` node in the selection (a definition can't nest any of those).

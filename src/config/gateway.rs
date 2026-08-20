@@ -182,7 +182,8 @@ pub struct SupernodeConfig {
     /// Optional human-readable description (shown in the UI library).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Inner plugin nodes plus the three boundary pseudo-nodes.
+    /// Inner plugin nodes plus the boundary pseudo-nodes: one `input`, one
+    /// `error`, and one or more `output` pseudo-nodes.
     #[serde(default)]
     pub nodes: Vec<NodeConfig>,
     /// Directed connections; boundary edges use `input.out`, `output.in`,
