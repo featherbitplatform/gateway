@@ -34,6 +34,7 @@ supernodes:
     edges:
       - { from: input.out,    to: auth.in }
       - { from: auth.success, to: up.in }
+      - { from: auth.denied,  to: error.in }   # an outcome port may wire into an error boundary; fan-in is allowed
       - { from: auth.error,   to: error.in }
       - { from: up.success,   to: output.in }
 ```
@@ -90,6 +91,7 @@ supernodes:
     nodes:
       - { id: input,       type: input }
       - { id: output,      type: output }
+      - { id: denied,      type: output }   # -> instance port `denied` (auth's own outcome port)
       - { id: error,       type: error }    # default — black-box target for unwired inner errors
       - { id: auth-error,  type: error }    # named — only reachable via an explicit edge
       - { id: auth,        type: key-auth }
@@ -97,6 +99,7 @@ supernodes:
     edges:
       - { from: input.out,     to: auth.in }
       - { from: auth.success,  to: up.in }
+      - { from: auth.denied,   to: denied.in }       # auth's real denied port — mandatory-wired, like any output-derived port
       - { from: auth.error,    to: auth-error.in }   # auth's real error port, routed explicitly
       - { from: up.success,    to: output.in }
       # up.error is left unwired: it exits through the default `error`
@@ -109,6 +112,7 @@ policies:
       # ... listener, upstream, reject, auth-error-handler, client ...
     edges:
       - { from: gate.success,    to: upstream.in }
+      - { from: gate.denied,     to: reject.in }             # mandatory — auth's rejection path
       - { from: gate.error,      to: reject.in }             # up's black-box exit
       - { from: gate.auth-error, to: auth-error-handler.in }  # auth's own error, routed separately
 ```
