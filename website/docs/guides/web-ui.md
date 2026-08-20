@@ -47,6 +47,30 @@ The static assets themselves are served **without** authentication; the SPA's ow
 
 Node positions on the canvas are stored in each node's `position` field in the policy; the graph engine ignores them, and they are omitted from serialized output when unset.
 
+## Building supernode definitions
+
+Opening a [supernode](../concepts/supernodes.md) from the Supernodes section of the sidebar puts the canvas into definition mode: the plugin drawer hides `listener`, `client`, and `supernode` (a definition can't nest any of those) and adds an **Output port** entry instead. Dropping it prompts for a port name in a small dialog, validated against the [reserved boundary ids](../concepts/supernodes.md#named-output-ports) and the definition's existing node ids — each drop adds one more `type: output` boundary, so a definition can carry as many named exits as it needs.
+
+An output boundary's Node ID field is editable — click it and the inspector shows a **Rename** button (`input` and `error` stay fixed, as the sole boundaries of their kind). Renaming an output boundary renames the port itself, since the node's id *is* the port name; the canvas rewrites every edge that referenced the old id to match.
+
+Back on a policy canvas, a supernode instance node renders one port row per port its definition exposes — `success` (only if the definition has an `output`-id boundary), then any named output ports in the order they appear in the definition, then `error` — instead of the fixed success/error pair from before named output ports existed.
+
+## Extracting a selection into a supernode
+
+Instead of building a definition from scratch, a group of existing policy nodes can be lifted straight into a new supernode. Multi-select two or more nodes on a policy canvas (shift-click or box-select), then trigger extraction one of three ways: the toolbar's **Extract Supernode** button, **Extract selection as supernode…** on the right-click context menu, or the same entry in the Ctrl+K command palette. All three are disabled until the selection is eligible.
+
+**Eligibility:**
+- No `listener`, `client`, or `supernode` node in the selection (a definition can't nest any of those).
+- Exactly one **entry** node — every edge coming in from outside the selection must land on the same node.
+- At least one non-error exit edge leaving the selection.
+- Every error exit edge leaving the selection must target the same outer node (an instance has one `error` port).
+
+A selection that fails any of these shows an error toast naming the problem instead of extracting.
+
+**What gets derived:** the entry node is wired from a new `input` boundary; each non-error exit edge becomes its own `output`-type boundary named after its source port (`success`/`out` exits map to the `output`-id boundary, i.e. the instance's `success` port), with duplicate names deduped by a numeric suffix; every error exit collapses into the single `error` boundary. Internal edges and node configs carry over unchanged.
+
+One dialog asks for the new definition's name. On confirm, the definition is created immediately through the Admin API and the selected nodes on the canvas are replaced by a single wired instance — the policy itself is not saved automatically, same as any other canvas edit, so **Save Policy** is still required to deploy it. If creating the definition fails, nothing on the canvas changes.
+
 ## Headless mode
 
 The UI is optional. It is only a client of the admin API, and it edits exactly the same data that lives in `gateway.yaml` — a policy saved from the canvas and a policy written by hand in YAML are interchangeable. Everything the UI does can be done with the YAML files plus hot-reload, or with the [Admin API](./admin-api.md) directly.
