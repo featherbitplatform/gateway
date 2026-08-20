@@ -64,6 +64,7 @@ Instead of building a definition from scratch, a group of existing policy nodes 
 - Exactly one **entry** node — every edge coming in from outside the selection must land on the same node.
 - At least one non-error exit edge leaving the selection.
 - Every error exit edge leaving the selection must target the same outer node (an instance has one `error` port).
+- No node in the selection has the id `input`, `output`, or `error` — those ids are reserved for supernode boundary nodes, and extraction refuses a selection that has one: "Rename node 'output' before extracting — that id is reserved for supernode boundary nodes".
 
 A selection that fails any of these shows an error toast naming the problem instead of extracting.
 
