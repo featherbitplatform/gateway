@@ -78,6 +78,8 @@ policy 'p': output port 'denied' of supernode instance 'gate' must be wired — 
 
 `error` is the one exception and stays optional, as it always has — see [black-box error routing](#black-box-error-routing) below.
 
+**Breaking change:** for a definition whose `output` boundary is unreachable — e.g. a pass-through `input.out -> error.in` with an orphaned `output` node — policies instantiating it used to compile with the instance's `success` port left unwired; they now must wire the instance's `success` port like any other mandatory port.
+
 ## Using a supernode from a policy
 
 Inside a policy, an instance is a plain node with `type: supernode`, referencing the definition by name:
@@ -104,7 +106,7 @@ In the [web UI](../guides/web-ui.md), a supernode instance on the policy canvas 
 An instance exposes one outer port per `type: output` boundary in its definition (`success`, alias `out`, for the `output`-id boundary; the id itself for any other, per [named output ports](#named-output-ports) above), plus `error` — nothing else. An instance never exposes an [outcome port](policies-and-graphs.md#outcome-ports-and-the-mandatory-wiring-rule) directly: those belong to *inner* nodes, and the definition must route them to a boundary itself. An edge leaving the instance on a port its definition doesn't derive is rejected, as is a second edge from any one exit:
 
 ```
-policy 'p': unknown port 'denied' on supernode instance 'sec' — instance exposes success (alias out) and error
+policy 'p': unknown port 'denied' on supernode instance 'sec' — supernode 'secured-call' exposes: success, error
 ```
 
 (that message assumes `sec` references a definition with only the default `output`/`error` boundaries; a definition that also declares a `denied` output boundary makes `sec.denied` valid — and, per the mandatory-wiring rule above, required.)
