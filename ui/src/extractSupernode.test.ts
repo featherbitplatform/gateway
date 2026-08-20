@@ -130,4 +130,14 @@ describe('extractSupernode', () => {
     };
     expect(() => extractSupernode(p, ['a'], 'x')).toThrow(/non-error exit/i);
   });
+
+  it('rejects supernode names containing /', () => {
+    expect(() => extractSupernode(fixture(), ['auth', 'rl'], 'a/b')).toThrow(/'\/'/)
+  });
+
+  it('rejects selections containing nodes with reserved boundary ids', () => {
+    const p = fixture();
+    p.nodes[4].id = 'error'; // rename eh to error
+    expect(() => extractSupernode(p, ['error', 'rl'], 'x')).toThrow(/reserved for supernode boundary/);
+  });
 });

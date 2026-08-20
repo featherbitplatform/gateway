@@ -1,7 +1,7 @@
 import type { Policy, PolicyEdge, PolicyNode, Supernode } from './types';
 import { splitEdge } from './policyGraph';
 
-const FORBIDDEN_TYPES = ['listener', 'client', 'supernode'];
+const FORBIDDEN_TYPES = ['listener', 'client', 'supernode', 'input', 'output', 'error'];
 const RESERVED = ['input', 'output', 'error', 'in', 'out', 'success'];
 
 export interface ExtractionResult {
@@ -15,6 +15,10 @@ export function extractSupernode(
   selectedIds: string[],
   name: string
 ): ExtractionResult {
+  if (name.includes('/')) {
+    throw new Error("Supernode names must not contain '/'");
+  }
+
   const selected = new Set(selectedIds);
   const selectedNodes = policy.nodes.filter((n) => selected.has(n.id));
 
@@ -22,6 +26,11 @@ export function extractSupernode(
     if (FORBIDDEN_TYPES.includes(n.type)) {
       throw new Error(
         `Cannot extract '${n.id}': ${n.type} nodes cannot live inside a supernode`
+      );
+    }
+    if (['input', 'output', 'error'].includes(n.id)) {
+      throw new Error(
+        `Rename node '${n.id}' before extracting — that id is reserved for supernode boundary nodes`
       );
     }
   }
@@ -115,7 +124,7 @@ export function extractSupernode(
   // Rewritten policy: selection replaced by one instance node.
   const remaining = policy.nodes.filter((n) => !selected.has(n.id));
   let instanceId = name;
-  while (remaining.some((n) => n.id === instanceId) || instanceId.includes('/')) {
+  while (remaining.some((n) => n.id === instanceId)) {
     instanceId = `${name}-${Math.floor(Math.random() * 36 ** 4).toString(36)}`;
   }
   const centroid = {
