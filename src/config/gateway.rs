@@ -166,9 +166,11 @@ pub struct EdgeConfig {
     pub to: String,
 }
 
-/// A reusable named subgraph with a fixed boundary: exactly one `input`,
-/// one `output`, and one `error` pseudo-node (declared in `nodes` like a
-/// policy declares `listener`/`client`, so the UI can persist positions).
+/// A reusable named subgraph with a boundary of exactly one `input` and one
+/// `error` pseudo-node plus one or more `output` pseudo-nodes; each output
+/// node's id is an instance port name (`output` = the `success` port)
+/// (declared in `nodes` like a policy declares `listener`/`client`, so the
+/// UI can persist positions).
 ///
 /// Instances appear in policies as nodes of `type: supernode` with
 /// `config: { name: <this name> }` and are inlined at compile time —
