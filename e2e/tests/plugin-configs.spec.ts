@@ -1,9 +1,16 @@
 /**
  * Shared plugin config scenarios. See E2E_TESTBOOK.md ("Plugin configs").
  */
-import {test, expect} from '@playwright/test';
+import {test, expect, type Page} from '@playwright/test';
 
 import {adminApi, dataPlane, deleteRouteIfPresent} from '../helpers/admin';
+
+/** Opens a route's policy on the canvas and waits for the graph to render. */
+async function openRoute(page: Page, route: string) {
+  await page.goto('/');
+  await page.getByText(route, {exact: true}).click();
+  await page.waitForSelector('.react-flow__node');
+}
 
 const DEF = (body: string) => ({
   name: 'e2e-shared-mock',
@@ -122,6 +129,168 @@ test.describe('Plugin configs', () => {
     expect((await api.delete('/api/plugin-configs/e2e-shared-mock')).ok()).toBeTruthy();
 
     await dp.dispose();
+    await api.dispose();
+  });
+
+  test('E2E-PC-02: inspector shows inherited values inline, highlights overrides, auto-drops equal edits', async ({page}) => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'pc-inh');
+    await api.delete('/api/policies/pc-inh-policy');
+    await api.delete('/api/plugin-configs/e2e-inh-mock');
+
+    expect(
+      (
+        await api.put('/api/plugin-configs/e2e-inh-mock', {
+          data: {
+            name: 'e2e-inh-mock',
+            type: 'mocking',
+            config: {response_status: 200, response_example: 'inh-body', content_type: 'text/plain'},
+          },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    expect(
+      (
+        await api.put('/api/policies/pc-inh-policy', {
+          data: {
+            name: 'pc-inh-policy',
+            nodes: [
+              {id: 'listener', type: 'listener', config: {}},
+              {id: 'mock', type: 'mocking', config_ref: 'e2e-inh-mock', config: {response_status: 418}},
+              {id: 'client', type: 'client', config: {}},
+            ],
+            edges: [
+              {from: 'listener.out', to: 'mock.in'},
+              {from: 'mock.success', to: 'client.in'},
+            ],
+          },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    expect(
+      (
+        await api.post('/api/routes', {
+          data: {name: 'pc-inh', match: {path: '/pc-inh/*', methods: ['GET']}, policy: 'pc-inh-policy'},
+        })
+      ).ok(),
+    ).toBeTruthy();
+
+    await openRoute(page, 'pc-inh');
+    await page.locator('.react-flow__node', {hasText: 'mock'}).first().click();
+
+    // The local override (418) is shown and flagged; the inherited body is
+    // shown inline in its field (not just in a read-only JSON blob) and not flagged.
+    await expect(page.locator('input[value="418"]')).toBeVisible();
+    await expect(page.getByText('overrides shared', {exact: true})).toBeVisible();
+    await expect(page.locator('textarea')).toHaveValue('inh-body');
+    await expect(page.getByText('added', {exact: true})).toHaveCount(0);
+
+    // Editing the override back to the inherited value clears the flag...
+    await page.locator('input[value="418"]').fill('200');
+    await expect(page.getByText('overrides shared', {exact: true})).toHaveCount(0);
+
+    // ...while adding a key the shared config does not set flags it as added.
+    await page.getByRole('switch').click();
+    await expect(page.getByText('added', {exact: true})).toBeVisible();
+
+    // The auto-dropped key is gone from the persisted node config.
+    await page.getByRole('button', {name: 'Save Policy'}).click();
+    await expect
+      .poll(async () => {
+        const policy = (await (await api.get('/api/policies/pc-inh-policy')).json()) as {
+          nodes: {id: string; config: Record<string, unknown>; config_ref?: string}[];
+        };
+        return policy.nodes.find((n) => n.id === 'mock')?.config;
+      })
+      .toEqual({with_mock_header: false});
+
+    await api.delete('/api/routes/pc-inh');
+    await api.delete('/api/policies/pc-inh-policy');
+    await api.delete('/api/plugin-configs/e2e-inh-mock');
+    await api.dispose();
+  });
+
+  test('E2E-PC-03: a configured node is saved as a shared config and re-linked to it', async ({page}) => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'pc-ext');
+    await api.delete('/api/policies/pc-ext-policy');
+    await api.delete('/api/plugin-configs/e2e-extracted');
+
+    expect(
+      (
+        await api.put('/api/policies/pc-ext-policy', {
+          data: {
+            name: 'pc-ext-policy',
+            nodes: [
+              {id: 'listener', type: 'listener', config: {}},
+              {
+                id: 'mock',
+                type: 'mocking',
+                config: {response_status: 201, response_example: 'ext-body', content_type: 'text/plain'},
+              },
+              {id: 'client', type: 'client', config: {}},
+            ],
+            edges: [
+              {from: 'listener.out', to: 'mock.in'},
+              {from: 'mock.success', to: 'client.in'},
+            ],
+          },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    expect(
+      (
+        await api.post('/api/routes', {
+          data: {name: 'pc-ext', match: {path: '/pc-ext/*', methods: ['GET']}, policy: 'pc-ext-policy'},
+        })
+      ).ok(),
+    ).toBeTruthy();
+
+    await openRoute(page, 'pc-ext');
+    await page.locator('.react-flow__node', {hasText: 'mock'}).first().click();
+
+    await page.getByRole('button', {name: 'Save as shared config'}).click();
+    await page.getByPlaceholder('my-shared-config').fill('e2e-extracted');
+    await page.getByRole('button', {name: 'Save shared config'}).click();
+
+    // The shared config now exists with the node's effective config...
+    await expect
+      .poll(async () => {
+        const res = await api.get('/api/plugin-configs/e2e-extracted');
+        return res.ok() ? ((await res.json()) as {config: Record<string, unknown>}).config : null;
+      })
+      .toEqual({response_status: 201, response_example: 'ext-body', content_type: 'text/plain'});
+
+    // ...and the node switched to referencing it, with nothing left local.
+    await expect(page.locator('select').first()).toHaveValue('e2e-extracted');
+    await expect(page.getByText('overrides shared', {exact: true})).toHaveCount(0);
+    await page.getByRole('button', {name: 'Save Policy'}).click();
+    await expect
+      .poll(async () => {
+        const policy = (await (await api.get('/api/policies/pc-ext-policy')).json()) as {
+          nodes: {id: string; config: Record<string, unknown>; config_ref?: string}[];
+        };
+        const mock = policy.nodes.find((n) => n.id === 'mock');
+        return {ref: mock?.config_ref, config: mock?.config};
+      })
+      .toEqual({ref: 'e2e-extracted', config: {}});
+
+    // The route's behavior is unchanged after the extraction.
+    const dp = await dataPlane();
+    const res = await dp.get('/pc-ext/x');
+    expect(res.status()).toBe(201);
+    expect(await res.text()).toBe('ext-body');
+
+    // A duplicate name is rejected client-side (the PUT is an upsert).
+    await page.getByRole('button', {name: 'Save as shared config'}).click();
+    await page.getByPlaceholder('my-shared-config').fill('e2e-extracted');
+    await page.getByRole('button', {name: 'Save shared config'}).click();
+    await expect(page.getByText(/already exists/i)).toBeVisible();
+
+    await dp.dispose();
+    await api.delete('/api/routes/pc-ext');
+    await api.delete('/api/policies/pc-ext-policy');
+    await api.delete('/api/plugin-configs/e2e-extracted');
     await api.dispose();
   });
 });
