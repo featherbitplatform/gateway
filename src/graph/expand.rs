@@ -8,19 +8,24 @@
 //! [`compile_policy`](crate::graph::compile_policy); the engine never sees
 //! a `supernode` node type.
 //!
-//! A definition may declare one or more `output` boundary nodes (Task 1);
-//! each output node's id names an instance port, via
+//! A definition may declare one or more `output` boundary nodes and one or
+//! more `error` boundary nodes; each boundary node's id names an instance
+//! port. For `output` boundaries this goes through
 //! [`port_for_output_boundary`] — the special id `output` keeps the
-//! historical `success` mapping, any other id IS the port name. So an
-//! instance's exit map is per-boundary: each output boundary has its own
-//! `exit_to` target (the `to` of the matching outer `inst.<port>` edge),
-//! plus the single, optional `error` boundary target. Every output-derived
-//! port is **mandatory-wired** — an unwired one is a hard compile error
-//! naming the instance and port, because the instance node is gone before
+//! historical `success` mapping, any other id IS the port name. For `error`
+//! boundaries the id IS the port name directly, with no such special-case
+//! mapping — except that the id `error` is also the one the black-box rule
+//! targets by default. So an instance's exit map is per-boundary: each
+//! output/error boundary has its own `exit_to` target (the `to` of the
+//! matching outer `inst.<port>` edge). Every output-derived port is
+//! **mandatory-wired** — an unwired one is a hard compile error naming the
+//! instance and port, because the instance node is gone before
 //! post-expansion port validation runs and nothing downstream could catch
-//! it otherwise. The `error` boundary stays optional: an unwired error exit
-//! just drops the corresponding edges (the policy catch-all, or the generic
-//! 500, takes over).
+//! it otherwise. Error-kind boundaries stay optional: an unwired one just
+//! drops the corresponding edges (the policy catch-all, or the generic 500,
+//! takes over). The black-box guarantee — every inner node with no error
+//! edge of its own gets an implicit error edge — follows ONLY the
+//! `error`-id boundary; other named error boundaries carry no such default.
 
 use std::collections::{HashMap, HashSet};
 
@@ -58,11 +63,11 @@ pub(crate) fn port_for_output_boundary(boundary_id: &str) -> &str {
 /// - outer `X.p -> inst.in` is redirected to the target of the definition's
 ///   `input.out` edge (prefixed);
 /// - an instance exposes one output port per `output` boundary node — named
-///   via [`port_for_output_boundary`] — plus `error` (the `error` boundary).
-///   `out` is accepted as an alias for the `output`-id boundary's `success`
-///   port. Any other port name on an outer edge leaving the instance is
-///   rejected, listing the exposed ports; so is a second edge from the same
-///   port;
+///   via [`port_for_output_boundary`] — plus one port per `error` boundary
+///   node, named directly by its id. `out` is accepted as an alias for the
+///   `output`-id boundary's `success` port. Any other port name on an outer
+///   edge leaving the instance is rejected, listing the exposed ports (output
+///   ports, then error ports); so is a second edge from the same port;
 /// - every output-derived port is mandatory-wired: an outer edge from
 ///   `inst.<port>` must exist for each `output` boundary, or expansion fails
 ///   naming the instance and port — the instance node is gone before
@@ -70,11 +75,14 @@ pub(crate) fn port_for_output_boundary(boundary_id: &str) -> &str {
 ///   catch it;
 /// - inner edges into an `output` boundary are redirected to the target of
 ///   that boundary's outer edge (always present, per the rule above);
-/// - inner edges into `error` follow the outer `inst.error` edge, or are
-///   dropped when it is unwired (the policy catch-all, or the generic 500,
-///   takes over — `error` is genuinely optional);
+/// - inner edges into an `error` boundary follow that boundary's outer
+///   `inst.<port>` edge, or are dropped when it is unwired (the policy
+///   catch-all, or the generic 500, takes over — error-kind ports are
+///   genuinely optional);
 /// - every inner node with no error edge of its own gets an implicit error
-///   edge to the outer error target when one is wired (black-box guarantee).
+///   edge to the outer target of the DEFAULT `error`-id boundary, when one is
+///   wired (black-box guarantee) — other named error boundaries carry no
+///   such default.
 ///
 /// Consumed by [`compile_policy`] at graph-compilation time.
 pub fn expand_policy(
@@ -105,11 +113,9 @@ pub fn expand_policy(
         /// For pass-through instances: the boundary node id the entry edge targets.
         pass_through_boundary: Option<String>,
         /// Boundary node id -> `to` endpoint of the outer edge wired to its port.
-        /// Mandatory-wiring guarantees an entry for every output boundary; the
-        /// error boundary's entry is optional.
+        /// Mandatory-wiring guarantees an entry for every output boundary;
+        /// error-kind boundaries' entries are optional.
         exit_to: HashMap<String, String>,
-        /// Node id of the error boundary (found by type, tolerating id mismatch).
-        error_node_id: Option<String>,
     }
 
     let mut splices: HashMap<&str, Splice> = HashMap::new();
@@ -175,14 +181,16 @@ pub fn expand_policy(
             (Some(format!("{}/{}.in", inst.id, entry_target)), None)
         };
 
-        let error_node_id = boundary_map
-            .iter()
-            .find(|(_, ty)| ty.as_str() == "error")
-            .map(|(id, _)| id.clone());
         let output_ids: Vec<String> = def
             .nodes
             .iter()
             .filter(|n| n.node_type == "output")
+            .map(|n| n.id.clone())
+            .collect();
+        let error_ids: Vec<String> = def
+            .nodes
+            .iter()
+            .filter(|n| n.node_type == "error")
             .map(|n| n.id.clone())
             .collect();
 
@@ -197,20 +205,17 @@ pub fn expand_policy(
             } else {
                 from_port
             };
-            let boundary_id = if port == "error" {
-                error_node_id.clone()
-            } else {
-                output_ids
-                    .iter()
-                    .find(|id| port_for_output_boundary(id) == port)
-                    .cloned()
-            };
+            let boundary_id = output_ids
+                .iter()
+                .find(|id| port_for_output_boundary(id) == port)
+                .or_else(|| error_ids.iter().find(|id| id.as_str() == port))
+                .cloned();
             let Some(bid) = boundary_id else {
                 let mut exposed: Vec<&str> = output_ids
                     .iter()
                     .map(|id| port_for_output_boundary(id))
                     .collect();
-                exposed.push("error");
+                exposed.extend(error_ids.iter().map(|id| id.as_str()));
                 return Err(format!(
                     "policy '{}': unknown port '{}' on supernode instance '{}' — \
                      supernode '{}' exposes: {}",
@@ -253,7 +258,6 @@ pub fn expand_policy(
                 entry,
                 pass_through_boundary,
                 exit_to,
-                error_node_id,
             },
         );
     }
@@ -296,7 +300,7 @@ pub fn expand_policy(
             path.push(target_node.to_string());
             match s.exit_to.get(pass_boundary.as_str()) {
                 Some(t) => current = t.clone(),
-                None => return Ok(None), // only reachable for an unwired error boundary
+                None => return Ok(None), // only reachable for an unwired error-kind boundary
             }
         }
     }
@@ -391,8 +395,8 @@ pub fn expand_policy(
                         edges.push(EdgeConfig { from, to: resolved });
                     }
                 }
-                // Unwired error boundary: drop (policy catch-all takes over). Output
-                // boundaries are always wired — checked above.
+                // Unwired error-kind boundary: drop (policy catch-all takes over).
+                // Output boundaries are always wired — checked above.
             } else {
                 edges.push(EdgeConfig {
                     from,
@@ -402,12 +406,12 @@ pub fn expand_policy(
         }
 
         // Black-box guarantee: unwired inner error ports exit through the
-        // instance's error output when the policy connected one.
-        if let Some(t) = s
-            .error_node_id
-            .as_ref()
-            .and_then(|id| s.exit_to.get(id.as_str()))
-        {
+        // instance's DEFAULT error output — only the `error`-id boundary
+        // carries this guarantee. `exit_to` can only hold key "error" when
+        // the definition has an `error`-id error boundary and the policy
+        // wired it: output ids can't be `error` (reserved), and the lookup
+        // above inserts entries keyed by boundary id.
+        if let Some(t) = s.exit_to.get("error") {
             if let Some(resolved) = resolve_target(&splices, t)
                 .map_err(|err| format!("policy '{}': {}", policy.name, err))?
             {
@@ -1489,5 +1493,171 @@ mod tests {
             err.contains("duplicate edge") && err.contains("'denied'"),
             "got: {err}"
         );
+    }
+
+    /// gate with two error boundaries: `error` (default) and `auth-error`.
+    /// `auth.error` exits via `auth-error`; `up` has no error edge (black-box).
+    fn multi_error_supernode() -> SupernodeConfig {
+        SupernodeConfig {
+            name: "gate".into(),
+            description: None,
+            nodes: vec![
+                node("input", "input"),
+                node("output", "output"),
+                node("error", "error"),
+                node("auth-error", "error"),
+                node("auth", "key-auth"),
+                node("up", "upstream"),
+            ],
+            edges: vec![
+                edge("input.out", "auth.in"),
+                edge("auth.success", "up.in"),
+                edge("auth.denied", "up.in"),
+                edge("auth.error", "auth-error.in"),
+                edge("up.success", "output.in"),
+            ],
+        }
+    }
+
+    /// Named error ports route to their own targets; the black-box rule follows
+    /// ONLY the default `error` port.
+    #[test]
+    fn test_named_error_port_and_default_black_box() {
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("gate", "gate"),
+                node("eh1", "error-handler"),
+                node("eh2", "error-handler"),
+                node("client", "client"),
+            ],
+            edges: vec![
+                edge("listener.out", "gate.in"),
+                edge("gate.success", "client.in"),
+                edge("gate.error", "eh1.in"),
+                edge("gate.auth-error", "eh2.in"),
+                edge("eh1.success", "client.in"),
+                edge("eh2.success", "client.in"),
+            ],
+        };
+        let out = expand_policy(&p, &[multi_error_supernode()]).unwrap();
+        // auth's own error edge follows the named boundary to eh2.
+        assert!(out
+            .edges
+            .iter()
+            .any(|e| e.from == "gate/auth.error" && e.to == "eh2.in"));
+        // up has no error edge: black-box wires it to the DEFAULT error target.
+        assert!(out
+            .edges
+            .iter()
+            .any(|e| e.from == "gate/up.error" && e.to == "eh1.in"));
+        // auth is handled inside the definition — no additional black-box edge.
+        assert_eq!(
+            out.edges
+                .iter()
+                .filter(|e| e.from == "gate/auth.error")
+                .count(),
+            1
+        );
+    }
+
+    /// Definition whose only error boundary is named `oops`: no `error` port
+    /// exists, and there is NO implicit black-box wiring.
+    fn renamed_error_supernode() -> SupernodeConfig {
+        SupernodeConfig {
+            name: "renamed".into(),
+            description: None,
+            nodes: vec![
+                node("input", "input"),
+                node("output", "output"),
+                node("oops", "error"),
+                node("up", "upstream"),
+            ],
+            edges: vec![edge("input.out", "up.in"), edge("up.success", "output.in")],
+        }
+    }
+
+    #[test]
+    fn test_no_black_box_without_default_error_boundary() {
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("r", "renamed"),
+                node("eh", "error-handler"),
+                node("client", "client"),
+            ],
+            edges: vec![
+                edge("listener.out", "r.in"),
+                edge("r.success", "client.in"),
+                edge("r.oops", "eh.in"),
+                edge("eh.success", "client.in"),
+            ],
+        };
+        let out = expand_policy(&p, &[renamed_error_supernode()]).unwrap();
+        // No implicit wiring: r/up.error stays unwired (policy catch-all).
+        assert!(!out.edges.iter().any(|e| e.from == "r/up.error"));
+    }
+
+    /// With the default renamed away, port `error` is unknown — and the message
+    /// lists the named error port.
+    #[test]
+    fn test_error_port_unknown_when_default_renamed() {
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("r", "renamed"),
+                node("client", "client"),
+            ],
+            edges: vec![
+                edge("listener.out", "r.in"),
+                edge("r.success", "client.in"),
+                edge("r.error", "client.in"),
+            ],
+        };
+        let err = expand_policy(&p, &[renamed_error_supernode()]).unwrap_err();
+        assert!(
+            err.contains("unknown port 'error'") && err.contains("oops"),
+            "got: {err}"
+        );
+    }
+
+    /// An unwired named error port just drops its exit edges (optional wiring).
+    #[test]
+    fn test_unwired_named_error_port_drops_exit_edges() {
+        let mut def = renamed_error_supernode();
+        def.nodes.push(node("auth", "key-auth"));
+        def.edges = vec![
+            edge("input.out", "auth.in"),
+            edge("auth.success", "up.in"),
+            edge("auth.denied", "up.in"),
+            edge("auth.error", "oops.in"),
+            edge("up.success", "output.in"),
+        ];
+        let p = PolicyConfig {
+            name: "p".into(),
+            error_handler: None,
+            nodes: vec![
+                node("listener", "listener"),
+                supernode_instance("r", "renamed"),
+                node("client", "client"),
+            ],
+            edges: vec![
+                edge("listener.out", "r.in"),
+                edge("r.success", "client.in"),
+                // r.oops deliberately unwired — error-kind ports are optional
+            ],
+        };
+        let out = expand_policy(&p, &[def]).unwrap();
+        assert!(!out.edges.iter().any(|e| e.from == "r/auth.error"));
+        assert!(out
+            .edges
+            .iter()
+            .any(|e| e.from == "r/up.success" && e.to == "client.in"));
     }
 }
