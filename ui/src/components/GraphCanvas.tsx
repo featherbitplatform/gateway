@@ -543,6 +543,7 @@ export function GraphCanvas({
         },
       ]);
       setSelectedNodeId(name);
+      setDrawerOpen(false);
     } else {
       const oldId = portDialog.nodeId;
       setNodes((nds) =>
