@@ -68,7 +68,9 @@ use crate::plugins::resources::PluginResources;
 use crate::plugins::util::cookie_session::{
     build_set_cookie, delete_cookie, path_covers, read_cookie, CookieAttrs, CookieSealer, SameSite,
 };
+use crate::plugins::util::server_session::{self, SessionBackend};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::sessions::StoreError;
 
 /// Transient state carried in the short-lived flow cookie across the redirect
 /// to the IdP and back to the callback (CSRF `state`, replay `nonce`, PKCE
@@ -92,6 +94,7 @@ struct SessionData {
 /// Interactive-mode configuration, present only when `bearer_only: false`.
 struct Interactive {
     sealer: CookieSealer,
+    backend: SessionBackend,
     authorization_endpoint_cfg: Option<String>,
     token_endpoint_cfg: Option<String>,
     redirect_uri: String,
@@ -285,7 +288,7 @@ impl OpenidConnectPlugin {
                         .to_string(),
                 );
             }
-            Some(build_interactive(config, &discovery)?)
+            Some(build_interactive(config, &discovery, resources)?)
         };
 
         let allowed_algs = parse_allowed_algs(config.get("token_signing_alg_values_expected"))?;
@@ -638,6 +641,27 @@ impl OpenidConnectPlugin {
         }
     }
 
+    /// Session-store outage: 503 through the error port. Deliberately NOT
+    /// 401 — bouncing users to an IdP whose callback also cannot persist a
+    /// session is a redirect loop disguised as an outage.
+    fn store_error(mut ctx: Context, e: StoreError) -> PluginExecutionError {
+        ctx.response.status_code = 503;
+        ctx.response.body = Bytes::from(r#"{"error": "session store unavailable"}"#.as_bytes());
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
+        PluginExecutionError {
+            context: ctx,
+            error: GatewayError {
+                node_id: String::new(),
+                code: "SESSION_STORE_ERROR".to_string(),
+                message: e.to_string(),
+                metadata: HashMap::new(),
+            },
+        }
+    }
+
     // ---- Interactive Authorization Code flow ------------------------------
 
     /// Drives the interactive flow: session check, callback handling, or a
@@ -645,10 +669,27 @@ impl OpenidConnectPlugin {
     async fn execute_interactive(&self, mut ctx: Context) -> PluginResult {
         let flow = self.interactive.as_ref().expect("interactive mode");
 
-        // Logout: clear the session cookie and redirect.
+        // Logout: clear the session (server-side, in store mode) and redirect.
         if let Some(logout_path) = &flow.logout_path {
             if ctx.request.path == *logout_path {
-                let clear = delete_cookie(&flow.session_cookie, &flow.cookie_path);
+                let cookie_value = ctx
+                    .request
+                    .headers
+                    .get("cookie")
+                    .and_then(|v| v.first())
+                    .and_then(|h| read_cookie(h, &flow.session_cookie))
+                    .map(str::to_string);
+                let clear = match server_session::destroy(
+                    &flow.backend,
+                    cookie_value.as_deref(),
+                    &flow.session_cookie,
+                    &flow.cookie_path,
+                )
+                .await
+                {
+                    Ok(c) => c,
+                    Err(e) => return Err(Self::store_error(ctx, e)),
+                };
                 return redirect(ctx, &flow.post_logout_redirect_uri, vec![clear]);
             }
         }
@@ -659,7 +700,11 @@ impl OpenidConnectPlugin {
         }
 
         // Existing valid session cookie → attach identity and continue.
-        if let Some(session) = self.read_session(&ctx) {
+        let session = match self.read_session(&ctx).await {
+            Ok(s) => s,
+            Err(e) => return Err(Self::store_error(ctx, e)),
+        };
+        if let Some(session) = session {
             if let Some(sub) = session.claims.get("sub") {
                 ctx.message.insert("user_id".to_string(), sub.clone());
             }
@@ -690,13 +735,20 @@ impl OpenidConnectPlugin {
         self.begin_auth(ctx).await
     }
 
-    /// Reads and opens the session cookie, if present and valid.
-    fn read_session(&self, ctx: &Context) -> Option<SessionData> {
-        let flow = self.interactive.as_ref()?;
-        let cookie_header = ctx.request.headers.get("cookie")?.first()?;
-        let raw = read_cookie(cookie_header, &flow.session_cookie)?;
-        let bytes = flow.sealer.open(raw).ok()?;
-        serde_json::from_slice(&bytes).ok()
+    /// Reads the session cookie via the configured backend. `Ok(None)` =
+    /// unauthenticated; `Err` = store outage (503 via `store_error`).
+    async fn read_session(&self, ctx: &Context) -> Result<Option<SessionData>, StoreError> {
+        let Some(flow) = self.interactive.as_ref() else {
+            return Ok(None);
+        };
+        let Some(cookie_header) = ctx.request.headers.get("cookie").and_then(|v| v.first()) else {
+            return Ok(None);
+        };
+        let Some(raw) = read_cookie(cookie_header, &flow.session_cookie) else {
+            return Ok(None);
+        };
+        let bytes = server_session::load(&flow.backend, &flow.sealer, raw).await?;
+        Ok(bytes.and_then(|b| serde_json::from_slice(&b).ok()))
     }
 
     /// Starts the flow: generate CSRF/nonce/PKCE, set the flow cookie, and
@@ -832,18 +884,29 @@ impl OpenidConnectPlugin {
             claims: serde_json::to_value(&claims).unwrap_or_default(),
             access_token,
         };
-        let sealed = match serde_json::to_vec(&session) {
-            Ok(b) => flow.sealer.seal(&b, flow.session_lifetime),
+        let payload = match serde_json::to_vec(&session) {
+            Ok(b) => b,
             Err(e) => {
                 return Err(Self::infra_error(
                     ctx,
-                    format!("session seal failed: {}", e),
+                    format!("session serialize failed: {}", e),
                 ))
             }
         };
-        let set_session = build_set_cookie(
+        let subject = claims
+            .get("sub")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let meta =
+            server_session::meta_now(&ctx, "openid-connect", &subject, flow.session_lifetime);
+        let set_session = match server_session::establish(
+            &flow.backend,
+            &flow.sealer,
+            &payload,
+            flow.session_lifetime,
+            meta,
             &flow.session_cookie,
-            &sealed,
             &CookieAttrs {
                 path: &flow.cookie_path,
                 max_age: Some(flow.session_lifetime.as_secs()),
@@ -851,7 +914,12 @@ impl OpenidConnectPlugin {
                 secure: request_is_https(&ctx),
                 same_site: SameSite::Lax,
             },
-        );
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => return Err(Self::store_error(ctx, e)),
+        };
         let clear_flow = delete_cookie(&flow.flow_cookie, &flow.cookie_path);
         let target = if flow_state.original_uri.is_empty() {
             "/".to_string()
@@ -974,10 +1042,12 @@ impl OpenidConnectPlugin {
 fn build_interactive(
     config: &HashMap<String, serde_json::Value>,
     discovery: &Option<String>,
+    resources: &Arc<PluginResources>,
 ) -> Result<Interactive, String> {
     let secret = session_field(config, "secret")
         .or_else(|| string_opt(config, "session_secret"))
         .ok_or("openid-connect: interactive login requires 'session.secret'")?;
+    let backend = server_session::parse_backend(config, resources, "openid-connect")?;
 
     let redirect_uri = string_opt(config, "redirect_uri")
         .ok_or("openid-connect: interactive login requires 'redirect_uri'")?;
@@ -1022,6 +1092,7 @@ fn build_interactive(
 
     Ok(Interactive {
         sealer: CookieSealer::new(&secret),
+        backend,
         authorization_endpoint_cfg,
         token_endpoint_cfg,
         redirect_uri,
@@ -2189,5 +2260,93 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         let err = plugin.execute(c).await.unwrap_err();
         assert_eq!(err.error.code, "OIDC_PROVIDER_ERROR");
         assert_eq!(err.context.response.status_code, 401);
+    }
+
+    // ---- Redis session storage ---------------------------------------
+
+    #[cfg(feature = "redis-store")]
+    fn resources_with_fake_store() -> (
+        std::sync::Arc<crate::plugins::resources::PluginResources>,
+        std::sync::Arc<crate::sessions::FakeSessionStore>,
+    ) {
+        let fake = std::sync::Arc::new(crate::sessions::FakeSessionStore::default());
+        let resources = crate::plugins::resources::PluginResources::empty();
+        resources.stores.store(std::sync::Arc::new(
+            crate::stores::StoreRegistry::with_fake_session_store("s1", fake.clone()),
+        ));
+        (resources, fake)
+    }
+
+    /// redis storage requires a store name; unknown stores fail at config.
+    #[test]
+    fn test_session_storage_redis_requires_store() {
+        let mut cfg = interactive_explicit_cfg();
+        cfg.insert(
+            "session".to_string(),
+            serde_json::json!({"secret": "cookie-signing-secret", "storage": "redis"}),
+        );
+        // `.err().unwrap()` (not `unwrap_err()`): the Ok type isn't `Debug`.
+        let err = OpenidConnectPlugin::from_config(&cfg, &PluginResources::empty())
+            .err()
+            .unwrap();
+        assert!(err.contains("requires 'session.store'"), "{err}");
+    }
+
+    /// In redis mode a valid id-cookie authenticates from the store, and a
+    /// store outage is a 503 on the error port — never a silent re-login.
+    #[cfg(feature = "redis-store")]
+    #[tokio::test]
+    async fn test_redis_session_read_and_store_outage_503() {
+        use crate::sessions::SessionStore as _;
+
+        let (resources, fake) = resources_with_fake_store();
+        let mut cfg = interactive_explicit_cfg();
+        cfg.insert(
+            "session".to_string(),
+            serde_json::json!({
+                "secret": "cookie-signing-secret",
+                "storage": "redis",
+                "store": "s1"
+            }),
+        );
+        let plugin = OpenidConnectPlugin::from_config(&cfg, &resources).unwrap();
+
+        // Establish a session by hand: seal SessionData, put under an id.
+        let sealer = CookieSealer::new("cookie-signing-secret");
+        let data = serde_json::json!({"claims": {"sub": "u1"}});
+        let sealed = sealer.seal(&serde_json::to_vec(&data).unwrap(), Duration::from_secs(60));
+        let id = crate::sessions::SessionId::random();
+        let meta = crate::sessions::SessionMeta {
+            id: String::new(),
+            subject: "u1".to_string(),
+            plugin: "openid-connect".to_string(),
+            policy: String::new(),
+            route: String::new(),
+            created_at: 0,
+            expires_at: 0,
+        };
+        fake.put(&id, sealed.as_bytes(), Duration::from_secs(60), &meta)
+            .await
+            .unwrap();
+
+        let mut ctx = req_ctx("/api", HashMap::new());
+        ctx.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("oidc_session={}", id.as_str())],
+        );
+        let out = plugin.execute(ctx).await.unwrap();
+        assert!(out.port.is_none(), "valid store session must pass");
+        assert_eq!(out.context.message["user_id"], "u1");
+
+        // Outage: same request, failing store.
+        fake.fail.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut ctx = req_ctx("/api", HashMap::new());
+        ctx.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("oidc_session={}", id.as_str())],
+        );
+        let err = plugin.execute(ctx).await.unwrap_err();
+        assert_eq!(err.error.code, "SESSION_STORE_ERROR");
+        assert_eq!(err.context.response.status_code, 503);
     }
 }

@@ -17,7 +17,6 @@ use crate::sessions::{SessionId, SessionMeta, SessionStore, StoreError};
 
 use super::cookie_session::{build_set_cookie, delete_cookie, CookieAttrs, CookieSealer};
 
-#[allow(dead_code)] // consumed by task 6 (openid-connect)
 pub enum SessionBackend {
     Cookie,
     Store {
@@ -37,7 +36,6 @@ impl std::fmt::Debug for SessionBackend {
     }
 }
 
-#[allow(dead_code)] // consumed by task 6 (openid-connect)
 fn nested_or_flat<'a>(
     config: &'a HashMap<String, serde_json::Value>,
     nested: &str,
@@ -53,7 +51,6 @@ fn nested_or_flat<'a>(
 
 /// Parses `session.storage` / `session.store` and resolves the named store
 /// at construction time — a bad reference fails policy compilation.
-#[allow(dead_code)] // consumed by task 6 (openid-connect)
 pub fn parse_backend(
     config: &HashMap<String, serde_json::Value>,
     resources: &Arc<PluginResources>,
@@ -79,7 +76,6 @@ pub fn parse_backend(
     }
 }
 
-#[allow(dead_code)] // consumed by task 6 (openid-connect)
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -88,7 +84,6 @@ fn now_unix() -> u64 {
 }
 
 /// Builds the meta envelope from the context's `__route`/`__policy` vars.
-#[allow(dead_code)] // consumed by task 6 (openid-connect)
 pub fn meta_now(ctx: &Context, plugin: &str, subject: &str, ttl: Duration) -> SessionMeta {
     let var = |k: &str| {
         ctx.message
@@ -112,7 +107,6 @@ pub fn meta_now(ctx: &Context, plugin: &str, subject: &str, ttl: Duration) -> Se
 /// Seals `payload` and returns the session Set-Cookie value. Cookie mode:
 /// the sealed blob IS the cookie. Redis mode: the sealed blob goes under a
 /// fresh random id; the cookie carries the bare id.
-#[allow(dead_code)] // consumed by task 6 (openid-connect)
 pub async fn establish(
     backend: &SessionBackend,
     sealer: &CookieSealer,
@@ -135,7 +129,6 @@ pub async fn establish(
 
 /// Opens a session cookie value. `Ok(None)` = treat as unauthenticated
 /// (absent/expired/tampered/junk id); `Err` = store outage (503, never 401).
-#[allow(dead_code)] // consumed by task 6 (openid-connect)
 pub async fn load(
     backend: &SessionBackend,
     sealer: &CookieSealer,
@@ -160,7 +153,6 @@ pub async fn load(
 /// delete failure is an Err — server-side revocation is the entire point of
 /// redis mode, so a logout that silently leaves the session live must fail
 /// loudly (503) instead.
-#[allow(dead_code)] // consumed by task 6 (openid-connect)
 pub async fn destroy(
     backend: &SessionBackend,
     cookie_value: Option<&str>,
@@ -178,7 +170,7 @@ pub async fn destroy(
 /// Rewrites an existing session's payload (token refresh). Redis mode: put
 /// under the SAME id (cookie unchanged → returns None). Cookie mode: the
 /// caller must send a fresh cookie (returns Some(set_cookie)).
-#[allow(dead_code)] // consumed by task 6 (openid-connect)
+#[allow(dead_code)] // consumed by task 7
 #[allow(clippy::too_many_arguments)] // matches the locked interface in the task-5 brief
 pub async fn update(
     backend: &SessionBackend,
