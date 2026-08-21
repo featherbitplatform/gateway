@@ -225,6 +225,15 @@ the (unchanged, default) stateless mode where it is never actually taken.
 An existing policy using either node without a `redirect` edge fails to
 recompile until one is added.
 
+**Amendment (as shipped):** on a successful code exchange, session
+establishment 302-redirects (the `redirect` port) to the code-stripped URL,
+carrying the `Set-Cookie` on that redirect response, rather than attaching
+identity and exiting `success` on the exchange request itself — because in
+the standard `success → upstream.in` wiring, `upstream` replaces
+`ctx.response.headers` wholesale, so a `Set-Cookie` set on the success path
+would never reach the browser. Identity is attached on the browser's
+follow-up request, which hits the session-read fast path.
+
 **Amendment (as shipped):** `secret_fallbacks` (APISIX's multi-secret
 key-rotation) remains **unsupported** on both plugins — same single-secret
 `CookieSealer` as every other session plugin in this codebase. This is the
