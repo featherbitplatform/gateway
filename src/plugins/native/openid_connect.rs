@@ -871,10 +871,18 @@ impl OpenidConnectPlugin {
             .do_refresh(&ctx, flow, &id, &refresh_token, &session)
             .await
         {
-            Ok(updated) => match store.unlock(&id).await {
-                Ok(()) => ControlFlow::Continue((ctx, updated)),
-                Err(e) => ControlFlow::Break(Err(Self::store_error(ctx, e))),
-            },
+            Ok(updated) => {
+                // Post-success unlock is best-effort: the refreshed session
+                // is already durably written and the lock self-heals via its
+                // TTL; failing the request here would 503 a correct response
+                // over lock-key cleanup.
+                if let Err(e) = store.unlock(&id).await {
+                    tracing::warn!(
+                        "openid-connect: post-refresh unlock failed (self-heals via TTL): {e}"
+                    );
+                }
+                ControlFlow::Continue((ctx, updated))
+            }
             Err(RefreshFailure::ReAuth(reason)) => {
                 // An IdP-side refresh failure (unreachable, non-2xx, or an
                 // invalid refreshed id_token) is not a store outage — unlock
@@ -883,10 +891,14 @@ impl OpenidConnectPlugin {
                 tracing::debug!(
                     "openid-connect: redis-mode refresh failed, falling back to re-login: {reason}"
                 );
+                // Deliberately best-effort: a secondary unlock error here
+                // must never override the already-decided re-login outcome.
                 let _ = store.unlock(&id).await;
                 ControlFlow::Break(self.begin_auth(ctx).await)
             }
             Err(RefreshFailure::Store(e)) => {
+                // Deliberately best-effort: a secondary unlock error here
+                // must never override the already-decided 503 outcome.
                 let _ = store.unlock(&id).await;
                 ControlFlow::Break(Err(Self::store_error(ctx, e)))
             }
@@ -2780,6 +2792,124 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         );
         assert_eq!(out.context.message["user_id"], "u1");
         // No lock was ever taken — try_lock succeeds trivially.
+        assert!(fake.try_lock(&id, Duration::from_secs(1)).await.unwrap());
+    }
+
+    /// Minimal one-shot HTTP server that answers exactly one request with a
+    /// fixed status line, `content-type: application/json`, and body.
+    /// Returns its port. Stands in for a token endpoint in refresh tests
+    /// (cribbed from `traffic_split.rs`'s body-returning `spawn_status_server`).
+    #[cfg(feature = "redis-store")]
+    async fn spawn_json_server(status_line: &'static str, body: &'static str) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\n\
+                             content-length: {}\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        port
+    }
+
+    /// Winner-success refresh: the token endpoint returns a fresh
+    /// access_token + rotated refresh_token + expires_in (no id_token). The
+    /// request passes authenticated with the existing claims preserved
+    /// (nothing to re-validate), the store record under the SAME id is
+    /// rewritten with the new tokens and a future `expires_at`, and the
+    /// lock is released.
+    #[cfg(feature = "redis-store")]
+    #[tokio::test]
+    async fn test_redis_refresh_winner_success_rewrites_session() {
+        use crate::sessions::SessionStore as _;
+
+        let port = spawn_json_server(
+            "200 OK",
+            r#"{"access_token":"new-at","refresh_token":"new-rt","expires_in":3600}"#,
+        )
+        .await;
+
+        let (resources, fake) = resources_with_fake_store();
+        let mut cfg = interactive_explicit_cfg();
+        cfg.insert(
+            "token_endpoint".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{port}/token")),
+        );
+        cfg.insert(
+            "session".to_string(),
+            serde_json::json!({
+                "secret": "cookie-signing-secret",
+                "storage": "redis",
+                "store": "s1"
+            }),
+        );
+        let plugin = OpenidConnectPlugin::from_config(&cfg, &resources).unwrap();
+
+        let sealer = CookieSealer::new("cookie-signing-secret");
+        // Stale access token (expires_at in the past) + a refresh token.
+        let data = serde_json::json!({
+            "claims": {"sub": "u1"},
+            "access_token": "old",
+            "refresh_token": "rt",
+            "expires_at": 1
+        });
+        let sealed = sealer.seal(
+            &serde_json::to_vec(&data).unwrap(),
+            Duration::from_secs(600),
+        );
+        let id = crate::sessions::SessionId::random();
+        let meta = crate::sessions::SessionMeta {
+            id: String::new(),
+            subject: "u1".into(),
+            plugin: "openid-connect".into(),
+            policy: String::new(),
+            route: String::new(),
+            created_at: 0,
+            expires_at: 0,
+        };
+        fake.put(&id, sealed.as_bytes(), Duration::from_secs(600), &meta)
+            .await
+            .unwrap();
+
+        let mut ctx = req_ctx("/api", HashMap::new());
+        ctx.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("oidc_session={}", id.as_str())],
+        );
+        let out = plugin.execute(ctx).await.unwrap();
+
+        // (a) passes authenticated; claims are preserved (no id_token came
+        // back to re-validate).
+        assert!(out.port.is_none(), "successful refresh must pass through");
+        assert_eq!(out.context.message["user_id"], "u1");
+
+        // (b) the store record under the SAME id was rewritten with the new
+        // tokens and a future expires_at.
+        let stored = fake.get(&id).await.unwrap().unwrap();
+        let sealed_str = String::from_utf8(stored).unwrap();
+        let opened = sealer.open(&sealed_str).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&opened).unwrap();
+        assert_eq!(value["access_token"], "new-at");
+        assert_eq!(value["refresh_token"], "new-rt");
+        assert!(
+            value["expires_at"].as_u64().unwrap() > now_unix(),
+            "expires_at must be in the future: {value}"
+        );
+
+        // (c) the lock was released.
         assert!(fake.try_lock(&id, Duration::from_secs(1)).await.unwrap());
     }
 }
