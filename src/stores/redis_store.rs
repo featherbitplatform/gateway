@@ -19,8 +19,8 @@ use crate::config::interpolate_env;
 use crate::config::StoreConfig;
 
 /// Result of a connectivity check (`POST /api/stores/{name}/ping`).
-// Consumed by task 4 (admin ping / counters) — nothing in production code
-// constructs or reads this yet; only this module's own tests do.
+// Consumed by task 9 (admin ping) — nothing in production code constructs
+// or reads this yet; only this module's own tests do.
 #[allow(dead_code)]
 pub struct PingInfo {
     pub latency_ms: u64,
@@ -33,11 +33,7 @@ pub struct RedisStoreClient {
     key_prefix: String,
     fingerprint: String,
     connect_timeout: Duration,
-    // Consumed by task 4 (admin ping / counters) via `Self::conn`/`Self::ping`
-    // — not yet read by production code outside this module's own tests.
-    #[allow(dead_code)]
     client: redis::Client,
-    #[allow(dead_code)]
     conn: OnceCell<redis::aio::ConnectionManager>,
 }
 
@@ -131,9 +127,6 @@ impl RedisStoreClient {
 
     /// The shared multiplexed connection; established on first use and
     /// auto-reconnecting thereafter.
-    // Consumed by task 4 (admin ping / counters) — not yet called by
-    // production code in this task.
-    #[allow(dead_code)]
     pub async fn conn(&self) -> Result<redis::aio::ConnectionManager, String> {
         let manager = self
             .conn
@@ -149,8 +142,8 @@ impl RedisStoreClient {
     }
 
     /// `PING` + server version, for the Admin API connectivity check.
-    // Consumed by task 4 (admin ping / counters) — not yet called by
-    // production code in this task.
+    // Consumed by task 9 (admin ping) — not yet called by production code
+    // in this task.
     #[allow(dead_code)]
     pub async fn ping(&self) -> Result<PingInfo, String> {
         let mut conn = self.conn().await?;
@@ -186,16 +179,13 @@ impl RedisStoreClient {
         })
     }
 
-    // Consumed by task 4 (admin ping / counters) — not yet called by
-    // production code in this task.
+    // Consumed by task 9 (admin ping) — not yet called by production code
+    // in this task.
     #[allow(dead_code)]
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    // Consumed by task 4 (admin ping / counters) — not yet called by
-    // production code in this task.
-    #[allow(dead_code)]
     pub fn key_prefix(&self) -> &str {
         &self.key_prefix
     }
@@ -204,8 +194,8 @@ impl RedisStoreClient {
         &self.fingerprint
     }
 
-    // Consumed by task 4 (admin ping / counters) — not yet called by
-    // production code in this task.
+    // Consumed by task 9 (admin ping) — not yet called by production code
+    // in this task.
     #[allow(dead_code)]
     pub fn connect_timeout(&self) -> Duration {
         self.connect_timeout

@@ -42,6 +42,11 @@ pub struct GatewayMetrics {
     /// per-consumer counter). Recorded by the `prometheus` node, which must be
     /// placed after the auth node that attaches the consumer.
     pub consumer_requests: IntCounterVec,
+    /// Counter-store (stores:) backend errors, per named store.
+    // Only incremented by `RedisCounterStore` (`redis-store` feature); a
+    // headless build registers the collector but never reads the field.
+    #[cfg_attr(not(feature = "redis-store"), allow(dead_code))]
+    pub counter_store_errors: IntCounterVec,
 }
 
 impl GatewayMetrics {
@@ -108,6 +113,15 @@ impl GatewayMetrics {
         )
         .unwrap();
 
+        let counter_store_errors = IntCounterVec::new(
+            Opts::new(
+                "gateway_counter_store_errors_total",
+                "Total counter-store backend errors per named store",
+            ),
+            &["store"],
+        )
+        .unwrap();
+
         registry.register(Box::new(request_count.clone())).unwrap();
         registry
             .register(Box::new(request_duration.clone()))
@@ -123,6 +137,9 @@ impl GatewayMetrics {
         registry
             .register(Box::new(consumer_requests.clone()))
             .unwrap();
+        registry
+            .register(Box::new(counter_store_errors.clone()))
+            .unwrap();
 
         Self {
             registry,
@@ -133,6 +150,7 @@ impl GatewayMetrics {
             node_execution_duration,
             node_errors,
             consumer_requests,
+            counter_store_errors,
         }
     }
 
