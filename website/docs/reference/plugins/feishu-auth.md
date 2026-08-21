@@ -96,14 +96,14 @@ A Feishu callout that fails outright — network error, non-200 response, or an 
 Each request is resolved through three branches:
 
 1. **Valid session.** If the `<session.cookie.name>` cookie (default `feishu_session`) opens successfully, the sealed userinfo (plus the exchanged access token and its expiry) is attached exactly as in stateless mode and the request continues through the **success** port — no Feishu callout. An undecodable payload (corrupt/stale format) is destroyed and treated as no session, rather than failing the request.
-2. **Code present, no valid session.** The existing token+userinfo callouts run unchanged; on success a new session is established (payload = userinfo JSON plus the exchanged access token and its expiry; subject = `user_id` else `open_id` else `union_id` else empty; TTL = `session.cookie.lifetime`) and identity is attached with a `Set-Cookie` on the **success** response — deliberate denials and upstream failures behave exactly as in stateless mode.
+2. **Code present, no valid session.** The existing token+userinfo callouts run unchanged; on success a new session is established (payload = userinfo JSON plus the exchanged access token and its expiry; subject = `user_id` else `open_id` else `union_id` else empty; TTL = `session.cookie.lifetime`) and the browser is **`302`-redirected to the current URL with the `code` query parameter stripped**, carrying the session `Set-Cookie`, exiting on the **`redirect`** port — deliberate denials and upstream failures behave exactly as in stateless mode. The node does **not** attach identity or exit `success` on this request: in the standard `success → upstream.in` wiring, the `upstream` node replaces `ctx.response.headers` wholesale, so a `Set-Cookie` set on that path would never reach the browser. The browser's follow-up request (now cookie-bearing, code-free) hits branch 1 above and gets identity attached there.
 3. **No session, no code.** The browser is **`302`-redirected to `redirect_uri`**, exiting on the **`redirect`** port.
 
 A session-store failure (`session.storage: redis`) on any operation never falls back to `401`: it exits through the ordinary **error** port as a `503` (error code `SESSION_STORE_ERROR`), because treating a store outage as "logged out" would just redirect the user into a login loop the store also can't complete. `storage: cookie` sessions (the default) remain unrevocable by design; `session.storage: redis` sessions can be listed and revoked through the [Admin API](../../guides/admin-api.md).
 
 #### Redirect wiring (important)
 
-The session-mode `302` (no session, no code) exits through the dedicated **`redirect`** output port, carrying the prepared response. **Wire the node's `redirect` edge to `client.in`** so it reaches the browser — this is required even in stateless mode, where the port is declared but never actually taken.
+Both session-mode `302`s — beginning login (no session, no code) and completing it (session established after a code exchange) — exit through the dedicated **`redirect`** output port, carrying the prepared response (including, for the latter, the session `Set-Cookie`). **Wire the node's `redirect` edge to `client.in`** so it reaches the browser — this is required even in stateless mode, where the port is declared but never actually taken.
 
 ## Ports
 

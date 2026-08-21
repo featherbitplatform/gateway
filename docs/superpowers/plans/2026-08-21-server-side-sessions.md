@@ -1697,6 +1697,8 @@ git commit -m "feat(authz-casdoor): redis session storage"
 Restored flow (session mode), per the APISIX original quoted in the module docs:
 1. strip `x-userinfo` → 2. read session: valid → deserialize the stored userinfo JSON, `attach_identity`, success. Store outage → 503 `SESSION_STORE_ERROR`. Undecodable payload → destroy + treat as no-session (APISIX destroys + 302). → 3. `extract_code`: none → 302 to `redirect_uri` (redirect port). → 4. code present → existing token+userinfo callouts (unchanged) → establish session (payload = the userinfo `result` JSON bytes; subject = `userid` else `unionid` else ""; ttl = cookie lifetime) → attach + success with the Set-Cookie on the response (`ctx.response.headers` "set-cookie" insert — success responses CAN carry Set-Cookie; the engine forwards response headers).
 
+> **Correction (final review):** false for policies containing `upstream` (wholesale header replacement); shipped behavior is establish-then-302-redirect on the `redirect` port.
+
 - [ ] **Step 1: Failing tests**
 
 ```rust
