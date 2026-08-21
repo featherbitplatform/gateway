@@ -14,13 +14,37 @@
 //! reads a code, calls DingTalk, then stores the resolved userinfo in an
 //! encrypted `dingtalk_session` cookie so later requests skip the callout, and
 //! it 302-redirects to `redirect_uri` when no code and no session are present.
-//! featherbit is stateless with no session store, so this port implements the
-//! **token-validation subset**: every request must carry a code, which is
-//! validated against DingTalk on each request. Consequently the session /
-//! cookie / redirect machinery is dropped, along with the config keys that only
-//! served it (`secret`, `secret_fallbacks`, `redirect_uri`, `cookie_expires_in`).
-//! The app-level access token *is* cached in-process (7000s TTL, matching
-//! APISIX's `lrucache`) so only the userinfo call happens per request.
+//! That session machinery is now restored on an opt-in basis, sharing the
+//! same [cookie](crate::plugins::util::cookie_session) /
+//! [server-store](crate::plugins::util::server_session) primitives as
+//! `cas-auth`/`openid-connect`/`authz-casdoor`:
+//!
+//! - **Stateless (default)** — when no `session.secret` is configured the
+//!   node behaves exactly as before: every request must carry a code, which
+//!   is validated against DingTalk on each request. No cookie is read or
+//!   set.
+//! - **Session (opt-in)** — set `session.secret` (or `session_secret`) to
+//!   turn the flow back on: strip any client-supplied `x-userinfo`, then read
+//!   the `dingtalk_session` cookie (cookie mode: the userinfo JSON is sealed
+//!   directly in the cookie; redis mode via `session.storage: redis` +
+//!   `session.store: <name>`: the cookie carries a bare id, the sealed
+//!   userinfo lives server-side). A valid session attaches identity straight
+//!   from the stored payload — no DingTalk callout. An undecodable payload
+//!   (corrupt/stale format) is destroyed and treated as no session rather
+//!   than failing the request. No session and no code 302-redirects to the
+//!   required `redirect_uri` (the `redirect` port). A code present runs the
+//!   existing token+userinfo callouts unchanged, then establishes a new
+//!   session (payload = the userinfo `result` JSON; subject = `userid` else
+//!   `unionid` else empty; ttl = `session.cookie.lifetime`, APISIX's
+//!   `cookie_expires_in`, default `86400`) and attaches identity with the
+//!   `Set-Cookie` on the success response. A session-store outage is a `503`
+//!   (`SESSION_STORE_ERROR`) on the `error` port, never a silent
+//!   re-login. The app-level access token is still cached in-process (7000s
+//!   TTL, matching APISIX's `lrucache`).
+//!
+//! Remaining deviation: `secret_fallbacks` (APISIX's multi-secret key
+//! rotation) is **not** supported — the sealer is a single `session.secret`,
+//! same as every other session plugin in this codebase.
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -34,7 +58,10 @@ use tokio::sync::Mutex;
 use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundRequest, OutboundResponse};
 use crate::plugins::resources::PluginResources;
+use crate::plugins::util::cookie_session::{read_cookie, CookieAttrs, CookieSealer, SameSite};
+use crate::plugins::util::server_session::{self, SessionBackend};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::sessions::StoreError;
 
 const DEFAULT_USERINFO_URL: &str = "https://oapi.dingtalk.com/topapi/v2/user/getuserinfo";
 const DEFAULT_TOKEN_URL: &str = "https://api.dingtalk.com/v1.0/oauth2/accessToken";
@@ -61,6 +88,16 @@ impl DingtalkError {
     }
 }
 
+/// Session-mode settings (present when `session.secret` is configured).
+struct DingtalkSession {
+    sealer: CookieSealer,
+    backend: SessionBackend,
+    cookie_name: String,
+    cookie_path: String,
+    cookie_lifetime: u64,
+    redirect_uri: String,
+}
+
 /// Authenticates requests by resolving a DingTalk authorization code to a
 /// DingTalk user via the OAuth `accessToken` + `getuserinfo` APIs.
 pub struct DingtalkAuthPlugin {
@@ -78,6 +115,9 @@ pub struct DingtalkAuthPlugin {
     resources: Arc<PluginResources>,
     /// In-process cache of the app-level access token: `(token, fetched_at)`.
     token_cache: Mutex<Option<(String, Instant)>>,
+    /// Session-mode settings; `None` keeps the stateless token-validation
+    /// behavior (the pre-existing, backward-compatible default).
+    session: Option<DingtalkSession>,
 }
 
 impl DingtalkAuthPlugin {
@@ -98,8 +138,22 @@ impl DingtalkAuthPlugin {
     /// - `timeout` (integer ms, default `6000`): per-callout timeout.
     /// - `ssl_verify` (bool, default `true`): verify DingTalk's TLS certificate.
     ///
-    /// Session-only APISIX keys (`secret`, `secret_fallbacks`, `redirect_uri`,
-    /// `cookie_expires_in`) are not accepted — see the module docs.
+    /// Session-mode keys (present ⇒ session mode is enabled — see the module
+    /// docs):
+    /// - `session_secret` (string) or `session.secret` (string): signing/
+    ///   encryption secret for the session cookie. Setting it turns on the
+    ///   session flow.
+    /// - `session.cookie.name` (string, default `"dingtalk_session"`).
+    /// - `session.cookie.path` (string, default `"/"`).
+    /// - `session.cookie.lifetime` (u64 seconds, default `86400`; APISIX's
+    ///   `cookie_expires_in`).
+    /// - `session.storage` / `session.store`: server-side session backend
+    ///   (see [`server_session::parse_backend`]).
+    /// - `redirect_uri` (string, **required in session mode**): where to
+    ///   302 a browser that has neither a valid session nor a code.
+    ///
+    /// `secret_fallbacks` (APISIX multi-secret rotation) is not accepted —
+    /// see the module docs.
     ///
     /// ```yaml
     /// type: dingtalk-auth
@@ -107,6 +161,9 @@ impl DingtalkAuthPlugin {
     ///   app_key: ${DINGTALK_APP_KEY}
     ///   app_secret: ${DINGTALK_APP_SECRET}
     ///   code_header: X-DingTalk-Code
+    ///   session:
+    ///     secret: ${DINGTALK_SESSION_SECRET}
+    ///   redirect_uri: https://login.example.com/start
     /// ```
     pub fn from_config(
         config: &HashMap<String, serde_json::Value>,
@@ -150,6 +207,28 @@ impl DingtalkAuthPlugin {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
+        let session = match session_secret(config) {
+            Some(secret) => {
+                let redirect_uri = require_string(config, "redirect_uri")?;
+                let sealer = CookieSealer::new(&secret);
+                let cookie_name = session_cookie_str(config, "name")
+                    .unwrap_or_else(|| "dingtalk_session".to_string());
+                let cookie_path =
+                    session_cookie_str(config, "path").unwrap_or_else(|| "/".to_string());
+                let cookie_lifetime = session_cookie_u64(config, "lifetime").unwrap_or(86_400);
+                let backend = server_session::parse_backend(config, resources, "dingtalk-auth")?;
+                Some(DingtalkSession {
+                    sealer,
+                    backend,
+                    cookie_name,
+                    cookie_path,
+                    cookie_lifetime,
+                    redirect_uri,
+                })
+            }
+            None => None,
+        };
+
         Ok(Self {
             app_key,
             app_secret,
@@ -162,6 +241,7 @@ impl DingtalkAuthPlugin {
             ssl_verify,
             resources: resources.clone(),
             token_cache: Mutex::new(None),
+            session,
         })
     }
 
@@ -282,6 +362,161 @@ impl DingtalkAuthPlugin {
             },
         })
     }
+
+    /// Session-store outage: 503 through the error port. Deliberately NOT
+    /// 401 — a store outage is not "unauthenticated".
+    fn store_error(mut ctx: Context, e: StoreError) -> PluginExecutionError {
+        ctx.response.status_code = 503;
+        ctx.response.body = Bytes::from(r#"{"error": "session store unavailable"}"#.as_bytes());
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
+        PluginExecutionError {
+            context: ctx,
+            error: GatewayError {
+                node_id: String::new(),
+                code: "SESSION_STORE_ERROR".to_string(),
+                message: e.to_string(),
+                metadata: HashMap::new(),
+            },
+        }
+    }
+
+    /// Builds a `302` early-exit carrying the prepared response, and exits on
+    /// the `redirect` port. Wire the node's `redirect` edge to `client.in` so
+    /// this reaches the browser.
+    fn redirect(mut ctx: Context, location: &str, set_cookies: Vec<String>) -> PluginResult {
+        ctx.response.status_code = 302;
+        ctx.response.body = Bytes::new();
+        ctx.response
+            .headers
+            .insert("location".to_string(), vec![location.to_string()]);
+        if !set_cookies.is_empty() {
+            ctx.response
+                .headers
+                .insert("set-cookie".to_string(), set_cookies);
+        }
+        Ok(PluginOutput::on_port(ctx, "redirect"))
+    }
+
+    /// Cookie attributes for the session cookie: `HttpOnly`, `SameSite=Lax`,
+    /// and `Secure` only over HTTPS (so plain-HTTP dev works).
+    fn session_attrs<'a>(session: &'a DingtalkSession, ctx: &Context) -> CookieAttrs<'a> {
+        CookieAttrs {
+            path: &session.cookie_path,
+            max_age: Some(session.cookie_lifetime),
+            http_only: true,
+            secure: ctx.request.scheme == "https",
+            same_site: SameSite::Lax,
+        }
+    }
+
+    /// Reads the session cookie via the configured backend.
+    ///
+    /// `Ok(Some(userinfo))` = a valid session; `Ok(None)` = no session (no
+    /// cookie, unopenable/expired/tampered value, or a payload that failed to
+    /// decode as JSON — in which case the session was also destroyed so a
+    /// stale entry does not linger); `Err` = store outage (503 via
+    /// [`DingtalkAuthPlugin::store_error`]), never a silent re-login.
+    ///
+    /// When the payload was undecodable, the returned delete-cookie
+    /// `Set-Cookie` value is included so the caller can forward it on
+    /// whatever response it ultimately builds.
+    async fn read_session(
+        &self,
+        ctx: &Context,
+        session: &DingtalkSession,
+    ) -> Result<(Option<serde_json::Value>, Option<String>), StoreError> {
+        let Some(cookie_header) = ctx.request.headers.get("cookie").and_then(|v| v.first()) else {
+            return Ok((None, None));
+        };
+        let Some(raw) = read_cookie(cookie_header, &session.cookie_name) else {
+            return Ok((None, None));
+        };
+        let raw = raw.to_string();
+        let Some(bytes) = server_session::load(&session.backend, &session.sealer, &raw).await?
+        else {
+            return Ok((None, None));
+        };
+        match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(userinfo) => Ok((Some(userinfo), None)),
+            Err(_) => {
+                // Undecodable payload: destroy the session and treat this
+                // request as if there were no session at all.
+                let cleared = server_session::destroy(
+                    &session.backend,
+                    Some(&raw),
+                    &session.cookie_name,
+                    &session.cookie_path,
+                )
+                .await?;
+                Ok((None, Some(cleared)))
+            }
+        }
+    }
+
+    /// Session-mode flow: read session → callback (code) → begin login.
+    async fn execute_session(&self, mut ctx: Context, session: &DingtalkSession) -> PluginResult {
+        let cleared_cookie = match self.read_session(&ctx, session).await {
+            Ok((Some(userinfo), _)) => {
+                attach_identity(&mut ctx, &userinfo, self.set_userinfo_header);
+                return Ok(PluginOutput::success(ctx));
+            }
+            Ok((None, cleared)) => cleared,
+            Err(e) => return Err(Self::store_error(ctx, e)),
+        };
+
+        let code = match self.extract_code(&ctx) {
+            Some(c) => c,
+            None => {
+                let set_cookies = cleared_cookie.into_iter().collect();
+                return Self::redirect(ctx, &session.redirect_uri, set_cookies);
+            }
+        };
+
+        let access_token = match self.access_token().await {
+            Ok(t) => t,
+            Err(DingtalkError::Unauthorized(m)) => return Self::reject(ctx, &m),
+            Err(e @ DingtalkError::Upstream(_)) => return Self::upstream_error(ctx, e.message()),
+        };
+
+        let userinfo = match self.fetch_userinfo(&access_token, &code).await {
+            Ok(u) => u,
+            Err(DingtalkError::Unauthorized(m)) => return Self::reject(ctx, &m),
+            Err(e @ DingtalkError::Upstream(_)) => return Self::upstream_error(ctx, e.message()),
+        };
+
+        let subject = userinfo
+            .get("userid")
+            .or_else(|| userinfo.get("unionid"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let ttl = Duration::from_secs(session.cookie_lifetime);
+        let meta = server_session::meta_now(&ctx, "dingtalk-auth", subject, ttl);
+        let payload = serde_json::to_vec(&userinfo).unwrap_or_default();
+        let attrs = Self::session_attrs(session, &ctx);
+        let set_cookie = match server_session::establish(
+            &session.backend,
+            &session.sealer,
+            &payload,
+            ttl,
+            meta,
+            &session.cookie_name,
+            &attrs,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => return Err(Self::store_error(ctx, e)),
+        };
+
+        attach_identity(&mut ctx, &userinfo, self.set_userinfo_header);
+        ctx.response
+            .headers
+            .insert("set-cookie".to_string(), vec![set_cookie]);
+        Ok(PluginOutput::success(ctx))
+    }
 }
 
 /// Extracts a required string config key.
@@ -295,6 +530,45 @@ fn require_string(
         .filter(|s| !s.is_empty())
         .map(String::from)
         .ok_or_else(|| format!("dingtalk-auth plugin requires '{}'", key))
+}
+
+/// Reads the session secret from `session_secret` or nested `session.secret`.
+fn session_secret(config: &HashMap<String, serde_json::Value>) -> Option<String> {
+    config
+        .get("session_secret")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            config
+                .get("session")
+                .and_then(|s| s.get("secret"))
+                .and_then(|v| v.as_str())
+        })
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// Reads a string field from nested `session.cookie.<key>`, falling back to the
+/// flat `session_cookie_<key>` form (used by the UI schema).
+fn session_cookie_str(config: &HashMap<String, serde_json::Value>, key: &str) -> Option<String> {
+    config
+        .get("session")
+        .and_then(|s| s.get("cookie"))
+        .and_then(|c| c.get(key))
+        .or_else(|| config.get(&format!("session_cookie_{key}")))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// Reads a u64 field from nested `session.cookie.<key>`, falling back to the
+/// flat `session_cookie_<key>` form (used by the UI schema).
+fn session_cookie_u64(config: &HashMap<String, serde_json::Value>, key: &str) -> Option<u64> {
+    config
+        .get("session")
+        .and_then(|s| s.get("cookie"))
+        .and_then(|c| c.get(key))
+        .or_else(|| config.get(&format!("session_cookie_{key}")))
+        .and_then(|v| v.as_u64())
 }
 
 /// Appends `key=value` to `url`, choosing `?` or `&` as needed.
@@ -395,6 +669,10 @@ impl Plugin for DingtalkAuthPlugin {
     async fn execute(&self, mut ctx: Context) -> PluginResult {
         // Never let a client-supplied X-Userinfo bleed through to the upstream.
         ctx.request.headers.remove("x-userinfo");
+
+        if let Some(session) = &self.session {
+            return self.execute_session(ctx, session).await;
+        }
 
         let code = match self.extract_code(&ctx) {
             Some(c) => c,
@@ -594,5 +872,163 @@ mod tests {
         let err = plugin.execute(ctx).await.unwrap_err();
         assert_eq!(err.error.code, "DINGTALK_UPSTREAM_ERROR");
         assert!(err.context.response.status_code >= 500);
+    }
+
+    #[test]
+    fn test_stateless_mode_unchanged() {
+        // No session key → from_config succeeds without redirect_uri, and
+        // the existing test_missing_code_rejected_401 behavior (above) is
+        // untouched by this test file's changes.
+        let cfg = cfg(&[("app_key", "k"), ("app_secret", "s")]);
+        let plugin = DingtalkAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
+        assert!(plugin.session.is_none());
+    }
+
+    #[test]
+    fn test_session_mode_requires_redirect_uri() {
+        // session.secret set but no redirect_uri → config error naming it.
+        let mut cfg = cfg(&[("app_key", "k"), ("app_secret", "s")]);
+        cfg.insert(
+            "session".to_string(),
+            serde_json::json!({ "secret": "s3cr3t" }),
+        );
+        let err = DingtalkAuthPlugin::from_config(&cfg, &PluginResources::empty())
+            .err()
+            .unwrap();
+        assert!(err.contains("redirect_uri"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_session_mode_no_code_redirects() {
+        let plugin = DingtalkAuthPlugin::from_config(
+            &cfg(&[
+                ("app_key", "k"),
+                ("app_secret", "s"),
+                ("redirect_uri", "https://login.example.com/start"),
+            ])
+            .into_iter()
+            .chain([(
+                "session".to_string(),
+                serde_json::json!({"secret": "s3cr3t"}),
+            )])
+            .collect(),
+            &PluginResources::empty(),
+        )
+        .unwrap();
+        let out = plugin.execute(base_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("redirect"));
+        assert_eq!(out.context.response.status_code, 302);
+        assert_eq!(
+            out.context.response.headers["location"],
+            vec!["https://login.example.com/start".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_mode_valid_cookie_skips_callout() {
+        // Cookie mode: hand-seal the userinfo JSON, present it, assert
+        // success + identity attached WITHOUT any HTTP callout (endpoints
+        // point at 127.0.0.1:1 — reaching them would error).
+        let mut config = cfg(&[
+            ("app_key", "k"),
+            ("app_secret", "s"),
+            ("access_token_url", "http://127.0.0.1:1"),
+            ("userinfo_url", "http://127.0.0.1:1"),
+            ("redirect_uri", "https://login.example.com/start"),
+        ]);
+        config.insert("timeout".to_string(), serde_json::json!(200));
+        config.insert(
+            "session".to_string(),
+            serde_json::json!({ "secret": "s3cr3t" }),
+        );
+        let plugin = DingtalkAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+
+        let sealer = CookieSealer::new("s3cr3t");
+        let payload = serde_json::to_vec(&serde_json::json!({ "userid": "u1" })).unwrap();
+        let sealed = sealer.seal(&payload, Duration::from_secs(86_400));
+
+        let mut ctx = base_ctx();
+        ctx.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("dingtalk_session={}", sealed)],
+        );
+
+        let out = plugin.execute(ctx).await.unwrap();
+        assert!(out.port.is_none());
+        assert_eq!(out.context.message.get("user_id").unwrap(), "u1");
+    }
+
+    #[cfg(feature = "redis-store")]
+    fn resources_with_fake_store() -> (Arc<PluginResources>, Arc<crate::sessions::FakeSessionStore>)
+    {
+        let fake = Arc::new(crate::sessions::FakeSessionStore::default());
+        let resources = PluginResources::empty();
+        resources.stores.store(Arc::new(
+            crate::stores::StoreRegistry::with_fake_session_store("s1", fake.clone()),
+        ));
+        (resources, fake)
+    }
+
+    /// In redis mode a valid session cookie authenticates from the store
+    /// without any DingTalk callout, and a store outage is a 503 on the
+    /// error port — never a silent re-login.
+    #[cfg(feature = "redis-store")]
+    #[tokio::test]
+    async fn test_redis_session_read_and_store_outage_503() {
+        use crate::sessions::SessionStore as _;
+
+        let (resources, fake) = resources_with_fake_store();
+        let mut config = cfg(&[
+            ("app_key", "k"),
+            ("app_secret", "s"),
+            ("access_token_url", "http://127.0.0.1:1"),
+            ("userinfo_url", "http://127.0.0.1:1"),
+            ("redirect_uri", "https://login.example.com/start"),
+        ]);
+        config.insert("timeout".to_string(), serde_json::json!(200));
+        config.insert(
+            "session".to_string(),
+            serde_json::json!({ "secret": "s3cr3t", "storage": "redis", "store": "s1" }),
+        );
+        let plugin = DingtalkAuthPlugin::from_config(&config, &resources).unwrap();
+
+        // Hand-put sealed userinfo JSON under an id, the way a successful
+        // callback would have established it.
+        let sealer = CookieSealer::new("s3cr3t");
+        let payload = serde_json::to_vec(&serde_json::json!({ "userid": "u1" })).unwrap();
+        let sealed = sealer.seal(&payload, Duration::from_secs(86_400));
+        let id = crate::sessions::SessionId::random();
+        let meta = crate::sessions::SessionMeta {
+            id: String::new(),
+            subject: "u1".to_string(),
+            plugin: "dingtalk-auth".to_string(),
+            policy: String::new(),
+            route: String::new(),
+            created_at: 0,
+            expires_at: 0,
+        };
+        fake.put(&id, sealed.as_bytes(), Duration::from_secs(86_400), &meta)
+            .await
+            .unwrap();
+
+        let mut ctx = base_ctx();
+        ctx.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("dingtalk_session={}", id.as_str())],
+        );
+        let out = plugin.execute(ctx).await.unwrap();
+        assert!(out.port.is_none());
+        assert_eq!(out.context.message.get("user_id").unwrap(), "u1");
+
+        // Outage: same request, failing store.
+        fake.fail.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut ctx = base_ctx();
+        ctx.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("dingtalk_session={}", id.as_str())],
+        );
+        let err = plugin.execute(ctx).await.unwrap_err();
+        assert_eq!(err.error.code, "SESSION_STORE_ERROR");
+        assert_eq!(err.context.response.status_code, 503);
     }
 }
