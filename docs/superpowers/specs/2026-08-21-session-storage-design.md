@@ -255,6 +255,19 @@ where availability beats accuracy. Errors are logged and counted in
 Prometheus (`gateway_counter_store_errors_total{store}` — amendment: gains
 the house `gateway_` metric prefix as shipped).
 
+**Amendment (as shipped):** a backend error with `allow_degradation: false`
+does not reject with the plugin's *configured rejection response* — it
+surfaces as a 500 through the node's `error` port (`RATE_LIMIT_UNAVAILABLE`),
+reusing the pre-existing local-policy behavior. The configured rejection
+response (`rejected_code`/`rejected_msg`) applies only to over-limit
+rejections (the `limited`/`denied` path), not to backend failures.
+
+**Amendment (as shipped):** the above `allow_degradation` field belongs to
+the standalone `limit-count` plugin only. The `workflow` `limit-count`
+action has no `allow_degradation` — a backend error always rejects through
+the `error` port regardless of `policy`, which is pre-existing workflow
+behavior (documented in `workflow.md`).
+
 ## 4. Admin API + UI
 
 **Admin API** (existing basic-auth middleware):

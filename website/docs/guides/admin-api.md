@@ -57,7 +57,7 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `GET` | `/api/plugins` | Static catalog of node/plugin types (id + description) | — |
 | `GET` | `/api/scripts` | List scripted-plugin files (`.lua`) in the `plugins/` directory next to the config directory; missing directory yields an empty list | — |
 | `GET` | `/api/status` | Gateway version plus route and policy counts | — |
-| `GET` | `/api/config/export` | Live in-memory config (routes + policies + supernodes + plugin configs) rendered as YAML (`text/yaml`) | `500` serialization failed |
+| `GET` | `/api/config/export` | Live in-memory config (routes + policies + supernodes + plugin configs + stores) rendered as YAML (`text/yaml`) | `500` serialization failed |
 | `GET` | `/api/debug/config` | Effective [debug-mode](./debugging.md) settings; answers even when debug is off | — |
 | `GET` | `/api/debug/traces` | Recorded traces, newest first; filter with `?route=&policy=&status=&source=&limit=` | `404` debug mode off |
 | `GET` | `/api/debug/traces/:id` | One trace with per-step context changes | `404` unknown/evicted, or debug off |
