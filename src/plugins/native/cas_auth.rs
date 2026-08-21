@@ -49,10 +49,10 @@ use std::time::Duration;
 use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
-use crate::plugins::util::cookie_session::{
-    build_set_cookie, delete_cookie, read_cookie, CookieAttrs, CookieSealer, SameSite,
-};
+use crate::plugins::util::cookie_session::{read_cookie, CookieAttrs, CookieSealer, SameSite};
+use crate::plugins::util::server_session::{self, SessionBackend};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::sessions::StoreError;
 
 /// Why a CAS ticket validation did not yield an authenticated user.
 ///
@@ -101,6 +101,10 @@ pub struct CasAuthPlugin {
     cookie_lifetime: u64,
     /// Optional logout path; a request to it clears the session cookie.
     logout_path: Option<String>,
+    /// Where the session payload lives: sealed in the cookie itself, or a
+    /// server-side store keyed by a bare id in the cookie. See
+    /// `session.storage` / `session.store` in [`CasAuthPlugin::from_config`].
+    backend: SessionBackend,
     client: Arc<OutboundClient>,
 }
 
@@ -187,6 +191,13 @@ impl CasAuthPlugin {
             .filter(|s| !s.is_empty())
             .map(String::from);
 
+        let backend = server_session::parse_backend(config, resources, "cas-auth")?;
+        if sealer.is_none() && !matches!(backend, SessionBackend::Cookie) {
+            return Err(
+                "cas-auth: session.storage requires session_secret (interactive mode)".to_string(),
+            );
+        }
+
         Ok(Self {
             idp_uri,
             service,
@@ -198,6 +209,7 @@ impl CasAuthPlugin {
             cookie_path,
             cookie_lifetime,
             logout_path,
+            backend,
             client: resources.outbound.clone(),
         })
     }
@@ -240,6 +252,26 @@ impl CasAuthPlugin {
                 node_id: String::new(),
                 code: "CAS_AUTH_PROVIDER_ERROR".to_string(),
                 message,
+                metadata: HashMap::new(),
+            },
+        }
+    }
+
+    /// Session-store outage: 503 through the error port. Deliberately NOT
+    /// 401 — a store outage is not "unauthenticated".
+    fn store_error(mut ctx: Context, e: StoreError) -> PluginExecutionError {
+        ctx.response.status_code = 503;
+        ctx.response.body = Bytes::from(r#"{"error": "session store unavailable"}"#.as_bytes());
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
+        PluginExecutionError {
+            context: ctx,
+            error: GatewayError {
+                node_id: String::new(),
+                code: "SESSION_STORE_ERROR".to_string(),
+                message: e.to_string(),
                 metadata: HashMap::new(),
             },
         }
@@ -307,14 +339,26 @@ impl CasAuthPlugin {
         );
     }
 
-    /// Reads and opens the session cookie, returning the authenticated user.
-    fn read_session(&self, ctx: &Context) -> Option<String> {
-        let sealer = self.sealer.as_ref()?;
-        let cookie_header = ctx.request.headers.get("cookie").and_then(|v| v.first())?;
-        let raw = read_cookie(cookie_header, &self.cookie_name)?;
-        let payload = sealer.open(raw).ok()?;
-        let session: CasSession = serde_json::from_slice(&payload).ok()?;
-        Some(session.user)
+    /// Reads the session cookie via the configured backend, returning the
+    /// authenticated user. `Ok(None)` = unauthenticated (no cookie/sealer, or
+    /// an unopenable/unparseable payload); `Err` = store outage (503 via
+    /// [`CasAuthPlugin::store_error`]), never a silent re-login.
+    async fn read_session(&self, ctx: &Context) -> Result<Option<String>, StoreError> {
+        let Some(sealer) = self.sealer.as_ref() else {
+            return Ok(None);
+        };
+        let Some(cookie_header) = ctx.request.headers.get("cookie").and_then(|v| v.first()) else {
+            return Ok(None);
+        };
+        let Some(raw) = read_cookie(cookie_header, &self.cookie_name) else {
+            return Ok(None);
+        };
+        let bytes = server_session::load(&self.backend, sealer, raw).await?;
+        Ok(bytes.and_then(|b| {
+            serde_json::from_slice::<CasSession>(&b)
+                .ok()
+                .map(|s| s.user)
+        }))
     }
 
     /// Validates a CAS ticket against `/serviceValidate`, returning the user.
@@ -352,29 +396,64 @@ impl CasAuthPlugin {
             .as_ref()
             .expect("execute_interactive only called when a sealer is configured");
 
-        // 0. Logout: clear the session cookie and bounce to "/".
+        // 0. Logout: revoke the session (store mode) and clear the cookie.
         if let Some(ref logout_path) = self.logout_path {
             if &ctx.request.path == logout_path {
-                let del = delete_cookie(&self.cookie_name, &self.cookie_path);
+                let cookie_value = ctx
+                    .request
+                    .headers
+                    .get("cookie")
+                    .and_then(|v| v.first())
+                    .and_then(|h| read_cookie(h, &self.cookie_name))
+                    .map(str::to_string);
+                let del = match server_session::destroy(
+                    &self.backend,
+                    cookie_value.as_deref(),
+                    &self.cookie_name,
+                    &self.cookie_path,
+                )
+                .await
+                {
+                    Ok(c) => c,
+                    Err(e) => return Err(Self::store_error(ctx, e)),
+                };
                 return self.redirect(ctx, "/".to_string(), vec![del]);
             }
         }
 
         // 1. Valid session cookie → authenticate straight from it.
-        if let Some(user) = self.read_session(&ctx) {
-            self.attach_user(&mut ctx, &user);
-            return Ok(PluginOutput::success(ctx));
+        match self.read_session(&ctx).await {
+            Ok(Some(user)) => {
+                self.attach_user(&mut ctx, &user);
+                return Ok(PluginOutput::success(ctx));
+            }
+            Ok(None) => {}
+            Err(e) => return Err(Self::store_error(ctx, e)),
         }
 
         // 2. Callback: a CAS ticket came back on the service URL. Validate it,
-        //    seal a session cookie, and redirect to the ticket-free service URL.
+        //    establish a session (cookie or store), and redirect to the
+        //    ticket-free service URL.
         if let Some(ticket) = extract_ticket(&ctx.request.query_params, &self.ticket_param) {
             return match self.cas_validate(&ctx, &ticket).await {
                 Ok(user) => {
+                    let ttl = Duration::from_secs(self.cookie_lifetime);
+                    let meta = server_session::meta_now(&ctx, "cas-auth", &user, ttl);
                     let payload = serde_json::to_vec(&CasSession { user }).unwrap_or_default();
-                    let sealed = sealer.seal(&payload, Duration::from_secs(self.cookie_lifetime));
-                    let set =
-                        build_set_cookie(&self.cookie_name, &sealed, &self.session_attrs(&ctx));
+                    let set = match server_session::establish(
+                        &self.backend,
+                        sealer,
+                        &payload,
+                        ttl,
+                        meta,
+                        &self.cookie_name,
+                        &self.session_attrs(&ctx),
+                    )
+                    .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => return Err(Self::store_error(ctx, e)),
+                    };
                     let target = self.service_url(&ctx);
                     self.redirect(ctx, target, vec![set])
                 }
@@ -891,5 +970,101 @@ mod tests {
             set.contains("cas_session=") && set.contains("Max-Age=0"),
             "{set}"
         );
+    }
+
+    #[cfg(feature = "redis-store")]
+    fn resources_with_fake_store() -> (Arc<PluginResources>, Arc<crate::sessions::FakeSessionStore>)
+    {
+        let fake = Arc::new(crate::sessions::FakeSessionStore::default());
+        let resources = PluginResources::empty();
+        resources.stores.store(Arc::new(
+            crate::stores::StoreRegistry::with_fake_session_store("s1", fake.clone()),
+        ));
+        (resources, fake)
+    }
+
+    /// redis storage requires a store name; unknown stores fail at config.
+    #[test]
+    fn test_session_storage_redis_requires_store() {
+        let mut cfg = HashMap::new();
+        cfg.insert(
+            "idp_uri".to_string(),
+            serde_json::json!("https://cas.example.org/cas"),
+        );
+        cfg.insert("session_secret".to_string(), serde_json::json!("s3cr3t"));
+        cfg.insert(
+            "session".to_string(),
+            serde_json::json!({ "storage": "redis" }),
+        );
+        // `.err().unwrap()` (not `unwrap_err()`): the Ok type isn't `Debug`.
+        let err = CasAuthPlugin::from_config(&cfg, &PluginResources::empty())
+            .err()
+            .unwrap();
+        assert!(err.contains("requires 'session.store'"), "{err}");
+    }
+
+    /// In redis mode a valid session cookie authenticates from the store, and
+    /// a store outage is a 503 on the error port — never a silent re-login.
+    #[cfg(feature = "redis-store")]
+    #[tokio::test]
+    async fn test_redis_session_read_and_store_outage_503() {
+        use crate::sessions::SessionStore as _;
+
+        let (resources, fake) = resources_with_fake_store();
+        let mut cfg = HashMap::new();
+        cfg.insert(
+            "idp_uri".to_string(),
+            serde_json::json!("https://cas.example.org/cas"),
+        );
+        cfg.insert("session_secret".to_string(), serde_json::json!("s3cr3t"));
+        cfg.insert(
+            "session".to_string(),
+            serde_json::json!({ "storage": "redis", "store": "s1" }),
+        );
+        let p = CasAuthPlugin::from_config(&cfg, &resources).unwrap();
+
+        // Establish a session by hand: seal a CasSession, put under an id.
+        let sealer = CookieSealer::new("s3cr3t");
+        let payload = serde_json::to_vec(&CasSession {
+            user: "alice".into(),
+        })
+        .unwrap();
+        let sealed = sealer.seal(&payload, Duration::from_secs(3600));
+        let id = crate::sessions::SessionId::random();
+        let meta = crate::sessions::SessionMeta {
+            id: String::new(),
+            subject: "alice".to_string(),
+            plugin: "cas-auth".to_string(),
+            policy: String::new(),
+            route: String::new(),
+            created_at: 0,
+            expires_at: 0,
+        };
+        fake.put(&id, sealed.as_bytes(), Duration::from_secs(3600), &meta)
+            .await
+            .unwrap();
+
+        let mut c = ctx("/dashboard", HashMap::new());
+        c.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("cas_session={}", id.as_str())],
+        );
+        let out = p.execute(c).await.unwrap();
+        assert_eq!(
+            out.context.request.headers.get("x-cas-user").unwrap()[0],
+            "alice"
+        );
+        assert_eq!(out.context.message.get("user").unwrap(), "alice");
+
+        // Outage: same request, failing store.
+        fake.fail.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut c = ctx("/dashboard", HashMap::new());
+        c.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("cas_session={}", id.as_str())],
+        );
+        let err = p.execute(c).await.unwrap_err();
+        assert_eq!(err.error.code, "SESSION_STORE_ERROR");
+        assert_eq!(err.context.response.status_code, 503);
     }
 }
