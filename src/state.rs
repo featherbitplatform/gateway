@@ -556,4 +556,43 @@ policies:
         // ...and the last-good config keeps serving.
         assert_eq!(state.gateway.read().await.stores.len(), 1);
     }
+
+    /// A limit-count node with `policy: redis` resolves its named store at
+    /// compile time: declared store compiles, missing store fails compile.
+    #[cfg(feature = "redis-store")]
+    #[test]
+    fn test_limit_count_redis_store_resolved_at_compile() {
+        let policy_yaml = |store_line: &str| {
+            format!(
+                r#"
+{store_line}
+policies:
+  - name: p
+    nodes:
+      - {{ id: l, type: listener }}
+      - {{ id: lc, type: limit-count, config: {{ count: 1, time_window: 60, policy: redis, store: s1 }} }}
+      - {{ id: c, type: client }}
+    edges:
+      - {{ from: l.out, to: lc.in }}
+      - {{ from: lc.success, to: c.in }}
+      - {{ from: lc.limited, to: c.in }}
+routes:
+  - name: r
+    match: {{ path: "/x" }}
+    policy: p
+"#
+            )
+        };
+
+        let with_store: crate::config::GatewayConfig = serde_yaml::from_str(&policy_yaml(
+            "stores:\n  - name: s1\n    type: redis\n    url: redis://127.0.0.1:6379",
+        ))
+        .unwrap();
+        validate_gateway_config(&with_store).expect("declared store must compile");
+
+        let without_store: crate::config::GatewayConfig =
+            serde_yaml::from_str(&policy_yaml("")).unwrap();
+        let err = validate_gateway_config(&without_store).unwrap_err();
+        assert!(err.contains("unknown store 's1'"), "{err}");
+    }
 }
