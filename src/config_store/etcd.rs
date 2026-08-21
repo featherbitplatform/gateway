@@ -309,6 +309,7 @@ fn gateway_from_kvs(prefix: &str, kvs: Vec<(String, Vec<u8>)>) -> Result<Gateway
         consumers: Vec::new(),
         supernodes: Vec::new(),
         plugin_configs: Vec::new(),
+        stores: Vec::new(),
     };
     for (key, value) in kvs {
         let rest = match key.strip_prefix(&format!("{}/", prefix)) {
@@ -372,6 +373,7 @@ fn is_empty(gw: &GatewayConfig) -> bool {
         && gw.consumers.is_empty()
         && gw.supernodes.is_empty()
         && gw.plugin_configs.is_empty()
+        && gw.stores.is_empty()
 }
 
 /// Builds the etcd store and the initial gateway config.
@@ -532,7 +534,8 @@ mod tests {
             policies: vec![],
             consumers: vec![],
             supernodes: vec![],
-            plugin_configs: vec![]
+            plugin_configs: vec![],
+            stores: vec![],
         }));
     }
 
