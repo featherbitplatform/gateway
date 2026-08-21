@@ -25,6 +25,7 @@ pub fn router() -> Router<Arc<SharedState>> {
             "/api/stores/{name}",
             get(get_store).put(update_store).delete(delete_store),
         )
+        .route("/api/stores/{name}/ping", axum::routing::post(ping_store))
 }
 
 async fn list_stores(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
@@ -138,6 +139,74 @@ async fn delete_store(
         )
             .into_response(),
     }
+}
+
+/// Connectivity check: resolves the store's config (env placeholders included)
+/// and PINGs it, bounded by the store's own connect_timeout_ms. The response
+/// never echoes resolved connection details — only latency and version.
+#[cfg(feature = "redis-store")]
+async fn ping_store(
+    State(state): State<Arc<SharedState>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let cfg = {
+        let gw = state.gateway.read().await;
+        match gw.stores.iter().find(|s| s.name == name) {
+            Some(s) => s.clone(),
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "not_found"})),
+                )
+                    .into_response()
+            }
+        }
+    };
+    let client = match crate::stores::redis_store::RedisStoreClient::build(&cfg) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e})),
+            )
+                .into_response()
+        }
+    };
+    match tokio::time::timeout(client.connect_timeout(), client.ping()).await {
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(serde_json::json!({
+                "error": "ping_timeout",
+                "message": format!("no reply within connect_timeout_ms ({}ms)", cfg.connect_timeout_ms),
+            })),
+        )
+            .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+        Ok(Ok(info)) => Json(serde_json::json!({
+            "status": "ok",
+            "latency_ms": info.latency_ms,
+            "version": info.version,
+        }))
+        .into_response(),
+    }
+}
+
+#[cfg(not(feature = "redis-store"))]
+async fn ping_store(
+    State(_state): State<Arc<SharedState>>,
+    Path(_name): Path<String>,
+) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "error": "this binary was built without the redis-store feature"
+        })),
+    )
+        .into_response()
 }
 
 /// Everything that references store `name`: node config `store:` keys (flat,
@@ -330,5 +399,60 @@ plugin_configs:
             refs.contains(&"plugin_config 'shared-lc'".to_string()),
             "{refs:?}"
         );
+    }
+
+    /// Ping on an unknown store is 404; on an unreachable store it is a 502
+    /// or 504 within the configured timeout — never a hang, never a 200.
+    #[tokio::test]
+    #[cfg(feature = "redis-store")]
+    async fn test_ping_unknown_and_unreachable() {
+        // Port 1 is reserved/closed; 300ms timeout keeps the test fast.
+        let state = test_state(
+            "stores:\n  - name: dead\n    type: redis\n    url: redis://127.0.0.1:1\n    connect_timeout_ms: 300\n",
+        );
+        let (status, _) = send(
+            &state,
+            Request::post("/api/stores/nope/ping")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, body) = send(
+            &state,
+            Request::post("/api/stores/dead/ping")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            status == StatusCode::BAD_GATEWAY || status == StatusCode::GATEWAY_TIMEOUT,
+            "{status} {body}"
+        );
+    }
+
+    /// Live ping; skipped unless FEATHERBIT_TEST_REDIS_URL is set.
+    #[tokio::test]
+    #[cfg(feature = "redis-store")]
+    async fn test_ping_live() {
+        let Ok(url) = std::env::var("FEATHERBIT_TEST_REDIS_URL") else {
+            eprintln!("skipping test_ping_live: FEATHERBIT_TEST_REDIS_URL not set");
+            return;
+        };
+        let state = test_state(&format!(
+            "stores:\n  - name: live\n    type: redis\n    url: {url}\n"
+        ));
+        let (status, body) = send(
+            &state,
+            Request::post("/api/stores/live/ping")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "ok");
+        assert!(body["latency_ms"].is_u64(), "{body}");
+        assert!(body["version"].is_string(), "{body}");
     }
 }
