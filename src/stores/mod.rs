@@ -20,6 +20,8 @@ use crate::config::StoreConfig;
 use crate::ratelimit::CounterStore;
 
 #[cfg(feature = "redis-store")]
+pub mod counter;
+#[cfg(feature = "redis-store")]
 pub mod redis_store;
 
 /// Validates the `stores:` section: unique non-empty names, known types,
@@ -71,9 +73,9 @@ pub fn validate_stores(stores: &[StoreConfig]) -> Result<(), String> {
 pub struct StoreRegistry {
     #[cfg(feature = "redis-store")]
     clients: HashMap<String, Arc<redis_store::RedisStoreClient>>,
-    // Not yet populated (Task 4 adds the fixed-window counter) or read by
-    // production code (Task 9 wires rate-limit plugins to `counter_store`);
-    // only exercised by this module's own tests today.
+    // Populated by `rebuild` but not yet read by production code — Task 9
+    // wires rate-limit plugins to `counter_store`. Exercised directly by
+    // this module's own tests until then.
     #[cfg(feature = "redis-store")]
     #[allow(dead_code)]
     counters: HashMap<String, Arc<dyn CounterStore>>,
@@ -88,15 +90,27 @@ impl StoreRegistry {
     /// store's resolved config fingerprint is unchanged, so unrelated config
     /// reloads keep established connections.
     #[cfg(feature = "redis-store")]
-    pub fn rebuild(prev: &StoreRegistry, stores: &[StoreConfig]) -> Result<StoreRegistry, String> {
+    pub fn rebuild(
+        prev: &StoreRegistry,
+        stores: &[StoreConfig],
+        metrics: Option<Arc<crate::metrics::GatewayMetrics>>,
+    ) -> Result<StoreRegistry, String> {
         let mut clients = HashMap::new();
-        let counters = HashMap::new();
+        let mut counters: HashMap<String, Arc<dyn CounterStore>> = HashMap::new();
         for cfg in stores {
             let fingerprint = redis_store::RedisStoreClient::fingerprint_of(cfg);
             let client = match prev.clients.get(&cfg.name) {
                 Some(existing) if existing.fingerprint() == fingerprint => existing.clone(),
                 _ => Arc::new(redis_store::RedisStoreClient::build(cfg)?),
             };
+            counters.insert(
+                cfg.name.clone(),
+                Arc::new(counter::RedisCounterStore::new(
+                    client.clone(),
+                    cfg.name.clone(),
+                    metrics.clone(),
+                )) as Arc<dyn CounterStore>,
+            );
             clients.insert(cfg.name.clone(), client);
         }
         Ok(StoreRegistry { clients, counters })
@@ -104,7 +118,11 @@ impl StoreRegistry {
 
     /// Headless build: any declared store is a configuration error.
     #[cfg(not(feature = "redis-store"))]
-    pub fn rebuild(_prev: &StoreRegistry, stores: &[StoreConfig]) -> Result<StoreRegistry, String> {
+    pub fn rebuild(
+        _prev: &StoreRegistry,
+        stores: &[StoreConfig],
+        _metrics: Option<Arc<crate::metrics::GatewayMetrics>>,
+    ) -> Result<StoreRegistry, String> {
         if stores.is_empty() {
             Ok(StoreRegistry::default())
         } else {
@@ -117,8 +135,8 @@ impl StoreRegistry {
 
     /// Resolves the counter backend for a named store; the error carries the
     /// declared-store list so a typo is self-explanatory.
-    // Not yet called by production code — rate-limit plugins are wired to
-    // this in Task 9. Exercised directly by this module's tests until then.
+    // Not yet called by production code — Task 9 wires rate-limit plugins to
+    // this. Exercised directly by this module's own tests until then.
     #[cfg(feature = "redis-store")]
     #[allow(dead_code)]
     pub fn counter_store(&self, name: &str) -> Result<Arc<dyn CounterStore>, String> {

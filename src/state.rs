@@ -168,7 +168,11 @@ impl SharedState {
         // cannot affect in-flight traffic; on failure the previous registry
         // is restored, preserving the last-good invariant.
         let prev = resources.stores.load_full();
-        let candidate = crate::stores::StoreRegistry::rebuild(&prev, &gateway.stores)?;
+        let candidate = crate::stores::StoreRegistry::rebuild(
+            &prev,
+            &gateway.stores,
+            resources.metrics.clone(),
+        )?;
         resources.stores.store(Arc::new(candidate));
         let result = Self::compile_routes_inner(gateway, resources);
         if result.is_err() {
