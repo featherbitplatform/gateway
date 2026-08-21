@@ -210,8 +210,10 @@ async fn ping_store(
 }
 
 /// Everything that references store `name`: node config `store:` keys (flat,
-/// for limit-count/workflow) and nested `session.store` (session plugins —
-/// wired in a later plan, scanned now so the guard never lags the feature).
+/// for limit-count/workflow), nested `session.store` (session plugins —
+/// wired in a later plan, scanned now so the guard never lags the feature),
+/// and `workflow`'s per-rule action params (`config.rules[].actions[][1].store`
+/// — actions are `[name, params]` pairs; see `plugins/native/workflow.rs`).
 fn store_referrers(gw: &GatewayConfig, name: &str) -> Vec<String> {
     fn config_references(
         config: &std::collections::HashMap<String, serde_json::Value>,
@@ -223,6 +225,26 @@ fn store_referrers(gw: &GatewayConfig, name: &str) -> Vec<String> {
                 .and_then(|v| v.get("store"))
                 .and_then(|v| v.as_str())
                 == Some(name)
+            || config
+                .get("rules")
+                .and_then(|v| v.as_array())
+                .is_some_and(|rules| rules.iter().any(|rule| rule_references(rule, name)))
+    }
+
+    fn rule_references(rule: &serde_json::Value, name: &str) -> bool {
+        rule.get("actions")
+            .and_then(|v| v.as_array())
+            .is_some_and(|actions| actions.iter().any(|action| action_references(action, name)))
+    }
+
+    fn action_references(action: &serde_json::Value, name: &str) -> bool {
+        action
+            .as_array()
+            .and_then(|a| a.get(1))
+            .and_then(|params| params.as_object())
+            .and_then(|params| params.get("store"))
+            .and_then(|v| v.as_str())
+            == Some(name)
     }
     fn scan_nodes(nodes: &[NodeConfig], owner: &str, name: &str, out: &mut Vec<String>) {
         for n in nodes {
@@ -397,6 +419,45 @@ plugin_configs:
             .collect();
         assert!(
             refs.contains(&"plugin_config 'shared-lc'".to_string()),
+            "{refs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_referenced_by_workflow_action_is_409_with_referrers() {
+        let state = test_state(
+            r#"
+stores:
+  - name: s1
+    type: redis
+    url: redis://127.0.0.1:6379
+plugin_configs:
+  - name: shared-wf
+    type: workflow
+    config:
+      rules:
+        - case: [["uri", "==", "/x"]]
+          actions:
+            - ["limit-count", { count: 1, time_window: 1, policy: redis, store: s1 }]
+"#,
+        );
+        let (status, body) = send(
+            &state,
+            Request::delete("/api/stores/s1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "in_use");
+        let refs: Vec<String> = body["referrers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            refs.contains(&"plugin_config 'shared-wf'".to_string()),
             "{refs:?}"
         );
     }
