@@ -93,9 +93,11 @@ impl SessionStore for RedisSessionStore {
             .set_ex(meta_key(p, id.as_str()), meta_json, ttl_secs);
         if !meta.subject.is_empty() {
             let sk = subj_key(p, &meta.subject);
-            // GT: the index must outlive its longest-lived member; a shorter
-            // new session must not shrink it.
+            // NX then GT: a fresh index gets the TTL; an existing one only
+            // ever grows — it must outlive its longest-lived member, and a
+            // shorter new session must not shrink it.
             pipe.sadd(&sk, id.as_str());
+            pipe.cmd("EXPIRE").arg(&sk).arg(ttl_secs).arg("NX");
             pipe.cmd("EXPIRE").arg(&sk).arg(ttl_secs).arg("GT");
         }
         pipe.query_async::<()>(&mut conn)
@@ -269,7 +271,7 @@ mod tests {
         ))
         .unwrap();
         let client = Arc::new(RedisStoreClient::build(&cfg).unwrap());
-        let store = RedisSessionStore::new(client, None);
+        let store = RedisSessionStore::new(client.clone(), None);
 
         let id = SessionId::random();
         let meta = SessionMeta {
@@ -288,6 +290,23 @@ mod tests {
         assert_eq!(
             store.get(&id).await.unwrap().as_deref(),
             Some(&b"sealed-bytes"[..])
+        );
+
+        // NX must have set a TTL on the fresh subject-index key (this is
+        // the FIRST put for "alice" in this test run, so the key was just
+        // created by SADD with no TTL of its own) — without it, EXPIRE ...
+        // GT alone would never apply (a key with no TTL is "infinite" for
+        // GT's comparison) and the index would persist forever.
+        let prefix = format!("fbsess{}", std::process::id());
+        let mut raw_conn = client.conn().await.unwrap();
+        let fresh_ttl: i64 = redis::cmd("TTL")
+            .arg(subj_key(&prefix, "alice"))
+            .query_async(&mut raw_conn)
+            .await
+            .unwrap();
+        assert!(
+            fresh_ttl > 0,
+            "fresh subject-index key should have a TTL set by NX, got {fresh_ttl}"
         );
 
         // Lock: winner/loser then release.
