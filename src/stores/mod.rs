@@ -73,11 +73,7 @@ pub fn validate_stores(stores: &[StoreConfig]) -> Result<(), String> {
 pub struct StoreRegistry {
     #[cfg(feature = "redis-store")]
     clients: HashMap<String, Arc<redis_store::RedisStoreClient>>,
-    // Populated by `rebuild` but not yet read by production code — Task 9
-    // wires rate-limit plugins to `counter_store`. Exercised directly by
-    // this module's own tests until then.
     #[cfg(feature = "redis-store")]
-    #[allow(dead_code)]
     counters: HashMap<String, Arc<dyn CounterStore>>,
     // Keeps the struct non-empty (and the imports used) in headless builds.
     #[cfg(not(feature = "redis-store"))]
@@ -135,10 +131,7 @@ impl StoreRegistry {
 
     /// Resolves the counter backend for a named store; the error carries the
     /// declared-store list so a typo is self-explanatory.
-    // Not yet called by production code — Task 9 wires rate-limit plugins to
-    // this. Exercised directly by this module's own tests until then.
     #[cfg(feature = "redis-store")]
-    #[allow(dead_code)]
     pub fn counter_store(&self, name: &str) -> Result<Arc<dyn CounterStore>, String> {
         self.counters.get(name).cloned().ok_or_else(|| {
             let mut names: Vec<&str> = self.clients.keys().map(String::as_str).collect();
@@ -155,9 +148,7 @@ impl StoreRegistry {
         })
     }
 
-    // See the redis-store variant above: not yet called by production code.
     #[cfg(not(feature = "redis-store"))]
-    #[allow(dead_code)]
     pub fn counter_store(&self, name: &str) -> Result<Arc<dyn CounterStore>, String> {
         Err(format!(
             "store '{}': this binary was built without the redis-store feature",
