@@ -22,7 +22,7 @@ pub use loader::{interpolate_env, interpolate_env_json, load_yaml, load_yaml_wit
 #[allow(unused_imports)]
 pub use gateway::{
     EdgeConfig, GatewayConfig, MatchRule, NodeConfig, PluginConfigDef, PolicyConfig, Position,
-    RouteConfig, SupernodeConfig,
+    RouteConfig, StoreConfig, StoreTlsConfig, SupernodeConfig,
 };
 #[allow(unused_imports)]
 pub use resolve::resolve_plugin_configs;
