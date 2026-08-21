@@ -55,8 +55,6 @@ fn id_of_meta_key(prefix: &str, key: &str) -> Option<String> {
 }
 
 impl RedisSessionStore {
-    // consumed by task 3 (StoreRegistry::rebuild wiring)
-    #[allow(dead_code)]
     pub fn new(client: Arc<RedisStoreClient>, metrics: Option<Arc<GatewayMetrics>>) -> Self {
         Self { client, metrics }
     }

@@ -75,6 +75,9 @@ pub struct StoreRegistry {
     clients: HashMap<String, Arc<redis_store::RedisStoreClient>>,
     #[cfg(feature = "redis-store")]
     counters: HashMap<String, Arc<dyn CounterStore>>,
+    #[cfg(feature = "redis-store")]
+    #[allow(dead_code)] // consumed by task 5 (session backend helper)
+    sessions: HashMap<String, Arc<dyn crate::sessions::SessionStore>>,
     // Keeps the struct non-empty (and the imports used) in headless builds.
     #[cfg(not(feature = "redis-store"))]
     #[allow(clippy::type_complexity)]
@@ -93,6 +96,7 @@ impl StoreRegistry {
     ) -> Result<StoreRegistry, String> {
         let mut clients = HashMap::new();
         let mut counters: HashMap<String, Arc<dyn CounterStore>> = HashMap::new();
+        let mut sessions: HashMap<String, Arc<dyn crate::sessions::SessionStore>> = HashMap::new();
         for cfg in stores {
             let fingerprint = redis_store::RedisStoreClient::fingerprint_of(cfg);
             let client = match prev.clients.get(&cfg.name) {
@@ -107,9 +111,20 @@ impl StoreRegistry {
                     metrics.clone(),
                 )) as Arc<dyn CounterStore>,
             );
+            sessions.insert(
+                cfg.name.clone(),
+                Arc::new(crate::sessions::redis::RedisSessionStore::new(
+                    client.clone(),
+                    metrics.clone(),
+                )) as Arc<dyn crate::sessions::SessionStore>,
+            );
             clients.insert(cfg.name.clone(), client);
         }
-        Ok(StoreRegistry { clients, counters })
+        Ok(StoreRegistry {
+            clients,
+            counters,
+            sessions,
+        })
     }
 
     /// Headless build: any declared store is a configuration error.
@@ -154,6 +169,60 @@ impl StoreRegistry {
             "store '{}': this binary was built without the redis-store feature",
             name
         ))
+    }
+
+    /// Resolves the session backend for a named store; the error carries the
+    /// declared-store list so a typo is self-explanatory.
+    #[cfg(feature = "redis-store")]
+    #[allow(dead_code)] // consumed by task 5 (session backend helper)
+    pub fn session_store(
+        &self,
+        name: &str,
+    ) -> Result<Arc<dyn crate::sessions::SessionStore>, String> {
+        self.sessions.get(name).cloned().ok_or_else(|| {
+            let mut names: Vec<&str> = self.clients.keys().map(String::as_str).collect();
+            names.sort_unstable();
+            format!(
+                "unknown store '{}' — declared stores: {}",
+                name,
+                if names.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    names.join(", ")
+                }
+            )
+        })
+    }
+
+    #[allow(dead_code)] // consumed by task 5 (session backend helper)
+    #[cfg(not(feature = "redis-store"))]
+    pub fn session_store(
+        &self,
+        name: &str,
+    ) -> Result<Arc<dyn crate::sessions::SessionStore>, String> {
+        Err(format!(
+            "store '{}': this binary was built without the redis-store feature",
+            name
+        ))
+    }
+
+    /// Test-only registry holding one injected fake session store.
+    #[cfg(test)]
+    pub fn with_fake_session_store(
+        name: &str,
+        store: Arc<dyn crate::sessions::SessionStore>,
+    ) -> StoreRegistry {
+        #[cfg(feature = "redis-store")]
+        {
+            let mut reg = StoreRegistry::default();
+            reg.sessions.insert(name.to_string(), store);
+            reg
+        }
+        #[cfg(not(feature = "redis-store"))]
+        {
+            let _ = (name, store);
+            StoreRegistry::default()
+        }
     }
 }
 
@@ -206,5 +275,20 @@ mod tests {
         };
         // Exact wording differs by build flavor; both name the store.
         assert!(err.contains("'nope'"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_session_store_lookup_and_fake_injection() {
+        let reg = StoreRegistry::default();
+        let err = match reg.session_store("nope") {
+            Ok(_) => panic!("expected an error for an unknown store name"),
+            Err(e) => e,
+        };
+        assert!(err.contains("'nope'"), "{err}");
+
+        let fake: std::sync::Arc<dyn crate::sessions::SessionStore> =
+            std::sync::Arc::new(crate::sessions::FakeSessionStore::default());
+        let reg = StoreRegistry::with_fake_session_store("s1", fake);
+        assert!(reg.session_store("s1").is_ok());
     }
 }
