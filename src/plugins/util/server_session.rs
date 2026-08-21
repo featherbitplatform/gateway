@@ -170,7 +170,6 @@ pub async fn destroy(
 /// Rewrites an existing session's payload (token refresh). Redis mode: put
 /// under the SAME id (cookie unchanged → returns None). Cookie mode: the
 /// caller must send a fresh cookie (returns Some(set_cookie)).
-#[allow(dead_code)] // consumed by task 7
 #[allow(clippy::too_many_arguments)] // matches the locked interface in the task-5 brief
 pub async fn update(
     backend: &SessionBackend,

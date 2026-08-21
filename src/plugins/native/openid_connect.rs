@@ -42,9 +42,22 @@
 //!   `session.cookie.lifetime` expiry without a shared denylist (a future
 //!   feature). Use short lifetimes. This is the standard client-side-cookie
 //!   trade-off APISIX shares when configured for cookie sessions.
-//! - **No token refresh** in this version: when the session cookie expires the
-//!   user re-authenticates (a fresh, fast redirect round-trip if the IdP
-//!   session is still valid).
+//! - **Token refresh, redis mode only.** When `session.storage: redis`, the
+//!   callback captures the token response's `refresh_token`/`expires_in`
+//!   alongside the session; a read that finds the access token within 30s of
+//!   `expires_at` transparently refreshes it at the token endpoint before
+//!   attaching identity, coordinated across concurrent requests via the
+//!   store's short-lived lock (`SessionStore::try_lock`/`unlock`) so only one
+//!   request per session performs the callout — losers re-read the
+//!   (usually already-refreshed) session instead of also calling the IdP.
+//!   An id_token in the refresh response is re-validated and its claims
+//!   replace the session's; an IdP-side refresh failure (unreachable,
+//!   non-2xx, invalid id_token) is not a store outage, so it falls back to
+//!   a fresh login rather than a 503. Set `session.refresh: false` to
+//!   disable (default `true`). Cookie-mode sessions have no server-side
+//!   coordination point for this, so they keep the original behavior: when
+//!   the session cookie expires the user re-authenticates (a fresh, fast
+//!   redirect round-trip if the IdP session is still valid).
 //! - Only the Authorization Code grant is implemented (the OIDC gateway case);
 //!   implicit/hybrid flows are not.
 
@@ -58,8 +71,9 @@ use ring::digest::{digest, SHA256};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
 use crate::context::{Context, GatewayError};
@@ -70,7 +84,7 @@ use crate::plugins::util::cookie_session::{
 };
 use crate::plugins::util::server_session::{self, SessionBackend};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
-use crate::sessions::StoreError;
+use crate::sessions::{SessionId, StoreError};
 
 /// Transient state carried in the short-lived flow cookie across the redirect
 /// to the IdP and back to the callback (CSRF `state`, replay `nonce`, PKCE
@@ -84,11 +98,21 @@ struct FlowState {
 }
 
 /// The sealed session payload: the validated identity, kept small.
+///
+/// `refresh_token`/`expires_at` are populated ONLY in redis mode (see
+/// [`OpenidConnectPlugin::handle_callback`]) — cookie-mode sessions have no
+/// server-side coordination point for a lock-guarded refresh, so those
+/// fields always stay `None` there and no refresh is ever attempted.
 #[derive(Serialize, Deserialize)]
 struct SessionData {
     claims: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     access_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<String>,
+    /// Access-token expiry, epoch seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<u64>,
 }
 
 /// Interactive-mode configuration, present only when `bearer_only: false`.
@@ -108,6 +132,10 @@ struct Interactive {
     /// subpaths hold independent sessions in the browser. Defaults to `/`.
     cookie_path: String,
     session_lifetime: Duration,
+    /// `session.refresh` (default `true`): redis-mode only — whether a
+    /// near-expiry access token is transparently refreshed before identity
+    /// is attached. Ignored in cookie mode, which never refreshes.
+    refresh_enabled: bool,
     logout_path: Option<String>,
     post_logout_redirect_uri: String,
     authz_endpoint_resolved: Mutex<Option<String>>,
@@ -154,6 +182,17 @@ struct CachedJwks {
 enum TokenError {
     Infra(String),
     Denied(String),
+}
+
+/// Outcome of a redis-mode refresh attempt ([`OpenidConnectPlugin::do_refresh`]).
+/// `ReAuth` (IdP unreachable/errored, or the refreshed id_token failing
+/// validation) is not a store outage — the caller falls back to re-login,
+/// never a 503. `Store` is a genuine session-store failure and maps to
+/// [`OpenidConnectPlugin::store_error`] (503) same as everywhere else.
+#[derive(Debug)]
+enum RefreshFailure {
+    ReAuth(String),
+    Store(StoreError),
 }
 
 /// Authenticates requests by validating a bearer access token via JWKS
@@ -666,7 +705,7 @@ impl OpenidConnectPlugin {
 
     /// Drives the interactive flow: session check, callback handling, or a
     /// fresh redirect to the identity provider.
-    async fn execute_interactive(&self, mut ctx: Context) -> PluginResult {
+    async fn execute_interactive(&self, ctx: Context) -> PluginResult {
         let flow = self.interactive.as_ref().expect("interactive mode");
 
         // Logout: clear the session (server-side, in store mode) and redirect.
@@ -699,12 +738,32 @@ impl OpenidConnectPlugin {
             return self.handle_callback(ctx).await;
         }
 
-        // Existing valid session cookie → attach identity and continue.
+        // Existing valid session cookie → attach identity and continue. Kept
+        // alongside the session read (rather than only inside `read_session`)
+        // because the redis-mode refresh check below needs the raw id to
+        // take the store's lock.
+        let raw_cookie_value = ctx
+            .request
+            .headers
+            .get("cookie")
+            .and_then(|v| v.first())
+            .and_then(|h| read_cookie(h, &flow.session_cookie))
+            .map(str::to_string);
         let session = match self.read_session(&ctx).await {
             Ok(s) => s,
             Err(e) => return Err(Self::store_error(ctx, e)),
         };
         if let Some(session) = session {
+            let (mut ctx, session) = match raw_cookie_value.as_deref() {
+                Some(raw) => match self.refresh_if_needed(ctx, flow, raw, session).await {
+                    ControlFlow::Continue(pair) => pair,
+                    ControlFlow::Break(result) => return result,
+                },
+                // A session was loaded from a cookie value that somehow
+                // isn't readable here — refresh needs the raw id, but
+                // authentication itself does not, so just proceed.
+                None => (ctx, session),
+            };
             if let Some(sub) = session.claims.get("sub") {
                 ctx.message.insert("user_id".to_string(), sub.clone());
             }
@@ -749,6 +808,217 @@ impl OpenidConnectPlugin {
         };
         let bytes = server_session::load(&flow.backend, &flow.sealer, raw).await?;
         Ok(bytes.and_then(|b| serde_json::from_slice(&b).ok()))
+    }
+
+    /// Pre-attach refresh check (redis mode only, gated on `refresh_enabled`
+    /// and the access token being within 30s of `expires_at`): coordinates a
+    /// lock-guarded refresh so concurrent requests for the same session don't
+    /// all hit the IdP.
+    ///
+    /// `ControlFlow::Continue` carries the (possibly refreshed) session data
+    /// for the caller to attach as normal; `ControlFlow::Break` is an
+    /// immediate exit the caller must return directly — either a 503 store
+    /// error, or a fallback to re-login when the IdP-side refresh itself
+    /// failed. Nothing outside this function and [`Self::do_refresh`] ever
+    /// touches the lock: every branch below unlocks exactly once before
+    /// breaking or continuing.
+    async fn refresh_if_needed(
+        &self,
+        ctx: Context,
+        flow: &Interactive,
+        raw: &str,
+        session: SessionData,
+    ) -> ControlFlow<PluginResult, (Context, SessionData)> {
+        if !flow.refresh_enabled || !matches!(flow.backend, SessionBackend::Store { .. }) {
+            return ControlFlow::Continue((ctx, session));
+        }
+        let (Some(expires_at), Some(refresh_token)) =
+            (session.expires_at, session.refresh_token.clone())
+        else {
+            return ControlFlow::Continue((ctx, session));
+        };
+        if now_unix() + 30 < expires_at {
+            return ControlFlow::Continue((ctx, session));
+        }
+        let Some(id) = SessionId::parse(raw) else {
+            // Shouldn't happen (the session was loaded through this same raw
+            // cookie value), but a malformed id is not grounds to fail the
+            // request — just proceed with what we already have.
+            return ControlFlow::Continue((ctx, session));
+        };
+        let SessionBackend::Store { store, .. } = &flow.backend else {
+            unreachable!("matches! above guarantees Store");
+        };
+
+        let acquired = match store.try_lock(&id, Duration::from_secs(10)).await {
+            Ok(b) => b,
+            Err(e) => return ControlFlow::Break(Err(Self::store_error(ctx, e))),
+        };
+        if !acquired {
+            // Loser: the winner is usually already refreshing/refreshed —
+            // re-read once and proceed with whatever is there now.
+            return match self.read_session(&ctx).await {
+                Ok(Some(fresh)) => ControlFlow::Continue((ctx, fresh)),
+                // The session vanished under us (e.g. evicted) — treat like
+                // no session at all rather than authenticating on stale data.
+                Ok(None) => ControlFlow::Break(self.begin_auth(ctx).await),
+                Err(e) => ControlFlow::Break(Err(Self::store_error(ctx, e))),
+            };
+        }
+
+        // Winner: every branch below unlocks exactly once.
+        match self
+            .do_refresh(&ctx, flow, &id, &refresh_token, &session)
+            .await
+        {
+            Ok(updated) => match store.unlock(&id).await {
+                Ok(()) => ControlFlow::Continue((ctx, updated)),
+                Err(e) => ControlFlow::Break(Err(Self::store_error(ctx, e))),
+            },
+            Err(RefreshFailure::ReAuth(reason)) => {
+                // An IdP-side refresh failure (unreachable, non-2xx, or an
+                // invalid refreshed id_token) is not a store outage — unlock
+                // (best effort; the lock has a 10s TTL regardless) and fall
+                // back to a fresh login rather than a 503.
+                tracing::debug!(
+                    "openid-connect: redis-mode refresh failed, falling back to re-login: {reason}"
+                );
+                let _ = store.unlock(&id).await;
+                ControlFlow::Break(self.begin_auth(ctx).await)
+            }
+            Err(RefreshFailure::Store(e)) => {
+                let _ = store.unlock(&id).await;
+                ControlFlow::Break(Err(Self::store_error(ctx, e)))
+            }
+        }
+    }
+
+    /// Performs the refresh callout, optional id_token re-validation, and
+    /// session rewrite. Never touches the lock — [`Self::refresh_if_needed`]
+    /// unlocks on every outcome of this call.
+    async fn do_refresh(
+        &self,
+        ctx: &Context,
+        flow: &Interactive,
+        id: &SessionId,
+        refresh_token: &str,
+        old: &SessionData,
+    ) -> Result<SessionData, RefreshFailure> {
+        let tokens = self
+            .refresh_tokens(refresh_token)
+            .await
+            .map_err(RefreshFailure::ReAuth)?;
+
+        let claims = match tokens.get("id_token").and_then(|v| v.as_str()) {
+            Some(id_token) => match self.validate_via_jwks(id_token).await {
+                Ok(c) => serde_json::to_value(&c).unwrap_or_default(),
+                Err(TokenError::Infra(e)) | Err(TokenError::Denied(e)) => {
+                    return Err(RefreshFailure::ReAuth(format!(
+                        "refreshed id_token validation failed: {e}"
+                    )))
+                }
+            },
+            None => old.claims.clone(),
+        };
+        let access_token = tokens
+            .get("access_token")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| old.access_token.clone());
+        // Keep the old refresh_token unless the IdP rotated it.
+        let refresh_token = tokens
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| old.refresh_token.clone());
+        let expires_at = tokens
+            .get("expires_in")
+            .and_then(|v| v.as_u64())
+            .map(|secs| now_unix() + secs)
+            .or(old.expires_at);
+
+        let updated = SessionData {
+            claims,
+            access_token,
+            refresh_token,
+            expires_at,
+        };
+        let payload = serde_json::to_vec(&updated)
+            .map_err(|e| RefreshFailure::ReAuth(format!("session serialize failed: {e}")))?;
+        let subject = updated
+            .claims
+            .get("sub")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Refresh must not extend the session's absolute lifetime, but the
+        // store doesn't expose the record's remaining TTL from here, so we
+        // approximate the remaining lifetime with the configured
+        // `session.cookie.lifetime` — an acceptable, documented
+        // over-approximation rather than a true "remaining" value.
+        let ttl = flow.session_lifetime;
+        let meta = server_session::meta_now(ctx, "openid-connect", &subject, ttl);
+        server_session::update(
+            &flow.backend,
+            &flow.sealer,
+            id.as_str(),
+            &payload,
+            ttl,
+            meta,
+            &flow.session_cookie,
+            &CookieAttrs {
+                path: &flow.cookie_path,
+                max_age: Some(ttl.as_secs()),
+                http_only: true,
+                secure: request_is_https(ctx),
+                same_site: SameSite::Lax,
+            },
+        )
+        .await
+        .map_err(RefreshFailure::Store)?;
+
+        Ok(updated)
+    }
+
+    /// Refreshes an access token at the token endpoint (RFC 6749 §6). Cloned
+    /// from [`Self::exchange_code`]'s request shape, with the refresh-token
+    /// grant body instead.
+    async fn refresh_tokens(&self, refresh_token: &str) -> Result<serde_json::Value, String> {
+        let token_endpoint = self.token_endpoint().await?;
+        let client_id = self.client_id.as_deref().unwrap_or("");
+        let client_secret = self.client_secret.as_deref().unwrap_or("");
+        let body = format!(
+            "grant_type=refresh_token&refresh_token={}&client_id={}&client_secret={}",
+            form_encode(refresh_token),
+            form_encode(client_id),
+            form_encode(client_secret),
+        );
+        let req = OutboundRequest {
+            method: http::Method::POST,
+            url: token_endpoint,
+            headers: vec![
+                (
+                    "content-type".to_string(),
+                    "application/x-www-form-urlencoded".to_string(),
+                ),
+                ("accept".to_string(), "application/json".to_string()),
+            ],
+            body: Bytes::from(body),
+            timeout: self.timeout,
+            ssl_verify: self.ssl_verify,
+            tls: None,
+        };
+        let resp = self
+            .resources
+            .outbound
+            .request(req)
+            .await
+            .map_err(|e| format!("token refresh callout failed: {}", e))?;
+        if resp.status != 200 {
+            return Err(format!("token endpoint returned status {}", resp.status));
+        }
+        serde_json::from_slice(&resp.body).map_err(|e| format!("invalid token response: {}", e))
     }
 
     /// Starts the flow: generate CSRF/nonce/PKCE, set the flow cookie, and
@@ -858,6 +1128,24 @@ impl OpenidConnectPlugin {
             .get("access_token")
             .and_then(|v| v.as_str())
             .map(String::from);
+        // Refresh material is captured only in redis mode with refresh
+        // enabled: cookie-mode sessions have no server-side coordination
+        // point for a lock-guarded refresh, so they keep the pre-Task-7
+        // re-login-on-expiry behavior untouched.
+        let (refresh_token, expires_at) =
+            if matches!(flow.backend, SessionBackend::Store { .. }) && flow.refresh_enabled {
+                let refresh_token = tokens
+                    .get("refresh_token")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let expires_at = tokens
+                    .get("expires_in")
+                    .and_then(|v| v.as_u64())
+                    .map(|secs| now_unix() + secs);
+                (refresh_token, expires_at)
+            } else {
+                (None, None)
+            };
 
         // Validate the id_token signature/claims via the JWKS path and check
         // the nonce binds it to this login attempt. A JWKS callout failure is
@@ -883,6 +1171,8 @@ impl OpenidConnectPlugin {
         let session = SessionData {
             claims: serde_json::to_value(&claims).unwrap_or_default(),
             access_token,
+            refresh_token,
+            expires_at,
         };
         let payload = match serde_json::to_vec(&session) {
             Ok(b) => b,
@@ -1102,6 +1392,7 @@ fn build_interactive(
         session_cookie,
         cookie_path,
         session_lifetime,
+        refresh_enabled: session_refresh_enabled(config),
         logout_path: string_opt(config, "logout_path"),
         post_logout_redirect_uri: string_opt(config, "post_logout_redirect_uri")
             .unwrap_or_else(|| "/".to_string()),
@@ -1118,6 +1409,18 @@ fn session_field(config: &HashMap<String, serde_json::Value>, field: &str) -> Op
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(String::from)
+}
+
+/// Reads `session.refresh` (nested), falling back to the flat
+/// `session_refresh` key the Web UI schema would emit; default `true`.
+/// Redis-mode only — cookie mode never attempts a refresh regardless.
+fn session_refresh_enabled(config: &HashMap<String, serde_json::Value>) -> bool {
+    config
+        .get("session")
+        .and_then(|s| s.get("refresh"))
+        .or_else(|| config.get("session_refresh"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
 }
 
 /// Reads a session cookie string field from nested `session.cookie.<field>`,
@@ -1193,6 +1496,15 @@ fn random_token() -> String {
 /// PKCE S256 challenge: base64url(SHA-256(verifier)).
 fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(digest(&SHA256, verifier.as_bytes()).as_ref())
+}
+
+/// Current time, epoch seconds. Used for `expires_at` bookkeeping on the
+/// redis-mode refresh path.
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Prepares a 302 redirect on the context and exits through the dedicated
@@ -1774,6 +2086,8 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         let session = SessionData {
             claims: serde_json::json!({ "sub": "u1", "name": "Alice" }),
             access_token: Some("at".into()),
+            refresh_token: None,
+            expires_at: None,
         };
         let sealed = sealer.seal(
             &serde_json::to_vec(&session).unwrap(),
@@ -2348,5 +2662,124 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         let err = plugin.execute(ctx).await.unwrap_err();
         assert_eq!(err.error.code, "SESSION_STORE_ERROR");
         assert_eq!(err.context.response.status_code, 503);
+    }
+
+    /// Redis-mode refresh: expired access token + refresh_token triggers a
+    /// locked refresh; the session is rewritten under the same id. The IdP
+    /// being unreachable falls back to re-login (redirect), not 503.
+    #[cfg(feature = "redis-store")]
+    #[tokio::test]
+    async fn test_redis_refresh_lock_and_fallback() {
+        use crate::sessions::SessionStore as _;
+
+        let (resources, fake) = resources_with_fake_store();
+        let mut cfg = interactive_explicit_cfg(); // token_endpoint: http://127.0.0.1:1 (unreachable)
+        cfg.insert(
+            "session".to_string(),
+            serde_json::json!({
+                "secret": "cookie-signing-secret",
+                "storage": "redis",
+                "store": "s1"
+            }),
+        );
+        let plugin = OpenidConnectPlugin::from_config(&cfg, &resources).unwrap();
+
+        let sealer = CookieSealer::new("cookie-signing-secret");
+        // Stale access token (expires_at in the past) + a refresh token.
+        let data = serde_json::json!({
+            "claims": {"sub": "u1"},
+            "access_token": "old",
+            "refresh_token": "rt",
+            "expires_at": 1
+        });
+        let sealed = sealer.seal(
+            &serde_json::to_vec(&data).unwrap(),
+            Duration::from_secs(600),
+        );
+        let id = crate::sessions::SessionId::random();
+        let meta = crate::sessions::SessionMeta {
+            id: String::new(),
+            subject: "u1".into(),
+            plugin: "openid-connect".into(),
+            policy: String::new(),
+            route: String::new(),
+            created_at: 0,
+            expires_at: 0,
+        };
+        fake.put(&id, sealed.as_bytes(), Duration::from_secs(600), &meta)
+            .await
+            .unwrap();
+
+        let mut ctx = req_ctx("/api", HashMap::new());
+        ctx.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("oidc_session={}", id.as_str())],
+        );
+        // Token endpoint unreachable → refresh fails → fall back to re-login.
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("redirect"), "failed refresh re-enters login");
+        // The lock was released (unlock on the failure path).
+        assert!(fake.try_lock(&id, Duration::from_secs(1)).await.unwrap());
+    }
+
+    /// `session.refresh: false` disables the refresh check entirely: a stale
+    /// access token + refresh_token pass through unchanged (no redirect, no
+    /// lock taken) — the plugin behaves exactly as it did before Task 7.
+    #[cfg(feature = "redis-store")]
+    #[tokio::test]
+    async fn test_redis_refresh_disabled_passes_stale_session_through() {
+        use crate::sessions::SessionStore as _;
+
+        let (resources, fake) = resources_with_fake_store();
+        let mut cfg = interactive_explicit_cfg();
+        cfg.insert(
+            "session".to_string(),
+            serde_json::json!({
+                "secret": "cookie-signing-secret",
+                "storage": "redis",
+                "store": "s1",
+                "refresh": false
+            }),
+        );
+        let plugin = OpenidConnectPlugin::from_config(&cfg, &resources).unwrap();
+
+        let sealer = CookieSealer::new("cookie-signing-secret");
+        let data = serde_json::json!({
+            "claims": {"sub": "u1"},
+            "access_token": "old",
+            "refresh_token": "rt",
+            "expires_at": 1
+        });
+        let sealed = sealer.seal(
+            &serde_json::to_vec(&data).unwrap(),
+            Duration::from_secs(600),
+        );
+        let id = crate::sessions::SessionId::random();
+        let meta = crate::sessions::SessionMeta {
+            id: String::new(),
+            subject: "u1".into(),
+            plugin: "openid-connect".into(),
+            policy: String::new(),
+            route: String::new(),
+            created_at: 0,
+            expires_at: 0,
+        };
+        fake.put(&id, sealed.as_bytes(), Duration::from_secs(600), &meta)
+            .await
+            .unwrap();
+
+        let mut ctx = req_ctx("/api", HashMap::new());
+        ctx.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("oidc_session={}", id.as_str())],
+        );
+        let out = plugin.execute(ctx).await.unwrap();
+        assert!(
+            out.port.is_none(),
+            "disabled refresh must pass through as-is"
+        );
+        assert_eq!(out.context.message["user_id"], "u1");
+        // No lock was ever taken — try_lock succeeds trivially.
+        assert!(fake.try_lock(&id, Duration::from_secs(1)).await.unwrap());
     }
 }
