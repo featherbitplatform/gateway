@@ -4,7 +4,8 @@
 //! `/v3/auth/authenticate` endpoints) through the shared [`OutboundClient`] —
 //! no gRPC, `protoc`, or `tonic` dependency. Config lives under per-resource
 //! keys (`<prefix>/routes/<name>`, `<prefix>/policies/<name>`,
-//! `<prefix>/consumers/<name>`, `<prefix>/supernodes/<name>`, `<prefix>/plugin_configs/<name>`),
+//! `<prefix>/consumers/<name>`, `<prefix>/supernodes/<name>`, `<prefix>/plugin_configs/<name>`,
+//! `<prefix>/stores/<name>`),
 //! each value the resource's JSON. Every gateway instance loads from the same prefix and a
 //! background poll task keeps the cluster converged (see [`spawn_watch`]).
 //! Note: an older build sharing the same prefix garbage-collects unknown key
@@ -31,7 +32,7 @@ use bytes::Bytes;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use crate::config::{EtcdConfig, GatewayConfig, PluginConfigDef, SystemConfig};
+use crate::config::{EtcdConfig, GatewayConfig, PluginConfigDef, StoreConfig, SystemConfig};
 use crate::config::{PolicyConfig, RouteConfig, SupernodeConfig};
 use crate::config_store::ConfigStore;
 use crate::consumers::ConsumerConfig;
@@ -207,6 +208,9 @@ impl EtcdConfigStore {
     fn plugin_config_key(&self, name: &str) -> String {
         format!("{}/plugin_configs/{}", self.prefix, name)
     }
+    fn store_key(&self, name: &str) -> String {
+        format!("{}/stores/{}", self.prefix, name)
+    }
 
     /// Writes every resource in `gw` to etcd (used to seed an empty prefix).
     async fn write_all(&self, gw: &GatewayConfig) -> Result<(), String> {
@@ -235,6 +239,10 @@ impl EtcdConfigStore {
                 &serde_json::to_vec(pc).unwrap(),
             )
             .await?;
+        }
+        for s in &gw.stores {
+            self.put(&self.store_key(&s.name), &serde_json::to_vec(s).unwrap())
+                .await?;
         }
         Ok(())
     }
@@ -286,6 +294,11 @@ impl ConfigStore for EtcdConfigStore {
             self.put(&key, &serde_json::to_vec(pc).unwrap()).await?;
             desired.insert(key);
         }
+        for s in &candidate.stores {
+            let key = self.store_key(&s.name);
+            self.put(&key, &serde_json::to_vec(s).unwrap()).await?;
+            desired.insert(key);
+        }
         for stale in current.difference(&desired) {
             self.delete(stale).await?;
         }
@@ -298,7 +311,7 @@ impl ConfigStore for EtcdConfigStore {
 
 /// Assembles a [`GatewayConfig`] from the etcd key/value pairs under `prefix`.
 ///
-/// Keys are `<prefix>/{routes,policies,consumers,supernodes,plugin_configs}/<name>`; values
+/// Keys are `<prefix>/{routes,policies,consumers,supernodes,plugin_configs,stores}/<name>`; values
 /// are the resource JSON. Unknown key shapes are skipped. Malformed resource
 /// JSON is an error (so a bad write surfaces rather than silently dropping
 /// config).
@@ -316,7 +329,7 @@ fn gateway_from_kvs(prefix: &str, kvs: Vec<(String, Vec<u8>)>) -> Result<Gateway
             Some(r) => r,
             None => continue,
         };
-        let (category, _name) = match rest.split_once('/') {
+        let (category, name) = match rest.split_once('/') {
             Some(p) => p,
             None => continue,
         };
@@ -345,6 +358,11 @@ fn gateway_from_kvs(prefix: &str, kvs: Vec<(String, Vec<u8>)>) -> Result<Gateway
                 let pc: PluginConfigDef = serde_json::from_slice(&value)
                     .map_err(|e| format!("bad plugin config '{}': {}", key, e))?;
                 gw.plugin_configs.push(pc);
+            }
+            "stores" => {
+                let s: StoreConfig = serde_json::from_str(&String::from_utf8_lossy(&value))
+                    .map_err(|e| format!("bad store '{}': {}", name, e))?;
+                gw.stores.push(s);
             }
             _ => {}
         }
@@ -605,5 +623,25 @@ mod tests {
             config: Default::default(),
         });
         assert!(!is_empty(&gw));
+    }
+
+    #[test]
+    fn test_gateway_from_kvs_parses_stores() {
+        let kvs = vec![(
+            "/fb/stores/s1".to_string(),
+            br#"{"name":"s1","type":"redis","url":"redis://127.0.0.1:6379","key_prefix":"fb","connect_timeout_ms":2000}"#.to_vec(),
+        )];
+        let gw = gateway_from_kvs("/fb", kvs).unwrap();
+        assert_eq!(gw.stores.len(), 1);
+        assert_eq!(gw.stores[0].name, "s1");
+        assert_eq!(gw.stores[0].store_type, "redis");
+        assert!(!is_empty(&gw));
+
+        let err = gateway_from_kvs(
+            "/fb",
+            vec![("/fb/stores/bad".to_string(), b"{notjson".to_vec())],
+        )
+        .unwrap_err();
+        assert!(err.contains("bad store 'bad'"), "{err}");
     }
 }
