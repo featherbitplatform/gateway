@@ -93,7 +93,10 @@ impl SessionStore for RedisSessionStore {
             .set_ex(meta_key(p, id.as_str()), meta_json, ttl_secs);
         if !meta.subject.is_empty() {
             let sk = subj_key(p, &meta.subject);
-            pipe.sadd(&sk, id.as_str()).expire(&sk, ttl_secs as i64);
+            // GT: the index must outlive its longest-lived member; a shorter
+            // new session must not shrink it.
+            pipe.sadd(&sk, id.as_str());
+            pipe.cmd("EXPIRE").arg(&sk).arg(ttl_secs).arg("GT");
         }
         pipe.query_async::<()>(&mut conn)
             .await
@@ -315,8 +318,32 @@ mod tests {
         }
         assert!(found);
 
+        // Subject-index TTL must only grow (EXPIRE ... GT), never shrink: a
+        // short-lived session put after a long-lived one must not truncate
+        // the index below the longer member's lifetime. Put a second,
+        // short-lived session for the same subject and confirm
+        // `delete_subject` still revokes BOTH — without GT the second put's
+        // unconditional `expire()` would shrink the index to 1s, it would
+        // expire out from under the first (60s) member, and this would
+        // silently drop to 0/1 instead of 2.
+        let id2 = SessionId::random();
+        let meta2 = SessionMeta {
+            id: String::new(),
+            subject: "alice".to_string(),
+            plugin: "openid-connect".to_string(),
+            policy: "p".to_string(),
+            route: "r".to_string(),
+            created_at: 1,
+            expires_at: 9999999999,
+        };
+        store
+            .put(&id2, b"sealed-bytes-2", Duration::from_secs(1), &meta2)
+            .await
+            .unwrap();
+
         // Revoke by subject.
-        assert!(store.delete_subject("alice").await.unwrap() >= 1);
+        assert_eq!(store.delete_subject("alice").await.unwrap(), 2);
         assert_eq!(store.get(&id).await.unwrap(), None);
+        assert_eq!(store.get(&id2).await.unwrap(), None);
     }
 }
