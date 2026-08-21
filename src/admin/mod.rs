@@ -14,6 +14,7 @@ mod plugin_configs;
 mod policies;
 mod routes;
 mod status;
+mod stores;
 mod supernodes;
 #[cfg(feature = "ui")]
 mod ui;
@@ -145,6 +146,7 @@ fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
         .merge(supernodes::router())
         .merge(consumers::router())
         .merge(status::router())
+        .merge(stores::router())
         .merge(debug::router())
         .merge(vars::router())
         .merge(env_vars::router())
