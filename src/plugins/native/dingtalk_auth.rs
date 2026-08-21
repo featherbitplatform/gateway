@@ -36,8 +36,13 @@
 //!   existing token+userinfo callouts unchanged, then establishes a new
 //!   session (payload = the userinfo `result` JSON; subject = `userid` else
 //!   `unionid` else empty; ttl = `session.cookie.lifetime`, APISIX's
-//!   `cookie_expires_in`, default `86400`) and attaches identity with the
-//!   `Set-Cookie` on the success response. A session-store outage is a `503`
+//!   `cookie_expires_in`, default `86400`) and 302-redirects (the `redirect`
+//!   port) to the current URL with the `code` query parameter stripped,
+//!   carrying the session `Set-Cookie` — the graph wires `success` straight
+//!   to `upstream.in`, which replaces `ctx.response.headers` wholesale, so a
+//!   Set-Cookie attached on that path would never reach the browser. The
+//!   browser's follow-up request then hits the session-read fast path above
+//!   and attaches identity. A session-store outage is a `503`
 //!   (`SESSION_STORE_ERROR`) on the `error` port, never a silent
 //!   re-login. The app-level access token is still cached in-process (7000s
 //!   TTL, matching APISIX's `lrucache`).
@@ -511,12 +516,43 @@ impl DingtalkAuthPlugin {
             Err(e) => return Err(Self::store_error(ctx, e)),
         };
 
-        attach_identity(&mut ctx, &userinfo, self.set_userinfo_header);
-        ctx.response
-            .headers
-            .insert("set-cookie".to_string(), vec![set_cookie]);
-        Ok(PluginOutput::success(ctx))
+        // Do NOT attach identity + succeed on this request: the graph wires
+        // `success` straight to `upstream.in`, and `upstream` replaces
+        // `ctx.response.headers` wholesale, so a Set-Cookie attached here
+        // would never reach the browser. Instead 302-redirect to the
+        // code-stripped URL carrying the cookie; the browser's follow-up
+        // request then hits the session-read fast path above.
+        let target = redirect_target(&ctx, &self.code_query);
+        Self::redirect(ctx, &target, vec![set_cookie])
     }
+}
+
+/// Rebuilds the current request's path+query with the `code` query
+/// parameter stripped, for the post-establish redirect (so the browser's
+/// follow-up GET doesn't resubmit the one-time code). If the code was read
+/// from the header rather than the query string, there is nothing to strip
+/// and the query comes back unchanged. Mirrors
+/// `authz_casdoor.rs::reconstruct_uri`.
+fn redirect_target(ctx: &Context, code_query: &str) -> String {
+    let mut uri = ctx.request.path.clone();
+    let mut pairs: Vec<String> = Vec::new();
+    for (k, values) in &ctx.request.query_params {
+        if k == code_query {
+            continue;
+        }
+        for v in values {
+            if v.is_empty() {
+                pairs.push(k.clone());
+            } else {
+                pairs.push(format!("{k}={v}"));
+            }
+        }
+    }
+    if !pairs.is_empty() {
+        uri.push('?');
+        uri.push_str(&pairs.join("&"));
+    }
+    uri
 }
 
 /// Extracts a required string config key.
@@ -956,6 +992,103 @@ mod tests {
         let out = plugin.execute(ctx).await.unwrap();
         assert!(out.port.is_none());
         assert_eq!(out.context.message.get("user_id").unwrap(), "u1");
+    }
+
+    /// One-shot mock HTTP server: accepts a single connection and replies with
+    /// the given JSON body.
+    async fn spawn_json_server(body: serde_json::Value) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let body = body.to_string();
+                let _ = stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        port
+    }
+
+    /// The critical regression test for the Set-Cookie-swallowed-by-upstream
+    /// bug: on a successful code exchange in session mode, the node must NOT
+    /// exit on `success` (that edge feeds `upstream.in`, which replaces
+    /// `ctx.response.headers` wholesale, dropping the Set-Cookie and causing
+    /// an infinite login loop). It must instead 302-redirect to the
+    /// code-stripped URL carrying the session cookie, and a follow-up
+    /// request presenting that cookie must take the session-read fast path.
+    #[tokio::test]
+    async fn test_session_mode_code_exchange_redirects_with_cookie() {
+        let token_port = spawn_json_server(serde_json::json!({
+            "accessToken": "app-token",
+            "expireIn": 7200
+        }))
+        .await;
+        let userinfo_port = spawn_json_server(serde_json::json!({
+            "errcode": 0,
+            "result": { "userid": "u1", "name": "Alice" }
+        }))
+        .await;
+
+        let token_url = format!("http://127.0.0.1:{}", token_port);
+        let userinfo_url = format!("http://127.0.0.1:{}", userinfo_port);
+        let mut config = cfg(&[
+            ("app_key", "k"),
+            ("app_secret", "s"),
+            ("access_token_url", token_url.as_str()),
+            ("userinfo_url", userinfo_url.as_str()),
+            ("redirect_uri", "https://login.example.com/start"),
+        ]);
+        config.insert("timeout".to_string(), serde_json::json!(2000));
+        config.insert(
+            "session".to_string(),
+            serde_json::json!({ "secret": "s3cr3t" }),
+        );
+        let plugin = DingtalkAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+
+        let mut ctx = base_ctx();
+        ctx.request.path = "/callback".to_string();
+        ctx.request
+            .query_params
+            .insert("code".to_string(), vec!["one-time-code".to_string()]);
+        ctx.request
+            .query_params
+            .insert("foo".to_string(), vec!["bar".to_string()]);
+
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("redirect"));
+        assert_eq!(out.context.response.status_code, 302);
+        assert_eq!(
+            out.context.response.headers["location"],
+            vec!["/callback?foo=bar".to_string()]
+        );
+        // No identity should be attached on this response — it's a bare
+        // redirect, not a success.
+        assert!(!out.context.message.contains_key("user_id"));
+        let set_cookie = out.context.response.headers["set-cookie"][0].clone();
+        assert!(set_cookie.starts_with("dingtalk_session="), "{set_cookie}");
+
+        // Follow-up request presenting the cookie the redirect just set must
+        // take the fast path: success, identity attached, no callout.
+        let cookie_value = set_cookie.split(';').next().unwrap().to_string();
+        let mut ctx2 = base_ctx();
+        ctx2.request
+            .headers
+            .insert("cookie".to_string(), vec![cookie_value]);
+        let out2 = plugin.execute(ctx2).await.unwrap();
+        assert!(out2.port.is_none());
+        assert_eq!(out2.context.message.get("user_id").unwrap(), "u1");
     }
 
     #[cfg(feature = "redis-store")]
