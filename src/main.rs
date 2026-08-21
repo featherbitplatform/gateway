@@ -44,6 +44,7 @@ mod ratelimit;
 mod routing;
 mod server;
 mod state;
+mod stores;
 mod stream;
 mod traffic;
 mod vars;

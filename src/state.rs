@@ -157,6 +157,27 @@ impl SharedState {
         gateway: &GatewayConfig,
         resources: &Arc<PluginResources>,
     ) -> Result<Vec<(RouteConfig, Arc<CompiledGraph>)>, String> {
+        crate::stores::validate_stores(&gateway.stores)?;
+        // Swap the candidate store registry in for the duration of the
+        // compile (plugins resolve `store:` names at construction). The
+        // registry is never read on the request path, so this transient swap
+        // cannot affect in-flight traffic; on failure the previous registry
+        // is restored, preserving the last-good invariant.
+        let prev = resources.stores.load_full();
+        let candidate = crate::stores::StoreRegistry::rebuild(&prev, &gateway.stores)?;
+        resources.stores.store(Arc::new(candidate));
+        let result = Self::compile_routes_inner(gateway, resources);
+        if result.is_err() {
+            resources.stores.store(prev);
+        }
+        result
+    }
+
+    /// The pre-stores compile body; called with the candidate registry already swapped in.
+    fn compile_routes_inner(
+        gateway: &GatewayConfig,
+        resources: &Arc<PluginResources>,
+    ) -> Result<Vec<(RouteConfig, Arc<CompiledGraph>)>, String> {
         // Materialize shared plugin configs first: supernode definitions and
         // policies both resolve against them, and expansion below copies the
         // resolved inner configs into instances. In-memory only — the stored
@@ -486,5 +507,56 @@ policies:
         );
         let err = state_from_yaml(&yaml).unwrap_err();
         assert!(err.contains("unknown plugin config 'shared-up'"), "{err}");
+    }
+
+    /// `stores:` validation runs on every compile: duplicates are rejected
+    /// with the running config left intact, and the stored config keeps raw
+    /// `${...}` placeholders (the security invariant shared with routes).
+    #[allow(unreachable_code, unused_variables)]
+    #[tokio::test]
+    async fn test_stores_validated_at_compile_and_kept_raw() {
+        let system: crate::config::SystemConfig = serde_yaml::from_str("{}").unwrap();
+        let gw: crate::config::GatewayConfig = serde_yaml::from_str(
+            "stores:\n  - name: s1\n    type: redis\n    url: ${STORE_TEST_URL:-redis://127.0.0.1:6379}\n",
+        )
+        .unwrap();
+        let result = SharedState::new(
+            system,
+            gw,
+            None,
+            std::sync::Arc::new(crate::config_store::FileConfigStore::new(
+                std::path::PathBuf::from("gateway.yaml"),
+            )),
+        );
+        // Until the real client lands (Task 3), declaring a store fails loudly.
+        // (`as_ref()` so `result` is still owned below for the unreachable
+        // tail — Task 3 deletes this early return and this workaround with it.)
+        let err = result
+            .as_ref()
+            .err()
+            .expect("stub client must reject stores");
+        assert!(err.contains("not implemented yet"), "{err}");
+        return;
+
+        let state = result.unwrap();
+
+        // Stored config still holds the placeholder.
+        let gw = state.gateway.read().await;
+        assert_eq!(
+            gw.stores[0].url,
+            "${STORE_TEST_URL:-redis://127.0.0.1:6379}"
+        );
+        drop(gw);
+
+        // A candidate with a duplicate store name is rejected...
+        let bad: crate::config::GatewayConfig = serde_yaml::from_str(
+            "stores:\n  - name: d\n    type: redis\n    url: redis://a\n  - name: d\n    type: redis\n    url: redis://b\n",
+        )
+        .unwrap();
+        let err = state.apply_gateway(bad).await.unwrap_err();
+        assert!(err.contains("Duplicate store name 'd'"), "{err}");
+
+        // ...and the last-good config keeps serving.
+        assert_eq!(state.gateway.read().await.stores.len(), 1);
     }
 }

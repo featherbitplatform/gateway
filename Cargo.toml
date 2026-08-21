@@ -9,8 +9,11 @@ publish = false
 [features]
 # The embedded admin web UI. Headless build (no UI assets, no serving code):
 # `cargo build --release --no-default-features`.
-default = ["ui"]
+default = ["ui", "redis-store"]
 ui = ["dep:rust-embed", "dep:mime_guess"]
+# Redis/Valkey client for the `stores:` resource (sessions, distributed rate
+# limiting). Off = declaring a store fails config load with a clear error.
+redis-store = []
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
