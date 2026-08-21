@@ -129,6 +129,10 @@ impl SharedState {
     /// Config stores call this to reject a candidate config before persisting
     /// it, so the Admin API can return an error synchronously even when the
     /// change will be applied asynchronously by a watch.
+    ///
+    /// Note: on success the candidate store registry remains loaded in
+    /// resources.stores; it is only ever read during a compile and is
+    /// replaced by the next one, so this is not applied config.
     pub fn validate_gateway(&self, gw: &GatewayConfig) -> Result<(), String> {
         crate::consumers::ConsumerStore::from_config(&gw.consumers)?;
         Self::compile_routes(gw, &self.resources)?;
@@ -512,7 +516,6 @@ policies:
     /// `stores:` validation runs on every compile: duplicates are rejected
     /// with the running config left intact, and the stored config keeps raw
     /// `${...}` placeholders (the security invariant shared with routes).
-    #[allow(unreachable_code, unused_variables)]
     #[tokio::test]
     async fn test_stores_validated_at_compile_and_kept_raw() {
         let system: crate::config::SystemConfig = serde_yaml::from_str("{}").unwrap();
@@ -528,16 +531,6 @@ policies:
                 std::path::PathBuf::from("gateway.yaml"),
             )),
         );
-        // Until the real client lands (Task 3), declaring a store fails loudly.
-        // (`as_ref()` so `result` is still owned below for the unreachable
-        // tail — Task 3 deletes this early return and this workaround with it.)
-        let err = result
-            .as_ref()
-            .err()
-            .expect("stub client must reject stores");
-        assert!(err.contains("not implemented yet"), "{err}");
-        return;
-
         let state = result.unwrap();
 
         // Stored config still holds the placeholder.
