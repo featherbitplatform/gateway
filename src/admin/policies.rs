@@ -297,8 +297,14 @@ fn plugin_catalog() -> Vec<serde_json::Value> {
         ),
         ("cas-auth", "CAS ticket validation or interactive SSO login"),
         ("wolf-rbac", "Wolf RBAC token check"),
-        ("dingtalk-auth", "DingTalk code/token validation"),
-        ("feishu-auth", "Feishu/Lark code/token validation"),
+        (
+            "dingtalk-auth",
+            "DingTalk code/token validation with optional session mode",
+        ),
+        (
+            "feishu-auth",
+            "Feishu/Lark code/token validation with optional session mode",
+        ),
         // Serverless & FaaS
         (
             "serverless-pre-function",
