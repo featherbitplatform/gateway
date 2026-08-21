@@ -100,7 +100,8 @@ stores:
     url: ${REDIS_URL:-redis://127.0.0.1:6379}
     password: ${REDIS_PASSWORD:-}   # optional; user/password also accepted in the URL
     key_prefix: fb                  # optional, default "fb"
-    pool_size: 8                    # optional
+    # Amendment (as shipped): v1 uses a single auto-reconnecting multiplexed
+    # connection, not a pool — there is no `pool_size` field.
     connect_timeout_ms: 2000        # optional
     tls:                            # optional, for rediss:// / private CAs
       ca_cert_path: /etc/ssl/redis-ca.pem
@@ -251,7 +252,8 @@ than first-request-aligned per instance.
 plugin's configured rejection response when the store is unreachable — a
 limit that silently stops limiting is a security hole. `true` fails open
 where availability beats accuracy. Errors are logged and counted in
-Prometheus (`counter_store_errors_total{store}`).
+Prometheus (`gateway_counter_store_errors_total{store}` — amendment: gains
+the house `gateway_` metric prefix as shipped).
 
 ## 4. Admin API + UI
 

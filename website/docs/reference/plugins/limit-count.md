@@ -5,7 +5,7 @@ description: Fixed-window request-count limiting per resolved key, using a share
 
 <span className="plugin-chip" style={{'--chip-color': '#ef4444'}}>limit-count</span>
 
-Counts requests per resolved key within a fixed time window and rejects those that exceed `count` requests per `time_window` seconds. Unlike the token-bucket [`rate-limit`](./rate-limit.md) plugin (smooth continuous refill), this enforces a hard cap per discrete window. Counting is delegated to a shared counter backend; only the in-memory `local` backend is available today. Place it before `upstream` to shed excess traffic early.
+Counts requests per resolved key within a fixed time window and rejects those that exceed `count` requests per `time_window` seconds. Unlike the token-bucket [`rate-limit`](./rate-limit.md) plugin (smooth continuous refill), this enforces a hard cap per discrete window. Counting is delegated to a shared counter backend: the in-memory `local` backend, or `redis` for cluster-shared counters via a named [`stores:`](../../guides/admin-api.md#endpoint-reference) entry. Place it before `upstream` to shed excess traffic early.
 
 ## Configuration
 
@@ -14,7 +14,8 @@ Counts requests per resolved key within a fixed time window and rejects those th
 | `count` | integer | — (**required**) | Requests allowed per window; must be greater than 0. |
 | `time_window` | integer | — (**required**) | Window length in seconds; must be greater than 0. |
 | `key` | string | `"$remote_addr"` | A `$var` template resolved per request (e.g. `$remote_addr`, `$consumer_name`, `$http_x_api_key`). An empty resolved value falls back to the client remote address. |
-| `policy` | string | `local` | Counter backend. Only `local` is available; `redis` and others are rejected at config load with the supported list. |
+| `policy` | string | `local` | Counter backend. `local` = per-instance in-memory windows; `redis` = cluster-shared windows via a named `stores:` entry. Anything else is rejected at config load with the supported list. |
+| `store` | string | — | Required when `policy: redis`: the name of a declared `stores:` entry (redis or valkey). Unknown names fail policy compilation. |
 | `group` | string | — | Prefixes the counter key so multiple nodes share one counter. |
 | `rejected_code` | integer | `503` | Status for over-limit requests (200–599). |
 | `rejected_msg` | string | — | Message placed in the rejection body (`{"error_msg": ...}`). |
@@ -42,6 +43,8 @@ On each request the key is counted against the fixed window:
 - **Over the limit** — the plugin writes a rejection onto `context.response` (status `rejected_code`, JSON body `{"error_msg": ...}` using `rejected_msg` or a default, `content-type: application/json`, plus the quota headers with `X-RateLimit-Remaining: 0`) and exits through the `limited` port.
 
 With the `local` policy, counts live in process memory: they are per gateway instance and are lost on restart. If the counter backend errors — a genuine infrastructure failure — the request fails with error code `RATE_LIMIT_UNAVAILABLE` through the `error` port (a `500` response is prepared) unless `allow_degradation` is set, in which case it passes through on `success`.
+
+With `policy: redis`, window boundaries are wall-clock aligned (`now / time_window`) and shared by every gateway instance — switching from `local` changes boundaries from first-request-aligned to clock-aligned. Backend errors respect `allow_degradation` (default `false`: reject). Errors are counted in `gateway_counter_store_errors_total{store}`.
 
 The quota headers are set on `context.response`; they are present when the final response is built and sent to the client.
 
