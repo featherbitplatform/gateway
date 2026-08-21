@@ -19,9 +19,6 @@ use crate::config::interpolate_env;
 use crate::config::StoreConfig;
 
 /// Result of a connectivity check (`POST /api/stores/{name}/ping`).
-// Consumed by task 9 (admin ping) — nothing in production code constructs
-// or reads this yet; only this module's own tests do.
-#[allow(dead_code)]
 pub struct PingInfo {
     pub latency_ms: u64,
     /// `valkey_version` when the server is Valkey, else `redis_version`.
@@ -142,9 +139,6 @@ impl RedisStoreClient {
     }
 
     /// `PING` + server version, for the Admin API connectivity check.
-    // Consumed by task 9 (admin ping) — not yet called by production code
-    // in this task.
-    #[allow(dead_code)]
     pub async fn ping(&self) -> Result<PingInfo, String> {
         let mut conn = self.conn().await?;
         let start = std::time::Instant::now();
@@ -179,8 +173,8 @@ impl RedisStoreClient {
         })
     }
 
-    // Consumed by task 9 (admin ping) — not yet called by production code
-    // in this task.
+    // Only this module's own tests call this — not yet used by any
+    // production code path.
     #[allow(dead_code)]
     pub fn name(&self) -> &str {
         &self.name
@@ -194,9 +188,6 @@ impl RedisStoreClient {
         &self.fingerprint
     }
 
-    // Consumed by task 9 (admin ping) — not yet called by production code
-    // in this task.
-    #[allow(dead_code)]
     pub fn connect_timeout(&self) -> Duration {
         self.connect_timeout
     }
