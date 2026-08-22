@@ -38,6 +38,7 @@ import type {
   ScriptFile,
   Supernode,
 } from '../types';
+import type { FieldOption } from '../pluginConfig';
 import { edgesAfterConnect } from '../connectionRules';
 import { extractSupernode, type ExtractionResult } from '../extractSupernode';
 import { buildPortSpecs, type PortSpecLookup } from '../portSpecs';
@@ -118,6 +119,13 @@ interface GraphCanvasProps {
    * palette's `when()` guard is concerned.
    */
   onCreateSupernodeDef?: (sn: Supernode) => Promise<boolean>;
+  /**
+   * Declared `stores:` entries as select options (`{value, label}`),
+   * forwarded to {@link NodeInspector}'s `storeOptions` prop for
+   * `optionsFrom: 'stores'` fields. Computed once in App from
+   * `StoreConfig[]` and shared with PluginConfigPanel.
+   */
+  storeOptions: FieldOption[];
 }
 
 /** ReactFlow custom node-type registry; every policy node renders as a {@link PluginNode}. */
@@ -261,6 +269,7 @@ export function GraphCanvas({
   showPortNames,
   onOpenPalette,
   onCreateSupernodeDef,
+  storeOptions,
 }: GraphCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -963,6 +972,7 @@ export function GraphCanvas({
           kind={kind}
           onRenameNode={kind === 'supernode' ? handleRenameBoundaryPort : undefined}
           boundaryDeleteBlocked={boundaryDeleteBlocked}
+          storeOptions={storeOptions}
         />
       )}
 
