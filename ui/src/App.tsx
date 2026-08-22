@@ -26,6 +26,7 @@ import type {
   PluginType,
   ScriptFile,
   DebugConfig,
+  StoreConfig,
 } from './types';
 
 /**
@@ -57,6 +58,7 @@ export default function App() {
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [supernodes, setSupernodes] = useState<Supernode[]>([]);
   const [pluginConfigs, setPluginConfigs] = useState<PluginConfigDef[]>([]);
+  const [stores, setStores] = useState<StoreConfig[]>([]);
   const [plugins, setPlugins] = useState<PluginType[]>([]);
   const [scripts, setScripts] = useState<ScriptFile[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
@@ -105,11 +107,12 @@ export default function App() {
 
   const loadData = useCallback(async () => {
     try {
-      const [r, p, sn, pc, pl, sc] = await Promise.all([
+      const [r, p, sn, pc, st, pl, sc] = await Promise.all([
         api.listRoutes(),
         api.listPolicies(),
         api.listSupernodes(),
         api.listPluginConfigs(),
+        api.listStores(),
         api.listPlugins(),
         api.listScripts(),
       ]);
@@ -117,6 +120,7 @@ export default function App() {
       setPolicies(p);
       setSupernodes(sn);
       setPluginConfigs(pc);
+      setStores(st);
       setPlugins(pl);
       setScripts(sc);
       setError(null);
@@ -152,6 +156,13 @@ export default function App() {
     : selectedPolicy;
 
   const selectedPluginConfigDef = pluginConfigs.find((pc) => pc.name === selectedPluginConfig) || null;
+
+  // Declared stores as select options for `optionsFrom: 'stores'` fields
+  // (SchemaForm's dynamicOptions), shared by NodeInspector and PluginConfigPanel.
+  const storeOptions = useMemo(
+    () => stores.map((s) => ({ value: s.name, label: `${s.name} (${s.type})` })),
+    [stores]
+  );
 
   // Shared configs only make sense for plugin nodes with real config, so the
   // create dialog's type picker excludes the boundary/no-config types —
@@ -658,6 +669,7 @@ export default function App() {
           key={selectedPluginConfigDef.name}
           def={selectedPluginConfigDef}
           onSave={handleSavePluginConfig}
+          storeOptions={storeOptions}
         />
       ) : (
         // Keyed by policy/supernode name: switching the selection remounts
