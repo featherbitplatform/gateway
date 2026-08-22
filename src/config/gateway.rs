@@ -43,6 +43,12 @@ pub struct GatewayConfig {
     /// nodes via `config_ref`; resolved at compile time (src/config/resolve.rs).
     #[serde(default)]
     pub plugin_configs: Vec<PluginConfigDef>,
+    /// Named shared stores (redis/valkey connections) referenced by plugin
+    /// config (`store: <name>`); clients are built at config-apply time
+    /// (src/stores/), so `${ENV_VAR}` placeholders never leave this struct
+    /// resolved.
+    #[serde(default)]
+    pub stores: Vec<StoreConfig>,
 }
 
 /// Binds a request match rule to a named policy.
@@ -213,6 +219,61 @@ pub struct PluginConfigDef {
     pub config: HashMap<String, serde_json::Value>,
 }
 
+/// A named shared store: a redis/valkey connection referenced by name from
+/// plugin config. Declared under top-level `stores:`. `url` and `password`
+/// support `${ENV_VAR:-default}` placeholders, resolved only when the client
+/// is built — the stored config (and everything the Admin API serves) keeps
+/// the raw placeholder.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct StoreConfig {
+    /// Unique name, referenced by plugin config (`store: <name>`).
+    pub name: String,
+    /// Backend type (YAML key: `type`): `redis` or `valkey` — aliases for the
+    /// same RESP backend.
+    #[serde(rename = "type")]
+    pub store_type: String,
+    /// Optional human-readable description (shown in the UI library).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Connection URL (`redis://` or `rediss://`).
+    pub url: String,
+    /// Optional password; overrides any password embedded in `url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// Namespace prefix for every key this store writes.
+    #[serde(default = "default_store_key_prefix")]
+    pub key_prefix: String,
+    /// Reserved for HA topologies (`sentinel`/`cluster`); v1 accepts only
+    /// `standalone` (the default) and rejects anything else at config load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology: Option<String>,
+    /// Reserved for HA topologies (sentinel/cluster endpoint lists); rejected
+    /// at config load in v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub urls: Option<Vec<String>>,
+    /// Connect/response timeout applied to the client and to `ping`.
+    #[serde(default = "default_store_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<StoreTlsConfig>,
+}
+
+fn default_store_key_prefix() -> String {
+    "fb".to_string()
+}
+
+fn default_store_connect_timeout_ms() -> u64 {
+    2000
+}
+
+/// TLS options for a `rediss://` store.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct StoreTlsConfig {
+    /// PEM CA bundle for a private CA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert_path: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +313,7 @@ supernodes:
             consumers: vec![],
             supernodes: gw.supernodes.clone(),
             plugin_configs: vec![],
+            stores: vec![],
         })
         .unwrap();
         let back: GatewayConfig = serde_yaml::from_str(&out).unwrap();
@@ -299,5 +361,55 @@ policies:
         .unwrap();
         let plain_out = serde_yaml::to_string(&plain).unwrap();
         assert!(!plain_out.contains("config_ref"), "{plain_out}");
+    }
+
+    /// Old configs stay valid; a store declaration round-trips through YAML
+    /// with placeholders preserved verbatim; optionals are omitted from output.
+    #[test]
+    fn test_stores_default_empty_and_roundtrip() {
+        let gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(gw.stores.is_empty());
+
+        let yaml = r#"
+stores:
+  - name: sessions-redis
+    type: valkey
+    description: "Shared session/counter backend"
+    url: ${REDIS_URL:-redis://127.0.0.1:6379}
+    password: ${REDIS_PASSWORD:-}
+    key_prefix: fb
+    connect_timeout_ms: 1500
+    tls:
+      ca_cert_path: /etc/ssl/redis-ca.pem
+"#;
+        let gw: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(gw.stores.len(), 1);
+        let s = &gw.stores[0];
+        assert_eq!(s.name, "sessions-redis");
+        assert_eq!(s.store_type, "valkey");
+        assert_eq!(s.url, "${REDIS_URL:-redis://127.0.0.1:6379}");
+        assert_eq!(s.password.as_deref(), Some("${REDIS_PASSWORD:-}"));
+        assert_eq!(s.key_prefix, "fb");
+        assert_eq!(s.connect_timeout_ms, 1500);
+        assert_eq!(
+            s.tls.as_ref().unwrap().ca_cert_path.as_deref(),
+            Some("/etc/ssl/redis-ca.pem")
+        );
+        assert!(s.topology.is_none());
+        assert!(s.urls.is_none());
+
+        // Defaults apply when omitted.
+        let gw: GatewayConfig = serde_yaml::from_str(
+            "stores:\n  - name: s1\n    type: redis\n    url: redis://localhost\n",
+        )
+        .unwrap();
+        assert_eq!(gw.stores[0].key_prefix, "fb");
+        assert_eq!(gw.stores[0].connect_timeout_ms, 2000);
+
+        // Round-trip: raw placeholder survives serialization, no null noise.
+        let out = serde_yaml::to_string(&gw).unwrap();
+        assert!(out.contains("redis://localhost"), "{out}");
+        assert!(!out.contains("description"), "{out}");
+        assert!(!out.contains("topology"), "{out}");
     }
 }

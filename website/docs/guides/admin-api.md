@@ -1,6 +1,6 @@
 ---
 title: Admin API
-description: REST API for routes, policies, config reload, and operational endpoints, with HTTP Basic authentication.
+description: REST API for routes, policies, stores, config reload, and operational endpoints, with HTTP Basic authentication.
 ---
 
 The admin API runs on a dedicated port (default `9090`), separate from the data plane. It is enabled by the `admin` section of `system.yaml`; omitting that section disables the admin server entirely.
@@ -43,6 +43,12 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `GET` | `/api/plugin-configs/:name` | Get a shared plugin config definition | `404` unknown plugin config |
 | `PUT` | `/api/plugin-configs/:name` | Create **or** update a shared plugin config definition (upsert) | `400` validation/recompile failed |
 | `DELETE` | `/api/plugin-configs/:name` | Delete a shared plugin config definition | `404` unknown plugin config; `400` recompile failed (e.g. a node still references it via `config_ref`) |
+| `GET` | `/api/stores` | List named stores (redis/valkey connections) | — |
+| `POST` | `/api/stores` | Create a store | `409` if the name exists; `400` on validation failure |
+| `GET` | `/api/stores/:name` | Get one store (raw config — `${ENV}` placeholders are never resolved) | `404` unknown store |
+| `PUT` | `/api/stores/:name` | Create **or** update a store (upsert) | `400` on validation failure |
+| `DELETE` | `/api/stores/:name` | Delete a store | `404` unknown store; `409` `{"error":"in_use","referrers":[...]}` if referenced |
+| `POST` | `/api/stores/:name/ping` | Connectivity check: latency + server version | `404` unknown store; `400` bad config; `502` unreachable; `504` timeout; `501` headless build |
 | `GET` | `/api/consumers` | List all consumers (with credentials) | — |
 | `GET` | `/api/consumers/:name` | Get a consumer | `404` unknown consumer |
 | `POST` | `/api/consumers` | Create a consumer | `409` name taken; `400` store rebuild rejected |
@@ -51,7 +57,7 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `GET` | `/api/plugins` | Static catalog of node/plugin types (id + description) | — |
 | `GET` | `/api/scripts` | List scripted-plugin files (`.lua`) in the `plugins/` directory next to the config directory; missing directory yields an empty list | — |
 | `GET` | `/api/status` | Gateway version plus route and policy counts | — |
-| `GET` | `/api/config/export` | Live in-memory config (routes + policies + supernodes + plugin configs) rendered as YAML (`text/yaml`) | `500` serialization failed |
+| `GET` | `/api/config/export` | Live in-memory config (routes + policies + supernodes + plugin configs + stores) rendered as YAML (`text/yaml`) | `500` serialization failed |
 | `GET` | `/api/debug/config` | Effective [debug-mode](./debugging.md) settings; answers even when debug is off | — |
 | `GET` | `/api/debug/traces` | Recorded traces, newest first; filter with `?route=&policy=&status=&source=&limit=` | `404` debug mode off |
 | `GET` | `/api/debug/traces/:id` | One trace with per-step context changes | `404` unknown/evicted, or debug off |
@@ -68,6 +74,7 @@ Notes on mutation semantics:
 - **Supernodes** are inlined into every referencing policy at compile time (see [Supernodes](../concepts/supernodes.md)), so a `PUT`/`DELETE` on `/api/supernodes/:name` re-expands and recompiles all routes just like a policy edit — deleting a definition still referenced by a policy fails with `400`, leaving the previous definition and compiled routes active.
 - **Shared plugin configs** are resolved (`config_ref` materialized into the effective node config) at the same compile choke point as supernode expansion, before it (see [Shared plugin configs](../concepts/plugin-configs.md)). A `PUT`/`DELETE` on `/api/plugin-configs/:name` revalidates and recompiles all routes just like a policy edit — an unknown reference or a `type` mismatch introduced by the edit, or a delete while still referenced by any policy or supernode node, fails with `400` and leaves the previous definition and compiled routes active.
 - **Consumer mutations** rebuild the consumer store and hot-swap it (no graph recompile); a rejected rebuild (duplicate credential, malformed credential object) leaves the previous store active.
+- `stores` follow the standard semantics (POST rejects duplicates, PUT upserts) with one addition: DELETE is guarded — a store referenced by any node or shared plugin config returns `409 {"error":"in_use","referrers":[...]}` naming each referrer. Ping resolves `${ENV_VAR}` placeholders at call time; responses never echo connection details. Binaries built without the `redis-store` feature reject any declared store at config load and answer ping with 501.
 - For both `PUT` endpoints, the name in the URL path overrides any name in the JSON body.
 - Every mutation triggers validation and recompilation of all route graphs. On failure the endpoint returns `400` and the previously compiled routes stay active.
 - Changes take effect immediately (hot-reload, no restart).

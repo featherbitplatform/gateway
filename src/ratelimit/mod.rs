@@ -3,9 +3,10 @@
 //! The featherbit analogue of APISIX's `policy: local | redis` counter
 //! abstraction. Rate-limit plugins (limit-count, api-breaker, ...) resolve a
 //! per-client key, then ask a [`CounterStore`] to count it within a fixed
-//! window. `local` (in-memory, per gateway instance) is always available; a
-//! Redis-backed store for cross-instance limits is planned behind a feature
-//! flag and slots in as another [`CounterStore`] implementation.
+//! window. `local` (in-memory, per gateway instance) is always available;
+//! `policy: redis` resolves a named `stores:` entry to a cluster-shared
+//! counter (`crate::stores::counter::RedisCounterStore`, `redis-store`
+//! feature) instead of going through this registry.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -99,8 +100,9 @@ impl CounterStore for LocalCounterStore {
 
 /// Resolves a `policy` config value to a counter backend.
 ///
-/// `local` is always available. Unknown policies (including `redis` until
-/// the feature lands) fail at config load with a descriptive error.
+/// `local` is always available. `redis` is not in this registry — it
+/// resolves via `stores:` (see the module doc) — so any other name, unknown
+/// policy strings included, fails at config load with a descriptive error.
 pub struct CounterStoreRegistry {
     stores: HashMap<String, Arc<dyn CounterStore>>,
 }
@@ -171,7 +173,7 @@ mod tests {
         let registry = CounterStoreRegistry::default();
         assert!(registry.get("local").is_ok());
         let err = match registry.get("redis") {
-            Ok(_) => panic!("'redis' should not resolve yet"),
+            Ok(_) => panic!("'redis' is not in this registry (it resolves via stores:)"),
             Err(e) => e,
         };
         assert!(err.contains("unknown rate-limit policy"), "{err}");
