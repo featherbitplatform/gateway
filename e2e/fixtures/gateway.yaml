@@ -635,6 +635,10 @@ policies:
         to: client.in
       - from: dingtalk.denied
         to: client.in
+      # Mandatory since dingtalk-auth gained the interactive port spec
+      # (session-mode 302s); unused in this stateless policy.
+      - from: dingtalk.redirect
+        to: client.in
       - from: dingtalk.error
         to: client.in
 
@@ -672,6 +676,10 @@ policies:
       - from: echo-backend.success
         to: client.in
       - from: feishu.denied
+        to: client.in
+      # Mandatory since feishu-auth gained the interactive port spec
+      # (session-mode 302s); unused in this stateless policy.
+      - from: feishu.redirect
         to: client.in
       - from: feishu.error
         to: client.in
