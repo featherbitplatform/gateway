@@ -226,7 +226,19 @@ impl WorkflowPlugin {
                         .get("policy")
                         .and_then(|v| v.as_str())
                         .unwrap_or("local");
-                    let store = resources.counters.get(policy)?;
+                    let store = if policy == "redis" {
+                        let name = params
+                            .get("store")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .ok_or_else(|| {
+                                "workflow limit-count: policy 'redis' requires 'store' naming a declared stores: entry"
+                                    .to_string()
+                            })?;
+                        resources.stores.load().counter_store(name)?
+                    } else {
+                        resources.counters.get(policy)?
+                    };
 
                     Action::LimitCount(LimitCount {
                         count,
@@ -565,12 +577,27 @@ mod tests {
             }]
         }))
         .is_err());
-        // Unknown counter policy.
-        assert!(plugin(serde_json::json!({
-            "rules": [{
-                "actions": [["limit-count", { "count": 1, "time_window": 1, "policy": "redis" }]]
-            }]
-        }))
-        .is_err());
+        // redis policy without a store name.
+        let err = match plugin(serde_json::json!({
+            "rules": [{ "case": [["uri", "==", "/x"]],
+                        "actions": [["limit-count", {"count": 1, "time_window": 1, "policy": "redis"}]] }]
+        })) {
+            Ok(_) => panic!("policy 'redis' without 'store' should be rejected"),
+            Err(e) => e,
+        };
+        assert!(err.contains("requires 'store'"), "{err}");
+
+        // redis policy naming an undeclared store.
+        #[cfg(feature = "redis-store")]
+        {
+            let err = match plugin(serde_json::json!({
+                "rules": [{ "case": [["uri", "==", "/x"]],
+                            "actions": [["limit-count", {"count": 1, "time_window": 1, "policy": "redis", "store": "nope"}]] }]
+            })) {
+                Ok(_) => panic!("policy 'redis' with an undeclared store should be rejected"),
+                Err(e) => e,
+            };
+            assert!(err.contains("unknown store 'nope'"), "{err}");
+        }
     }
 }

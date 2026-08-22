@@ -23,8 +23,9 @@ use crate::vars::template::Template;
 
 /// Enforces a per-key request count within a fixed time window.
 ///
-/// On each request the resolved key is counted against a [`CounterStore`]
-/// (currently only the in-memory `local` backend). Within the limit the
+/// On each request the resolved key is counted against a [`CounterStore`]:
+/// the in-memory `local` backend, or a named `stores:` entry via
+/// `policy: redis` for cluster-shared counters. Within the limit the
 /// request passes through the `success` port; over the limit it is rejected
 /// with `rejected_code` and a JSON `{"error_msg": ...}` body through the
 /// `limited` port. A counter-backend failure stays on `error`. When
@@ -67,8 +68,12 @@ impl LimitCountPlugin {
     ///   `$var` interpolation (e.g. `$remote_addr`, `$consumer_name`,
     ///   `$http_x_api_key`). An empty resolved value falls back to the client
     ///   remote address.
-    /// - `policy` (string, default `"local"`): counter backend. Only `local`
-    ///   is available; `redis`/others are rejected at config load.
+    /// - `policy` (string, default `"local"`): counter backend. `local` is
+    ///   always available; `redis` resolves `store:` to a named `stores:`
+    ///   entry for cluster-shared counters (requires `store:`; any other
+    ///   value is rejected at config load).
+    /// - `store` (string, required iff `policy: redis`): name of a declared
+    ///   `stores:` entry to use as the counter backend.
     /// - `group` (string, optional): prefixes the counter key so multiple
     ///   nodes share one counter.
     /// - `rejected_code` (integer 200-599, default `503`): status for
@@ -120,9 +125,22 @@ impl LimitCountPlugin {
             .get("policy")
             .and_then(|v| v.as_str())
             .unwrap_or("local");
-        // Resolves the backend (and surfaces the supported-policy list on an
-        // unknown/not-yet-implemented policy such as `redis`).
-        let store = resources.counters.get(policy)?;
+        // `redis` resolves a named `stores:` entry (cluster-shared counters);
+        // anything else goes through the local registry, which also produces
+        // the supported-policy list for unknown names.
+        let store = if policy == "redis" {
+            let name = config
+                .get("store")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    "limit-count: policy 'redis' requires 'store' naming a declared stores: entry"
+                        .to_string()
+                })?;
+            resources.stores.load().counter_store(name)?
+        } else {
+            resources.counters.get(policy)?
+        };
 
         let group = config
             .get("group")
@@ -313,17 +331,45 @@ mod tests {
         assert!(plugin(serde_json::json!({ "count": 10, "time_window": 60 })).is_ok());
     }
 
+    /// `policy: redis` requires `store:`; a policy name that is neither
+    /// `local` nor `redis` is rejected with the supported list.
+    ///
+    /// (`LimitCountPlugin` isn't `Debug` — its `store: Arc<dyn CounterStore>`
+    /// field can't derive it — so `unwrap_err()` doesn't compile here; match
+    /// instead, as `src/stores/mod.rs`'s tests already do for the same reason.)
+    #[test]
+    fn test_redis_policy_requires_store() {
+        let err = match plugin(serde_json::json!({
+            "count": 1, "time_window": 60, "policy": "redis"
+        })) {
+            Ok(_) => panic!("policy 'redis' without 'store' should be rejected"),
+            Err(e) => e,
+        };
+        assert!(err.contains("requires 'store'"), "{err}");
+    }
+
     #[test]
     fn test_unknown_policy_rejected() {
         let err = match plugin(serde_json::json!({
-            "count": 10,
-            "time_window": 60,
-            "policy": "redis"
+            "count": 1, "time_window": 60, "policy": "memcached"
         })) {
-            Ok(_) => panic!("'redis' policy should not resolve yet"),
+            Ok(_) => panic!("policy 'memcached' should be rejected"),
             Err(e) => e,
         };
-        assert!(err.contains("policy"), "{err}");
+        assert!(err.contains("unknown rate-limit policy"), "{err}");
+    }
+
+    /// `store:` must name a declared store; the error lists what exists.
+    #[cfg(feature = "redis-store")]
+    #[test]
+    fn test_redis_policy_unknown_store_rejected() {
+        let err = match plugin(serde_json::json!({
+            "count": 1, "time_window": 60, "policy": "redis", "store": "nope"
+        })) {
+            Ok(_) => panic!("policy 'redis' with an undeclared store should be rejected"),
+            Err(e) => e,
+        };
+        assert!(err.contains("unknown store 'nope'"), "{err}");
     }
 
     #[test]

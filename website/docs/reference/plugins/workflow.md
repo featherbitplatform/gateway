@@ -32,7 +32,8 @@ All expressions and action parameters are validated at config load; unsupported 
 | `key` | string | `"$remote_addr"` | `$var` template resolved per request into the counter key (e.g. `"$http_x_api_key"`, `"$remote_addr:$uri"`). |
 | `rejected_code` | integer 200–599 | `503` | Status when the limit is exceeded. |
 | `rejected_msg` | string | — | When set, the rejection body is `{"error_msg": "<msg>"}`; empty body otherwise. |
-| `policy` | string | `"local"` | Counter backend name (only `local`, in-memory per instance, is available today). |
+| `policy` | string | `"local"` | Counter backend. `local` = per-instance in-memory windows; `redis` = cluster-shared windows via a named `stores:` entry. |
+| `store` | string | — | Required when `policy: redis`: the name of a declared `stores:` entry (redis or valkey). Unknown names fail policy compilation. |
 
 ```yaml
 type: workflow
@@ -55,7 +56,7 @@ Rules are checked top to bottom; a rule without a `case` always matches. The **f
 - **`return` matches** — the plugin writes the rejection onto `context.response` (configured status, JSON body `{"error_msg":"rejected by workflow"}`, `content-type: application/json`) and exits through the **`denied` port**.
 - **`limit-count`, within limit** — the plugin sets `x-ratelimit-limit` / `x-ratelimit-remaining` / `x-ratelimit-reset` response headers and continues through the **`success` port**.
 - **`limit-count`, exceeded** — rejection written onto `context.response` (status `rejected_code`, quota headers, body from `rejected_msg` or empty) and exits through the **`limited` port**.
-- **`limit-count`, counter backend failure** — a genuine infrastructure failure; fails with error code `RATE_LIMIT_ERROR` through the **`error` port** (rare — the in-memory `local` backend is effectively infallible).
+- **`limit-count`, counter backend failure** — a genuine infrastructure failure; fails with error code `RATE_LIMIT_ERROR` through the **`error` port**. With the `local` policy this is rare (the in-memory backend is effectively infallible); with `policy: redis` a backend error always exits through `error` — the workflow `limit-count` action has no `allow_degradation` fail-open option, unlike the standalone `limit-count` plugin.
 - **No rule matches** — passthrough on `success`, Context untouched.
 
 ### Wiring the early exits
@@ -72,12 +73,13 @@ edges:
 
 Routing `denied`/`limited` through an `error-handler` will replace the prepared body with the handler's template.
 
-Counters are isolated per workflow node instance and per rule, live in process memory, and reset on restart/config reload.
+Counters are isolated per workflow node instance and per rule. With the `local` policy they live in process memory and reset on restart/config reload. With `policy: redis`, counters are shared by every gateway instance via the named `store`, and window boundaries are wall-clock aligned (`now / time_window`) rather than first-request-aligned — switching from `local` changes when windows roll over. Backend errors are counted in `gateway_counter_store_errors_total{store}` and always exit through `error` (no `allow_degradation`).
 
 ## Limitations
 
 - Only the `return` and `limit-count` actions are supported.
-- `limit-count`'s `key` is a `$var` template (default `"$remote_addr"`); there is no separate `key_type`, and `policy` supports only `local`.
+- `limit-count`'s `key` is a `$var` template (default `"$remote_addr"`); there is no separate `key_type`.
+- `limit-count`'s `redis` policy has no `allow_degradation` fail-open option (unlike the standalone `limit-count` plugin) — a backend error always rejects through the `error` port.
 - Quota headers are always sent (not configurable).
 
 ## Ports
