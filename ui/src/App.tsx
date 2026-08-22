@@ -569,6 +569,17 @@ export default function App() {
     setToast({ tone: 'warning', title, message });
   }, []);
 
+  /**
+   * Stable error reporter for the dialog panels. Memoized deliberately:
+   * panels' refresh callbacks depend on it, so an inline arrow here would
+   * give every render a new identity and refire their load effects — on a
+   * failing store that becomes an unbounded request/toast loop.
+   */
+  const handlePanelError = useCallback(
+    (title: string, message?: string) => setToast({ tone: 'error', title, message }),
+    [],
+  );
+
   // Selection across routes/supernodes/plugin configs/stores is mutually
   // exclusive (see handleSelect* above), so any one of them being set means
   // "something is selected" for the view-yaml command's `when`.
@@ -769,7 +780,7 @@ export default function App() {
           key={selectedStoreDef.name}
           def={selectedStoreDef}
           onSave={handleSaveStore}
-          onError={(title, message) => setToast({ tone: 'error', title, message })}
+          onError={handlePanelError}
         />
       ) : selectedPluginConfigDef ? (
         <PluginConfigPanel
@@ -1097,14 +1108,14 @@ export default function App() {
         config={debugConfig}
         policies={policies}
         selectedPolicy={selectedPolicy?.name ?? null}
-        onError={(title, message) => setToast({ tone: 'error', title, message })}
+        onError={handlePanelError}
       />
 
       <SessionsPanel
         open={sessionsOpen}
         onClose={() => setSessionsOpen(false)}
         stores={stores}
-        onError={(title, message) => setToast({ tone: 'error', title, message })}
+        onError={handlePanelError}
       />
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
