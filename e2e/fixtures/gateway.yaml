@@ -1,6 +1,23 @@
 # Seed config for the e2e suite. Copied to e2e/.tmp/ before the gateway boots:
 # admin-API writes persist back to the config file, and a test run must not
 # dirty the fixture.
+stores:
+  # Lazily-connecting: the suite boots fine with no redis running. The gated
+  # session scenarios (E2E-SESS-*) skip unless FEATHERBIT_TEST_REDIS_URL is set.
+  - name: e2e-redis
+    type: redis
+    # A description so the sidebar shows this instead of the raw url --
+    # ${FEATHERBIT_TEST_REDIS_URL:-...} contains "featherbit" as a substring,
+    # which would otherwise collide with E2E-UI-01's page-title assertion.
+    description: e2e fixture store
+    url: ${FEATHERBIT_TEST_REDIS_URL:-redis://127.0.0.1:6379}
+    key_prefix: fbe2e
+  # Deliberately unreachable, for the ping-failure scenario.
+  - name: e2e-dead
+    type: redis
+    url: redis://127.0.0.1:1
+    connect_timeout_ms: 300
+
 routes:
   - name: echo-api
     match:

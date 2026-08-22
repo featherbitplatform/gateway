@@ -411,6 +411,28 @@ own dedicated outcome port (see "Data plane" above) — and a single
 | E2E-VC-05 | Bearer auth, body `{"user":{"id":7}}` | `200` — `NOT is_null` holds |
 | E2E-VC-06 | Open `vc-policy`'s `validate` node; the builder shows 3 top-level entries (2 rules + 1 `OR` group, via `data-testid="condition-node"`/`data-depth`); change the `contains` rule's value from `Bearer` to `Token` and save | `authorization: Bearer tok` now `401`, `authorization: Token tok` (+ a passing body) `200` — the UI edit round-trips through the admin API and changes live traffic |
 
+## Stores & sessions — `tests/stores-sessions.spec.ts`
+
+Named `stores:` connections (`/api/stores`) and the server-side sessions admin
+surface (`/api/sessions`). The fixture declares two stores: `e2e-redis`
+(`url: ${FEATHERBIT_TEST_REDIS_URL:-redis://127.0.0.1:6379}`, lazily
+connecting so the suite boots with no redis running) and `e2e-dead`
+(`url: redis://127.0.0.1:1`, `connect_timeout_ms: 300`, deliberately
+unreachable). The four scenarios below are **unconditional**: they run every
+time, with or without redis, and never touch a live backend (ping targets a
+closed port; the sessions endpoint calls are validation-only 400/404 before
+any store lookup happens). A later batch of `E2E-SESS-*` scenarios exercises
+real session storage/list/revoke against a live redis and follows the
+convention every gated scenario in this suite uses: they skip themselves
+(rather than fail) when `FEATHERBIT_TEST_REDIS_URL` is unset.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-STORE-01 | `GET /api/stores` lists both fixture stores with raw config; `POST` a duplicate `e2e-redis`; `PUT`/`DELETE` a scratch store | The `${FEATHERBIT_TEST_REDIS_URL:-...}` placeholder appears verbatim (never resolved); duplicate `POST` is `409`; the scratch store round-trips create → read → delete → `404` |
+| E2E-STORE-02 | Reference `e2e-redis` from a `limit-count` plugin config's `store` key, then `DELETE /api/stores/e2e-redis` | `409 {"error":"in_use","referrers":["plugin_config 'e2e-store-ref'"]}`; deleting the plugin config (not the fixture-owned store) clears the reference |
+| E2E-STORE-03 | **Browser.** Create a store named `e2e-ui-store` via the sidebar's "New store" dialog (`url: redis://127.0.0.1:1`), open it, click **Ping**, then delete it via the sidebar's delete button + confirm dialog | The store appears in the sidebar; Ping surfaces a failure message (timeout or refused, OS-dependent); delete removes it from the sidebar and `GET /api/stores/e2e-ui-store` returns `404` |
+| E2E-STORE-04 | `GET /api/sessions` (no `store`); `GET /api/sessions?store=nope` | `400`; `404` — both decided before any backend is contacted |
+
 ## Deliberately out of scope
 
 Covered by the Rust suite with real sockets, or unreachable from Playwright:
@@ -419,7 +441,9 @@ Covered by the Rust suite with real sockets, or unreachable from Playwright:
 - HTTP/2 (ALPN + h2c) and the WebSocket relay, incl. RFC 8441
 - L4 TCP/UDP stream proxying (Playwright cannot speak raw UDP)
 - Graceful-shutdown drain on SIGTERM
-- etcd cluster convergence (needs `docker-compose.etcd.yaml`)
+- etcd cluster convergence (needs `docker-compose.etcd.yaml`) — redis/valkey
+  stores, by contrast, now have gated in-suite coverage (`E2E-SESS-*`) against
+  a live backend when `FEATHERBIT_TEST_REDIS_URL` is set
 
 These are candidates for a Rust `tests/e2e.rs` target later; they are not gaps in
 *this* suite.
