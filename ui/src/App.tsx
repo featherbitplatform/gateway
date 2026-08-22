@@ -12,6 +12,7 @@ import { PluginConfigPanel } from './components/PluginConfigPanel';
 import { StoresPanel } from './components/StoresPanel';
 import { Dialog, DialogButton, DialogField } from './components/Dialog';
 import { DebugPanel } from './components/DebugPanel';
+import { SessionsPanel } from './components/SessionsPanel';
 import { Toast, type ToastData } from './components/Toast';
 import { CommandPalette } from './components/CommandPalette';
 import { buildCommands, matchesShortcut, type CommandContext } from './commands';
@@ -109,6 +110,9 @@ export default function App() {
   // panel can explain why it is unavailable rather than appearing broken.
   const [debugOpen, setDebugOpen] = useState(false);
   const [debugConfig, setDebugConfig] = useState<DebugConfig | null>(null);
+
+  // Sessions panel state.
+  const [sessionsOpen, setSessionsOpen] = useState(false);
 
   // Port-name visibility (P) and the command palette (Ctrl+K). Owned here —
   // a single usePortNames() call — so the palette's toggle and the canvas
@@ -758,6 +762,7 @@ export default function App() {
         onViewYaml={handleViewYaml}
         onOpenDebug={() => setDebugOpen(true)}
         debugEnabled={debugConfig?.enabled ?? false}
+        onOpenSessions={() => setSessionsOpen(true)}
       />
       {selectedStoreDef ? (
         <StoresPanel
@@ -1092,6 +1097,13 @@ export default function App() {
         config={debugConfig}
         policies={policies}
         selectedPolicy={selectedPolicy?.name ?? null}
+        onError={(title, message) => setToast({ tone: 'error', title, message })}
+      />
+
+      <SessionsPanel
+        open={sessionsOpen}
+        onClose={() => setSessionsOpen(false)}
+        stores={stores}
         onError={(title, message) => setToast({ tone: 'error', title, message })}
       />
 
