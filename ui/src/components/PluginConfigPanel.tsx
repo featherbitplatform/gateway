@@ -18,6 +18,7 @@ import { useState } from 'react';
 import type { PluginConfigDef } from '../types';
 import { getPluginMeta } from '../pluginMeta';
 import { getPluginConfigSchema } from '../pluginConfig';
+import type { FieldOption } from '../pluginConfig';
 import { SchemaForm } from './SchemaForm';
 
 interface PluginConfigPanelProps {
@@ -25,9 +26,16 @@ interface PluginConfigPanelProps {
   def: PluginConfigDef;
   /** Fires with the edited definition when Save is clicked. */
   onSave: (def: PluginConfigDef) => void;
+  /**
+   * Declared `stores:` entries as select options (`{value, label}`), forwarded
+   * into SchemaForm's `dynamicOptions.stores` for `optionsFrom: 'stores'`
+   * fields. Computed once in App from `StoreConfig[]` and shared with
+   * NodeInspector.
+   */
+  storeOptions: FieldOption[];
 }
 
-export function PluginConfigPanel({ def, onSave }: PluginConfigPanelProps) {
+export function PluginConfigPanel({ def, onSave, storeOptions }: PluginConfigPanelProps) {
   const [description, setDescription] = useState(def.description ?? '');
   const [config, setConfig] = useState<Record<string, unknown>>(def.config ?? {});
   // JSON-fallback buffer (schema-less types only). Seeded once from
@@ -121,7 +129,12 @@ export function PluginConfigPanel({ def, onSave }: PluginConfigPanelProps) {
         />
 
         {schema.length > 0 ? (
-          <SchemaForm schema={schema} value={config} onChange={setConfig} />
+          <SchemaForm
+            schema={schema}
+            value={config}
+            onChange={setConfig}
+            dynamicOptions={{ stores: storeOptions }}
+          />
         ) : (
           <div>
             <label

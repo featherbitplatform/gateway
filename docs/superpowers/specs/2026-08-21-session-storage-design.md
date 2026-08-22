@@ -372,6 +372,25 @@ clock-aligned windows). CI runs the suite in a service-container matrix:
    ping it, wire it via the store picker, verify the raw placeholder (not
    the secret) round-trips through the API.
 
+**Amendment (as shipped):** the interactive-login e2e scenarios
+(`E2E-SESS-01..03`) run the redis-backed OIDC login against the suite's
+hermetic mock-idp (a real RS256/JWKS-serving in-process IdP already used by
+the existing interactive `app-api` scenarios), not the Keycloak realm under
+`tests/`. The Keycloak realm stays a manual local playground — never wired
+into `npm test` — because it needs a real Docker Keycloak instance and would
+make the suite non-hermetic. The choreography (authorize → callback →
+session cookie) is the same either way.
+
+**Amendment (as shipped):** "session survives a gateway restart" is not
+covered by e2e. The Playwright harness boots one shared gateway process per
+suite run and reuses it across all scenarios — there is no per-scenario
+restart to hook into. Restart-survival for redis-backed sessions is instead
+covered by the Rust integration tests in §5 above ("Integration (live
+store)"): a session written by one `RedisSessionStore` instance is read back
+by a freshly constructed one against the same backend, which is the property
+that actually matters (the session lives in Redis, not in gateway process
+memory) without needing to actually kill and restart a binary.
+
 **Build/CI guards**: `--no-default-features` build proves `redis-store`
 compiles out; config-load test asserts the "built without redis-store"
 error; clippy/tests as usual; the `redis` crate enters the existing
