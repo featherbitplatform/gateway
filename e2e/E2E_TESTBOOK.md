@@ -421,10 +421,12 @@ connecting so the suite boots with no redis running) and `e2e-dead`
 unreachable). The four scenarios below are **unconditional**: they run every
 time, with or without redis, and never touch a live backend (ping targets a
 closed port; the sessions endpoint calls are validation-only 400/404 before
-any store lookup happens). A later batch of `E2E-SESS-*` scenarios exercises
-real session storage/list/revoke against a live redis and follows the
-convention every gated scenario in this suite uses: they skip themselves
-(rather than fail) when `FEATHERBIT_TEST_REDIS_URL` is unset.
+any store lookup happens). The `E2E-SESS-*` scenarios that follow exercise
+real session storage/list/revoke against a live redis via the `oidc-redis`
+route/policy (`openid-connect`, `session_storage: redis`, `session_store:
+e2e-redis`) and follow the convention every gated scenario in this suite
+uses: they skip themselves (rather than fail) when `FEATHERBIT_TEST_REDIS_URL`
+is unset.
 
 | ID | Scenario | Expected |
 |---|---|---|
@@ -432,6 +434,9 @@ convention every gated scenario in this suite uses: they skip themselves
 | E2E-STORE-02 | Reference `e2e-redis` from a `limit-count` plugin config's `store` key, then `DELETE /api/stores/e2e-redis` | `409 {"error":"in_use","referrers":["plugin_config 'e2e-store-ref'"]}`; deleting the plugin config (not the fixture-owned store) clears the reference |
 | E2E-STORE-03 | **Browser.** Create a store named `e2e-ui-store` via the sidebar's "New store" dialog (`url: redis://127.0.0.1:1`), open it, click **Ping**, then delete it via the sidebar's delete button + confirm dialog | The store appears in the sidebar; Ping surfaces a failure message (timeout or refused, OS-dependent); delete removes it from the sidebar and `GET /api/stores/e2e-ui-store` returns `404` |
 | E2E-STORE-04 | `GET /api/sessions` (no `store`); `GET /api/sessions?store=nope` | `400`; `404` — both decided before any backend is contacted |
+| E2E-SESS-01 | *Gated on `FEATHERBIT_TEST_REDIS_URL`.* Interactive login on `/oidc-redis/echo` (same authorize/callback choreography as the `app-api` interactive scenarios, driven through a plain API context), then replay the request | The `oidc_redis_session` cookie is a bare 32-char lowercase-hex id (`/^[0-9a-f]{32}$/`), not a sealed blob; the replayed request succeeds without a second trip to the IdP |
+| E2E-SESS-02 | *Gated.* `GET /api/sessions?store=e2e-redis` after establishing a session | The listing includes the session with `subject: 'alice'`, `plugin: 'openid-connect'`, `policy: 'oidc-redis-policy'`, `route: 'oidc-redis'`; the record has no payload-like fields beyond `id`/`subject`/`plugin`/`policy`/`route`/`created_at`/`expires_at` |
+| E2E-SESS-03 | *Gated.* **Browser.** Log in via `/oidc-redis/echo`, then in the admin UI open the Sessions panel (footer button), select store `e2e-redis`, and click the session's revoke button | The row disappears; a subsequent data-plane request carrying the old cookie is bounced back into login (302 to the IdP) |
 
 ## Deliberately out of scope
 
