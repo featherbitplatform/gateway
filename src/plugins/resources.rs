@@ -34,6 +34,10 @@ pub struct PluginResources {
     pub counters: CounterStoreRegistry,
     /// Shared state for traffic-control node pairs (concurrency, breakers, cache).
     pub traffic: TrafficRegistries,
+    /// Named shared stores (redis/valkey), swapped on config (re)compile.
+    /// Plugins resolve a store by name at construction time and hold the
+    /// resulting `Arc` — nothing reads this on the request path.
+    pub stores: ArcSwap<crate::stores::StoreRegistry>,
 }
 
 impl PluginResources {
@@ -46,6 +50,7 @@ impl PluginResources {
             consumers: ArcSwap::from_pointee(ConsumerStore::default()),
             counters: CounterStoreRegistry::default(),
             traffic: TrafficRegistries::default(),
+            stores: ArcSwap::from_pointee(crate::stores::StoreRegistry::default()),
         })
     }
 
