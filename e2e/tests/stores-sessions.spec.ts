@@ -12,7 +12,7 @@
  */
 import {test, expect, request} from '@playwright/test';
 
-import {GATEWAY_URL} from '../playwright.config';
+import {GATEWAY_URL, IDP_URL} from '../playwright.config';
 import {adminApi, waitForDataPlane} from '../helpers/admin';
 
 test.describe('Stores & sessions', () => {
@@ -166,12 +166,23 @@ test.describe('Redis-backed sessions', () => {
     // longer and look nothing like plain hex.
     expect(cookie!.value).toMatch(/^[0-9a-f]{32}$/);
 
-    // Replay: the same context's jar carries the id, and the gateway must
-    // accept it from the store without a second round trip to the IdP.
-    const second = await traffic.get('/oidc-redis/second-visit');
+    // Replay: prove the store-backed cookie authenticates on its own, not by
+    // silently redoing the login dance -- the mock IdP's /authorize is
+    // non-interactive, so a context that auto-follows redirects would land on
+    // the same 200 either way and couldn't tell replay from re-authentication.
+    // A fresh maxRedirects:0 context carrying just the cookie makes the two
+    // cases observably different: a real session hit is an IMMEDIATE 200; a
+    // miss is an immediate 302 to the IdP.
+    const replay = await request.newContext({
+      baseURL: GATEWAY_URL,
+      maxRedirects: 0,
+      extraHTTPHeaders: {cookie: `oidc_redis_session=${cookie!.value}`},
+    });
+    const second = await replay.get('/oidc-redis/second-visit');
     expect(second.status()).toBe(200);
     const echo2 = (await second.json()) as Echo;
     expect(echo2.path).toBe('/second-visit');
+    await replay.dispose();
 
     await traffic.dispose();
   });
@@ -241,6 +252,13 @@ test.describe('Redis-backed sessions', () => {
     });
     const result = await waitForDataPlane(raw, '/oidc-redis/echo', (status) => status === 302);
     expect(result.status).toBe(302);
+
+    // waitForDataPlane's check only sees status/body -- confirm separately
+    // that the 302 is genuinely a re-entry into login (not some other
+    // redirect), same assertion shape as E2E-OIDC-10's forged-cookie case.
+    const confirm = await raw.get('/oidc-redis/echo');
+    expect(confirm.status()).toBe(302);
+    expect(confirm.headers()['location']).toContain(`${IDP_URL}/authorize`);
 
     await raw.dispose();
   });
