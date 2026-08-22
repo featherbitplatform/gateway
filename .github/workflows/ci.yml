@@ -47,6 +47,39 @@ jobs:
       # The tree is clippy-clean today; keep it that way.
       - run: cargo clippy --all-targets --locked -- -D warnings
 
+  # Live-backend tests against real RESP servers. The env-gated tests
+  # (FEATHERBIT_TEST_REDIS_URL) self-skip in every other job; here they run,
+  # once per backend, proving the redis AND valkey claims. No UI build needed:
+  # redis-store without the ui feature.
+  redis-live:
+    name: redis live tests (${{ matrix.backend.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend:
+          - { name: redis-7, image: "redis:7" }
+          - { name: valkey-8, image: "valkey/valkey:8" }
+    services:
+      redis:
+        image: ${{ matrix.backend.image }}
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping || valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test --locked --no-default-features --features redis-store
+        env:
+          FEATHERBIT_TEST_REDIS_URL: redis://127.0.0.1:6379
+
   # The headless build (no `ui` feature, no ui/dist needed) must keep
   # compiling — it ships as the -headless Docker variant.
   headless-check:
@@ -85,6 +118,15 @@ jobs:
   e2e:
     name: e2e (Playwright)
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
 
@@ -114,10 +156,13 @@ jobs:
       # Playwright boots everything itself: the gateway, the Python echo backend
       # (python3 is preinstalled; the config resolves it per platform), and the
       # Node mock services (OIDC provider, the HTTP auth mock, and an ldapjs
-      # LDAP server). No containers required.
+      # LDAP server). The redis service unlocks the gated E2E-SESS scenarios;
+      # everything else remains process-local.
       - name: Run e2e
         run: npm test
         working-directory: e2e
+        env:
+          FEATHERBIT_TEST_REDIS_URL: redis://127.0.0.1:6379
 
       # The report carries traces, screenshots and the failing scenario IDs --
       # the only way to diagnose a browser failure after the fact.
