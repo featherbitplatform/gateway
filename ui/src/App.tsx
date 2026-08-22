@@ -690,6 +690,7 @@ export default function App() {
           showPortNames={showPortNames}
           onOpenPalette={() => setPaletteOpen(true)}
           onCreateSupernodeDef={handleCreateSupernodeDef}
+          storeOptions={storeOptions}
         />
       )}
 
