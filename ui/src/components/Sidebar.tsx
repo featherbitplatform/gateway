@@ -7,7 +7,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Plus, RotateCw, X, FileCode, Bug } from 'lucide-react';
-import type { Route, Supernode, PluginConfigDef, GatewayStatus } from '../types';
+import type { Route, Supernode, PluginConfigDef, StoreConfig, GatewayStatus } from '../types';
 import { api } from '../api/client';
 
 /** Props for Sidebar. Route data and mutations are owned by the parent (App). */
@@ -42,6 +42,16 @@ interface SidebarProps {
   onCreatePluginConfig: () => void;
   /** Called with the plugin config's name when its hover-revealed delete button is clicked. */
   onDeletePluginConfig: (name: string) => void;
+  /** Declared stores to list, as fetched from the admin API's GET /api/stores. */
+  stores: StoreConfig[];
+  /** Name of the currently selected store, or null when none is selected. */
+  selectedStore: string | null;
+  /** Called with a store's name when its row is clicked. */
+  onSelectStore: (name: string) => void;
+  /** Called when the stores "New" button is clicked; the parent opens the create-store dialog. */
+  onCreateStore: () => void;
+  /** Called with the store's name when its hover-revealed delete button is clicked. */
+  onDeleteStore: (name: string) => void;
   /** Called when "Reload Config" is clicked; the parent triggers POST /api/config/reload. */
   onReload: () => void;
   /** Called when "View YAML" is clicked; the parent fetches GET /api/config/export and shows it. */
@@ -80,6 +90,11 @@ export function Sidebar({
   onSelectPluginConfig,
   onCreatePluginConfig,
   onDeletePluginConfig,
+  stores,
+  selectedStore,
+  onSelectStore,
+  onCreateStore,
+  onDeleteStore,
   onReload,
   onViewYaml,
   onOpenDebug,
@@ -380,6 +395,88 @@ export function Sidebar({
                 className="opacity-0 group-hover:opacity-100 flex items-center justify-center rounded transition-all"
                 style={{ width: 22, height: 22, color: 'var(--error)' }}
                 aria-label={`Delete plugin config ${pc.name}`}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Stores */}
+      <div className="shrink-0" style={{ borderTop: '1px solid var(--border)', maxHeight: 260, overflowY: 'auto' }}>
+        <div className="p-3 flex items-center justify-between">
+          <span className="eyebrow">Stores</span>
+          <button
+            onClick={onCreateStore}
+            aria-label="New store"
+            className="flex items-center gap-1 transition-colors"
+            style={{
+              fontSize: 'var(--text-xs)',
+              fontWeight: 'var(--weight-medium)' as never,
+              padding: '3px 8px',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--accent)',
+              color: 'var(--text-on-accent)',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-hover)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--accent)')}
+          >
+            <Plus size={12} />
+            New
+          </button>
+        </div>
+        {stores.map((s) => {
+          const isSelected = selectedStore === s.name;
+          return (
+            <div
+              key={s.name}
+              onClick={() => onSelectStore(s.name)}
+              className="mx-2 mb-1 cursor-pointer flex items-center justify-between group"
+              style={{
+                padding: '8px 10px',
+                borderRadius: 'var(--radius-sm)',
+                background: isSelected ? 'var(--surface-active)' : 'transparent',
+                boxShadow: isSelected ? 'inset 0 0 0 1px var(--accent-ring)' : 'none',
+                transition: 'background var(--dur-fast) var(--ease-out)',
+              }}
+              onMouseEnter={(e) => {
+                if (!isSelected) e.currentTarget.style.background = 'var(--surface-hover)';
+              }}
+              onMouseLeave={(e) => {
+                if (!isSelected) e.currentTarget.style.background = 'transparent';
+              }}
+            >
+              <div className="flex flex-col min-w-0">
+                <span
+                  className="truncate"
+                  style={{
+                    fontSize: 'var(--text-sm)',
+                    fontWeight: 'var(--weight-medium)' as never,
+                    color: 'var(--text-primary)',
+                  }}
+                >
+                  {s.name}
+                </span>
+                <span
+                  className="truncate"
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-xs)',
+                    color: 'var(--text-muted)',
+                  }}
+                >
+                  {s.description || `${s.type} · ${s.url}`}
+                </span>
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteStore(s.name);
+                }}
+                className="opacity-0 group-hover:opacity-100 flex items-center justify-center rounded transition-all"
+                style={{ width: 22, height: 22, color: 'var(--error)' }}
+                aria-label={`Delete store ${s.name}`}
               >
                 <X size={13} />
               </button>
