@@ -6,7 +6,7 @@
  * @module components/Sidebar
  */
 import { useEffect, useState } from 'react';
-import { Plus, RotateCw, X, FileCode, Bug } from 'lucide-react';
+import { Plus, RotateCw, X, FileCode, Bug, KeyRound } from 'lucide-react';
 import type { Route, Supernode, PluginConfigDef, StoreConfig, GatewayStatus } from '../types';
 import { api } from '../api/client';
 
@@ -42,7 +42,11 @@ interface SidebarProps {
   onCreatePluginConfig: () => void;
   /** Called with the plugin config's name when its hover-revealed delete button is clicked. */
   onDeletePluginConfig: (name: string) => void;
-  /** Declared stores to list, as fetched from the admin API's GET /api/stores. */
+  /**
+   * Declared stores to list, as fetched from the admin API's GET /api/stores.
+   * Also gates the Sessions footer button's dimmed/tooltip state (empty =
+   * no store to list sessions from).
+   */
   stores: StoreConfig[];
   /** Name of the currently selected store, or null when none is selected. */
   selectedStore: string | null;
@@ -60,6 +64,8 @@ interface SidebarProps {
   onOpenDebug: () => void;
   /** Whether debug mode is on. When false the Debug button is disabled with an explanatory tooltip. */
   debugEnabled: boolean;
+  /** Called when "Sessions" is clicked; the parent opens the sessions panel. */
+  onOpenSessions: () => void;
 }
 
 /**
@@ -99,6 +105,7 @@ export function Sidebar({
   onViewYaml,
   onOpenDebug,
   debugEnabled,
+  onOpenSessions,
 }: SidebarProps) {
   const [status, setStatus] = useState<GatewayStatus | null>(null);
 
@@ -487,6 +494,33 @@ export function Sidebar({
 
       {/* Footer */}
       <div style={{ padding: 12, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {/* Always rendered, even with no stores declared: a developer who
+            cannot find the button files a bug, one who sees it greyed out
+            fixes their config (declares a redis/valkey store). */}
+        <button
+          onClick={onOpenSessions}
+          title={
+            stores.length === 0
+              ? 'Server-side sessions — requires a declared redis/valkey store'
+              : 'List and revoke server-side sessions'
+          }
+          aria-label="Sessions"
+          className="w-full flex items-center justify-center gap-1.5 transition-colors"
+          style={{
+            padding: '7px 0',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: 'var(--text-xs)',
+            fontWeight: 'var(--weight-medium)' as never,
+            background: 'var(--surface-input)',
+            color: stores.length === 0 ? 'var(--text-muted)' : 'var(--text-primary)',
+            border: '1px solid var(--border)',
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+          onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+        >
+          <KeyRound size={12} />
+          Sessions
+        </button>
         {/* Always rendered, even when debug is off: a developer who cannot find
             the button files a bug, one who sees it greyed out fixes their config. */}
         <button
