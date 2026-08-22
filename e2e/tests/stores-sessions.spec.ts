@@ -86,6 +86,7 @@ test.describe('Stores & sessions', () => {
   test('E2E-STORE-03: create/ping/delete a store from the sidebar', async ({page}) => {
     const api = await adminApi();
     await api.delete('/api/stores/e2e-ui-store');
+    await api.delete('/api/plugin-configs/e2e-picker-check');
 
     await page.goto('/');
     await page.getByRole('button', {name: 'New store'}).click();
@@ -103,6 +104,21 @@ test.describe('Stores & sessions', () => {
 
     await page.getByRole('button', {name: 'Ping store'}).click();
     await expect(page.getByText(/Timed out|refused|connect/i)).toBeVisible();
+
+    // Store-picker coverage: a scratch limit-count shared config renders a
+    // `store`-select field (optionsFrom: 'stores') fed by the same
+    // `storeOptions` App computes from GET /api/stores -- assert it lists
+    // the fixture `e2e-redis` store.
+    const putPicker = await api.put('/api/plugin-configs/e2e-picker-check', {
+      data: {name: 'e2e-picker-check', type: 'limit-count', config: {}},
+    });
+    expect(putPicker.ok(), await putPicker.text()).toBeTruthy();
+    await page.reload();
+    await page.getByText('e2e-picker-check', {exact: true}).click();
+    const storeSelect = page.getByLabel('Store', {exact: true});
+    await expect(storeSelect).toBeVisible();
+    await expect(storeSelect.locator('option', {hasText: 'e2e-redis (redis)'})).toHaveCount(1);
+    await api.delete('/api/plugin-configs/e2e-picker-check');
 
     await row.hover(); // the delete button is only revealed on hover
     await page.getByRole('button', {name: 'Delete store e2e-ui-store'}).click();
