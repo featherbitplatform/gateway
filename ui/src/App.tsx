@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { GraphCanvas } from './components/GraphCanvas';
 import { PluginConfigPanel } from './components/PluginConfigPanel';
+import { StoresPanel } from './components/StoresPanel';
 import { Dialog, DialogButton, DialogField } from './components/Dialog';
 import { DebugPanel } from './components/DebugPanel';
 import { Toast, type ToastData } from './components/Toast';
@@ -18,6 +19,7 @@ import { useEditorActions } from './editorActions';
 import { usePortNames } from './usePortNames';
 import { toggleTheme } from './theme';
 import { api } from './api/client';
+import { parseApiError } from './apiError';
 import type {
   Route,
   Policy,
@@ -64,6 +66,7 @@ export default function App() {
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
   const [selectedSupernode, setSelectedSupernode] = useState<string | null>(null);
   const [selectedPluginConfig, setSelectedPluginConfig] = useState<string | null>(null);
+  const [selectedStore, setSelectedStore] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastData | null>(null);
 
@@ -89,6 +92,15 @@ export default function App() {
 
   // Delete-plugin-config confirmation state
   const [deletePluginConfigTarget, setDeletePluginConfigTarget] = useState<string | null>(null);
+
+  // Create-store dialog state
+  const [createStoreOpen, setCreateStoreOpen] = useState(false);
+  const [newStoreName, setNewStoreName] = useState('');
+  const [newStoreType, setNewStoreType] = useState('redis');
+  const [newStoreUrl, setNewStoreUrl] = useState('');
+
+  // Delete-store confirmation state
+  const [deleteStoreTarget, setDeleteStoreTarget] = useState<string | null>(null);
 
   // View-YAML dialog state: null when closed, the exported YAML string when open.
   const [yamlView, setYamlView] = useState<string | null>(null);
@@ -157,6 +169,8 @@ export default function App() {
 
   const selectedPluginConfigDef = pluginConfigs.find((pc) => pc.name === selectedPluginConfig) || null;
 
+  const selectedStoreDef = stores.find((s) => s.name === selectedStore) || null;
+
   // Declared stores as select options for `optionsFrom: 'stores'` fields
   // (SchemaForm's dynamicOptions), shared by NodeInspector and PluginConfigPanel.
   const storeOptions = useMemo(
@@ -178,24 +192,35 @@ export default function App() {
   );
 
   // Selection is mutually exclusive across the routes list, the supernodes
-  // list, and the plugin configs list: picking one clears the other two so
-  // the main panel always reflects a single, unambiguous selection.
+  // list, the plugin configs list, and the stores list: picking one clears
+  // the other three so the main panel always reflects a single, unambiguous
+  // selection.
   const handleSelectRoute = (name: string) => {
     setSelectedSupernode(null);
     setSelectedPluginConfig(null);
+    setSelectedStore(null);
     setSelectedRoute(name);
   };
 
   const handleSelectSupernode = (name: string) => {
     setSelectedRoute(null);
     setSelectedPluginConfig(null);
+    setSelectedStore(null);
     setSelectedSupernode(name);
   };
 
   const handleSelectPluginConfig = (name: string) => {
     setSelectedRoute(null);
     setSelectedSupernode(null);
+    setSelectedStore(null);
     setSelectedPluginConfig(name);
+  };
+
+  const handleSelectStore = (name: string) => {
+    setSelectedRoute(null);
+    setSelectedSupernode(null);
+    setSelectedPluginConfig(null);
+    setSelectedStore(name);
   };
 
   // The create/view/reload handlers below are useCallback'd because they are
@@ -352,6 +377,67 @@ export default function App() {
     }
   };
 
+  const handleCreateStore = useCallback(() => {
+    setNewStoreName('');
+    setNewStoreType('redis');
+    setNewStoreUrl('');
+    setCreateStoreOpen(true);
+  }, []);
+
+  const submitCreateStore = async () => {
+    const name = newStoreName.trim();
+    const url = newStoreUrl.trim();
+    if (!name || !url) return;
+    setCreateStoreOpen(false);
+
+    try {
+      await api.createStore({
+        name,
+        type: newStoreType,
+        url,
+        key_prefix: 'fb',
+        connect_timeout_ms: 2000,
+      });
+      await loadData();
+      handleSelectStore(name);
+      setToast({ tone: 'success', title: 'Store created', message: `${name} · ${newStoreType}` });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to create store', message: `${e}` });
+    }
+  };
+
+  const submitDeleteStore = async () => {
+    const name = deleteStoreTarget;
+    setDeleteStoreTarget(null);
+    if (!name) return;
+    try {
+      await api.deleteStore(name);
+      await loadData();
+      if (selectedStore === name) setSelectedStore(null);
+      setToast({ tone: 'success', title: 'Store deleted', message: name });
+    } catch (e) {
+      const parsed = parseApiError(e);
+      setToast({
+        tone: 'error',
+        title: 'Failed to delete store',
+        message:
+          parsed.error === 'in_use'
+            ? `Referenced by: ${parsed.referrers.join(', ')}`
+            : `${e}`,
+      });
+    }
+  };
+
+  const handleSaveStore = async (store: StoreConfig) => {
+    try {
+      await api.updateStore(store.name, store);
+      await loadData();
+      setToast({ tone: 'success', title: 'Store saved', message: store.name });
+    } catch (e) {
+      setToast({ tone: 'error', title: 'Failed to save store', message: `${e}` });
+    }
+  };
+
   /**
    * Persists a shared config extracted from a policy node (the inspector's
    * "Save as shared config" flow). Returns whether the save succeeded so the
@@ -479,10 +565,14 @@ export default function App() {
     setToast({ tone: 'warning', title, message });
   }, []);
 
-  // Selection across routes/supernodes/plugin configs is mutually exclusive
-  // (see handleSelect* above), so any one of them being set means "something
-  // is selected" for the view-yaml command's `when`.
-  const hasSelection = selectedRoute !== null || selectedSupernode !== null || selectedPluginConfig !== null;
+  // Selection across routes/supernodes/plugin configs/stores is mutually
+  // exclusive (see handleSelect* above), so any one of them being set means
+  // "something is selected" for the view-yaml command's `when`.
+  const hasSelection =
+    selectedRoute !== null ||
+    selectedSupernode !== null ||
+    selectedPluginConfig !== null ||
+    selectedStore !== null;
 
   // Memoized: this object is the only non-primitive dependency of the global
   // keydown effect below, so a fresh literal every render would tear down and
@@ -659,12 +749,24 @@ export default function App() {
         onSelectPluginConfig={handleSelectPluginConfig}
         onCreatePluginConfig={handleCreatePluginConfig}
         onDeletePluginConfig={(name) => setDeletePluginConfigTarget(name)}
+        stores={stores}
+        selectedStore={selectedStore}
+        onSelectStore={handleSelectStore}
+        onCreateStore={handleCreateStore}
+        onDeleteStore={(name) => setDeleteStoreTarget(name)}
         onReload={handleReload}
         onViewYaml={handleViewYaml}
         onOpenDebug={() => setDebugOpen(true)}
         debugEnabled={debugConfig?.enabled ?? false}
       />
-      {selectedPluginConfigDef ? (
+      {selectedStoreDef ? (
+        <StoresPanel
+          key={selectedStoreDef.name}
+          def={selectedStoreDef}
+          onSave={handleSaveStore}
+          onError={(title, message) => setToast({ tone: 'error', title, message })}
+        />
+      ) : selectedPluginConfigDef ? (
         <PluginConfigPanel
           key={selectedPluginConfigDef.name}
           def={selectedPluginConfigDef}
@@ -858,6 +960,87 @@ export default function App() {
           Delete plugin config{' '}
           <code style={{ color: 'var(--text-primary)' }}>{deletePluginConfigTarget}</code>? Deletion
           fails while any node still references it.
+        </p>
+      </Dialog>
+
+      <Dialog
+        open={createStoreOpen}
+        title="New store"
+        onClose={() => setCreateStoreOpen(false)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setCreateStoreOpen(false)}>
+              Cancel
+            </DialogButton>
+            <DialogButton onClick={submitCreateStore} disabled={!newStoreName.trim() || !newStoreUrl.trim()}>
+              Create store
+            </DialogButton>
+          </>
+        }
+      >
+        <DialogField
+          label="Store name"
+          value={newStoreName}
+          onChange={setNewStoreName}
+          placeholder="sessions-redis"
+          autoFocus
+        />
+        <div style={{ marginBottom: 12 }}>
+          <label
+            style={{
+              display: 'block',
+              fontSize: 'var(--text-xs)',
+              fontWeight: 500,
+              color: 'var(--text-secondary)',
+              marginBottom: 4,
+            }}
+          >
+            Type
+          </label>
+          <select
+            value={newStoreType}
+            onChange={(e) => setNewStoreType(e.target.value)}
+            className="w-full"
+            style={{
+              padding: '7px 10px',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: 'var(--text-sm)',
+              background: 'var(--surface-input)',
+              color: 'var(--text-primary)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            <option value="redis">redis</option>
+            <option value="valkey">valkey</option>
+          </select>
+        </div>
+        <DialogField
+          label="URL"
+          value={newStoreUrl}
+          onChange={setNewStoreUrl}
+          placeholder="redis://127.0.0.1:6379"
+          mono
+        />
+      </Dialog>
+
+      <Dialog
+        open={deleteStoreTarget !== null}
+        title="Delete store"
+        onClose={() => setDeleteStoreTarget(null)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setDeleteStoreTarget(null)}>
+              Cancel
+            </DialogButton>
+            <DialogButton variant="danger" onClick={submitDeleteStore}>
+              Delete
+            </DialogButton>
+          </>
+        }
+      >
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: 0 }}>
+          Delete store <code style={{ color: 'var(--text-primary)' }}>{deleteStoreTarget}</code>?
+          Deletion is blocked while any plugin config references it.
         </p>
       </Dialog>
 
