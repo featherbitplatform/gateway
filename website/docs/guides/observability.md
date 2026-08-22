@@ -9,7 +9,7 @@ featherbit exposes Prometheus metrics and health probes on the admin port, and l
 
 `GET /metrics` on the admin port renders the shared gateway registry in the Prometheus text exposition format (`text/plain; charset=utf-8`). Unlike the health probes, `/metrics` requires Basic auth (see [Admin API](./admin-api.md)).
 
-Six metric families are recorded — per-route metrics by the data plane, per-node metrics by the graph engine:
+Eight metric families are recorded — per-route metrics by the data plane, per-node metrics by the graph engine, plus per-store error counters:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
@@ -19,6 +19,8 @@ Six metric families are recorded — per-route metrics by the data plane, per-no
 | `gateway_node_executions_total` | counter | `policy`, `node_id`, `node_type` | Graph node executions |
 | `gateway_node_duration_seconds` | histogram | `policy`, `node_id` | Per-node execution latency (buckets 0.1 ms to 500 ms) |
 | `gateway_node_errors_total` | counter | `policy`, `node_id`, `error_code` | Node failures by error code |
+| `gateway_counter_store_errors_total` | counter | `store` | Counter-store (`stores:`) backend errors per named store |
+| `gateway_session_store_errors_total` | counter | `store` | Session-store backend errors per named store |
 
 The per-node families let you pinpoint which node inside a routing policy is slow or failing, not just which route.
 
