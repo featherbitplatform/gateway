@@ -50,6 +50,13 @@ export interface FieldSchema {
   type: FieldType;
   /** Choices for `radio`/`select`; plain strings double as value and label. */
   options?: (string | FieldOption)[];
+  /**
+   * Source of dynamic options for `select` fields, resolved at render time
+   * from SchemaForm's `dynamicOptions` prop (e.g. `'stores'` = the declared
+   * `stores:` names). Merged AFTER `options`, so a static empty-choice entry
+   * can precede the dynamic list.
+   */
+  optionsFrom?: 'stores';
   /** Initial value when the field is unset in the node config. */
   default?: unknown;
   /** Placeholder text for text-like inputs. */
