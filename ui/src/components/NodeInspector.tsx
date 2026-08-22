@@ -79,12 +79,10 @@ interface NodeInspectorProps {
   /**
    * Declared `stores:` entries as select options (`{value, label}`), forwarded
    * into SchemaForm's `dynamicOptions.stores` for `optionsFrom: 'stores'`
-   * fields. Computed once in App from `StoreConfig[]` and shared with
-   * PluginConfigPanel. Optional because this panel is rendered from
-   * GraphCanvas, which does not yet thread the prop through — fields using
-   * `optionsFrom` render with no dynamic choices until that wiring lands.
+   * fields. Computed once in App from `StoreConfig[]` and threaded through
+   * GraphCanvas; shared with PluginConfigPanel.
    */
-  storeOptions?: FieldOption[];
+  storeOptions: FieldOption[];
 }
 
 /** Plugin types with no configuration of their own — fixed pipeline endpoints and supernode boundary pseudo-nodes. */
@@ -514,7 +512,7 @@ export function NodeInspector({
             onChange={(config) => onUpdateConfig(node.id, config)}
             varContext={{ suggestions, availability, onOpenLegend: () => setLegendOpen(true) }}
             inherited={inheritedConfig}
-            dynamicOptions={{ stores: storeOptions ?? [] }}
+            dynamicOptions={{ stores: storeOptions }}
           />
         ) : (
           <JsonConfigEditor
