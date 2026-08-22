@@ -141,6 +141,11 @@ export default defineConfig({
         ECHO_PORT: '3010',
         LOG_LEVEL: 'warn',
         [ENV_CANARY_NAME]: ENV_CANARY_VALUE,
+        // Present only when the caller exported it: an EMPTY string would
+        // defeat the fixture's ${FEATHERBIT_TEST_REDIS_URL:-...} default.
+        ...(process.env.FEATHERBIT_TEST_REDIS_URL
+          ? {FEATHERBIT_TEST_REDIS_URL: process.env.FEATHERBIT_TEST_REDIS_URL}
+          : {}),
       },
       // /healthz needs no auth, so it is the honest readiness signal here.
       url: `${ADMIN_URL}/healthz`,
