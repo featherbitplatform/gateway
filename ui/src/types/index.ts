@@ -126,6 +126,95 @@ export interface PluginConfigDef {
 }
 
 /**
+ * A named shared store: a redis/valkey connection referenced by plugin
+ * config (`store` / `session_store`).
+ *
+ * @remarks
+ * Mirrors src/config/gateway.rs::StoreConfig (YAML key `type` ↔ `store_type`);
+ * served raw — `${ENV}` placeholders are never resolved by the Admin API.
+ */
+export interface StoreConfig {
+  /** Unique name, referenced by plugin config. */
+  name: string;
+  /** Backend type: `redis` or `valkey` (aliases for the same RESP backend). */
+  type: string;
+  /** Optional human-readable description shown in the sidebar. */
+  description?: string;
+  /** Connection URL (`redis://` or `rediss://`); may hold `${ENV}` placeholders. */
+  url: string;
+  /** Optional password; overrides any password embedded in the URL. */
+  password?: string;
+  /** Namespace prefix for every key this store writes (server default `fb`). */
+  key_prefix: string;
+  /** Reserved for HA topologies; v1 accepts only `standalone`. */
+  topology?: string;
+  /** Reserved for HA topologies; rejected in v1. */
+  urls?: string[];
+  /** Connect/response timeout in milliseconds (server default 2000). */
+  connect_timeout_ms: number;
+  /** Optional TLS options for `rediss://`. */
+  tls?: StoreTlsConfig;
+}
+
+/**
+ * TLS options for a `rediss://` store.
+ *
+ * @remarks Mirrors src/config/gateway.rs::StoreTlsConfig.
+ */
+export interface StoreTlsConfig {
+  /** PEM CA bundle path for a private CA. */
+  ca_cert_path?: string;
+}
+
+/**
+ * Metadata envelope for one server-side session (payloads never leave the store).
+ *
+ * @remarks Mirrors src/sessions/mod.rs::SessionMeta; served by src/admin/sessions.rs.
+ */
+export interface SessionMeta {
+  /** The session id (the value in the browser's cookie). */
+  id: string;
+  /** Authenticated subject; may be empty (opaque token with no claims). */
+  subject: string;
+  /** Plugin type that established the session. */
+  plugin: string;
+  /** Policy name the session was established under. */
+  policy: string;
+  /** Route name the session was established under. */
+  route: string;
+  /** Unix seconds. */
+  created_at: number;
+  /** Unix seconds. */
+  expires_at: number;
+}
+
+/**
+ * One page of session metadata.
+ *
+ * @remarks Mirrors src/sessions/mod.rs::SessionPage (cursor = Redis SCAN cursor).
+ */
+export interface SessionPage {
+  /** The page's sessions. */
+  sessions: SessionMeta[];
+  /** Opaque cursor for the next page; null when exhausted. */
+  next_cursor: string | null;
+}
+
+/**
+ * Result of a store connectivity check.
+ *
+ * @remarks Inline JSON from src/admin/stores.rs::ping_store.
+ */
+export interface StorePing {
+  /** Always `ok` on success. */
+  status: string;
+  /** Round-trip latency in milliseconds. */
+  latency_ms: number;
+  /** Server version (redis_version / valkey_version). */
+  version: string;
+}
+
+/**
  * One declared output port on a plugin type.
  *
  * @remarks

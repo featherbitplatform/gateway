@@ -47,7 +47,9 @@ use crate::plugins::resources::PluginResources;
 use crate::plugins::util::cookie_session::{
     build_set_cookie, delete_cookie, path_covers, read_cookie, CookieAttrs, CookieSealer, SameSite,
 };
+use crate::plugins::util::server_session::{self, SessionBackend};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::sessions::StoreError;
 
 /// Session payload sealed into the Casdoor session cookie (interactive mode).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +106,10 @@ pub struct AuthzCasdoorPlugin {
     cookie_lifetime: u64,
     /// Optional logout path; a request to it clears the session cookie.
     logout_path: Option<String>,
+    /// Where the session payload lives: sealed in the cookie itself, or a
+    /// server-side store keyed by a bare id in the cookie. See
+    /// `session.storage` / `session.store` in [`AuthzCasdoorPlugin::from_config`].
+    backend: SessionBackend,
     /// Randomness source for the anti-CSRF `state`.
     rng: SystemRandom,
     /// Shared pooled outbound HTTP client.
@@ -231,6 +237,14 @@ impl AuthzCasdoorPlugin {
             .filter(|s| !s.is_empty())
             .map(String::from);
 
+        let backend = server_session::parse_backend(config, resources, "authz-casdoor")?;
+        if sealer.is_none() && !matches!(backend, SessionBackend::Cookie) {
+            return Err(
+                "authz-casdoor: session.storage requires session_secret (interactive mode)"
+                    .to_string(),
+            );
+        }
+
         Ok(Self {
             basic_auth: basic_auth_header(&client_id, &client_secret),
             endpoint_addr,
@@ -247,6 +261,7 @@ impl AuthzCasdoorPlugin {
             cookie_path,
             cookie_lifetime,
             logout_path,
+            backend,
             rng: SystemRandom::new(),
             outbound: resources.outbound.clone(),
         })
@@ -310,6 +325,26 @@ impl AuthzCasdoorPlugin {
         })
     }
 
+    /// Session-store outage: 503 through the error port. Deliberately NOT
+    /// 401 — a store outage is not "unauthenticated".
+    fn store_error(mut ctx: Context, e: StoreError) -> PluginExecutionError {
+        ctx.response.status_code = 503;
+        ctx.response.body = Bytes::from(r#"{"error": "session store unavailable"}"#.as_bytes());
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
+        PluginExecutionError {
+            context: ctx,
+            error: GatewayError {
+                node_id: String::new(),
+                code: "SESSION_STORE_ERROR".to_string(),
+                message: e.to_string(),
+                metadata: HashMap::new(),
+            },
+        }
+    }
+
     /// Cookie attributes: `HttpOnly`, `SameSite=Lax`, `Secure` only over HTTPS.
     fn cookie_attrs(&self, ctx: &Context, max_age: u64) -> CookieAttrs<'_> {
         CookieAttrs {
@@ -321,13 +356,22 @@ impl AuthzCasdoorPlugin {
         }
     }
 
-    /// Reads and opens the session cookie, returning the sealed session.
-    fn read_session(&self, ctx: &Context) -> Option<CasdoorSession> {
-        let sealer = self.sealer.as_ref()?;
-        let cookie_header = ctx.request.headers.get("cookie").and_then(|v| v.first())?;
-        let raw = read_cookie(cookie_header, &self.cookie_name)?;
-        let payload = sealer.open(raw).ok()?;
-        serde_json::from_slice(&payload).ok()
+    /// Reads the session cookie via the configured backend, returning the
+    /// sealed session. `Ok(None)` = unauthenticated (no cookie/sealer, or an
+    /// unopenable/unparseable payload); `Err` = store outage (503 via
+    /// [`AuthzCasdoorPlugin::store_error`]), never a silent re-login.
+    async fn read_session(&self, ctx: &Context) -> Result<Option<CasdoorSession>, StoreError> {
+        let Some(sealer) = self.sealer.as_ref() else {
+            return Ok(None);
+        };
+        let Some(cookie_header) = ctx.request.headers.get("cookie").and_then(|v| v.first()) else {
+            return Ok(None);
+        };
+        let Some(raw) = read_cookie(cookie_header, &self.cookie_name) else {
+            return Ok(None);
+        };
+        let bytes = server_session::load(&self.backend, sealer, raw).await?;
+        Ok(bytes.and_then(|b| serde_json::from_slice(&b).ok()))
     }
 
     /// Reads and opens the transient login-flow cookie.
@@ -392,10 +436,27 @@ impl AuthzCasdoorPlugin {
             .as_ref()
             .expect("execute_interactive only called when a sealer is configured");
 
-        // 0. Logout: clear the session cookie and bounce to "/".
+        // 0. Logout: revoke the session (store mode) and clear the cookie.
         if let Some(ref logout_path) = self.logout_path {
             if &ctx.request.path == logout_path {
-                let del = delete_cookie(&self.cookie_name, &self.cookie_path);
+                let cookie_value = ctx
+                    .request
+                    .headers
+                    .get("cookie")
+                    .and_then(|v| v.first())
+                    .and_then(|h| read_cookie(h, &self.cookie_name))
+                    .map(str::to_string);
+                let del = match server_session::destroy(
+                    &self.backend,
+                    cookie_value.as_deref(),
+                    &self.cookie_name,
+                    &self.cookie_path,
+                )
+                .await
+                {
+                    Ok(c) => c,
+                    Err(e) => return Err(Self::store_error(ctx, e)),
+                };
                 return Self::redirect(ctx, "/".to_string(), vec![del]);
             }
         }
@@ -407,11 +468,13 @@ impl AuthzCasdoorPlugin {
         }
 
         // 2. Valid session cookie (for this client_id) → authenticate from it.
-        if let Some(session) = self.read_session(&ctx) {
-            if session.client_id == self.client_id {
+        match self.read_session(&ctx).await {
+            Ok(Some(session)) if session.client_id == self.client_id => {
                 self.attach_session(&mut ctx, &session);
                 return Ok(PluginOutput::success(ctx));
             }
+            Ok(_) => {}
+            Err(e) => return Err(Self::store_error(ctx, e)),
         }
 
         // 3. No session, not a callback → begin login at Casdoor.
@@ -447,18 +510,36 @@ impl AuthzCasdoorPlugin {
         };
 
         let claims = decode_jwt_claims(&access_token);
+        // Opaque (non-JWT) tokens have no claims, so `sub` may be absent —
+        // an empty subject is correct here and deliberately unindexed.
+        let subject = claims
+            .as_ref()
+            .and_then(|c| c.get("sub"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let session = CasdoorSession {
             access_token,
             client_id: self.client_id.clone(),
             claims,
         };
         let payload = serde_json::to_vec(&session).unwrap_or_default();
-        let sealed = sealer.seal(&payload, Duration::from_secs(self.cookie_lifetime));
-        let set_session = build_set_cookie(
+        let ttl = Duration::from_secs(self.cookie_lifetime);
+        let meta = server_session::meta_now(&ctx, "authz-casdoor", &subject, ttl);
+        let set_session = match server_session::establish(
+            &self.backend,
+            sealer,
+            &payload,
+            ttl,
+            meta,
             &self.cookie_name,
-            &sealed,
             &self.cookie_attrs(&ctx, self.cookie_lifetime),
-        );
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => return Err(Self::store_error(ctx, e)),
+        };
         let del_flow = delete_cookie(&self.flow_cookie_name, &self.cookie_path);
         Self::redirect(ctx, flow.original_uri, vec![set_session, del_flow])
     }
@@ -1230,5 +1311,93 @@ mod tests {
         query.insert("a".to_string(), vec!["1".to_string()]);
         assert_eq!(reconstruct_uri(&ctx("/p", query)), "/p?a=1");
         assert_eq!(reconstruct_uri(&ctx("/p", HashMap::new())), "/p");
+    }
+
+    /// redis storage requires a store name; unknown stores fail at config.
+    #[test]
+    fn test_session_storage_redis_requires_store() {
+        let mut config = interactive_cfg();
+        config.insert(
+            "session".to_string(),
+            serde_json::json!({ "storage": "redis" }),
+        );
+        // `.err().unwrap()` (not `unwrap_err()`): the Ok type isn't `Debug`.
+        let err = AuthzCasdoorPlugin::from_config(&config, &PluginResources::empty())
+            .err()
+            .unwrap();
+        assert!(err.contains("requires 'session.store'"), "{err}");
+    }
+
+    #[cfg(feature = "redis-store")]
+    fn resources_with_fake_store() -> (Arc<PluginResources>, Arc<crate::sessions::FakeSessionStore>)
+    {
+        let fake = Arc::new(crate::sessions::FakeSessionStore::default());
+        let resources = PluginResources::empty();
+        resources.stores.store(Arc::new(
+            crate::stores::StoreRegistry::with_fake_session_store("s1", fake.clone()),
+        ));
+        (resources, fake)
+    }
+
+    /// In redis mode a valid session cookie authenticates from the store, and
+    /// a store outage is a 503 on the error port — never a silent re-login.
+    #[cfg(feature = "redis-store")]
+    #[tokio::test]
+    async fn test_redis_session_read_and_store_outage_503() {
+        use crate::sessions::SessionStore as _;
+
+        let (resources, fake) = resources_with_fake_store();
+        let mut config = interactive_cfg();
+        config.insert(
+            "session".to_string(),
+            serde_json::json!({ "secret": "s3cr3t", "storage": "redis", "store": "s1" }),
+        );
+        let p = AuthzCasdoorPlugin::from_config(&config, &resources).unwrap();
+
+        // Establish a session by hand: seal a CasdoorSession, put under an id.
+        let sealer = CookieSealer::new("s3cr3t");
+        let session = CasdoorSession {
+            access_token: "tok-xyz".into(),
+            client_id: "id".into(),
+            claims: Some(serde_json::json!({ "sub": "u1" })),
+        };
+        let payload = serde_json::to_vec(&session).unwrap();
+        let sealed = sealer.seal(&payload, Duration::from_secs(3600));
+        let id = crate::sessions::SessionId::random();
+        let meta = crate::sessions::SessionMeta {
+            id: String::new(),
+            subject: "u1".to_string(),
+            plugin: "authz-casdoor".to_string(),
+            policy: String::new(),
+            route: String::new(),
+            created_at: 0,
+            expires_at: 0,
+        };
+        fake.put(&id, sealed.as_bytes(), Duration::from_secs(3600), &meta)
+            .await
+            .unwrap();
+
+        let mut c = ctx("/protected", HashMap::new());
+        c.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("casdoor_session={}", id.as_str())],
+        );
+        let out = p.execute(c).await.unwrap();
+        assert_eq!(
+            out.context.request.headers.get("authorization").unwrap()[0],
+            "Bearer tok-xyz"
+        );
+        assert_eq!(out.context.message.get("user_id").unwrap(), "u1");
+
+        // Outage: same request, failing store.
+        fake.fail.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut c = ctx("/protected", HashMap::new());
+        c.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("casdoor_session={}", id.as_str())],
+        );
+        let err = p.execute(c).await.unwrap_err();
+        assert_eq!(err.error.code, "SESSION_STORE_ERROR");
+        assert_eq!(err.context.response.status_code, 503);
     }
 }

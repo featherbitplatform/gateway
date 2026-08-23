@@ -19,6 +19,9 @@ import type {
   TraceSummary,
   TraceDetail,
   SandboxResult,
+  StoreConfig,
+  StorePing,
+  SessionPage,
 } from '../types';
 
 const BASE = '';
@@ -198,4 +201,45 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  // Stores
+  /** `GET /api/stores` — returns all named stores (raw `${ENV}` placeholders, never resolved). */
+  listStores: () => request<StoreConfig[]>('/api/stores'),
+  /** `POST /api/stores` — creates a store; 409 when the name exists. */
+  createStore: (store: StoreConfig) =>
+    request('/api/stores', { method: 'POST', body: JSON.stringify(store) }),
+  /** `PUT /api/stores/{name}` — upserts the named store. */
+  updateStore: (name: string, store: StoreConfig) =>
+    request(`/api/stores/${name}`, { method: 'PUT', body: JSON.stringify(store) }),
+  /** `DELETE /api/stores/{name}` — removes the store; 409 `in_use` with referrers while referenced. */
+  deleteStore: (name: string) => request(`/api/stores/${name}`, { method: 'DELETE' }),
+  /** `POST /api/stores/{name}/ping` — connectivity check; 502/504 unreachable, 501 headless build. */
+  pingStore: (name: string) =>
+    request<StorePing>(`/api/stores/${name}/ping`, { method: 'POST' }),
+
+  // Sessions
+  /** `GET /api/sessions?store=…` — one page of session metadata; 501 on headless builds. */
+  listSessions: (filter: {
+    store: string;
+    subject?: string;
+    plugin?: string;
+    limit?: number;
+    cursor?: string;
+  }) => {
+    const q = new URLSearchParams();
+    q.set('store', filter.store);
+    if (filter.subject) q.set('subject', filter.subject);
+    if (filter.plugin) q.set('plugin', filter.plugin);
+    if (filter.limit) q.set('limit', String(filter.limit));
+    if (filter.cursor) q.set('cursor', filter.cursor);
+    return request<SessionPage>(`/api/sessions?${q.toString()}`);
+  },
+  /** `DELETE /api/sessions/{store}/{id}` — revokes one session. */
+  deleteSession: (store: string, id: string) =>
+    request(`/api/sessions/${store}/${id}`, { method: 'DELETE' }),
+  /** `DELETE /api/sessions?store=…&subject=…` — revokes every session for a subject. */
+  deleteSessionsBySubject: (store: string, subject: string) => {
+    const q = new URLSearchParams({ store, subject });
+    return request<{ revoked: number }>(`/api/sessions?${q.toString()}`, { method: 'DELETE' });
+  },
 };

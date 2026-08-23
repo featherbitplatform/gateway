@@ -43,6 +43,7 @@ mod plugins;
 mod ratelimit;
 mod routing;
 mod server;
+mod sessions;
 mod state;
 mod stores;
 mod stream;

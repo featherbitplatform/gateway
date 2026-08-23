@@ -171,6 +171,13 @@ pub trait SessionStore: Send + Sync {
 subject, plugin type, route/policy name, created-at, expires-at. The token
 payload arrives already sealed — the store never sees plaintext tokens.
 
+**Amendment (as shipped):** `policy` and `route` are populated from two new
+context vars, `__policy`/`__route`, set by the listener before the graph
+runs — not read off the node or config directly. `meta_now()`
+(`src/plugins/util/server_session.rs`) reads them off `ctx.message`,
+defaulting to `""` when either is absent (e.g. a sandboxed/synthetic
+context with no listener-set vars).
+
 **Redis key layout** (under the store's `key_prefix`):
 
 | Key | Value | TTL |
@@ -209,16 +216,54 @@ config keys dropped by the stateless ports (`secret`, `redirect_uri`,
 `cookie_expires_in` etc.) return, mapped onto the shared `session:` block;
 module docs' Deviations sections are updated.
 
+**Amendment (as shipped):** restoring the session/redirect flow is a
+**breaking change** to these two plugins' port spec. Both moved onto the
+same `INTERACTIVE_AUTH_SPEC` as `cas-auth`/`openid-connect`/`authz-casdoor`
+(`src/plugins/ports.rs`), which declares a `redirect` output port. Like
+`denied`, the policy compiler now requires `redirect` to be wired — even in
+the (unchanged, default) stateless mode where it is never actually taken.
+An existing policy using either node without a `redirect` edge fails to
+recompile until one is added.
+
+**Amendment (as shipped):** on a successful code exchange, session
+establishment 302-redirects (the `redirect` port) to the code-stripped URL,
+carrying the `Set-Cookie` on that redirect response, rather than attaching
+identity and exiting `success` on the exchange request itself — because in
+the standard `success → upstream.in` wiring, `upstream` replaces
+`ctx.response.headers` wholesale, so a `Set-Cookie` set on the success path
+would never reach the browser. Identity is attached on the browser's
+follow-up request, which hits the session-read fast path.
+
+**Amendment (as shipped):** `secret_fallbacks` (APISIX's multi-secret
+key-rotation) remains **unsupported** on both plugins — same single-secret
+`CookieSealer` as every other session plugin in this codebase. This is the
+one upstream behavior the restoration does not bring back.
+
 **Refresh coordination** (openid-connect): before refreshing, `try_lock(id)`.
 Winner refreshes, `put`s updated session, unlocks. Loser re-`get`s (usually
 finds fresh tokens) and proceeds without refreshing — no waiting loop, no
 thundering herd against the IdP.
+
+**Amendment (as shipped):** token refresh was greenfield for openid-connect
+— the pre-existing (stateless-cookie) port had no refresh capability at
+all, so this is new surface, not a restoration. It ships **redis-mode
+only** (`session.storage: redis`, gated additionally by `session.refresh`,
+default `true`); `session.storage: cookie` is completely unchanged and
+never attempts a refresh. An IdP-side refresh failure (unreachable,
+non-2xx, or an invalid refreshed `id_token`) is deliberately **not** routed
+through the store-error 503 path — it falls back to a fresh login, the
+same as an ordinary expired cookie-mode session.
 
 **Failure semantics**: a `StoreError` on any session operation routes out the
 node's **`error` port with a 503** — never 401 (treating an outage as
 "logged out" would redirect every user to an IdP whose callback also cannot
 persist a session: a redirect loop). There is deliberately **no fail-open
 mode for sessions**.
+
+**Amendment (as shipped):** the error-path metric is
+`gateway_session_store_errors_total{store}` (`src/metrics/mod.rs`) — it
+gains the house `gateway_` prefix, same amendment already noted for the
+counter-store metric in §3.
 
 ## 3. Redis `CounterStore`
 
@@ -326,6 +371,25 @@ clock-aligned windows). CI runs the suite in a service-container matrix:
 3. Stores editor: declare a store with an `${ENV}` placeholder in the UI,
    ping it, wire it via the store picker, verify the raw placeholder (not
    the secret) round-trips through the API.
+
+**Amendment (as shipped):** the interactive-login e2e scenarios
+(`E2E-SESS-01..03`) run the redis-backed OIDC login against the suite's
+hermetic mock-idp (a real RS256/JWKS-serving in-process IdP already used by
+the existing interactive `app-api` scenarios), not the Keycloak realm under
+`tests/`. The Keycloak realm stays a manual local playground — never wired
+into `npm test` — because it needs a real Docker Keycloak instance and would
+make the suite non-hermetic. The choreography (authorize → callback →
+session cookie) is the same either way.
+
+**Amendment (as shipped):** "session survives a gateway restart" is not
+covered by e2e. The Playwright harness boots one shared gateway process per
+suite run and reuses it across all scenarios — there is no per-scenario
+restart to hook into. Restart-survival for redis-backed sessions is instead
+covered by the Rust integration tests in §5 above ("Integration (live
+store)"): a session written by one `RedisSessionStore` instance is read back
+by a freshly constructed one against the same backend, which is the property
+that actually matters (the session lives in Redis, not in gateway process
+memory) without needing to actually kill and restart a binary.
 
 **Build/CI guards**: `--no-default-features` build proves `redis-store`
 compiles out; config-load test asserts the "built without redis-store"

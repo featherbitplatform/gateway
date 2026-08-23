@@ -247,6 +247,19 @@ async fn handle_request(
 
     let gateway_request = GatewayRequest::from_hyper(&parts, body_bytes, remote_addr);
     let mut ctx = Context::new(gateway_request);
+    // Attribute this execution to its matched route/policy so plugins (e.g.
+    // session metadata) can read them without a Context struct change.
+    // Precedent: the `__client_cert_*` internal vars below. Set before the
+    // graph runs so it is visible to every node, including this WebSocket
+    // upgrade path, which shares this same Context-building seam.
+    ctx.message.insert(
+        "__route".to_string(),
+        serde_json::Value::String(route_name.clone()),
+    );
+    ctx.message.insert(
+        "__policy".to_string(),
+        serde_json::Value::String(policy_name.clone()),
+    );
     if is_ws {
         // Signal the `upstream` node to resolve a target and emit a 101 instead
         // of doing a buffered round-trip. Note for h2 WebSockets (RFC 8441):
@@ -841,6 +854,46 @@ policies:
         assert!(
             tokio_tungstenite::connect_async(&url).await.is_err(),
             "handshake must fail when the upstream is unreachable"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_context_carries_route_and_policy_names() {
+        // Every request's Context must carry its matched route/policy names
+        // (`__route`/`__policy`) before the graph executes, so plugins (and
+        // later, session metadata — see server-side-sessions Task 6+) can
+        // read them. Assert via a plain HTTP route whose `echo` node renders
+        // both message keys into response headers with `{{message...}}`
+        // templates (precedent: the `__client_cert_*` internal vars).
+        let gw_yaml = r#"
+routes:
+  - name: r1
+    match: { path: /attribution }
+    policy: p1
+policies:
+  - name: p1
+    nodes:
+      - { id: listener, type: listener }
+      - { id: e, type: echo, config: { body: "ok", headers: { x-test-route: "{{message.__route}}", x-test-policy: "{{message.__policy}}" } } }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: e.in }
+      - { from: e.success, to: client.in }
+"#;
+        let gw = start_gateway(build_state(gw_yaml), false).await;
+        let url = format!("http://127.0.0.1:{}/attribution", gw.port());
+        let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+        assert_eq!(
+            resp.headers()
+                .get("x-test-route")
+                .map(|v| v.to_str().unwrap()),
+            Some("r1")
+        );
+        assert_eq!(
+            resp.headers()
+                .get("x-test-policy")
+                .map(|v| v.to_str().unwrap()),
+            Some("p1")
         );
     }
 
