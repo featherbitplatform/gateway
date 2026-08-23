@@ -1,6 +1,23 @@
 # Seed config for the e2e suite. Copied to e2e/.tmp/ before the gateway boots:
 # admin-API writes persist back to the config file, and a test run must not
 # dirty the fixture.
+stores:
+  # Lazily-connecting: the suite boots fine with no redis running. The gated
+  # session scenarios (E2E-SESS-*) skip unless FEATHERBIT_TEST_REDIS_URL is set.
+  - name: e2e-redis
+    type: redis
+    # A description so the sidebar shows this instead of the raw url --
+    # ${FEATHERBIT_TEST_REDIS_URL:-...} contains "featherbit" as a substring,
+    # which would otherwise collide with E2E-UI-01's page-title assertion.
+    description: e2e fixture store
+    url: ${FEATHERBIT_TEST_REDIS_URL:-redis://127.0.0.1:6379}
+    key_prefix: fbe2e
+  # Deliberately unreachable, for the ping-failure scenario.
+  - name: e2e-dead
+    type: redis
+    url: redis://127.0.0.1:1
+    connect_timeout_ms: 300
+
 routes:
   - name: echo-api
     match:
@@ -51,6 +68,16 @@ routes:
       path: /app/*
       methods: [GET]
     policy: app-policy
+
+  # OIDC interactive login, redis-backed session storage -- same choreography
+  # as app-api above, exercised by the gated E2E-SESS-* scenarios (skip
+  # themselves unless FEATHERBIT_TEST_REDIS_URL is set). The match MUST cover
+  # the redirect_uri path (/oidc-redis/callback), same requirement as app-api.
+  - name: oidc-redis
+    match:
+      path: /oidc-redis/*
+      methods: [GET]
+    policy: oidc-redis-policy
 
   # forward-auth: delegate the decision to the mock auth service. The decision is
   # driven off the path -- /fauth/allow/* permits, anything else is denied.
@@ -308,6 +335,57 @@ policies:
         config:
           phase: request
           strip_path_prefix: /app
+      - id: echo-backend
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: oidc.in
+      - from: oidc.success
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: echo-backend.in
+      - from: echo-backend.success
+        to: client.in
+      - from: oidc.denied
+        to: client.in
+      - from: oidc.redirect
+        to: client.in
+      - from: oidc.error
+        to: client.in
+
+  # /oidc-redis/* -> openid-connect interactive login, same node config as
+  # app-policy above with ONLY the session storage deltas: redis-backed
+  # (session_storage/session_store) and a distinct cookie name so the two
+  # policies' sessions never collide. Ports wired identically to app-policy.
+  - name: oidc-redis-policy
+    nodes:
+      - id: listener
+        type: listener
+      - id: oidc
+        type: openid-connect
+        config:
+          bearer_only: false
+          discovery: ${IDP_ISSUER:-http://127.0.0.1:3011}/.well-known/openid-configuration
+          client_id: featherbit-e2e
+          client_secret: e2e-client-secret
+          redirect_uri: http://127.0.0.1:18081/oidc-redis/callback
+          set_userinfo_header: true
+          session:
+            secret: e2e-session-secret-do-not-use-in-prod
+          session_storage: redis
+          session_store: e2e-redis
+          session_cookie_name: oidc_redis_session
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /oidc-redis
       - id: echo-backend
         type: upstream
         config:
@@ -635,6 +713,10 @@ policies:
         to: client.in
       - from: dingtalk.denied
         to: client.in
+      # Mandatory since dingtalk-auth gained the interactive port spec
+      # (session-mode 302s); unused in this stateless policy.
+      - from: dingtalk.redirect
+        to: client.in
       - from: dingtalk.error
         to: client.in
 
@@ -672,6 +754,10 @@ policies:
       - from: echo-backend.success
         to: client.in
       - from: feishu.denied
+        to: client.in
+      # Mandatory since feishu-auth gained the interactive port spec
+      # (session-mode 302s); unused in this stateless policy.
+      - from: feishu.redirect
         to: client.in
       - from: feishu.error
         to: client.in

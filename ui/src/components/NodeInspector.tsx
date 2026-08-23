@@ -18,6 +18,7 @@ import type { PluginNodeData } from './PluginNode';
 import type { DebugConfig, PluginConfigDef } from '../types';
 import { getPluginMeta } from '../pluginMeta';
 import { getPluginConfigSchema } from '../pluginConfig';
+import type { FieldOption } from '../pluginConfig';
 import { mergeEffective } from '../configInheritance';
 import { Dialog, DialogButton, DialogField } from './Dialog';
 import { SchemaForm } from './SchemaForm';
@@ -75,6 +76,13 @@ interface NodeInspectorProps {
    * boundary nodes and whenever deleting is safe.
    */
   boundaryDeleteBlocked?: string;
+  /**
+   * Declared `stores:` entries as select options (`{value, label}`), forwarded
+   * into SchemaForm's `dynamicOptions.stores` for `optionsFrom: 'stores'`
+   * fields. Computed once in App from `StoreConfig[]` and threaded through
+   * GraphCanvas; shared with PluginConfigPanel.
+   */
+  storeOptions: FieldOption[];
 }
 
 /** Plugin types with no configuration of their own — fixed pipeline endpoints and supernode boundary pseudo-nodes. */
@@ -208,6 +216,7 @@ export function NodeInspector({
   kind,
   onRenameNode,
   boundaryDeleteBlocked,
+  storeOptions,
 }: NodeInspectorProps) {
   // Computed ahead of the `!node` early return below so the hooks that
   // follow (useState, useContextSuggestions) run unconditionally on every
@@ -503,6 +512,7 @@ export function NodeInspector({
             onChange={(config) => onUpdateConfig(node.id, config)}
             varContext={{ suggestions, availability, onOpenLegend: () => setLegendOpen(true) }}
             inherited={inheritedConfig}
+            dynamicOptions={{ stores: storeOptions }}
           />
         ) : (
           <JsonConfigEditor
