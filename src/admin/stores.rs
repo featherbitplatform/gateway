@@ -220,6 +220,7 @@ fn store_referrers(gw: &GatewayConfig, name: &str) -> Vec<String> {
         name: &str,
     ) -> bool {
         config.get("store").and_then(|v| v.as_str()) == Some(name)
+            || config.get("session_store").and_then(|v| v.as_str()) == Some(name)
             || config
                 .get("session")
                 .and_then(|v| v.get("store"))
@@ -458,6 +459,45 @@ plugin_configs:
             .collect();
         assert!(
             refs.contains(&"plugin_config 'shared-wf'".to_string()),
+            "{refs:?}"
+        );
+    }
+
+    /// The UI's SchemaForm writes the FLAT `session_store` key (the nested
+    /// `session.store` form is hand-written YAML); the delete guard must see
+    /// both, or a store referenced only by a UI-authored session plugin
+    /// config could be deleted out from under it.
+    #[tokio::test]
+    async fn test_delete_store_referenced_by_flat_session_store_is_409() {
+        let state = test_state(
+            r#"
+stores:
+  - name: s1
+    type: redis
+    url: redis://127.0.0.1:6379
+plugin_configs:
+  - name: ui-oidc
+    type: openid-connect
+    config: { session_storage: redis, session_store: s1 }
+"#,
+        );
+        let (status, body) = send(
+            &state,
+            Request::delete("/api/stores/s1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "in_use");
+        let refs: Vec<String> = body["referrers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            refs.contains(&"plugin_config 'ui-oidc'".to_string()),
             "{refs:?}"
         );
     }

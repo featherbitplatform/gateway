@@ -48,6 +48,9 @@ Interactive-mode keys (used only when `bearer_only: false`):
 | `session.cookie.name` (or `session_cookie_name`) | string | `oidc_session` | Session cookie name (the transient flow cookie is `<name>_flow`). |
 | `session.cookie.path` (or `session_cookie_path`) | string | `/` | `Path` attribute of the session and flow cookies. Scope it to the app's subpath (e.g. `/app_a`) so two nodes on different subpaths keep independent sessions. **Must cover the `redirect_uri` path**, or login loops (rejected at load). |
 | `session.cookie.lifetime` (or `session_cookie_lifetime`) | integer (seconds) | `3600` | Session cookie lifetime. |
+| `session.storage` (or `session_storage`) | string | `cookie` | `cookie` seals the whole session into the encrypted browser cookie — no server-side store. `redis` shrinks the cookie to a bare random 128-bit id and stores the sealed payload server-side in the named `session.store`, enabling listing/revocation via the [Admin API](../../guides/admin-api.md) (`GET`/`DELETE /api/sessions`) and coordinated token refresh (`session.refresh`, below). |
+| `session.store` (or `session_store`) | string | — | Name of a declared `stores:` entry (redis/valkey). **Required when `session.storage: redis`**; resolved at policy-compile time — an unknown name fails compilation, never a request. |
+| `session.refresh` (or `session_refresh`) | boolean | `true` | `session.storage: redis` only: transparently refresh a near-expiry access token (using the `refresh_token` captured at login) before attaching identity, coordinated across gateway instances by a short-lived per-session store lock. Ignored in `cookie` mode, which never refreshes. See [Token refresh](#token-refresh). |
 
 The flat `session_secret` / `session_cookie_*` forms are what the **Web UI** node-config form emits (its form is flat and cannot author nested maps); the nested `session:` map is equivalent and takes precedence when both are present.
 | `logout_path` | string | — | When set, a request to this path clears the session and redirects. |
@@ -104,13 +107,17 @@ A **genuine provider failure** — the discovery document, JWKS endpoint, or int
 
 ## Interactive login
 
-With `bearer_only: false` the plugin runs the browser-facing **Authorization Code flow with PKCE**, keeping all state in an **encrypted client-side cookie** (see the [cookie-session codec](../../concepts/architecture.md)) — no server-side session store, so it scales horizontally as long as every instance shares `session.secret`.
+With `bearer_only: false` the plugin runs the browser-facing **Authorization Code flow with PKCE**. By default (`session.storage: cookie`) all state stays in an **encrypted client-side cookie** (see the [cookie-session codec](../../concepts/architecture.md)) — no server-side session store, so it scales horizontally as long as every instance shares `session.secret`. Setting `session.storage: redis` (+ `session.store: <name>`) moves the sealed payload server-side instead: the cookie shrinks to a bare 128-bit id, and sessions become listable and revocable through the [Admin API](../../guides/admin-api.md) (`GET`/`DELETE /api/sessions`) — `storage: cookie` sessions remain unrevocable by design, since nothing server-side tracks them. The **transient login-flow cookie** (`<name>_flow`, carrying the pre-login `state`/`nonce`/PKCE material) stays client-side in **both** modes; it predates the session and never touches the store. A session-store failure (on load, establish, or refresh) never falls back to `401` — it exits through the ordinary **error** port as a `503` (error code `SESSION_STORE_ERROR`), because treating a store outage as "logged out" would just redirect the user into a login loop the store also can't complete.
 
 The node handles three cases per request:
 
 1. **Valid session cookie** → the sealed claims are attached to `context.message` (`jwt_claims`, `user_id`) and the request continues out the **success** port to the upstream.
 2. **Callback** (request path = `redirect_uri` path, carrying `code` + `state`) → the plugin verifies `state` against the flow cookie (CSRF), exchanges the code at the token endpoint (with the PKCE `code_verifier`), validates the `id_token` against the JWKS and checks its `nonce`, seals a session cookie, and `302`-redirects to the originally requested URL.
 3. **No session** → generates `state`/`nonce`/PKCE, sets a short-lived flow cookie, and `302`-redirects to the IdP authorization endpoint.
+
+#### Token refresh
+
+`session.storage: redis` only, and only when `session.refresh` (default `true`) is set: a request presenting a session whose access token is near expiry is refreshed before identity is attached. The node takes a short-lived (10s, `SET NX PX`) store lock so only one gateway instance calls the token endpoint concurrently; the loser re-reads the (usually already-refreshed) session instead of also calling the IdP. The refreshed tokens — and any re-validated `id_token` claims — replace the session in the store under the same id, so the cookie itself never changes. A refresh failure at the IdP (unreachable, non-2xx, or an invalid refreshed `id_token`) is **not** a store outage: rather than a `503`, the request simply falls back to a fresh login, the same as an expired cookie-mode session. Unlocking after a refresh attempt is best-effort (the lock self-heals via its TTL either way). `session.storage: cookie` never attempts a refresh, regardless of `session.refresh`.
 
 **Wiring:** in interactive mode every browser move (the `302` to the IdP, the post-callback `302`, or a logout redirect) exits through the dedicated **`redirect`** port with the prepared response already on the context — **wire the node's `redirect` edge to `client.in`.** A deliberate rejection (missing/invalid flow cookie, CSRF `state` mismatch, an invalid `id_token`, a nonce mismatch) exits through **`denied`** — wire that to `client.in` too, or a custom denial handler. A genuine discovery/token-endpoint callout failure exits through the ordinary **error** port. Only a request with a valid session cookie leaves the `success` port. The node must sit on a route whose match rule also covers the `redirect_uri` path, so the callback reaches it.
 
@@ -173,12 +180,12 @@ Two `openid-connect` nodes on different routes can hold separate browser session
 ```
 
 :::note Limitations
-Sessions live entirely in the encrypted cookie, so there is **no server-side revocation** before the cookie's `lifetime` expires (use short lifetimes) and **no token refresh** yet — an expired session triggers a fresh, fast redirect round-trip. Only the Authorization Code grant is implemented. Server-side sessions with instant revocation would need a shared store (a future feature).
+In the default `session.storage: cookie` mode, sessions live entirely in the encrypted cookie: there is **no server-side revocation** before the cookie's `lifetime` expires (use short lifetimes) and **no token refresh** — an expired session triggers a fresh, fast redirect round-trip. `session.storage: redis` lifts both limits (revocation via `/api/sessions`, refresh via `session.refresh`) at the cost of requiring a declared `stores:` entry. Only the Authorization Code grant is implemented.
 :::
 
 ## Ports
 
-`openid-connect` declares four output ports: `success`, `denied` (a deliberate `401` rejection is prepared — missing/invalid bearer token, or in interactive mode a CSRF/nonce/session-flow failure), `redirect` (a `302` browser move is prepared — login, callback, or logout; interactive mode only, but the port is always declared), and `error` (a genuine provider failure — discovery, JWKS, or introspection/token-endpoint callout trouble). `denied` and `redirect` are both mandatory ports, same as `success`: the policy compiler rejects any policy that leaves either unwired, **even in bearer-only mode where `redirect` is never actually taken**. Wire both straight to `client`:
+`openid-connect` declares four output ports: `success`, `denied` (a deliberate `401` rejection is prepared — missing/invalid bearer token, or in interactive mode a CSRF/nonce/session-flow failure), `redirect` (a `302` browser move is prepared — login, callback, or logout; interactive mode only, but the port is always declared), and `error` (a genuine provider failure — discovery, JWKS, or introspection/token-endpoint callout trouble — or, in `session.storage: redis` mode, a session-store failure: `503`, error code `SESSION_STORE_ERROR`). `denied` and `redirect` are both mandatory ports, same as `success`: the policy compiler rejects any policy that leaves either unwired, **even in bearer-only mode where `redirect` is never actually taken**. Wire both straight to `client`:
 
 ```yaml
 edges:

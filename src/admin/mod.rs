@@ -13,6 +13,7 @@ mod env_vars;
 mod plugin_configs;
 mod policies;
 mod routes;
+mod sessions;
 mod status;
 mod stores;
 mod supernodes;
@@ -145,6 +146,7 @@ fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
         .merge(plugin_configs::router())
         .merge(supernodes::router())
         .merge(consumers::router())
+        .merge(sessions::router())
         .merge(status::router())
         .merge(stores::router())
         .merge(debug::router())

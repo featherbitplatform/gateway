@@ -1,6 +1,6 @@
 ---
 title: Admin API
-description: REST API for routes, policies, stores, config reload, and operational endpoints, with HTTP Basic authentication.
+description: REST API for routes, policies, stores, server-side sessions, config reload, and operational endpoints, with HTTP Basic authentication.
 ---
 
 The admin API runs on a dedicated port (default `9090`), separate from the data plane. It is enabled by the `admin` section of `system.yaml`; omitting that section disables the admin server entirely.
@@ -54,6 +54,9 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `POST` | `/api/consumers` | Create a consumer | `409` name taken; `400` store rebuild rejected |
 | `PUT` | `/api/consumers/:name` | Create **or** update a consumer (upsert) | `400` store rebuild rejected |
 | `DELETE` | `/api/consumers/:name` | Delete a consumer | `404` unknown consumer |
+| `GET` | `/api/sessions?store=&subject=&plugin=&limit=&cursor=` | List server-side session metadata (never payloads) | `400` missing `store`; `404` unknown store; `502` store outage; `501` headless build |
+| `DELETE` | `/api/sessions/:store/:id` | Revoke one session | `400` bad id; `404` unknown store; `502` store outage; `501` headless build |
+| `DELETE` | `/api/sessions?store=&subject=` | Revoke every session for a subject (`{"revoked": N}`) | `400` missing `store`/`subject`; `404` unknown store; `502` store outage; `501` headless build |
 | `GET` | `/api/plugins` | Static catalog of node/plugin types (id + description) | — |
 | `GET` | `/api/scripts` | List scripted-plugin files (`.lua`) in the `plugins/` directory next to the config directory; missing directory yields an empty list | — |
 | `GET` | `/api/status` | Gateway version plus route and policy counts | — |
@@ -75,6 +78,7 @@ Notes on mutation semantics:
 - **Shared plugin configs** are resolved (`config_ref` materialized into the effective node config) at the same compile choke point as supernode expansion, before it (see [Shared plugin configs](../concepts/plugin-configs.md)). A `PUT`/`DELETE` on `/api/plugin-configs/:name` revalidates and recompiles all routes just like a policy edit — an unknown reference or a `type` mismatch introduced by the edit, or a delete while still referenced by any policy or supernode node, fails with `400` and leaves the previous definition and compiled routes active.
 - **Consumer mutations** rebuild the consumer store and hot-swap it (no graph recompile); a rejected rebuild (duplicate credential, malformed credential object) leaves the previous store active.
 - `stores` follow the standard semantics (POST rejects duplicates, PUT upserts) with one addition: DELETE is guarded — a store referenced by any node or shared plugin config returns `409 {"error":"in_use","referrers":[...]}` naming each referrer. Ping resolves `${ENV_VAR}` placeholders at call time; responses never echo connection details. Binaries built without the `redis-store` feature reject any declared store at config load and answer ping with 501.
+- **Sessions** are read/write against the named store's live data, not the compiled route graph, so they never trigger a recompile. Listing and both revoke endpoints return only `SessionMeta` — subject, plugin, policy, route, timestamps — never the sealed session payload. Revocation applies to **store-backed sessions only**: a plugin configured with `session.storage: cookie` (the default) keeps its session entirely client-side, so there is nothing server-side to revoke — only `session.storage: redis` sessions are listable/revocable here. Binaries built without the `redis-store` feature answer every `/api/sessions*` route with `501`.
 - For both `PUT` endpoints, the name in the URL path overrides any name in the JSON body.
 - Every mutation triggers validation and recompilation of all route graphs. On failure the endpoint returns `400` and the previously compiled routes stay active.
 - Changes take effect immediately (hot-reload, no restart).

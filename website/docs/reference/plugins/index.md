@@ -151,8 +151,8 @@ These plugins delegate the auth or authorization decision to an external service
 | [`openid-connect`](openid-connect.md) | OIDC: bearer-token validation or interactive Authorization Code login |
 | [`cas-auth`](cas-auth.md) | CAS: ticket validation or interactive SSO login |
 | [`wolf-rbac`](wolf-rbac.md) | Wolf RBAC token check |
-| [`dingtalk-auth`](dingtalk-auth.md) | DingTalk code/token validation |
-| [`feishu-auth`](feishu-auth.md) | Feishu/Lark code/token validation |
+| [`dingtalk-auth`](dingtalk-auth.md) | DingTalk code/token validation with optional session mode |
+| [`feishu-auth`](feishu-auth.md) | Feishu/Lark code/token validation with optional session mode |
 
 ## Scripting
 
