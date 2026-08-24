@@ -17,6 +17,7 @@ const sidebars: SidebarsConfig = {
         'concepts/policies-and-graphs',
         'concepts/supernodes',
         'concepts/plugin-configs',
+        'concepts/stores',
         'concepts/context-object',
         'concepts/listener-and-client',
         'concepts/error-handling',

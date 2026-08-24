@@ -469,10 +469,10 @@ pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
         "redirect" => Some(&ports::REDIRECT_SPEC),
         "fault-injection" => Some(&ports::FAULT_INJECTION_SPEC),
         "key-auth" | "basic-auth" | "jwt-auth" | "hmac-auth" | "jwe-decrypt" | "multi-auth"
-        | "ldap-auth" | "dingtalk-auth" | "feishu-auth" | "forward-auth" | "opa" | "wolf-rbac" => {
-            Some(&ports::AUTH_SPEC)
+        | "ldap-auth" | "forward-auth" | "opa" | "wolf-rbac" => Some(&ports::AUTH_SPEC),
+        "cas-auth" | "openid-connect" | "authz-casdoor" | "dingtalk-auth" | "feishu-auth" => {
+            Some(&ports::INTERACTIVE_AUTH_SPEC)
         }
-        "cas-auth" | "openid-connect" | "authz-casdoor" => Some(&ports::INTERACTIVE_AUTH_SPEC),
         "authz-casbin" | "authz-keycloak" => Some(&ports::AUTH_SPEC),
         "acl"
         | "ip-restriction"
