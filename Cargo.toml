@@ -1,6 +1,6 @@
 [package]
 name = "featherbit"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 # Not published to crates.io; also lets cargo-deny's license check skip the
 # workspace crate (deny.toml: private = { ignore = true }).
@@ -9,8 +9,11 @@ publish = false
 [features]
 # The embedded admin web UI. Headless build (no UI assets, no serving code):
 # `cargo build --release --no-default-features`.
-default = ["ui"]
+default = ["ui", "redis-store"]
 ui = ["dep:rust-embed", "dep:mime_guess"]
+# Redis/Valkey client for the `stores:` resource (sessions, distributed rate
+# limiting). Off = declaring a store fails config load with a clear error.
+redis-store = ["dep:redis"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -77,6 +80,10 @@ jsonschema = { version = "0.47.0", default-features = false }
 serde_json_path = "0.7"
 ring = "0.17.14"
 casbin = "2.20.0"
+# Redis/Valkey client for the `stores:` resource (`redis-store` feature).
+# default-features = false + rustls: the tree must stay ring-only — after any
+# version bump, verify `cargo tree -i aws-lc-sys` prints nothing.
+redis = { version = "0.32", optional = true, default-features = false, features = ["tokio-rustls-comp", "connection-manager", "script"] }
 ldap3 = { version = "0.12.1", default-features = false, features = ["tls-rustls-ring"] }
 # etcd config store (HA clustering) talks to etcd's v3 HTTP/JSON gateway via the
 # shared outbound client — no gRPC/protoc/tonic dependency required.

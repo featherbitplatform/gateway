@@ -50,6 +50,8 @@ interface SchemaFormProps {
    * `config_ref` (or for editors of the shared config itself).
    */
   inherited?: Record<string, unknown>;
+  /** Dynamic option lists for `optionsFrom` selects (key = source name). */
+  dynamicOptions?: Record<string, FieldOption[]>;
 }
 
 /**
@@ -281,7 +283,9 @@ function Switch({
  * - `radio` — segmented button group for small always-visible enums
  *   (e.g. rate-limit `strategy`); serializes to the selected option's string value.
  * - `select` — native dropdown for longer enums (e.g. `content_type`);
- *   serializes to the selected option's string value.
+ *   serializes to the selected option's string value. `field.optionsFrom`
+ *   appends a dynamically-supplied list (from the `dynamicOptions` prop)
+ *   after any static `options`.
  * - `switch` — boolean toggle with optional inline `switchLabel`; serializes to a boolean.
  * - `list` — add/remove rows of a single scalar input (`field.item.type` picks
  *   text or number); serializes to an array of strings or numbers
@@ -310,7 +314,14 @@ function Switch({
  * The emitted config object is what the admin API persists as the node's
  * `config` block in gateway.yaml.
  */
-export function SchemaForm({ schema, value, onChange, varContext, inherited }: SchemaFormProps) {
+export function SchemaForm({
+  schema,
+  value,
+  onChange,
+  varContext,
+  inherited,
+  dynamicOptions,
+}: SchemaFormProps) {
   const inh = inherited ?? {};
   const set = (key: string, v: unknown) => onChange(applyEdit(value, inh, key, v));
 
@@ -396,20 +407,26 @@ export function SchemaForm({ schema, value, onChange, varContext, inherited }: S
           />
         );
 
-      case 'select':
+      case 'select': {
+        const opts = [
+          ...normalizeOptions(field.options),
+          ...(field.optionsFrom ? (dynamicOptions?.[field.optionsFrom] ?? []) : []),
+        ];
         return (
           <select
             value={(current as string) ?? (field.default as string) ?? ''}
             onChange={(e) => set(field.key, e.target.value)}
             style={{ ...inputStyle, appearance: 'auto' }}
+            aria-label={field.label}
           >
-            {normalizeOptions(field.options).map((opt) => (
+            {opts.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
             ))}
           </select>
         );
+      }
 
       case 'switch':
         return (
@@ -602,6 +619,7 @@ export function SchemaForm({ schema, value, onChange, varContext, inherited }: S
               value={obj}
               onChange={(v) => set(field.key, v)}
               varContext={varContext}
+              dynamicOptions={dynamicOptions}
             />
           </div>
         );
