@@ -32,6 +32,8 @@ Setting a session secret enables the interactive login flow.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `session_secret` / `session.secret` | string | — | Secret used to encrypt+authenticate the session and flow cookies. **Presence enables interactive mode.** A key is derived from it (SHA-256), so any length is accepted; the same value must be configured on every gateway instance. |
+| `session.storage` (or `session_storage`) | string | `cookie` | `cookie` seals the session into the encrypted browser cookie. `redis` shrinks the session cookie to a bare random 128-bit id and stores the sealed payload server-side in the named `session.store`, enabling listing/revocation via the [Admin API](../../guides/admin-api.md) (`GET`/`DELETE /api/sessions`). The transient flow cookie (below) is unaffected — it always stays client-side. |
+| `session.store` (or `session_store`) | string | — | Name of a declared `stores:` entry (redis/valkey). **Required when `session.storage: redis`**; resolved at policy-compile time — an unknown name fails compilation, never a request. |
 | `session.cookie.name` (or `session_cookie_name`) | string | `casdoor_session` | Session cookie name. The transient login-flow cookie is `<name>_flow`. |
 | `session.cookie.path` (or `session_cookie_path`) | string | `/` | Session/flow cookie `Path`. Scope it to the app's subpath (e.g. `/app_a`) so nodes on different subpaths keep independent sessions. **Must cover the `callback_url` path**, or login loops (rejected at load). |
 | `session.cookie.lifetime` (or `session_cookie_lifetime`) | number (seconds) | `3600` | Session cookie lifetime (also the sealed payload's expiry). |
@@ -82,6 +84,10 @@ Each request is resolved through three branches:
 
 If `logout_path` is configured and the request path matches, the session cookie is deleted and the browser is redirected to `/`.
 
+#### Server-side sessions (`session.storage: redis`)
+
+Setting `session.storage: redis` (+ `session.store: <name>`) moves the sealed session payload into the named store; the browser only ever holds a bare 128-bit id for the session cookie. Sessions become listable and revocable through the [Admin API](../../guides/admin-api.md) (`GET`/`DELETE /api/sessions`) — `storage: cookie` sessions (the default) remain unrevocable by design, since nothing server-side tracks them. The short-lived **flow cookie** (state + original URI, used only across the redirect to Casdoor and back) stays client-side in **both** storage modes — it predates the session and never touches the store. A session-store failure on any operation (open, establish, revoke) never falls back to `403`: it exits through the ordinary **error** port as a `503` (error code `SESSION_STORE_ERROR`), because treating a store outage as "logged out" would just redirect the user into a login loop the store also can't complete.
+
 #### Redirect wiring (important)
 
 Every `302` in interactive mode (login redirect, post-callback redirect, logout) exits through the dedicated **`redirect`** output port, carrying the prepared `302` response. This follows the same convention as the standalone `redirect` node. **Wire the node's `redirect` edge to `client.in`** so the redirect (and its `Set-Cookie`) reaches the browser; wire `denied` to `client.in` too (or a custom denial handler) for deliberate rejections; wire the `success` edge onward to the upstream for authenticated requests.
@@ -92,7 +98,7 @@ Both the session cookie and the transient flow cookie are set with `Path=<sessio
 
 ## Ports
 
-`authz-casdoor` declares four output ports: `success`, `denied` (a deliberate `403` rejection is prepared — missing/inactive/invalid token, or an OAuth state mismatch), `redirect` (a `302` browser move is prepared — login, callback, or logout; interactive mode only, but the port is always declared), and `error` (a genuine Casdoor callout failure — introspection or token exchange unreachable). `denied` and `redirect` are both mandatory ports, same as `success`: the policy compiler rejects any policy that leaves either unwired, **even in stateless mode where `redirect` is never actually taken**. Wire both straight to `client`:
+`authz-casdoor` declares four output ports: `success`, `denied` (a deliberate `403` rejection is prepared — missing/inactive/invalid token, or an OAuth state mismatch), `redirect` (a `302` browser move is prepared — login, callback, or logout; interactive mode only, but the port is always declared), and `error` (a genuine Casdoor callout failure — introspection or token exchange unreachable — or, in `session.storage: redis` mode, a session-store failure: `503`, error code `SESSION_STORE_ERROR`). `denied` and `redirect` are both mandatory ports, same as `success`: the policy compiler rejects any policy that leaves either unwired, **even in stateless mode where `redirect` is never actually taken**. Wire both straight to `client`:
 
 ```yaml
 edges:
@@ -107,6 +113,6 @@ edges:
 ## Deviations / Limitations
 
 - **Interactive login is now supported** via an encrypted, authenticated client-side session cookie (AES-256-GCM) — no server-side session store is required, and any gateway instance sharing the secret can open any cookie, so this works across a horizontally-scaled deployment.
-- **No server-side session revocation before expiry.** Because sessions live entirely in the client cookie, there is no way to invalidate an individual session before its `lifetime` elapses (short of rotating the secret, which invalidates *all* sessions). Use short lifetimes. Server-side revocation is a possible future feature.
-- **No refresh-token handling in v1.** The access token is stored as issued; when the session cookie expires the user is redirected through Casdoor login again. Refresh-token exchange is out of scope for this version.
+- **No server-side session revocation before expiry — in `session.storage: cookie` mode (the default).** Because those sessions live entirely in the client cookie, there is no way to invalidate an individual one before its `lifetime` elapses (short of rotating the secret, which invalidates *all* sessions). Use short lifetimes, or switch to `session.storage: redis` for revocation via the [Admin API](../../guides/admin-api.md) (`/api/sessions`).
+- **No refresh-token handling in v1, in either storage mode.** The access token is stored as issued; when the session cookie expires the user is redirected through Casdoor login again. Refresh-token exchange is out of scope for this version.
 - **Access-token signature is not re-verified.** The token comes directly from Casdoor's token endpoint over TLS and is trusted; its claims are decoded (not signature-checked) purely to surface identity to the upstream.

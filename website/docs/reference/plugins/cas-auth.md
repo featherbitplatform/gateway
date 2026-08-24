@@ -31,6 +31,8 @@ Setting a session secret enables the interactive login flow.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `session_secret` / `session.secret` | string | — | Secret used to encrypt+authenticate the session cookie. **Presence enables interactive mode.** A key is derived from it (SHA-256), so any length is accepted; the same value must be configured on every gateway instance. |
+| `session.storage` (or `session_storage`) | string | `cookie` | `cookie` seals the session into the encrypted browser cookie. `redis` shrinks the cookie to a bare random 128-bit id and stores the sealed payload server-side in the named `session.store`, enabling listing/revocation via the [Admin API](../../guides/admin-api.md) (`GET`/`DELETE /api/sessions`). |
+| `session.store` (or `session_store`) | string | — | Name of a declared `stores:` entry (redis/valkey). **Required when `session.storage: redis`**; resolved at policy-compile time — an unknown name fails compilation, never a request. |
 | `session.cookie.name` (or `session_cookie_name`) | string | `cas_session` | Session cookie name. |
 | `session.cookie.path` (or `session_cookie_path`) | string | `/` | Session cookie `Path`. Scope it to the app's subpath (e.g. `/app_a`) so nodes on different subpaths keep independent sessions. |
 | `session.cookie.lifetime` (or `session_cookie_lifetime`) | number (seconds) | `3600` | Session cookie lifetime (also the sealed payload's expiry). |
@@ -86,6 +88,10 @@ Each request is resolved through three branches:
 
 If `logout_path` is configured and the request path matches, the session cookie is deleted and the browser is redirected to `/` on the **`redirect`** port.
 
+#### Server-side sessions (`session.storage: redis`)
+
+Setting `session.storage: redis` (+ `session.store: <name>`) moves the sealed session payload into the named store; the browser only ever holds a bare 128-bit id. Sessions become listable and revocable through the [Admin API](../../guides/admin-api.md) (`GET`/`DELETE /api/sessions`) — `storage: cookie` sessions (the default) remain unrevocable by design, since nothing server-side tracks them. A session-store failure on any operation (open, establish, revoke) never falls back to `401`: it exits through the ordinary **error** port as a `503` (error code `SESSION_STORE_ERROR`), because treating a store outage as "logged out" would just redirect the user into a CAS login loop the store also can't complete. Unlike `openid-connect`/`authz-casdoor`, `cas-auth` has no separate transient flow cookie — CAS returns the ticket directly to the service URL — so `session.storage` only ever affects the one session cookie.
+
 #### Redirect wiring (important)
 
 Every `302` in interactive mode (login redirect, post-callback redirect, logout) exits through the dedicated **`redirect`** output port, carrying the prepared `302` response. This follows the same convention as the standalone `redirect` node. **Wire the node's `redirect` edge to `client.in`** so the redirect (and its `Set-Cookie`) reaches the browser; wire `denied` to `client.in` too (or a custom denial handler) for deliberate rejections; wire the `success` edge onward to the upstream for authenticated requests.
@@ -99,7 +105,7 @@ Every `302` in interactive mode (login redirect, post-callback redirect, logout)
 | `success` | The request is authenticated (valid ticket, or a valid session cookie in interactive mode). |
 | `denied` | A deliberate `401` is prepared: no ticket at all, or the CAS server answered and refused the ticket. |
 | `redirect` | A `302` browser move is prepared — login, post-callback, or logout. Interactive mode only, but the port is always declared. |
-| `error` | The ticket-validation callout **failed**: the CAS server was unreachable, timed out, or answered `/serviceValidate` with a non-200. The node never obtained a verdict, so this is not a denial. Error code `CAS_AUTH_PROVIDER_ERROR`; the client-visible response is the same `401` JSON shape as `denied`. |
+| `error` | The ticket-validation callout **failed**: the CAS server was unreachable, timed out, or answered `/serviceValidate` with a non-200. The node never obtained a verdict, so this is not a denial. Error code `CAS_AUTH_PROVIDER_ERROR`; the client-visible response is the same `401` JSON shape as `denied`. In `session.storage: redis` mode, a session-store failure also exits here, as a `503` with error code `SESSION_STORE_ERROR`. |
 
 Like `success`, `denied` and `redirect` are both mandatory ports: the policy compiler rejects any policy that leaves either unwired, **even in stateless mode where `redirect` is never actually taken**. Wire both straight to `client`; `error` is optional and falls back to the policy catch-all:
 
@@ -122,6 +128,6 @@ The session cookie is set with `Path=<session.cookie.path>` (default `/`), `Http
 ## Deviations / Limitations
 
 - **Interactive login is now supported** via an encrypted, authenticated client-side session cookie (AES-256-GCM) — no server-side session store is required, and any gateway instance sharing the secret can open any cookie, so this works across a horizontally-scaled deployment.
-- **No server-side session revocation before expiry.** Because sessions live entirely in the client cookie, there is no way to invalidate an individual session before its `lifetime` elapses (short of rotating the secret, which invalidates *all* sessions). Use short lifetimes. Server-side revocation is a possible future feature.
-- **No CAS single-logout (SLO) callback.** The IdP-initiated back-channel logout POST is not handled; `logout_path` performs a simple local cookie clear + redirect only.
-- **No ticket/proxy-ticket refresh.** There is no renewal handling in v1; when the cookie expires the user is redirected through CAS login again.
+- **No server-side session revocation before expiry — in `session.storage: cookie` mode (the default).** Because those sessions live entirely in the client cookie, there is no way to invalidate an individual one before its `lifetime` elapses (short of rotating the secret, which invalidates *all* sessions). Use short lifetimes, or switch to `session.storage: redis` for revocation via the [Admin API](../../guides/admin-api.md) (`/api/sessions`).
+- **No CAS single-logout (SLO) callback.** The IdP-initiated back-channel logout POST is not handled; `logout_path` performs a simple local cookie clear + redirect only (plus a store `delete` in redis mode).
+- **No ticket/proxy-ticket refresh.** There is no renewal handling in v1, in either storage mode; when the session expires the user is redirected through CAS login again.
