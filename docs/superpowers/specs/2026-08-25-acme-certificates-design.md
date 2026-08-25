@@ -52,6 +52,9 @@ and peers pick up a cert one of them issued.
 - **DNS-01 / wildcard certificates** — needs DNS-provider integrations;
   wildcard `server_name`s in an ACME'd slot are rejected at load.
 - **`admin.tls` via ACME** — the admin listener is rarely on a public 443.
+- **RSA certificate keys** — rustls/ring cannot generate RSA keys and the
+  pure-Rust `rsa` crate carries an open RUSTSEC advisory the SAST pipeline
+  rejects; `key_type: rsa-*` is refused at load with a pointed message.
 - **OCSP stapling**, CRL — unchanged from the existing TLS roadmap.
 - **ACME config CRUD** in the Admin API — ACME config lives in `system.yaml`,
   which is restart-gated like every other TLS setting.
@@ -88,7 +91,8 @@ acme:                                   # optional; absent = feature off
   eab:                                  # optional (ZeroSSL, Google Trust Services, step-ca)
     key_id: ${ACME_EAB_KID}
     hmac_key: ${ACME_EAB_HMAC}          # base64url, as issued by the CA
-  key_type: ecdsa-p256                  # default; or rsa-2048
+  directory_ca_path: /etc/pki/step-root.pem   # optional; trust root for the CA's HTTPS endpoint (private CAs, Pebble)
+  key_type: ecdsa-p256                  # default; or ecdsa-p384
   renew_before: 30d                     # duration; renew when not_after - now < this
   storage:
     type: filesystem                    # default
@@ -117,8 +121,9 @@ Types (`src/config/system.rs`):
   `TlsConfig.acme: Option<AcmeSlot>`. Same on `SniCert`.
   `AcmeSlot { domains: Vec<String> }` with `domains` defaulting to empty
   (meaning "the `server_name`" on an `SniCert`).
-- `AcmeConfig { directory_url, contact, terms_of_service_agreed, eab,
-  key_type, renew_before, storage }`; `AcmeStorageConfig` is a
+- `AcmeConfig { directory_url, directory_ca_path, contact,
+  terms_of_service_agreed, eab, key_type, renew_before, storage }`;
+  `AcmeStorageConfig` is a
   `#[serde(tag = "type")]` enum `Filesystem { dir }` |
   `Store { store, encryption_key }`.
 - `renew_before` parses `Nd`/`Nh` (and plain seconds); default 30 days.
@@ -140,7 +145,10 @@ listener binds):
   same "built without redis-store" error `stores:` uses) and
   `encryption_key` to be non-empty after `${ENV}` interpolation.
 - `directory_url` must be `https://` (Pebble in tests uses `https://` too;
-  a plaintext CA is refused).
+  a plaintext CA is refused). `directory_ca_path`, when set, must be a
+  readable PEM bundle; it replaces the system roots for the CA connection.
+- `key_type` must be `ecdsa-p256` or `ecdsa-p384`; anything else (including
+  `rsa-2048`) is refused with a message naming the supported values.
 
 The store *name* is checked once `gateway.yaml` is loaded (both configs are
 loaded before listeners start): an unknown name aborts startup. The ACME
@@ -438,9 +446,10 @@ to Sessions and laid out like `SessionsPanel.tsx`:
   closed after the handshake without a response; `acme-tls/1` is absent from
   the ALPN list when `acme:` is not configured; file-based slots and their
   hot-reload behave as before.
-- **Integration with Pebble** (Let's Encrypt's test CA; Linux CI service
-  container, `PEBBLE_VA_ALWAYS_VALID=0`, TLS-ALPN port pointed at the
-  gateway): gateway boots with a placeholder → `/readyz` is 503 → cert is
+- **Integration with Pebble** (Let's Encrypt's test CA; Linux CI, run with
+  `docker run --network host` so its validator reaches the gateway on the
+  runner's loopback, `tlsPort` pointed at the gateway's listener,
+  `directory_ca_path` = Pebble's `pebble.minica.pem`): gateway boots with a placeholder → `/readyz` is 503 → cert is
   issued → `/readyz` is 200 → `GET /api/acme/certs` shows `issued` with a
   Pebble issuer → `POST …/renew?force=true` rotates the serial → a restart
   reuses the stored cert (no re-issue). Run for both storage backends. Gated
