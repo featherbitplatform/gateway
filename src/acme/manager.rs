@@ -846,7 +846,26 @@ mod tests {
             "our failed attempt + the peer's order"
         );
 
-        // No stale-backoff duplicate order follows adoption.
+        // The real discriminator: `next_renewal_at` is only ever written by
+        // the ARI/renew-before branch, which only runs once `failures == 0`
+        // (the `failures > 0` branch computes a local `due_at` but never
+        // calls `update()`, so the field stays `None` — exactly what
+        // `parse_cert_meta`/`adopt_from_storage` leave it at). Seeing it
+        // become `Some` after adoption proves the reset actually happened,
+        // deterministically and fast, instead of racing (or failing to
+        // distinguish within) the real 60 s+ backoff floor.
+        let scheduled = wait_until(
+            &h.certs,
+            &h.slot.id,
+            "next_renewal_at recorded after adoption (proves the failure \
+             streak was reset, not stuck on the stale-backoff branch)",
+            |c| c.state == CertState::Issued && c.meta.next_renewal_at.is_some(),
+        )
+        .await;
+        assert!(scheduled.meta.next_renewal_at.unwrap() > now_unix());
+
+        // Secondary check, kept from the original assertion: no stale-backoff
+        // duplicate order follows adoption either.
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(
             h.client.orders(),
