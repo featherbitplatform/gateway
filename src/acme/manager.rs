@@ -291,14 +291,16 @@ impl Manager {
                         slot.id, failures, e
                     );
                     let now = now_unix();
-                    // Any failed attempt — including the first, on a placeholder —
-                    // moves the cert to `Failed`: `/readyz` treats `Failed` as ready
-                    // (constraints.md: only `Placeholder` blocks it), so a CA outage
-                    // never wedges startup forever. The served bytes (leaf_der/key)
-                    // are untouched, so a placeholder keeps serving as a placeholder
-                    // even though its recorded state is now `Failed`.
+                    // A placeholder that fails stays `Placeholder` — that is the
+                    // sole state `/readyz` keys on (constraints.md), so it must not
+                    // flip to `Failed` just because an issuance attempt failed, or
+                    // readiness would report ready while still serving a self-signed
+                    // cert. A real cert that fails to renew becomes `Failed` but
+                    // keeps serving the last-good certificate.
                     update(&self.certs, &slot.id, |c| {
-                        c.state = CertState::Failed;
+                        if c.state != CertState::Placeholder {
+                            c.state = CertState::Failed;
+                        }
                         c.meta.last_attempt_at = Some(now);
                         c.meta.last_error = Some(e.to_string());
                         c.meta.next_renewal_at = Some(now + backoff_secs(failures) as i64);
@@ -306,7 +308,10 @@ impl Manager {
                     if let Some(m) = &self.metrics {
                         m.attempt(slot.id.as_str(), false, now);
                     }
-                    if current.state == CertState::Placeholder {
+                    if self
+                        .snapshot(&slot.id)
+                        .is_some_and(|c| c.state == CertState::Placeholder)
+                    {
                         warn!(
                             "acme: {} is still serving a self-signed placeholder",
                             slot.id
@@ -550,20 +555,38 @@ mod tests {
         )
     }
 
-    async fn wait_state(certs: &ManagedCerts, id: &CertId, want: CertState) -> ManagedCert {
+    async fn wait_until(
+        certs: &ManagedCerts,
+        id: &CertId,
+        what: &str,
+        pred: impl Fn(&ManagedCert) -> bool,
+    ) -> ManagedCert {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(c) = certs.load().get(id.as_str()) {
-                if c.state == want {
+                if pred(c) {
                     return c.clone();
                 }
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "timed out waiting for {want:?}"
+                "timed out waiting for {what}"
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    async fn wait_state(certs: &ManagedCerts, id: &CertId, want: CertState) -> ManagedCert {
+        wait_until(certs, id, &format!("{want:?}"), |c| c.state == want).await
+    }
+
+    /// A failed issuance attempt on a placeholder: still `Placeholder` (that is
+    /// the sole state `/readyz` keys on) but with the failure recorded.
+    async fn wait_failed_placeholder(certs: &ManagedCerts, id: &CertId) -> ManagedCert {
+        wait_until(certs, id, "placeholder with a recorded error", |c| {
+            c.state == CertState::Placeholder && c.meta.last_error.is_some()
+        })
+        .await
     }
 
     #[tokio::test]
@@ -610,7 +633,12 @@ mod tests {
             .clone();
         let m = manager(&h, fast_cfg());
         m.clone().run().await;
-        let failed = wait_state(&h.certs, &h.slot.id, CertState::Failed).await;
+        let failed = wait_failed_placeholder(&h.certs, &h.slot.id).await;
+        assert_eq!(
+            failed.state,
+            CertState::Placeholder,
+            "readiness stays keyed on Placeholder, not Failed"
+        );
         assert!(failed
             .meta
             .last_error
@@ -644,8 +672,9 @@ mod tests {
             .store(2, std::sync::atomic::Ordering::SeqCst);
         let m = manager(&h, fast_cfg());
         m.clone().run().await;
-        // Two failed connects → Failed twice with backoff; force-renew skips the wait.
-        wait_state(&h.certs, &h.slot.id, CertState::Failed).await;
+        // Two failed connects → still Placeholder (with a recorded error) and
+        // backing off; force-renew skips the wait.
+        wait_failed_placeholder(&h.certs, &h.slot.id).await;
         m.renew_now(h.slot.id.as_str(), true);
         tokio::time::sleep(Duration::from_millis(100)).await;
         m.renew_now(h.slot.id.as_str(), true);
