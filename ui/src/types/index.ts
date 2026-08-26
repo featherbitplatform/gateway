@@ -432,3 +432,36 @@ export interface SandboxResult {
   stored_trace_id: string;
   trace: TraceDetail;
 }
+
+/** Lifecycle state of an ACME-managed certificate. @remarks Mirrors src/acme/mod.rs::CertState. */
+export type AcmeCertState = 'placeholder' | 'issued' | 'renewing' | 'failed';
+
+/** One managed certificate as served by `GET /api/acme/certs` (never includes key material). */
+export interface AcmeCert {
+  /** Normalized, comma-joined domain set; the renew endpoint's path parameter. */
+  id: string;
+  domains: string[];
+  state: AcmeCertState;
+  /** Unix seconds; 0 while a placeholder is served. */
+  not_before: number;
+  not_after: number;
+  issuer: string;
+  serial: string;
+  next_renewal_at: number | null;
+  last_attempt_at: number | null;
+  last_error: string | null;
+}
+
+/** Envelope of `GET /api/acme/certs`. `enabled: false` = no `acme:` block in system.yaml. */
+export interface AcmeCertsResponse {
+  enabled: boolean;
+  /** `filesystem` or `store:<name>`; absent when disabled. */
+  storage?: string;
+  certs: AcmeCert[];
+}
+
+/** Body of `POST /api/acme/certs/{id}/renew` (200 not_due or 202 scheduled). */
+export interface AcmeRenewResponse {
+  scheduled: boolean;
+  reason?: string;
+}
