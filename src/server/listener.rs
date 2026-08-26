@@ -58,8 +58,26 @@ pub async fn start_server(
     // a cert-file change swaps it in for new connections without a restart.
     let tls_config: Option<tls::SharedTlsConfig> = match &system.tls {
         Some(tls_cfg) => {
-            let shared = tls::build_reloadable(tls_cfg, http2_enabled)?;
-            tls::spawn_cert_watcher(tls_cfg.clone(), http2_enabled, shared.clone(), "data-plane");
+            // ACME: seed managed certs (stored or placeholder) before the config
+            // is built, so the listener is up — and validatable — immediately.
+            let hooks = match &system.acme {
+                Some(acme_cfg) if !tls_cfg.managed_domains().is_empty() => {
+                    let rt =
+                        crate::acme::start(acme_cfg, tls_cfg, &state.resources, &state.metrics)
+                            .await?;
+                    state.acme.store(Some(rt.clone()));
+                    Some(rt.hooks())
+                }
+                _ => None,
+            };
+            let shared = tls::build_reloadable(tls_cfg, http2_enabled, hooks.as_ref())?;
+            tls::spawn_cert_watcher(
+                tls_cfg.clone(),
+                http2_enabled,
+                shared.clone(),
+                "data-plane",
+                hooks,
+            );
             Some(shared)
         }
         None => None,
@@ -96,6 +114,10 @@ pub async fn start_server(
                     match tls_config.as_ref().map(tls::current_acceptor) {
                         Some(acc) => match acc.accept(stream).await {
                             Ok(tls_stream) => {
+                                if tls::negotiated_acme_challenge(&tls_stream) {
+                                    tracing::debug!("acme-tls/1 validation handshake from {}; closing", remote_addr);
+                                    return;
+                                }
                                 let client_id = tls::client_cert_identity(&tls_stream);
                                 let service = service_fn(move |req: Request<Incoming>| {
                                     let state = state.clone();
@@ -681,14 +703,15 @@ policies:
         let cert_path = dir.join(format!("fb_wss_{}.crt", pid));
         let key_path = dir.join(format!("fb_wss_{}.key", pid));
         std::fs::write(&cert_path, certified.cert.pem()).unwrap();
-        std::fs::write(&key_path, certified.key_pair.serialize_pem()).unwrap();
+        std::fs::write(&key_path, certified.signing_key.serialize_pem()).unwrap();
         let tls_cfg = TlsConfig {
-            cert_path: cert_path.to_string_lossy().into_owned(),
-            key_path: key_path.to_string_lossy().into_owned(),
+            cert_path: Some(cert_path.to_string_lossy().into_owned()),
+            key_path: Some(key_path.to_string_lossy().into_owned()),
             min_version: "1.2".to_string(),
             client_ca_path: None,
             client_cert_required: true,
             sni_certs: Vec::new(),
+            acme: None,
         };
         // http2=false → ALPN advertises http/1.1 only, matching the WS handshake.
         let acceptor = tls::build_acceptor(&tls_cfg, false).unwrap();

@@ -80,6 +80,56 @@ jobs:
         env:
           FEATHERBIT_TEST_REDIS_URL: redis://127.0.0.1:6379
 
+  # Real ACME issuance against Pebble (Let's Encrypt's test CA). Host networking
+  # lets Pebble's validator reach the test's listener on 127.0.0.1:18443; the
+  # test self-skips everywhere FEATHERBIT_TEST_PEBBLE_URL is unset.
+  acme-live:
+    name: acme live tests (pebble)
+    runs-on: ubuntu-latest
+    # The scenario runs once per storage backend; the redis service is what
+    # enables the `stores:`-backed half of it.
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping || valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Start Pebble
+        run: |
+          curl -fsSL -o /tmp/pebble.minica.pem \
+            https://raw.githubusercontent.com/letsencrypt/pebble/main/test/certs/pebble.minica.pem
+          docker run -d --name pebble --network host \
+            -e PEBBLE_VA_NOSLEEP=1 \
+            -v "$PWD/dev/pebble/pebble-config.json:/test/config/pebble-config.json:ro" \
+            ghcr.io/letsencrypt/pebble:latest -config /test/config/pebble-config.json -strict
+          for i in $(seq 1 30); do
+            curl -sk https://localhost:14000/dir >/dev/null && break
+            sleep 1
+          done
+          curl -sk https://localhost:14000/dir
+
+      - run: "cargo test --locked --no-default-features --features redis-store acme:: -- --nocapture"
+        env:
+          FEATHERBIT_TEST_PEBBLE_URL: https://localhost:14000/dir
+          FEATHERBIT_TEST_PEBBLE_CA: /tmp/pebble.minica.pem
+          FEATHERBIT_TEST_ACME_DOMAIN: localhost
+          FEATHERBIT_TEST_ACME_PORT: "18443"
+          FEATHERBIT_TEST_REDIS_URL: redis://127.0.0.1:6379
+
+      - name: Pebble logs
+        if: failure()
+        run: docker logs pebble
+
   # The headless build (no `ui` feature, no ui/dist needed) must keep
   # compiling — it ships as the -headless Docker variant.
   headless-check:
@@ -153,16 +203,35 @@ jobs:
         run: npm ci && npx playwright install --with-deps chromium
         working-directory: e2e
 
+      - name: Start Pebble
+        run: |
+          curl -fsSL -o /tmp/pebble.minica.pem \
+            https://raw.githubusercontent.com/letsencrypt/pebble/main/test/certs/pebble.minica.pem
+          docker run -d --name pebble --network host \
+            -e PEBBLE_VA_NOSLEEP=1 \
+            -v "$PWD/dev/pebble/pebble-config.json:/test/config/pebble-config.json:ro" \
+            ghcr.io/letsencrypt/pebble:latest -config /test/config/pebble-config.json -strict
+          for i in $(seq 1 30); do
+            curl -sk https://localhost:14000/dir >/dev/null && break
+            sleep 1
+          done
+          curl -sk https://localhost:14000/dir
+
       # Playwright boots everything itself: the gateway, the Python echo backend
       # (python3 is preinstalled; the config resolves it per platform), and the
       # Node mock services (OIDC provider, the HTTP auth mock, and an ldapjs
       # LDAP server). The redis service unlocks the gated E2E-SESS scenarios;
-      # everything else remains process-local.
+      # the Pebble service unlocks the gated E2E-ACME scenarios; everything
+      # else remains process-local.
       - name: Run e2e
         run: npm test
         working-directory: e2e
         env:
           FEATHERBIT_TEST_REDIS_URL: redis://127.0.0.1:6379
+          FEATHERBIT_TEST_PEBBLE_URL: https://localhost:14000/dir
+          FEATHERBIT_TEST_PEBBLE_CA: /tmp/pebble.minica.pem
+          FEATHERBIT_TEST_ACME_DOMAIN: localhost
+          FEATHERBIT_TEST_ACME_PORT: "18443"
 
       # The report carries traces, screenshots and the failing scenario IDs --
       # the only way to diagnose a browser failure after the fact.
