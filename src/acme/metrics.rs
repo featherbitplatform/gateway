@@ -19,9 +19,10 @@ pub struct AcmeMetrics {
 }
 
 impl AcmeMetrics {
-    /// Creates the collectors and registers them on `registry`. A collector
-    /// already registered (same process, second call) is reused silently.
-    pub fn register(registry: &Registry) -> Arc<Self> {
+    /// Creates the collectors and registers them on `registry`.
+    /// Returns an error if any collector is already registered on this registry
+    /// (programming error; each registry must be used for at most one `register` call).
+    pub fn register(registry: &Registry) -> Result<Arc<Self>, prometheus::Error> {
         let not_after = IntGaugeVec::new(
             Opts::new(
                 "featherbit_acme_cert_not_after_timestamp_seconds",
@@ -60,17 +61,14 @@ impl AcmeMetrics {
             Box::new(renewals.clone()),
             Box::new(last_attempt.clone()),
         ] {
-            match registry.register(c) {
-                Ok(()) | Err(prometheus::Error::AlreadyReg) => {}
-                Err(e) => panic!("acme metrics registration: {e}"),
-            }
+            registry.register(c)?;
         }
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             not_after,
             state,
             renewals,
             last_attempt,
-        })
+        }))
     }
 
     pub fn observe(&self, cert_id: &str, state: CertState, not_after: i64) {
@@ -104,7 +102,7 @@ mod tests {
     #[test]
     fn series_render_with_expected_names_and_labels() {
         let registry = prometheus::Registry::new();
-        let m = AcmeMetrics::register(&registry);
+        let m = AcmeMetrics::register(&registry).unwrap();
         m.observe("a.example.com", CertState::Issued, 1_800_000_000);
         m.attempt("a.example.com", true, 1_700_000_000);
         m.attempt("a.example.com", false, 1_700_000_100);
@@ -115,6 +113,11 @@ mod tests {
         assert!(out.contains(
             "featherbit_acme_cert_state{cert_id=\"a.example.com\",state=\"placeholder\"} 0"
         ));
+        assert!(out.contains(
+            "featherbit_acme_cert_state{cert_id=\"a.example.com\",state=\"renewing\"} 0"
+        ));
+        assert!(out
+            .contains("featherbit_acme_cert_state{cert_id=\"a.example.com\",state=\"failed\"} 0"));
         assert!(out.contains(
             "featherbit_acme_renewals_total{cert_id=\"a.example.com\",result=\"success\"} 1"
         ));
@@ -127,7 +130,10 @@ mod tests {
         assert!(render(&registry).contains(
             "featherbit_acme_cert_not_after_timestamp_seconds{cert_id=\"b.example.com\"} 0"
         ));
-        // Registering twice on the same registry must not panic.
-        let _ = AcmeMetrics::register(&registry);
+        // Registering twice on the same registry must fail.
+        assert!(matches!(
+            AcmeMetrics::register(&registry),
+            Err(prometheus::Error::AlreadyReg)
+        ));
     }
 }
