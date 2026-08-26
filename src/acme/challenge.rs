@@ -172,6 +172,7 @@ impl TlsAlpnSolver {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn cached_domains(&self) -> Vec<String> {
         let now = Instant::now();
         let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
