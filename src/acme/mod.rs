@@ -259,7 +259,13 @@ pub fn leaf_dns_sans(leaf_der: &[u8]) -> Result<Vec<String>, AcmeError> {
     Ok(out)
 }
 
-/// The leaf's SubjectPublicKeyInfo DER (for "does this chain belong to my key").
+/// The leaf's SubjectPublicKeyInfo DER. Production code never needs it —
+/// `load_certified_key` gates key/leaf agreement through rustls'
+/// `CertifiedKey::keys_match()` — but the TLS resolver tests verify signatures
+/// over a challenge certificate whose critical `acmeIdentifier` extension
+/// rustls-webpki refuses to parse, and raw-SPKI verification is the way around
+/// that.
+#[cfg(test)]
 pub fn leaf_spki(leaf_der: &[u8]) -> Result<Vec<u8>, AcmeError> {
     let cert = parse_leaf(leaf_der)?;
     Ok(cert.tbs_certificate.subject_pki.raw.to_vec())
