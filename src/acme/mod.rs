@@ -20,7 +20,7 @@ use tracing::{info, warn};
 
 use crate::config::{AcmeConfig, AcmeStorageConfig, TlsConfig};
 use crate::metrics::GatewayMetrics;
-use crate::stores::StoreRegistry;
+use crate::plugins::resources::PluginResources;
 use challenge::TlsAlpnSolver;
 use manager::{ManagedSlot, Manager, ManagerConfig};
 use storage::CertStorage;
@@ -295,9 +295,14 @@ impl AcmeRuntime {
     }
 }
 
+/// Builds the configured [`CertStorage`]. The redis backend keeps only the
+/// store's *name* and resolves its client from `resources` on every call, so an
+/// Admin API store edit is picked up by the next operation; the name is
+/// validated here (resolved once and discarded) so a typo fails startup rather
+/// than every later renewal.
 pub fn build_storage(
     cfg: &AcmeConfig,
-    stores: &StoreRegistry,
+    resources: &Arc<PluginResources>,
 ) -> Result<Arc<dyn CertStorage>, AcmeError> {
     match &cfg.storage {
         AcmeStorageConfig::Filesystem { dir } => Ok(Arc::new(storage::fs::FsCertStorage::new(dir))),
@@ -306,15 +311,16 @@ pub fn build_storage(
             store,
             encryption_key,
         } => {
-            let client = stores.client(store).map_err(AcmeError::Config)?;
-            Ok(Arc::new(storage::redis::RedisCertStorage::new(
-                client,
-                encryption_key,
-            )))
+            let storage =
+                storage::redis::RedisCertStorage::new(resources.clone(), store, encryption_key);
+            storage
+                .client()
+                .map_err(|e| AcmeError::Config(e.to_string()))?;
+            Ok(Arc::new(storage))
         }
         #[cfg(not(feature = "redis-store"))]
         AcmeStorageConfig::Store { .. } => {
-            let _ = stores;
+            let _ = resources;
             Err(AcmeError::Config(
                 "acme.storage.type: store needs the redis-store feature".into(),
             ))
@@ -328,10 +334,10 @@ pub fn build_storage(
 pub async fn start(
     cfg: &AcmeConfig,
     tls: &TlsConfig,
-    stores: &StoreRegistry,
+    resources: &Arc<PluginResources>,
     metrics: &GatewayMetrics,
 ) -> Result<Arc<AcmeRuntime>, AcmeError> {
-    let storage = build_storage(cfg, stores)?;
+    let storage = build_storage(cfg, resources)?;
     let solver = TlsAlpnSolver::new(storage.clone());
     let certs = new_managed_certs();
     let acme_metrics = metrics::AcmeMetrics::register(&metrics.registry)
@@ -582,10 +588,10 @@ mod tests {
         .unwrap();
         let cfg = system.acme.as_ref().unwrap();
         let tls = system.tls.as_ref().unwrap();
-        let stores = crate::stores::StoreRegistry::default();
+        let resources = crate::plugins::resources::PluginResources::new(None);
         let metrics = crate::metrics::GatewayMetrics::new();
 
-        let rt = start(cfg, tls, &stores, &metrics).await.unwrap();
+        let rt = start(cfg, tls, &resources, &metrics).await.unwrap();
         assert_eq!(rt.placeholder_ids(), vec!["s.example.com".to_string()]);
         assert_eq!(rt.storage_label, "filesystem");
         assert!(metrics.render().contains(
@@ -594,7 +600,7 @@ mod tests {
 
         // A valid stored cert is adopted at start (no placeholder, no order).
         let issued = rcgen::generate_simple_self_signed(vec!["s.example.com".to_string()]).unwrap();
-        let storage = build_storage(cfg, &stores).unwrap();
+        let storage = build_storage(cfg, &resources).unwrap();
         let (id, _) = CertId::from_domains(&["s.example.com".into()]).unwrap();
         storage
             .save_cert(
@@ -607,7 +613,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let rt2 = start(cfg, tls, &stores, &crate::metrics::GatewayMetrics::new())
+        let rt2 = start(cfg, tls, &resources, &crate::metrics::GatewayMetrics::new())
             .await
             .unwrap();
         assert!(rt2.placeholder_ids().is_empty());
