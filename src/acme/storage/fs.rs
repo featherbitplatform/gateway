@@ -58,7 +58,10 @@ fn atomic_write(path: &Path, bytes: &[u8], secret: bool) -> Result<(), AcmeError
     #[cfg(not(unix))]
     let _ = secret;
     if let Err(first) = std::fs::rename(&tmp, path) {
-        // Windows refuses to rename over an existing file.
+        // `rename` can still fail if `path` is held open by another handle
+        // (e.g. a transient sharing violation on Windows, or another process
+        // reading it) even though it uses replace-existing semantics; fall
+        // back to an explicit remove-then-rename.
         std::fs::remove_file(path).map_err(|e| io_err("replace", path, e))?;
         std::fs::rename(&tmp, path).map_err(|_| io_err("rename", path, first))?;
     }
@@ -124,6 +127,29 @@ impl FsCertStorage {
             &serde_json::to_vec(&lease).unwrap(),
             false,
         )
+    }
+
+    /// Creates the lease file iff it does not already exist (`O_EXCL`
+    /// semantics via `create_new`) — the OS guarantees exactly one concurrent
+    /// caller wins. Returns `Err(AlreadyExists)` when another lease file is
+    /// already there.
+    fn create_lease_file(&self, id: &CertId, owner: &str, ttl: Duration) -> std::io::Result<()> {
+        let path = self.lease_path(id);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let lease = LeaseFile {
+            owner: owner.to_string(),
+            expires_at: expires_at(ttl),
+        };
+        let bytes = serde_json::to_vec(&lease).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        use std::io::Write;
+        f.write_all(&bytes)?;
+        Ok(())
     }
 }
 
@@ -216,12 +242,30 @@ impl CertStorage for FsCertStorage {
         owner: &str,
         ttl: Duration,
     ) -> Result<bool, AcmeError> {
-        match self.read_lease(id)? {
-            Some(l) if l.owner != owner => Ok(false),
-            _ => {
-                self.write_lease(id, owner, ttl)?;
-                Ok(true)
+        match self.create_lease_file(id, owner, ttl) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                match self.read_lease(id)? {
+                    // Live lease held by someone else: no win.
+                    Some(l) if l.owner != owner => Ok(false),
+                    // Already ours (fresh or stale-but-not-expired): refresh in place.
+                    Some(_) => {
+                        self.write_lease(id, owner, ttl)?;
+                        Ok(true)
+                    }
+                    // Expired or corrupt: clear it and retry the exclusive create once.
+                    // Losing that retry to a concurrent creator/remover means `false`.
+                    None => {
+                        remove_opt(&self.lease_path(id))?;
+                        match self.create_lease_file(id, owner, ttl) {
+                            Ok(()) => Ok(true),
+                            Err(e2) if e2.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                            Err(e2) => Err(io_err("create lease", &self.lease_path(id), e2)),
+                        }
+                    }
+                }
             }
+            Err(e) => Err(io_err("create lease", &self.lease_path(id), e)),
         }
     }
 
@@ -298,6 +342,39 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn try_acquire_lease_is_atomic_under_concurrency() {
+        let dir = temp_dir("lease_race");
+        let storage = Arc::new(FsCertStorage::new(dir.clone()));
+        let (id, _) = CertId::from_domains(&["race.example.com".into()]).unwrap();
+        let ttl = Duration::from_secs(30);
+
+        let tasks: Vec<_> = (0..8)
+            .map(|i| {
+                let storage = storage.clone();
+                let id = id.clone();
+                tokio::spawn(async move {
+                    storage
+                        .try_acquire_lease(&id, &format!("owner-{i}"), ttl)
+                        .await
+                        .unwrap()
+                })
+            })
+            .collect();
+
+        let wins = futures_util::future::join_all(tasks)
+            .await
+            .into_iter()
+            .filter(|r| *r.as_ref().unwrap())
+            .count();
+        assert_eq!(
+            wins, 1,
+            "exactly one concurrent acquirer should win the lease"
+        );
+
         let _ = std::fs::remove_dir_all(dir);
     }
 }
