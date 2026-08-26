@@ -27,6 +27,10 @@
 // design; boxing it would ripple through the `Plugin` trait and every plugin.
 #![allow(clippy::result_large_err)]
 
+// Consumed by later ACME tasks (issuance, renewal, TLS resolver wiring); not
+// yet referenced outside its own tests.
+#[allow(dead_code)]
+mod acme;
 mod admin;
 mod balancer;
 mod batch;
