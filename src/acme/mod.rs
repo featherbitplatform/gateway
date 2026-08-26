@@ -395,11 +395,17 @@ pub async fn start(
             None => {
                 let (key, leaf) = placeholder_cert(&domains)?;
                 warn!("acme: {} has no certificate yet — serving a self-signed placeholder until issuance succeeds", id);
+                // Real metadata even for a placeholder: its (one-hour)
+                // `not_after` is what the manager uses to decide when to
+                // re-mint it. The metrics gauge still reports 0 for
+                // placeholders — see `seeded_not_after` below and
+                // `Manager::observe`.
+                let meta = parse_cert_meta(&leaf).unwrap_or_default();
                 ManagedCert {
                     key,
                     leaf_der: leaf,
                     state: CertState::Placeholder,
-                    meta: CertMeta::default(),
+                    meta,
                     domains: domains.clone(),
                 }
             }
@@ -489,11 +495,7 @@ pub(crate) mod testing {
             let c = rcgen::generate_simple_self_signed(domains.clone()).unwrap();
             load_certified_key(&c.cert.pem(), &c.signing_key.serialize_pem()).unwrap()
         };
-        let meta = if state == CertState::Placeholder {
-            CertMeta::default()
-        } else {
-            parse_cert_meta(&leaf).unwrap()
-        };
+        let meta = parse_cert_meta(&leaf).unwrap();
         publish(
             &certs,
             &id,
@@ -597,6 +599,13 @@ mod tests {
         assert!(metrics.render().contains(
             "featherbit_acme_cert_state{cert_id=\"s.example.com\",state=\"placeholder\"} 1"
         ));
+        // The placeholder carries real validity (so the manager knows when to
+        // re-mint it) but the expiry gauge still reads 0 for placeholders.
+        let seeded = rt.certs.load().get("s.example.com").unwrap().clone();
+        assert!(seeded.meta.not_after > now_unix(), "{:?}", seeded.meta);
+        assert!(metrics.render().contains(
+            "featherbit_acme_cert_not_after_timestamp_seconds{cert_id=\"s.example.com\"} 0"
+        ));
 
         // A valid stored cert is adopted at start (no placeholder, no order).
         let issued = rcgen::generate_simple_self_signed(vec!["s.example.com".to_string()]).unwrap();
@@ -629,6 +638,7 @@ mod tests {
         let certs = new_managed_certs();
         let (id, domains) = CertId::from_domains(&s(&["a.example.com"])).unwrap();
         let (key, leaf) = placeholder_cert(&domains).unwrap();
+        let leaf_copy = leaf.clone();
         publish(
             &certs,
             &id,
@@ -636,7 +646,7 @@ mod tests {
                 key,
                 leaf_der: leaf,
                 state: CertState::Placeholder,
-                meta: CertMeta::default(),
+                meta: parse_cert_meta(&leaf_copy).unwrap(),
                 domains,
             },
         );

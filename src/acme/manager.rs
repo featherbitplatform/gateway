@@ -20,13 +20,18 @@ use super::metrics::AcmeMetrics;
 use super::order::{issue, KeyType};
 use super::storage::CertStorage;
 use super::{
-    load_certified_key, now_unix, parse_cert_meta, publish, update, AcmeError, CertId, CertState,
-    ManagedCert, ManagedCerts,
+    load_certified_key, now_unix, parse_cert_meta, placeholder_cert, publish, update, AcmeError,
+    CertId, CertMeta, CertState, ManagedCert, ManagedCerts,
 };
 
 pub const LEASE_TTL: Duration = Duration::from_secs(300);
 /// ARI is re-queried at most this often per certificate.
 const ARI_INTERVAL_SECS: i64 = 3_600;
+/// Placeholders are minted with one hour of validity; re-mint this long before
+/// they lapse so a slot stuck in `Placeholder` never serves an expired
+/// certificate (design section 4: "re-minted on every restart and hourly while
+/// still in Placeholder state").
+const PLACEHOLDER_REMINT_MARGIN_SECS: i64 = 300;
 
 /// Unix time at which the certificate should be renewed: `renew_before` ahead of
 /// expiry, or the start of the CA's ARI window if that comes first.
@@ -234,6 +239,59 @@ impl Manager {
         }
     }
 
+    /// Mints a fresh self-signed placeholder when the current one is about to
+    /// lapse. Placeholders are deliberately short-lived (one hour) so they are
+    /// never mistaken for a real certificate; a slot whose issuance keeps
+    /// failing would otherwise end up serving an *expired* self-signed cert,
+    /// which fails the TLS handshake outright instead of merely failing
+    /// verification. The state stays `Placeholder` -- that is what `/readyz`
+    /// keys on -- and the recorded attempt/error history is carried over.
+    fn remint_placeholder_if_stale(&self, slot: &ManagedSlot, current: ManagedCert) -> ManagedCert {
+        if current.state != CertState::Placeholder
+            || current.meta.not_after - now_unix() >= PLACEHOLDER_REMINT_MARGIN_SECS
+        {
+            return current;
+        }
+        let (key, leaf) = match placeholder_cert(&slot.domains) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "acme: could not re-mint the placeholder for {}: {}",
+                    slot.id, e
+                );
+                return current;
+            }
+        };
+        let meta = match parse_cert_meta(&leaf) {
+            Ok(m) => m,
+            Err(e) => {
+                warn!(
+                    "acme: could not read the re-minted placeholder for {}: {}",
+                    slot.id, e
+                );
+                return current;
+            }
+        };
+        let fresh = ManagedCert {
+            key,
+            leaf_der: leaf,
+            state: CertState::Placeholder,
+            meta: CertMeta {
+                next_renewal_at: current.meta.next_renewal_at,
+                last_attempt_at: current.meta.last_attempt_at,
+                last_error: current.meta.last_error.clone(),
+                ..meta
+            },
+            domains: slot.domains.clone(),
+        };
+        info!(
+            "acme: re-minted the self-signed placeholder for {} (still awaiting a real certificate)",
+            slot.id
+        );
+        publish(&self.certs, &slot.id, fresh);
+        self.snapshot(&slot.id).unwrap_or(current)
+    }
+
     async fn run_slot(self: Arc<Self>, slot: ManagedSlot) {
         let ctl = &self.controls[slot.id.as_str()];
         let mut failures: u32 = 0;
@@ -244,6 +302,7 @@ impl Manager {
             let Some(current) = self.snapshot(&slot.id) else {
                 return;
             };
+            let current = self.remint_placeholder_if_stale(&slot, current);
             let forced = ctl.force.swap(false, Ordering::SeqCst);
             let now = now_unix();
 
@@ -499,9 +558,7 @@ mod tests {
     use super::*;
     use crate::acme::client::mock::{MockAcmeClient, MockBehavior, MockFactory, MockStep};
     use crate::acme::storage::fs::FsCertStorage;
-    use crate::acme::{
-        new_managed_certs, placeholder_cert, publish, CertMeta, CertState, ManagedCert,
-    };
+    use crate::acme::{new_managed_certs, placeholder_cert, publish, CertState, ManagedCert};
 
     #[test]
     fn when_to_renew_takes_the_earlier_of_renew_before_and_ari() {
@@ -544,6 +601,10 @@ mod tests {
         let (id, domains) = CertId::from_domains(&["m.example.com".into()]).unwrap();
         let certs = new_managed_certs();
         let (key, leaf) = placeholder_cert(&domains).unwrap();
+        // Real metadata, as `acme::start` seeds it: a placeholder's `not_after`
+        // is what drives re-minting, so `CertMeta::default()` (not_after 0)
+        // would look permanently lapsed here.
+        let meta = crate::acme::parse_cert_meta(&leaf).unwrap();
         publish(
             &certs,
             &id,
@@ -551,7 +612,7 @@ mod tests {
                 key,
                 leaf_der: leaf,
                 state: CertState::Placeholder,
-                meta: CertMeta::default(),
+                meta,
                 domains: domains.clone(),
             },
         );
@@ -873,5 +934,50 @@ mod tests {
             "adopting a peer's certificate must reset local backoff state, \
              not leave a duplicate order pending"
         );
+    }
+
+    /// A slot that never manages to issue must not end up serving an *expired*
+    /// self-signed placeholder: the manager re-mints it before the one-hour
+    /// validity lapses, without leaving `Placeholder` (readiness keys on that
+    /// state) and without losing the recorded failure.
+    #[tokio::test]
+    async fn a_placeholder_close_to_expiry_is_reminted_while_staying_a_placeholder() {
+        let h = harness(
+            "remint",
+            MockBehavior {
+                fail_step: Some(MockStep::NewOrder),
+                ..Default::default()
+            },
+        );
+        // Re-publish the seeded placeholder as one that expires in a minute.
+        let seeded = h.certs.load().get(h.slot.id.as_str()).unwrap().clone();
+        let before = seeded.leaf_der.clone();
+        publish(
+            &h.certs,
+            &h.slot.id,
+            ManagedCert {
+                meta: crate::acme::CertMeta {
+                    not_after: now_unix() + 60,
+                    ..seeded.meta.clone()
+                },
+                ..seeded
+            },
+        );
+
+        let m = manager(&h, fast_cfg());
+        m.clone().run().await;
+
+        let reminted = wait_until(&h.certs, &h.slot.id, "a re-minted placeholder", |c| {
+            c.state == CertState::Placeholder && c.leaf_der != before
+        })
+        .await;
+        assert_eq!(reminted.state, CertState::Placeholder);
+        assert!(
+            reminted.meta.not_after > now_unix() + 60,
+            "the fresh placeholder carries a full validity window: {:?}",
+            reminted.meta
+        );
+        // The failing CA's error history survives the swap.
+        wait_failed_placeholder(&h.certs, &h.slot.id).await;
     }
 }
