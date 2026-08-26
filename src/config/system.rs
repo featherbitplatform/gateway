@@ -419,7 +419,10 @@ pub fn parse_duration(s: &str) -> Result<std::time::Duration, String> {
         }
     };
     let n: u64 = num.parse().map_err(|_| format!("invalid duration '{s}'"))?;
-    Ok(std::time::Duration::from_secs(n * mult))
+    let secs = n
+        .checked_mul(mult)
+        .ok_or_else(|| format!("duration '{s}' is out of range"))?;
+    Ok(std::time::Duration::from_secs(secs))
 }
 
 /// Lowercases and validates one ACME DNS identifier: no wildcards, no IPs, only
@@ -861,6 +864,17 @@ mod acme_config_tests {
         assert!(parse_duration("").is_err());
         assert!(parse_duration("3w").is_err());
         assert!(parse_duration("-1d").is_err());
+        // `n * mult` used to wrap in release builds and panic in debug ones.
+        assert_eq!(
+            parse_duration("18446744073709551615d").unwrap_err(),
+            "duration '18446744073709551615d' is out of range"
+        );
+        assert!(parse_duration("999999999999999999h").is_err());
+        assert_eq!(
+            parse_duration("18446744073709551615").unwrap().as_secs(),
+            u64::MAX,
+            "bare seconds have no multiplier to overflow"
+        );
     }
 
     #[test]
