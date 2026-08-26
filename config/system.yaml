@@ -41,3 +41,20 @@ debug:
   trace_all: ${FEATHERBIT_DEBUG_TRACE_ALL:-false}
   capture_bodies: ${FEATHERBIT_DEBUG_BODIES:-false}
   max_traces: ${FEATHERBIT_DEBUG_MAX_TRACES:-50}
+
+# Automatic TLS certificates via ACME (TLS-ALPN-01). Uncomment `acme:` and
+# replace `tls.cert_path/key_path` with `tls.acme.domains`. Restart-gated.
+# Experiment against Let's Encrypt STAGING first — production has strict
+# duplicate-certificate rate limits.
+# acme:
+#   directory_url: https://acme-staging-v02.api.letsencrypt.org/directory
+#   contact: ["mailto:ops@example.com"]
+#   terms_of_service_agreed: true
+#   key_type: ecdsa-p256
+#   renew_before: 30d
+#   storage:
+#     type: filesystem
+#     dir: /var/lib/featherbit/acme
+# tls:
+#   acme:
+#     domains: [api.example.com]

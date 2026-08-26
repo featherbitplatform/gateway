@@ -92,6 +92,118 @@ Certificates are **hot-reloaded** — no configuration or restart needed. Both t
 
 See [`examples/system-tls.yaml`](https://github.com/) for a complete example.
 
+## Automatic certificates (ACME)
+
+Instead of files, a certificate slot can be **ACME-managed**: the gateway
+registers with an ACME CA (Let's Encrypt by default), proves control of each
+domain with the **TLS-ALPN-01** challenge on its own 443 listener, installs the
+certificate, and renews it before expiry — no certbot, no sidecar.
+
+```yaml
+acme:
+  directory_url: https://acme-v02.api.letsencrypt.org/directory   # default
+  contact: ["mailto:ops@example.com"]
+  terms_of_service_agreed: true
+  key_type: ecdsa-p256          # or ecdsa-p384
+  renew_before: 30d
+  storage:
+    type: filesystem
+    dir: /var/lib/featherbit/acme
+
+tls:
+  acme:
+    domains: [api.example.com, www.example.com]   # replaces cert_path/key_path
+  sni_certs:
+    - server_name: tenant.example.com
+      acme: {}                                     # domains defaults to [server_name]
+    - server_name: "*.legacy.example.com"          # file-based entries mix freely
+      cert_path: /etc/gateway/tls/legacy.crt
+      key_path: /etc/gateway/tls/legacy.key
+```
+
+### How it behaves
+
+- **Bootstrap.** The listener comes up immediately with a self-signed
+  **placeholder** for each managed certificate (TLS-ALPN-01 needs the listener
+  up to validate). `GET /readyz` returns `503` with
+  `{"acme":{"placeholder":[…]}}` until every managed cert is real, so a load
+  balancer or Kubernetes holds traffic without killing the process. Issuance
+  normally completes within seconds.
+- **Renewal.** Each certificate renews `renew_before` ahead of expiry, or earlier
+  if the CA publishes an ARI (renewal-info) window. A new private key is
+  generated for every issuance. Renewed certificates are served to **new**
+  connections instantly — no `ServerConfig` rebuild, no restart.
+- **Failures never drop TLS.** A failed renewal keeps the current certificate
+  serving, logs the ACME problem detail, backs off (1 min → 1 h), and shows up
+  as `state: failed` with `last_error` in the Admin API and UI. Only a
+  placeholder affects readiness — a placeholder whose own issuance fails
+  **stays** `placeholder` (with `last_error`); only a certificate that was
+  previously issued can move to `failed`.
+- **Restart-gated** like every other TLS setting: changing `acme:` or a slot's
+  `acme` requires a restart. Stored certificates are reused across restarts.
+
+### Requirements and limits
+
+- The CA must reach the gateway's data-plane listener on **port 443** of each
+  domain (TLS-ALPN-01 is port-fixed). Behind a load balancer this means TCP
+  passthrough — a TLS-terminating LB cannot forward the challenge.
+- `directory_url` must be `https://`. `directory_ca_path` trusts a private CA's
+  own HTTPS endpoint (step-ca, Pebble). `eab: { key_id, hmac_key }` enables
+  External Account Binding (ZeroSSL, Google Trust Services).
+- **Not supported in this version:** wildcard domains (need DNS-01), HTTP-01,
+  RSA keys (the ring crypto backend cannot generate them), and ACME on
+  `admin.tls`. All are refused at startup with a pointed error.
+- Experiment against the **staging** directory
+  (`https://acme-staging-v02.api.letsencrypt.org/directory`) — production
+  Let's Encrypt has strict duplicate-certificate limits. The gateway never
+  re-issues a still-valid certificate outside its renewal window unless you
+  force it.
+
+### Storage and clusters
+
+State (account key, certificate keys and chains, pending challenges, the
+renewal lease) lives in `acme.storage`:
+
+- `type: filesystem` (default) — a directory; keys are written `0600`. Right
+  for a single instance.
+- `type: store` — a declared redis/valkey [`stores:`](../concepts/stores.md)
+  entry, with `encryption_key` (env-interpolated) sealing every private key
+  and the account credentials at rest (AES-256-GCM). Right for N instances:
+  one instance takes a **lease** and orders; the others adopt the certificate
+  from the store within a minute and, while an order is in flight, refresh
+  the challenge certificate every 2 s so the CA may validate through any
+  instance behind a TCP load balancer.
+
+```yaml
+acme:
+  storage:
+    type: store
+    store: sessions-redis
+    encryption_key: ${ACME_STORAGE_KEY}
+```
+
+Deleting a store that ACME uses is refused (`409 in_use`, referrer
+`acme.storage (system.yaml)`).
+
+### Operating it
+
+- `GET /api/acme/certs` — every managed certificate: `state`
+  (`placeholder` | `issued` | `renewing` | `failed`), `not_after`, `issuer`,
+  `serial`, `next_renewal_at`, `last_error`. Never includes key material.
+- `POST /api/acme/certs/{id}/renew` — renew now (`202`); a still-valid cert
+  outside its window answers `200 {"scheduled":false,"reason":"not_due"}`
+  unless `?force=true`. `{id}` is the comma-joined, sorted domain list.
+- The web UI's **Certificates** footer button shows the same table with a
+  per-row **Renew now**.
+- Prometheus: `featherbit_acme_cert_not_after_timestamp_seconds{cert_id}`,
+  `featherbit_acme_cert_state{cert_id,state}`,
+  `featherbit_acme_renewals_total{cert_id,result}`,
+  `featherbit_acme_last_renewal_attempt_timestamp_seconds{cert_id}` — alert on
+  `not_after - time() < 7*86400` or a rising `result="failure"`.
+
+Test locally against Pebble (Let's Encrypt's test CA) with
+`dev/pebble/docker-compose.yml`; see the header of that file.
+
 ## HTTP/2
 
 ```yaml
@@ -208,3 +320,4 @@ websocat wss://127.0.0.1:8443/ws -k       # against a TLS listener (self-signed)
 - Certificate hot-reload (a cert change needs a restart).
 - OCSP stapling / GM (SM2) — the parked `ocsp-stapling` and `gm` plugins.
 - `wss://` to the upstream, HTTP/2 WebSockets (RFC 8441), and L4 (TCP/UDP) stream proxying — separate roadmap items.
+- HTTP-01 / DNS-01 challenges (wildcards), RSA ACME keys, ACME for the admin listener.
