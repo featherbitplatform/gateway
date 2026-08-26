@@ -374,6 +374,9 @@ pub enum AcmeStorageConfig {
     /// `encryption_key` (AES-256-GCM, key derived by SHA-256) before storage.
     Store {
         store: String,
+        /// Only read when the `redis-store` feature is on (the headless build
+        /// refuses `type: store` at validation, so nothing consumes it there).
+        #[cfg_attr(not(feature = "redis-store"), allow(dead_code))]
         #[serde(default)]
         encryption_key: String,
     },
