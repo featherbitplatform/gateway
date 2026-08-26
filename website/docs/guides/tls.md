@@ -164,8 +164,11 @@ tls:
 State (account key, certificate keys and chains, pending challenges, the
 renewal lease) lives in `acme.storage`:
 
-- `type: filesystem` (default) — a directory; keys are written `0600`. Right
-  for a single instance.
+- `type: filesystem` (default) — a directory. Private keys (the account key
+  and every certificate key) are written `0600` on unix; on Windows the mode
+  cannot be set that way, so their protection is whatever the directory's ACL
+  gives them — put the storage directory somewhere only the gateway's account
+  can read. Right for a single instance.
 - `type: store` — a declared redis/valkey [`stores:`](../concepts/stores.md)
   entry, with `encryption_key` (env-interpolated) sealing every private key
   and the account credentials at rest (AES-256-GCM). Right for N instances:
@@ -187,9 +190,14 @@ Deleting a store that ACME uses is refused (`409 in_use`, referrer
 
 ### Operating it
 
-- `GET /api/acme/certs` — every managed certificate: `state`
-  (`placeholder` | `issued` | `renewing` | `failed`), `not_after`, `issuer`,
-  `serial`, `next_renewal_at`, `last_error`. Never includes key material.
+- `GET /api/acme/certs` — `{"enabled": true, "storage": "filesystem" |
+  "store:<name>", "certs": [...]}`. `enabled` is `false` (with an empty
+  `certs`) when `acme:` is not configured, so a client can tell "not
+  configured" from "nothing managed" without guessing from the status code.
+  Each entry carries `id` (the comma-joined, sorted domain list), `domains`,
+  `state` (`placeholder` | `issued` | `renewing` | `failed`), `not_before`,
+  `not_after`, `issuer`, `serial`, `next_renewal_at`, `last_attempt_at` and
+  `last_error`. Never includes key material.
 - `POST /api/acme/certs/{id}/renew` — renew now (`202`); a still-valid cert
   outside its window answers `200 {"scheduled":false,"reason":"not_due"}`
   unless `?force=true`. `{id}` is the comma-joined, sorted domain list.
@@ -317,7 +325,6 @@ websocat wss://127.0.0.1:8443/ws -k       # against a TLS listener (self-signed)
 
 - mTLS / client-certificate authentication (the server requests no client cert).
 - SNI-based multi-certificate selection (a single cert per listener).
-- Certificate hot-reload (a cert change needs a restart).
 - OCSP stapling / GM (SM2) — the parked `ocsp-stapling` and `gm` plugins.
 - `wss://` to the upstream, HTTP/2 WebSockets (RFC 8441), and L4 (TCP/UDP) stream proxying — separate roadmap items.
 - HTTP-01 / DNS-01 challenges (wildcards), RSA ACME keys, ACME for the admin listener.
