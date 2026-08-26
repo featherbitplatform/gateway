@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod challenge;
 pub mod client;
+pub mod metrics;
 pub mod order;
 pub mod storage;
 
