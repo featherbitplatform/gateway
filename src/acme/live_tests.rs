@@ -3,6 +3,11 @@
 //! the `acme-live` CI job. Pebble's validator connects to
 //! `<domain>:<FEATHERBIT_TEST_ACME_PORT>` (its `tlsPort`), so the data-plane
 //! listener binds that exact port.
+//!
+//! The scenario runs once per storage backend (design §5): always for the
+//! filesystem backend, and additionally for the `stores:` (redis) backend when
+//! `FEATHERBIT_TEST_REDIS_URL` is set. Both runs need the same listener port,
+//! so they run sequentially inside one test.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,7 +41,52 @@ fn env() -> Option<Env> {
     })
 }
 
-fn system_yaml(e: &Env, storage_dir: &std::path::Path) -> String {
+/// The `stores:` entry name the redis run declares and points `acme.storage` at.
+const STORE_NAME: &str = "acme-live";
+
+/// One storage backend under test: the `acme.storage` block, the `gateway.yaml`
+/// that has to accompany it, and the `storage` label the Admin API should report.
+struct Backend {
+    storage_block: String,
+    gateway_yaml: String,
+    label: String,
+}
+
+fn filesystem_backend(dir: &std::path::Path) -> Backend {
+    Backend {
+        storage_block: format!(
+            "{{ type: filesystem, dir: \"{}\" }}",
+            dir.display().to_string().replace('\\', "/")
+        ),
+        gateway_yaml: "{}".to_string(),
+        label: "filesystem".to_string(),
+    }
+}
+
+/// `None` unless this binary has the `redis-store` feature *and*
+/// `FEATHERBIT_TEST_REDIS_URL` points at a live server.
+fn store_backend() -> Option<Backend> {
+    if !cfg!(feature = "redis-store") {
+        eprintln!("skipping the acme live store backend: built without redis-store");
+        return None;
+    }
+    let Ok(url) = std::env::var("FEATHERBIT_TEST_REDIS_URL") else {
+        eprintln!("skipping the acme live store backend: FEATHERBIT_TEST_REDIS_URL not set");
+        return None;
+    };
+    Some(Backend {
+        storage_block: format!(
+            "{{ type: store, store: {STORE_NAME}, encryption_key: test-secret }}"
+        ),
+        gateway_yaml: format!(
+            "stores:\n  - name: {STORE_NAME}\n    type: redis\n    url: {url}\n    key_prefix: fbacmelive{}\n",
+            std::process::id()
+        ),
+        label: format!("store:{STORE_NAME}"),
+    })
+}
+
+fn system_yaml(e: &Env, storage_block: &str) -> String {
     format!(
         r#"
 listener: {{ bind: "127.0.0.1", port: {port} }}
@@ -48,13 +98,13 @@ acme:
   terms_of_service_agreed: true
   contact: ["mailto:e2e@example.com"]
   renew_before: 30d
-  storage: {{ type: filesystem, dir: "{sdir}" }}
+  storage: {storage}
 "#,
         port = e.port,
         domain = e.domain,
         dir = e.dir_url,
         ca = e.ca_path.replace('\\', "/"),
-        sdir = storage_dir.display().to_string().replace('\\', "/"),
+        storage = storage_block,
     )
 }
 
@@ -79,15 +129,15 @@ async fn wait_for(
     }
 }
 
-#[tokio::test]
-async fn pebble_issues_renews_and_restart_reuses_the_stored_cert() {
-    let Some(e) = env() else { return };
-    let storage_dir = std::env::temp_dir().join(format!("fb_acme_pebble_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&storage_dir);
-
-    let system: SystemConfig = serde_yaml::from_str(&system_yaml(&e, &storage_dir)).unwrap();
+/// Boot → placeholder → issuance → forced renewal → restart adoption, all
+/// through whichever `CertStorage` `backend` selects. The restart at the end
+/// builds a second runtime over the *same* storage, so for the redis backend
+/// the adoption check goes through the redis records.
+async fn run_scenario(e: &Env, backend: &Backend) {
+    let system: SystemConfig =
+        serde_yaml::from_str(&system_yaml(e, &backend.storage_block)).expect("system.yaml parses");
     system.validate().unwrap();
-    let gateway: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+    let gateway: GatewayConfig = serde_yaml::from_str(&backend.gateway_yaml).unwrap();
     let state = Arc::new(
         SharedState::new(
             system.clone(),
@@ -120,6 +170,7 @@ async fn pebble_issues_renews_and_restart_reuses_the_stored_cert() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
+    assert_eq!(rt.storage_label, backend.label);
     let id = e.domain.to_ascii_lowercase();
     assert_eq!(rt.placeholder_ids(), vec![id.clone()]);
 
@@ -172,5 +223,20 @@ async fn pebble_issues_renews_and_restart_reuses_the_stored_cert() {
 
     let _ = shutdown_tx.send(true);
     let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+}
+
+#[tokio::test]
+async fn pebble_issues_renews_and_restart_reuses_the_stored_cert() {
+    let Some(e) = env() else { return };
+
+    let storage_dir = std::env::temp_dir().join(format!("fb_acme_pebble_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&storage_dir);
+    run_scenario(&e, &filesystem_backend(&storage_dir)).await;
+    let _ = std::fs::remove_dir_all(&storage_dir);
+
+    // Sequential, not concurrent: both runs bind the same listener port (the
+    // one Pebble's validator dials).
+    if let Some(backend) = store_backend() {
+        run_scenario(&e, &backend).await;
+    }
 }

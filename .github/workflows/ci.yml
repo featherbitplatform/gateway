@@ -86,6 +86,17 @@ jobs:
   acme-live:
     name: acme live tests (pebble)
     runs-on: ubuntu-latest
+    # The scenario runs once per storage backend; the redis service is what
+    # enables the `stores:`-backed half of it.
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping || valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
 
@@ -113,6 +124,7 @@ jobs:
           FEATHERBIT_TEST_PEBBLE_CA: /tmp/pebble.minica.pem
           FEATHERBIT_TEST_ACME_DOMAIN: localhost
           FEATHERBIT_TEST_ACME_PORT: "18443"
+          FEATHERBIT_TEST_REDIS_URL: redis://127.0.0.1:6379
 
       - name: Pebble logs
         if: failure()
@@ -220,6 +232,7 @@ jobs:
           FEATHERBIT_TEST_PEBBLE_CA: /tmp/pebble.minica.pem
           FEATHERBIT_TEST_ACME_DOMAIN: localhost
           FEATHERBIT_TEST_ACME_PORT: "18443"
+          FEATHERBIT_TEST_REDIS_URL: redis://127.0.0.1:6379
 
       # The report carries traces, screenshots and the failing scenario IDs --
       # the only way to diagnose a browser failure after the fact.
