@@ -232,7 +232,6 @@ jobs:
           FEATHERBIT_TEST_PEBBLE_CA: /tmp/pebble.minica.pem
           FEATHERBIT_TEST_ACME_DOMAIN: localhost
           FEATHERBIT_TEST_ACME_PORT: "18443"
-          FEATHERBIT_TEST_REDIS_URL: redis://127.0.0.1:6379
 
       # The report carries traces, screenshots and the failing scenario IDs --
       # the only way to diagnose a browser failure after the fact.

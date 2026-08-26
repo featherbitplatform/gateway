@@ -548,10 +548,21 @@ mod tests {
     }
 
     /// The other half of the race: the lease *file already exists* but has
-    /// expired, so every contender takes the takeover path. The old
-    /// remove-then-create implementation let two of them win here (one removes
-    /// and creates, a second removes that fresh lease and creates its own);
-    /// the rename-based compare-and-swap admits exactly one.
+    /// expired, so every contender takes the takeover path.
+    ///
+    /// Two earlier implementations both let more than one contender win here,
+    /// and this test caught each of them. Remove-then-create: one removes and
+    /// creates, a second removes that fresh lease and creates its own. A bare
+    /// rename-aside compare-and-swap: the rename succeeds against *whatever*
+    /// is at the path, so a late contender moves the winner's fresh lease
+    /// aside and takes over from it — and even with a content check, the path
+    /// is empty between the rename and the create, so any contender reaching
+    /// its own exclusive create in that window wins alongside the taker.
+    ///
+    /// What admits exactly one is `take_over_expired_lease`: the exclusively
+    /// created `<lease>.takeover` marker serializes takeovers, and the new
+    /// lease is installed with a replacing `rename` so the path is never
+    /// empty.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn expired_lease_takeover_is_atomic_under_concurrency() {
         const CONTENDERS: usize = 8;
