@@ -5,7 +5,9 @@
 //! (`{owner, expires_at}`). Every write is temp-file + rename; secret files are
 //! `0600` on unix. Expired challenge/lease files read as absent.
 
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -88,6 +90,32 @@ fn expires_at(ttl: Duration) -> i64 {
     now_unix() + ttl.as_secs().max(1) as i64
 }
 
+/// Per-process, monotonically increasing disambiguator folded into lease temp
+/// file names, so two calls in the same process racing in the same nanosecond
+/// still can't collide on the temp path.
+static LEASE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A temp path beside `lease_path` that is unique to this call: no two
+/// concurrent callers (same process or different) land on the same name, so
+/// each writes its own temp file undisturbed before attempting to publish it.
+fn lease_tmp_path(lease_path: &Path, owner: &str) -> PathBuf {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    owner.hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    std::thread::current().id().hash(&mut hasher);
+    LEASE_TMP_COUNTER
+        .fetch_add(1, Ordering::Relaxed)
+        .hash(&mut hasher);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    nanos.hash(&mut hasher);
+    let mut name = lease_path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{:x}.tmp", hasher.finish()));
+    lease_path.with_file_name(name)
+}
+
 impl FsCertStorage {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into() }
@@ -129,10 +157,21 @@ impl FsCertStorage {
         )
     }
 
-    /// Creates the lease file iff it does not already exist (`O_EXCL`
-    /// semantics via `create_new`) — the OS guarantees exactly one concurrent
-    /// caller wins. Returns `Err(AlreadyExists)` when another lease file is
-    /// already there.
+    /// Creates the lease file iff it does not already exist, and never
+    /// exposes a partially-written lease at `lease_path`: the full JSON is
+    /// written to a private, unique temp file first, then published with
+    /// `hard_link`, which — unlike creating the destination directly — fails
+    /// atomically with `AlreadyExists` when the destination is already there
+    /// (POSIX `link(2)`, NTFS `CreateHardLink`) without ever making an empty
+    /// or partial file visible at `lease_path`. The OS guarantees exactly one
+    /// concurrent caller's `hard_link` wins.
+    ///
+    /// Falls back to the old `create_new` + `write_all` path only when
+    /// `hard_link` itself errors with something other than `AlreadyExists`
+    /// (e.g. unsupported on some network filesystem). That fallback has a
+    /// reduced guarantee: the destination is briefly visible empty before the
+    /// content lands, since content can no longer be written before the path
+    /// is public.
     fn create_lease_file(&self, id: &CertId, owner: &str, ttl: Duration) -> std::io::Result<()> {
         let path = self.lease_path(id);
         if let Some(parent) = path.parent() {
@@ -143,13 +182,24 @@ impl FsCertStorage {
             expires_at: expires_at(ttl),
         };
         let bytes = serde_json::to_vec(&lease).unwrap();
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        use std::io::Write;
-        f.write_all(&bytes)?;
-        Ok(())
+
+        let tmp = lease_tmp_path(&path, owner);
+        std::fs::write(&tmp, &bytes)?;
+
+        let result = match std::fs::hard_link(&tmp, &path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+            Err(_) => std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    f.write_all(&bytes)
+                }),
+        };
+        let _ = std::fs::remove_file(&tmp);
+        result
     }
 }
 
@@ -345,35 +395,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[tokio::test]
+    /// Genuine OS-thread concurrency (not tokio task interleaving, which
+    /// never preempts between the non-`.await`ing filesystem calls in
+    /// `try_acquire_lease`): each contender gets its own real thread with its
+    /// own single-threaded runtime, all released at the same instant by a
+    /// `Barrier`, racing `try_acquire_lease` on a shared `FsCertStorage` dir.
+    /// Repeated over many fresh `CertId`s so a rare race isn't masked by one
+    /// lucky round.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn try_acquire_lease_is_atomic_under_concurrency() {
+        const CONTENDERS: usize = 8;
+        const ROUNDS: usize = 20;
+
         let dir = temp_dir("lease_race");
-        let storage = Arc::new(FsCertStorage::new(dir.clone()));
-        let (id, _) = CertId::from_domains(&["race.example.com".into()]).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
         let ttl = Duration::from_secs(30);
 
-        let tasks: Vec<_> = (0..8)
-            .map(|i| {
-                let storage = storage.clone();
-                let id = id.clone();
-                tokio::spawn(async move {
-                    storage
-                        .try_acquire_lease(&id, &format!("owner-{i}"), ttl)
-                        .await
-                        .unwrap()
-                })
-            })
-            .collect();
+        for round in 0..ROUNDS {
+            let (id, _) = CertId::from_domains(&[format!("race-{round}.example.com")]).unwrap();
+            let barrier = Arc::new(std::sync::Barrier::new(CONTENDERS));
 
-        let wins = futures_util::future::join_all(tasks)
-            .await
-            .into_iter()
-            .filter(|r| *r.as_ref().unwrap())
-            .count();
-        assert_eq!(
-            wins, 1,
-            "exactly one concurrent acquirer should win the lease"
-        );
+            let handles: Vec<_> = (0..CONTENDERS)
+                .map(|i| {
+                    let barrier = barrier.clone();
+                    let dir = dir.clone();
+                    let id = id.clone();
+                    std::thread::spawn(move || {
+                        let storage = FsCertStorage::new(dir);
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap();
+                        barrier.wait();
+                        rt.block_on(storage.try_acquire_lease(&id, &format!("owner-{i}"), ttl))
+                            .unwrap()
+                    })
+                })
+                .collect();
+
+            let wins: usize = handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .filter(|w| *w)
+                .count();
+            assert_eq!(
+                wins, 1,
+                "round {round}: exactly one concurrent acquirer should win the lease"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(dir);
     }
