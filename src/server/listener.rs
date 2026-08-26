@@ -58,8 +58,14 @@ pub async fn start_server(
     // a cert-file change swaps it in for new connections without a restart.
     let tls_config: Option<tls::SharedTlsConfig> = match &system.tls {
         Some(tls_cfg) => {
-            let shared = tls::build_reloadable(tls_cfg, http2_enabled)?;
-            tls::spawn_cert_watcher(tls_cfg.clone(), http2_enabled, shared.clone(), "data-plane");
+            let shared = tls::build_reloadable(tls_cfg, http2_enabled, None)?;
+            tls::spawn_cert_watcher(
+                tls_cfg.clone(),
+                http2_enabled,
+                shared.clone(),
+                "data-plane",
+                None,
+            );
             Some(shared)
         }
         None => None,
@@ -96,6 +102,10 @@ pub async fn start_server(
                     match tls_config.as_ref().map(tls::current_acceptor) {
                         Some(acc) => match acc.accept(stream).await {
                             Ok(tls_stream) => {
+                                if tls::negotiated_acme_challenge(&tls_stream) {
+                                    tracing::debug!("acme-tls/1 validation handshake from {}; closing", remote_addr);
+                                    return;
+                                }
                                 let client_id = tls::client_cert_identity(&tls_stream);
                                 let service = service_fn(move |req: Request<Incoming>| {
                                     let state = state.clone();
