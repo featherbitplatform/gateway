@@ -6,6 +6,7 @@
 //! (node-graph editor) as an unauthenticated fallback
 //! (compile-time `ui` feature + runtime `admin.ui_enabled`).
 
+mod acme;
 mod auth;
 mod consumers;
 mod debug;
@@ -71,8 +72,8 @@ pub async fn start_admin_server(
     let tls_config: Option<tls::SharedTlsConfig> = match &admin_config.tls {
         // HTTP/2 is fine for the admin API; the auto builder still serves h1.
         Some(tls_cfg) => {
-            let shared = tls::build_reloadable(tls_cfg, true)?;
-            tls::spawn_cert_watcher(tls_cfg.clone(), true, shared.clone(), "admin");
+            let shared = tls::build_reloadable(tls_cfg, true, None)?;
+            tls::spawn_cert_watcher(tls_cfg.clone(), true, shared.clone(), "admin", None);
             Some(shared)
         }
         None => None,
@@ -142,6 +143,7 @@ fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
     let app = Router::new()
         // API routes (with auth)
         .merge(routes::router())
+        .merge(acme::router())
         .merge(policies::router())
         .merge(plugin_configs::router())
         .merge(supernodes::router())

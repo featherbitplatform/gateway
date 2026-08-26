@@ -1,0 +1,21 @@
+routes:
+  - name: echo
+    match:
+      path: /echo
+    policy: echo
+policies:
+  - name: echo
+    nodes:
+      - id: in
+        type: listener
+      - id: up
+        type: upstream
+        config:
+          targets:
+            - host: ${ECHO_HOST:-127.0.0.1}
+              port: ${ECHO_PORT:-3010}
+      - id: out
+        type: client
+    edges:
+      - { from: in.out, to: up.in }
+      - { from: up.success, to: out.in }

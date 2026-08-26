@@ -39,3 +39,6 @@ tests/pg-data-keycloak/
 
 # SAST scan outputs (dev/sast.ps1 / dev/sast.sh)
 sast-out/
+
+# Superpowers SDD workspace (per-plan ledgers, briefs, review packages)
+.superpowers/

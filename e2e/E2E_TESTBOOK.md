@@ -438,6 +438,22 @@ is unset.
 | E2E-SESS-02 | *Gated.* `GET /api/sessions?store=e2e-redis` after establishing a session | The listing includes the session with `subject: 'alice'`, `plugin: 'openid-connect'`, `policy: 'oidc-redis-policy'`, `route: 'oidc-redis'`; the record has no payload-like fields beyond `id`/`subject`/`plugin`/`policy`/`route`/`created_at`/`expires_at` |
 | E2E-SESS-03 | *Gated.* **Browser.** Log in via `/oidc-redis/echo`, then in the admin UI open the Sessions panel (footer button), select store `e2e-redis`, and click the session's revoke button | The row disappears; a subsequent data-plane request carrying the old cookie is bounced back into login (302 to the IdP) |
 
+## ACME certificates — `tests/acme.spec.ts`
+
+The main fixture gateway has no `acme:` block, so `E2E-ACME-01` proves the
+"not configured" surface unconditionally. `E2E-ACME-02` is gated on
+`FEATHERBIT_TEST_PEBBLE_URL` (+ `FEATHERBIT_TEST_PEBBLE_CA`, and optionally
+`FEATHERBIT_TEST_ACME_DOMAIN`/`FEATHERBIT_TEST_ACME_PORT`, defaults
+`localhost`/`18443`) and spawns a **second** gateway from `fixtures/acme/`
+(HTTPS on the port Pebble's validator dials, admin on `19092`) so the suite's
+plaintext gateway on 18081 is untouched. Run Pebble with
+`dev/pebble/docker-compose.yml`; the CI `e2e` job starts it the same way.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-ACME-01 | `GET /api/acme/certs`, `POST /api/acme/certs/x/renew`; **Browser.** click the sidebar's **Certificates** footer button | `200 {"enabled":false,"certs":[]}`; `501`; the panel shows the "ACME is not configured" notice (`data-testid="acme-not-configured"`) |
+| E2E-ACME-02 | *Gated on `FEATHERBIT_TEST_PEBBLE_URL`.* Spawn the ACME gateway; poll `GET /api/acme/certs` until `issued`; **Browser.** open its Certificates panel, **Renew now → Confirm → Force renew** | The single cert goes placeholder → issued with a Pebble issuer and `/readyz` is `200`; the row shows `Issued`; the first renew answers `not_due` (the panel offers **Force renew**); after forcing, the serial changes |
+
 ## Deliberately out of scope
 
 Covered by the Rust suite with real sockets, or unreachable from Playwright:
