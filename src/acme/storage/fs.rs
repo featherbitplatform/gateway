@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use super::CertStorage;
 use crate::acme::{now_unix, AcmeError, CertId, StoredCert};
@@ -201,6 +202,112 @@ impl FsCertStorage {
         let _ = std::fs::remove_file(&tmp);
         result
     }
+
+    /// Takes over a lease that read as expired (or corrupt), atomically with
+    /// respect to every other contender.
+    ///
+    /// The naive `remove_opt` + `create_lease_file` lets two contenders both
+    /// win (A removes and creates; B, already past its own read, removes A's
+    /// *fresh* lease and creates its own). Moving the stale file aside with
+    /// `rename` and creating in its place does not fix it either: between the
+    /// rename and the create the lease path is **empty**, and a contender that
+    /// reaches its own exclusive create in that window wins alongside the one
+    /// doing the takeover.
+    ///
+    /// So the takeover holds a separate mutex — an exclusively created
+    /// `<lease>.takeover` marker, the one primitive the filesystem does give
+    /// atomically — and installs the new lease by `rename`-over (via
+    /// [`atomic_write`]), which replaces the file without the path ever being
+    /// empty. Contenders that lose the marker concede for this round and
+    /// re-evaluate on their next pass.
+    fn take_over_expired_lease(
+        &self,
+        id: &CertId,
+        owner: &str,
+        ttl: Duration,
+    ) -> Result<bool, AcmeError> {
+        let Some(_guard) = TakeoverGuard::acquire(&self.lease_path(id), owner)? else {
+            return Ok(false);
+        };
+        // Re-read under the mutex: the previous holder of the marker may have
+        // just installed a live lease of its own.
+        match self.read_lease(id)? {
+            Some(l) if l.owner != owner => Ok(false),
+            _ => {
+                self.write_lease(id, owner, ttl)?;
+                Ok(true)
+            }
+        }
+    }
+}
+
+/// How long a `<lease>.takeover` marker may exist before it is assumed to
+/// belong to a process that died mid-takeover. The marker is held for a couple
+/// of filesystem operations, so anything older than this is debris.
+const TAKEOVER_MARKER_STALE_SECS: u64 = 60;
+
+/// RAII holder of the exclusive `<lease>.takeover` marker; removes it on drop.
+struct TakeoverGuard(PathBuf);
+
+impl TakeoverGuard {
+    /// `Ok(Some(guard))` when this caller now holds the marker, `Ok(None)`
+    /// when another contender does.
+    fn acquire(lease_path: &Path, owner: &str) -> Result<Option<Self>, AcmeError> {
+        let mut name = lease_path.file_name().unwrap_or_default().to_os_string();
+        name.push(".takeover");
+        let marker = lease_path.with_file_name(name);
+        if let Some(parent) = marker.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io_err("create dir", parent, e))?;
+        }
+        match create_marker(&marker, owner) {
+            Ok(()) => return Ok(Some(Self(marker))),
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+                return Err(io_err("create takeover marker", &marker, e))
+            }
+            Err(_) => {}
+        }
+        // Crash recovery: a marker nobody could still be holding is debris.
+        // Removing it can, in principle, race another recoverer — it is the
+        // one path where two takeovers could proceed, and it only opens after
+        // a process died inside a microsecond-wide window.
+        let stale = std::fs::metadata(&marker)
+            .and_then(|m| m.modified())
+            .map(|t| {
+                t.elapsed()
+                    .map(|d| d.as_secs() >= TAKEOVER_MARKER_STALE_SECS)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if !stale {
+            return Ok(None);
+        }
+        warn!(
+            "acme: removing a stale lease-takeover marker at {}",
+            marker.display()
+        );
+        let _ = std::fs::remove_file(&marker);
+        match create_marker(&marker, owner) {
+            Ok(()) => Ok(Some(Self(marker))),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+            Err(e) => Err(io_err("create takeover marker", &marker, e)),
+        }
+    }
+}
+
+impl Drop for TakeoverGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Exclusive create; the content is only ever read by a human debugging.
+fn create_marker(marker: &Path, owner: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(marker)
+        .and_then(|mut f| f.write_all(owner.as_bytes()))
 }
 
 #[async_trait]
@@ -303,16 +410,9 @@ impl CertStorage for FsCertStorage {
                         self.write_lease(id, owner, ttl)?;
                         Ok(true)
                     }
-                    // Expired or corrupt: clear it and retry the exclusive create once.
-                    // Losing that retry to a concurrent creator/remover means `false`.
-                    None => {
-                        remove_opt(&self.lease_path(id))?;
-                        match self.create_lease_file(id, owner, ttl) {
-                            Ok(()) => Ok(true),
-                            Err(e2) if e2.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-                            Err(e2) => Err(io_err("create lease", &self.lease_path(id), e2)),
-                        }
-                    }
+                    // Expired or corrupt: take it over under the takeover
+                    // mutex (see `take_over_expired_lease`).
+                    None => self.take_over_expired_lease(id, owner, ttl),
                 }
             }
             Err(e) => Err(io_err("create lease", &self.lease_path(id), e)),
@@ -441,6 +541,65 @@ mod tests {
             assert_eq!(
                 wins, 1,
                 "round {round}: exactly one concurrent acquirer should win the lease"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The other half of the race: the lease *file already exists* but has
+    /// expired, so every contender takes the takeover path. The old
+    /// remove-then-create implementation let two of them win here (one removes
+    /// and creates, a second removes that fresh lease and creates its own);
+    /// the rename-based compare-and-swap admits exactly one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn expired_lease_takeover_is_atomic_under_concurrency() {
+        const CONTENDERS: usize = 8;
+        const ROUNDS: usize = 10;
+
+        let dir = temp_dir("lease_takeover_race");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ttl = Duration::from_secs(30);
+
+        for round in 0..ROUNDS {
+            let (id, _) = CertId::from_domains(&[format!("stale-{round}.example.com")]).unwrap();
+            // Pre-acquire with the shortest TTL the backend keeps (1 s), then
+            // sleep past it so the file is present but dead for everyone.
+            let seed = FsCertStorage::new(dir.clone());
+            assert!(seed
+                .try_acquire_lease(&id, "previous-holder", Duration::from_secs(1))
+                .await
+                .unwrap());
+            tokio::time::sleep(Duration::from_millis(1_500)).await;
+            assert!(seed.lease_path(&id).exists(), "the stale lease file stays");
+
+            let barrier = Arc::new(std::sync::Barrier::new(CONTENDERS));
+            let handles: Vec<_> = (0..CONTENDERS)
+                .map(|i| {
+                    let barrier = barrier.clone();
+                    let dir = dir.clone();
+                    let id = id.clone();
+                    std::thread::spawn(move || {
+                        let storage = FsCertStorage::new(dir);
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap();
+                        barrier.wait();
+                        rt.block_on(storage.try_acquire_lease(&id, &format!("owner-{i}"), ttl))
+                            .unwrap()
+                    })
+                })
+                .collect();
+
+            let wins: usize = handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .filter(|w| *w)
+                .count();
+            assert_eq!(
+                wins, 1,
+                "round {round}: exactly one contender should take over an expired lease"
             );
         }
 
