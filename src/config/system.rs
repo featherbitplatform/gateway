@@ -330,9 +330,6 @@ pub struct AcmeConfig {
     #[serde(default)]
     pub directory_ca_path: Option<String>,
     /// Account contacts, e.g. `mailto:ops@example.com`.
-    // Accepted and documented in `system.yaml`, but not yet read by the ACME
-    // client (account registration lands in a later task).
-    #[allow(dead_code)]
     #[serde(default)]
     pub contact: Vec<String>,
     /// Must be `true`: registering an account asserts agreement to the CA's terms.
@@ -475,9 +472,6 @@ impl TlsConfig {
     /// Normalized domain lists of every ACME-managed slot, default cert first,
     /// then `sni_certs` in order. Empty when nothing is managed. Assumes
     /// [`TlsConfig::validate`] passed.
-    // Exercised directly by `acme_config_tests`; consumed by the cert
-    // resolver/renewal loop in a later task.
-    #[allow(dead_code)]
     pub fn managed_domains(&self) -> Vec<Vec<String>> {
         let mut out = Vec::new();
         if let Some(slot) = &self.acme {

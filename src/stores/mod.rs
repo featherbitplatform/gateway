@@ -147,7 +147,6 @@ impl StoreRegistry {
     /// The raw client for `name` (ACME storage borrows it; sessions/counters have
     /// their own typed accessors).
     #[cfg(feature = "redis-store")]
-    #[allow(dead_code)] // consumed by the ACME manager wiring (later task)
     pub fn client(&self, name: &str) -> Result<Arc<redis_store::RedisStoreClient>, String> {
         self.clients.get(name).cloned().ok_or_else(|| {
             let mut names: Vec<&str> = self.clients.keys().map(String::as_str).collect();
