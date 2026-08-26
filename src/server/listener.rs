@@ -62,8 +62,9 @@ pub async fn start_server(
             // is built, so the listener is up — and validatable — immediately.
             let hooks = match &system.acme {
                 Some(acme_cfg) if !tls_cfg.managed_domains().is_empty() => {
-                    let stores = state.resources.stores.load();
-                    let rt = crate::acme::start(acme_cfg, tls_cfg, &stores, &state.metrics).await?;
+                    let rt =
+                        crate::acme::start(acme_cfg, tls_cfg, &state.resources, &state.metrics)
+                            .await?;
                     state.acme.store(Some(rt.clone()));
                     Some(rt.hooks())
                 }
