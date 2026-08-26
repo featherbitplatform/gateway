@@ -6,6 +6,9 @@
 //! `409 {"error":"in_use","referrers":[...]}` — a new envelope, since the
 //! reference is not discoverable via graph recompilation (a store used only
 //! by a shared plugin_config compiles fine without the node being wired).
+//! The same guard also covers `acme.storage` (`system.yaml`), since an ACME
+//! `type: store` storage config references a store outside `gateway.yaml`
+//! entirely and would otherwise go undetected.
 
 use std::sync::Arc;
 
@@ -111,7 +114,16 @@ async fn delete_store(
 ) -> impl IntoResponse {
     let candidate = {
         let gw = state.gateway.read().await;
-        let referrers = store_referrers(&gw, &name);
+        let mut referrers = store_referrers(&gw, &name);
+        if let Some(crate::config::AcmeConfig {
+            storage: crate::config::AcmeStorageConfig::Store { store, .. },
+            ..
+        }) = &state.system.acme
+        {
+            if store == &name {
+                referrers.push("acme.storage (system.yaml)".to_string());
+            }
+        }
         if !referrers.is_empty() {
             return (
                 StatusCode::CONFLICT,
@@ -500,6 +512,47 @@ plugin_configs:
             refs.contains(&"plugin_config 'ui-oidc'".to_string()),
             "{refs:?}"
         );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "redis-store")]
+    async fn test_delete_store_used_by_acme_storage_is_409() {
+        let system: SystemConfig = serde_yaml::from_str(
+            "acme:\n  terms_of_service_agreed: true\n  storage:\n    type: store\n    store: s1\n    encryption_key: k\n",
+        )
+        .unwrap();
+        let gateway: GatewayConfig = serde_yaml::from_str(
+            "stores:\n  - name: s1\n    type: redis\n    url: redis://127.0.0.1:6379\n",
+        )
+        .unwrap();
+        let state = Arc::new(
+            SharedState::new(
+                system,
+                gateway,
+                None,
+                Arc::new(FileConfigStore::new("gateway.yaml".into())),
+            )
+            .unwrap(),
+        );
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/stores/s1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["error"], "in_use");
+        assert!(body["referrers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r.as_str().unwrap().contains("acme.storage")));
     }
 
     /// Ping on an unknown store is 404; on an unreachable store it is a 502
