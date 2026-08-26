@@ -47,6 +47,10 @@ pub struct SharedState {
     /// plane when a request opts into tracing, read by the Admin API. Fixed at
     /// startup — `system.yaml` is not hot-reloaded.
     pub debug: Arc<DebugState>,
+    /// The running ACME runtime (managed certs, solver, renewal manager), set
+    /// once at startup when `system.tls.acme`/`sni_certs[].acme` is configured.
+    /// `None` when ACME is not in use. Drives `/readyz`'s placeholder gate.
+    pub acme: arc_swap::ArcSwapOption<crate::acme::AcmeRuntime>,
 }
 
 impl SharedState {
@@ -98,6 +102,7 @@ impl SharedState {
             resources,
             config_store,
             debug: debug_state,
+            acme: arc_swap::ArcSwapOption::empty(),
         })
     }
 

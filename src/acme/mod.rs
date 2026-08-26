@@ -16,6 +16,14 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::sign::CertifiedKey;
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
+
+use crate::config::{AcmeConfig, AcmeStorageConfig, TlsConfig};
+use crate::metrics::GatewayMetrics;
+use crate::stores::StoreRegistry;
+use challenge::TlsAlpnSolver;
+use manager::{ManagedSlot, Manager, ManagerConfig};
+use storage::CertStorage;
 
 pub mod challenge;
 pub mod client;
@@ -255,6 +263,252 @@ pub fn leaf_spki(leaf_der: &[u8]) -> Result<Vec<u8>, AcmeError> {
     Ok(cert.tbs_certificate.subject_pki.raw.to_vec())
 }
 
+/// Everything the rest of the process needs from ACME once started.
+pub struct AcmeRuntime {
+    pub certs: ManagedCerts,
+    pub solver: Arc<TlsAlpnSolver>,
+    pub manager: Arc<Manager>,
+    pub storage_label: String,
+}
+
+impl AcmeRuntime {
+    pub fn hooks(&self) -> crate::server::tls::AcmeHooks {
+        crate::server::tls::AcmeHooks {
+            certs: self.certs.clone(),
+            solver: self.solver.clone(),
+        }
+    }
+
+    /// Ids of managed certs still serving a placeholder (drives `/readyz`).
+    pub fn placeholder_ids(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .certs
+            .load()
+            .iter()
+            .filter(|(_, c)| c.state == CertState::Placeholder)
+            .map(|(id, _)| id.clone())
+            .collect();
+        v.sort();
+        v
+    }
+}
+
+pub fn build_storage(
+    cfg: &AcmeConfig,
+    stores: &StoreRegistry,
+) -> Result<Arc<dyn CertStorage>, AcmeError> {
+    match &cfg.storage {
+        AcmeStorageConfig::Filesystem { dir } => Ok(Arc::new(storage::fs::FsCertStorage::new(dir))),
+        #[cfg(feature = "redis-store")]
+        AcmeStorageConfig::Store {
+            store,
+            encryption_key,
+        } => {
+            let client = stores.client(store).map_err(AcmeError::Config)?;
+            Ok(Arc::new(storage::redis::RedisCertStorage::new(
+                client,
+                encryption_key,
+            )))
+        }
+        #[cfg(not(feature = "redis-store"))]
+        AcmeStorageConfig::Store { .. } => {
+            let _ = stores;
+            Err(AcmeError::Config(
+                "acme.storage.type: store needs the redis-store feature".into(),
+            ))
+        }
+    }
+}
+
+/// Builds storage, seeds [`ManagedCerts`] from storage (or placeholders), and
+/// spawns the renewal manager. The CA is **not** contacted here — the manager
+/// connects lazily — so a CA outage never blocks the listener from starting.
+pub async fn start(
+    cfg: &AcmeConfig,
+    tls: &TlsConfig,
+    stores: &StoreRegistry,
+    metrics: &GatewayMetrics,
+) -> Result<Arc<AcmeRuntime>, AcmeError> {
+    let storage = build_storage(cfg, stores)?;
+    let solver = TlsAlpnSolver::new(storage.clone());
+    let certs = new_managed_certs();
+    let acme_metrics = metrics::AcmeMetrics::register(&metrics.registry)
+        .map_err(|e| AcmeError::Config(format!("acme metrics: {e}")))?;
+    let now = now_unix();
+
+    let mut slots = Vec::new();
+    for domains in tls.managed_domains() {
+        let (id, domains) = CertId::from_domains(&domains)?;
+        if slots.iter().any(|s: &ManagedSlot| s.id == id) {
+            continue; // two slots with the same domain set share one certificate
+        }
+        let adopted = match storage.load_cert(&id).await {
+            Ok(Some(stored)) => {
+                match load_certified_key(&stored.chain_pem, &stored.key_pem)
+                    .and_then(|(key, leaf)| parse_cert_meta(&leaf).map(|meta| (key, leaf, meta)))
+                {
+                    Ok((key, leaf, meta)) if meta.not_after > now => {
+                        info!(
+                            "acme: loaded stored certificate for {} (expires {})",
+                            id, meta.not_after
+                        );
+                        Some(ManagedCert {
+                            key,
+                            leaf_der: leaf,
+                            state: CertState::Issued,
+                            meta,
+                            domains: domains.clone(),
+                        })
+                    }
+                    Ok(_) => {
+                        warn!(
+                            "acme: stored certificate for {} is expired; serving a placeholder",
+                            id
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        warn!("acme: stored certificate for {} is unusable ({}); serving a placeholder", id, e);
+                        None
+                    }
+                }
+            }
+            Ok(None) => None,
+            Err(e) => {
+                warn!(
+                    "acme: reading stored certificate for {} failed ({}); serving a placeholder",
+                    id, e
+                );
+                None
+            }
+        };
+        let cert = match adopted {
+            Some(c) => c,
+            None => {
+                let (key, leaf) = placeholder_cert(&domains)?;
+                warn!("acme: {} has no certificate yet — serving a self-signed placeholder until issuance succeeds", id);
+                ManagedCert {
+                    key,
+                    leaf_der: leaf,
+                    state: CertState::Placeholder,
+                    meta: CertMeta::default(),
+                    domains: domains.clone(),
+                }
+            }
+        };
+        // Observed synchronously here (rather than left to the manager's
+        // spawned per-slot task) so the seeded state is visible to metrics
+        // scrapes and `/readyz` the instant `start()` returns, with no
+        // dependency on when that task first gets scheduled.
+        let seeded_not_after = if cert.state == CertState::Placeholder {
+            0
+        } else {
+            cert.meta.not_after
+        };
+        acme_metrics.observe(id.as_str(), cert.state, seeded_not_after);
+        publish(&certs, &id, cert);
+        slots.push(ManagedSlot { id, domains });
+    }
+
+    let manager_cfg = ManagerConfig {
+        key_type: order::KeyType::parse(&cfg.key_type)?,
+        renew_before: cfg.renew_before_duration().map_err(AcmeError::Config)?,
+        ..ManagerConfig::default()
+    };
+    let factory = Arc::new(client::InstantAcmeFactory::new(
+        cfg.clone(),
+        storage.clone(),
+    ));
+    let manager = Manager::new(
+        manager_cfg,
+        factory,
+        storage.clone(),
+        solver.clone(),
+        certs.clone(),
+        slots,
+        Some(acme_metrics),
+    );
+    tokio::spawn(manager.clone().run());
+
+    Ok(Arc::new(AcmeRuntime {
+        certs,
+        solver,
+        manager,
+        storage_label: storage.label(),
+    }))
+}
+
+/// Runtimes for admin/readiness unit tests: a manager that never runs, over a
+/// mock CA and a temp filesystem store.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+    use client::mock::{MockAcmeClient, MockBehavior, MockFactory};
+
+    pub fn runtime_with(certs: ManagedCerts, slots: Vec<ManagedSlot>) -> Arc<AcmeRuntime> {
+        let dir = std::env::temp_dir().join(format!(
+            "fb_acme_rt_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let storage: Arc<dyn CertStorage> = Arc::new(storage::fs::FsCertStorage::new(dir));
+        let solver = TlsAlpnSolver::new(storage.clone());
+        let factory = MockFactory::new(MockAcmeClient::new(MockBehavior::default()));
+        let manager = Manager::new(
+            ManagerConfig::default(),
+            factory,
+            storage,
+            solver.clone(),
+            certs.clone(),
+            slots,
+            None,
+        );
+        Arc::new(AcmeRuntime {
+            certs,
+            solver,
+            manager,
+            storage_label: "filesystem".into(),
+        })
+    }
+
+    fn seeded(domains: &[&str], state: CertState) -> Arc<AcmeRuntime> {
+        let domains: Vec<String> = domains.iter().map(|d| d.to_string()).collect();
+        let (id, domains) = CertId::from_domains(&domains).unwrap();
+        let certs = new_managed_certs();
+        let (key, leaf) = if state == CertState::Placeholder {
+            placeholder_cert(&domains).unwrap()
+        } else {
+            let c = rcgen::generate_simple_self_signed(domains.clone()).unwrap();
+            load_certified_key(&c.cert.pem(), &c.signing_key.serialize_pem()).unwrap()
+        };
+        let meta = if state == CertState::Placeholder {
+            CertMeta::default()
+        } else {
+            parse_cert_meta(&leaf).unwrap()
+        };
+        publish(
+            &certs,
+            &id,
+            ManagedCert {
+                key,
+                leaf_der: leaf,
+                state,
+                meta,
+                domains: domains.clone(),
+            },
+        );
+        runtime_with(certs, vec![ManagedSlot { id, domains }])
+    }
+
+    pub fn placeholder_runtime(domains: &[&str]) -> Arc<AcmeRuntime> {
+        seeded(domains, CertState::Placeholder)
+    }
+
+    pub fn issued_runtime(domains: &[&str]) -> Arc<AcmeRuntime> {
+        seeded(domains, CertState::Issued)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +562,53 @@ mod tests {
         assert!(meta.not_after > meta.not_before);
         assert!(!meta.serial.is_empty());
         assert!(meta.issuer.contains("rcgen"), "{}", meta.issuer);
+    }
+
+    #[tokio::test]
+    async fn start_seeds_placeholders_then_reuses_a_stored_cert() {
+        let dir = std::env::temp_dir().join(format!("fb_acme_start_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let system: crate::config::SystemConfig = serde_yaml::from_str(&format!(
+            "acme:\n  terms_of_service_agreed: true\n  storage:\n    type: filesystem\n    dir: {}\ntls:\n  acme:\n    domains: [s.example.com]\n",
+            dir.display().to_string().replace('\\', "/")
+        ))
+        .unwrap();
+        let cfg = system.acme.as_ref().unwrap();
+        let tls = system.tls.as_ref().unwrap();
+        let stores = crate::stores::StoreRegistry::default();
+        let metrics = crate::metrics::GatewayMetrics::new();
+
+        let rt = start(cfg, tls, &stores, &metrics).await.unwrap();
+        assert_eq!(rt.placeholder_ids(), vec!["s.example.com".to_string()]);
+        assert_eq!(rt.storage_label, "filesystem");
+        assert!(metrics.render().contains(
+            "featherbit_acme_cert_state{cert_id=\"s.example.com\",state=\"placeholder\"} 1"
+        ));
+
+        // A valid stored cert is adopted at start (no placeholder, no order).
+        let issued = rcgen::generate_simple_self_signed(vec!["s.example.com".to_string()]).unwrap();
+        let storage = build_storage(cfg, &stores).unwrap();
+        let (id, _) = CertId::from_domains(&["s.example.com".into()]).unwrap();
+        storage
+            .save_cert(
+                &id,
+                &StoredCert {
+                    chain_pem: issued.cert.pem(),
+                    key_pem: issued.signing_key.serialize_pem(),
+                    issued_at: now_unix(),
+                },
+            )
+            .await
+            .unwrap();
+        let rt2 = start(cfg, tls, &stores, &crate::metrics::GatewayMetrics::new())
+            .await
+            .unwrap();
+        assert!(rt2.placeholder_ids().is_empty());
+        assert_eq!(
+            rt2.certs.load().get("s.example.com").unwrap().state,
+            CertState::Issued
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
