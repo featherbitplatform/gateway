@@ -5,13 +5,9 @@
 //! validatable challenge cert behind. Verification runs before anything is
 //! persisted: a CA returning garbage never evicts a working certificate.
 
-use rcgen::PublicKeyData;
-
 use super::challenge::TlsAlpnSolver;
 use super::client::{AcmeClient, PendingChallenge};
-use super::{
-    leaf_dns_sans, leaf_spki, load_certified_key, now_unix, parse_cert_meta, AcmeError, StoredCert,
-};
+use super::{leaf_dns_sans, load_certified_key, now_unix, parse_cert_meta, AcmeError, StoredCert};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyType {
@@ -69,12 +65,11 @@ pub fn verify_chain(
     domains: &[String],
     now: i64,
 ) -> Result<(), AcmeError> {
+    // `load_certified_key` is the key-match gate: it calls rustls'
+    // `CertifiedKey::keys_match()`, which errors (`AcmeError::Certificate`) if
+    // the leaf's public key doesn't match `key`. No separate SPKI compare
+    // needed here.
     let (_, leaf) = load_certified_key(chain_pem, &key.serialize_pem())?;
-    if leaf_spki(&leaf)? != key.subject_public_key_info() {
-        return Err(AcmeError::Certificate(
-            "leaf public key does not match the generated key".into(),
-        ));
-    }
     let meta = parse_cert_meta(&leaf)?;
     if meta.not_after <= now {
         return Err(AcmeError::Certificate(format!(
@@ -242,7 +237,8 @@ mod tests {
         assert!(verify_chain(&pem, &key, &doms(), t).is_err());
         // Expired (evaluate "now" after not_after).
         assert!(verify_chain(&pem, &key, &["a.example.com".to_string()], t + 31 * 86_400).is_err());
-        // Foreign key.
+        // Foreign key: rejected by `load_certified_key`'s key-match check
+        // (rustls `CertifiedKey::keys_match()`), not a separate SPKI compare.
         let other = generate_key(KeyType::EcdsaP256).unwrap();
         assert!(verify_chain(&pem, &other, &["a.example.com".to_string()], t).is_err());
     }
