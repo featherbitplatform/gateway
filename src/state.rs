@@ -51,6 +51,13 @@ pub struct SharedState {
     /// once at startup when `system.tls.acme`/`sni_certs[].acme` is configured.
     /// `None` when ACME is not in use. Drives `/readyz`'s placeholder gate.
     pub acme: arc_swap::ArcSwapOption<crate::acme::AcmeRuntime>,
+    /// Whether `system.yaml` asks for ACME-managed certificates at all
+    /// (`acme:` present **and** at least one managed TLS slot). The runtime in
+    /// `acme` is only populated once `server::start_server` has seeded it,
+    /// which happens after the admin listener is already serving — so
+    /// `/readyz` uses this to answer "not ready" instead of "ready" during
+    /// that window.
+    pub acme_expected: bool,
 }
 
 impl SharedState {
@@ -65,6 +72,11 @@ impl SharedState {
         config_store: Arc<dyn ConfigStore>,
     ) -> Result<Self, String> {
         let metrics = Arc::new(GatewayMetrics::new());
+        let acme_expected = system.acme.is_some()
+            && system
+                .tls
+                .as_ref()
+                .is_some_and(|t| !t.managed_domains().is_empty());
         let resources = PluginResources::new(Some(metrics.clone()));
         resources
             .consumers
@@ -103,6 +115,7 @@ impl SharedState {
             config_store,
             debug: debug_state,
             acme: arc_swap::ArcSwapOption::empty(),
+            acme_expected,
         })
     }
 
