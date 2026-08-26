@@ -74,7 +74,19 @@ async fn renew_cert(
         );
     };
     let force = params.get("force").is_some_and(|v| v == "true" || v == "1");
-    match rt.manager.renew_now(&id, force) {
+    // A cert id *is* its normalized domain set, so accept any spelling of it:
+    // `CertId::from_domains` lowercases, sorts and dedups, matching what the
+    // manager keyed the slot under. An id that is not a valid domain list can
+    // never name a managed certificate.
+    let Ok((id, _)) =
+        crate::acme::CertId::from_domains(&id.split(',').map(String::from).collect::<Vec<_>>())
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found"})),
+        );
+    };
+    match rt.manager.renew_now(id.as_str(), force) {
         RenewOutcome::Scheduled => (
             StatusCode::ACCEPTED,
             Json(serde_json::json!({"scheduled": true})),
@@ -210,5 +222,29 @@ mod tests {
             ])));
         let (status, _) = call(p, Method::POST, "/api/acme/certs/p.example.com/renew").await;
         assert_eq!(status, StatusCode::ACCEPTED);
+    }
+
+    /// A cert id is its normalized domain set, so any spelling of that set has
+    /// to reach the same certificate — the UI and hand-written curl calls both
+    /// pass ids around verbatim from wherever the domains were typed.
+    #[tokio::test]
+    async fn renew_normalizes_the_path_id_to_the_cert_id() {
+        let s = state();
+        s.acme.store(Some(crate::acme::testing::issued_runtime(&[
+            "a.example.com",
+            "b.example.com",
+        ])));
+        // Reversed order, mixed case, a duplicate: still the same certificate.
+        let (status, body) = call(
+            s.clone(),
+            Method::POST,
+            "/api/acme/certs/B.example.com,a.example.com,A.EXAMPLE.com/renew?force=true",
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["scheduled"], true);
+        // Not a domain list at all ⇒ still a 404, not a 500.
+        let (status, _) = call(s, Method::POST, "/api/acme/certs/*.example.com/renew").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }
