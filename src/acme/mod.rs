@@ -160,11 +160,28 @@ pub fn update(certs: &ManagedCerts, id: &CertId, f: impl FnOnce(&mut ManagedCert
 }
 
 /// What storage persists per certificate.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Deliberately **not** `Serialize`: each backend writes its own shape (the
+/// filesystem one splits the parts across files, the redis one seals the key
+/// into a `CertRecord`), and a blanket derive would make it one
+/// `serde_json::to_string` away from a private key landing in a log line or an
+/// API response. The hand-written `Debug` redacts `key_pem` for the same
+/// reason — it exists only so tests can `assert_eq!` on round-trips.
+#[derive(Clone, PartialEq, Deserialize)]
 pub struct StoredCert {
     pub chain_pem: String,
     pub key_pem: String,
     pub issued_at: i64,
+}
+
+impl std::fmt::Debug for StoredCert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredCert")
+            .field("chain_pem", &self.chain_pem)
+            .field("key_pem", &"<redacted>")
+            .field("issued_at", &self.issued_at)
+            .finish()
+    }
 }
 
 pub fn now_unix() -> i64 {
@@ -637,6 +654,21 @@ mod tests {
             CertState::Issued
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stored_cert_debug_redacts_the_private_key() {
+        let cert = StoredCert {
+            chain_pem: "-----BEGIN CERTIFICATE-----".into(),
+            key_pem: "-----BEGIN PRIVATE KEY-----
+SECRET"
+                .into(),
+            issued_at: 7,
+        };
+        let rendered = format!("{cert:?}");
+        assert!(!rendered.contains("SECRET"), "{rendered}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        assert!(rendered.contains("BEGIN CERTIFICATE"), "{rendered}");
     }
 
     #[test]
