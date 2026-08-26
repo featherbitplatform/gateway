@@ -32,28 +32,75 @@ use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
+use crate::acme::challenge::{ChallengeSolver, ACME_TLS_ALPN};
+use crate::acme::ManagedCerts;
 use crate::config::TlsConfig;
 use crate::stream::sni::SniPattern;
 
-/// Resolves the server certificate by ClientHello SNI hostname (exact or
-/// single-label wildcard), falling back to the default cert. Enables
-/// multi-domain TLS termination on one listener.
+/// What the ACME subsystem hands the TLS layer: the live managed-cert map and
+/// the TLS-ALPN-01 challenge solver. `None` everywhere ACME is not configured.
+#[derive(Clone, Debug)]
+pub struct AcmeHooks {
+    pub certs: ManagedCerts,
+    pub solver: Arc<dyn ChallengeSolver>,
+}
+
+/// Where one certificate slot's `CertifiedKey` comes from.
+#[derive(Debug)]
+enum CertSlot {
+    /// Loaded from `cert_path`/`key_path` at (re)build time.
+    File(Arc<CertifiedKey>),
+    /// Looked up in `AcmeHooks::certs` on every ClientHello (so a renewal is a
+    /// map swap, not a `ServerConfig` rebuild).
+    Managed(String),
+}
+
+/// Resolves the server certificate: a ClientHello offering exactly ALPN
+/// `acme-tls/1` is a CA validation and gets the pending challenge cert (or is
+/// refused); otherwise SNI hostname (exact or single-label wildcard) selects a
+/// slot, falling back to the default.
 #[derive(Debug)]
 struct SniCertResolver {
-    certs: Vec<(SniPattern, Arc<CertifiedKey>)>,
-    default: Arc<CertifiedKey>,
+    certs: Vec<(SniPattern, CertSlot)>,
+    default: CertSlot,
+    acme: Option<AcmeHooks>,
+}
+
+impl SniCertResolver {
+    fn slot_key(&self, slot: &CertSlot) -> Option<Arc<CertifiedKey>> {
+        match slot {
+            CertSlot::File(ck) => Some(ck.clone()),
+            CertSlot::Managed(id) => self
+                .acme
+                .as_ref()?
+                .certs
+                .load()
+                .get(id)
+                .map(|c| c.key.clone()),
+        }
+    }
 }
 
 impl ResolvesServerCert for SniCertResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        if let Some(hooks) = &self.acme {
+            let only_acme = client_hello
+                .alpn()
+                .map(|mut alpn| alpn.next() == Some(ACME_TLS_ALPN) && alpn.next().is_none())
+                .unwrap_or(false);
+            if only_acme {
+                // RFC 8737 §3: no pending challenge for this name ⇒ abort.
+                return hooks.solver.challenge_cert(client_hello.server_name()?);
+            }
+        }
         if let Some(name) = client_hello.server_name() {
-            for (pattern, ck) in &self.certs {
+            for (pattern, slot) in &self.certs {
                 if pattern.matches(name) {
-                    return Some(ck.clone());
+                    return self.slot_key(slot);
                 }
             }
         }
-        Some(self.default.clone())
+        self.slot_key(&self.default)
     }
 }
 
@@ -96,6 +143,10 @@ pub enum TlsError {
     ClientVerifier(String),
     #[error("TLS slot '{0}' has no certificate source (set cert_path/key_path, or acme)")]
     MissingCertSource(String),
+    #[error(
+        "TLS slot '{0}' is ACME-managed but no ACME runtime was provided (is `acme:` configured?)"
+    )]
+    AcmeNotWired(String),
 }
 
 /// The file pair of a file-based slot. ACME-managed slots are handled by the
@@ -176,6 +227,7 @@ fn load_client_ca_roots(path: &str) -> Result<rustls::RootCertStore, TlsError> {
 pub fn build_server_config(
     tls: &TlsConfig,
     http2_enabled: bool,
+    acme: Option<&AcmeHooks>,
 ) -> Result<Arc<ServerConfig>, TlsError> {
     install_crypto_provider();
 
@@ -184,10 +236,6 @@ pub fn build_server_config(
         "1.3" => &[&rustls::version::TLS13],
         other => return Err(TlsError::BadMinVersion(other.to_string())),
     };
-
-    let (cert_path, key_path) = file_pair(&tls.cert_path, &tls.key_path, "default")?;
-    let chain = load_cert_chain(cert_path)?;
-    let key = load_private_key(key_path)?;
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = ServerConfig::builder_with_provider(provider.clone())
@@ -216,26 +264,73 @@ pub fn build_server_config(
         None => builder.with_no_client_auth(),
     };
 
-    // Certificate selection: a single cert, or an SNI resolver that presents a
-    // per-hostname cert (falling back to the default `cert_path`/`key_path`).
-    let mut config = if tls.sni_certs.is_empty() {
-        builder
-            .with_single_cert(chain, key)
-            .map_err(|e| TlsError::RustlsConfig(e.to_string()))?
-    } else {
-        let default = Arc::new(certified_key(chain, key, &provider)?);
-        let mut certs = Vec::with_capacity(tls.sni_certs.len());
-        for sc in &tls.sni_certs {
-            let (c_path, k_path) = file_pair(&sc.cert_path, &sc.key_path, &sc.server_name)?;
-            let c = load_cert_chain(c_path)?;
-            let k = load_private_key(k_path)?;
-            certs.push((
-                SniPattern::parse(&sc.server_name),
-                Arc::new(certified_key(c, k, &provider)?),
-            ));
+    // Certificate selection: each slot is either a file-based cert loaded now,
+    // or (when ACME-managed) a lookup key resolved against `AcmeHooks::certs`
+    // on every ClientHello.
+    fn slot(
+        what: &str,
+        cert: &Option<String>,
+        key: &Option<String>,
+        acme_slot: &Option<crate::config::AcmeSlot>,
+        domains_for_id: Vec<String>,
+        acme: Option<&AcmeHooks>,
+        provider: &Arc<rustls::crypto::CryptoProvider>,
+    ) -> Result<CertSlot, TlsError> {
+        if acme_slot.is_some() {
+            if acme.is_none() {
+                return Err(TlsError::AcmeNotWired(what.to_string()));
+            }
+            let (id, _) = crate::acme::CertId::from_domains(&domains_for_id)
+                .map_err(|e| TlsError::RustlsConfig(e.to_string()))?;
+            return Ok(CertSlot::Managed(id.as_str().to_string()));
         }
-        builder.with_cert_resolver(Arc::new(SniCertResolver { certs, default }))
-    };
+        let (c, k) = file_pair(cert, key, what)?;
+        Ok(CertSlot::File(Arc::new(certified_key(
+            load_cert_chain(c)?,
+            load_private_key(k)?,
+            provider,
+        )?)))
+    }
+
+    let default = slot(
+        "default",
+        &tls.cert_path,
+        &tls.key_path,
+        &tls.acme,
+        tls.acme
+            .as_ref()
+            .map(|s| s.domains.clone())
+            .unwrap_or_default(),
+        acme,
+        &provider,
+    )?;
+    let mut certs = Vec::with_capacity(tls.sni_certs.len());
+    for sc in &tls.sni_certs {
+        let domains = sc
+            .acme_domains()
+            .map_err(TlsError::RustlsConfig)?
+            .unwrap_or_default();
+        certs.push((
+            SniPattern::parse(&sc.server_name),
+            slot(
+                &sc.server_name,
+                &sc.cert_path,
+                &sc.key_path,
+                &sc.acme,
+                domains,
+                acme,
+                &provider,
+            )?,
+        ));
+    }
+
+    // Always the resolver — it is what `with_single_cert` builds internally
+    // (`AlwaysResolvesChain`), so a single file-based cert behaves identically.
+    let mut config = builder.with_cert_resolver(Arc::new(SniCertResolver {
+        certs,
+        default,
+        acme: acme.cloned(),
+    }));
 
     config.alpn_protocols = if http2_enabled {
         // h2 first so a client offering both prefers HTTP/2.
@@ -243,6 +338,12 @@ pub fn build_server_config(
     } else {
         vec![b"http/1.1".to_vec()]
     };
+    if acme.is_some() {
+        // Advertised last: browsers offering h2/http1.1 never pick it, and
+        // rustls would otherwise abort a validator's acme-tls/1-only hello with
+        // no_application_protocol before the resolver could answer.
+        config.alpn_protocols.push(ACME_TLS_ALPN.to_vec());
+    }
 
     Ok(Arc::new(config))
 }
@@ -254,16 +355,25 @@ pub fn build_server_config(
 /// hot-reload; this one-shot form is kept for tests and simple embedding.
 #[allow(dead_code)]
 pub fn build_acceptor(tls: &TlsConfig, http2_enabled: bool) -> Result<TlsAcceptor, TlsError> {
-    Ok(TlsAcceptor::from(build_server_config(tls, http2_enabled)?))
+    Ok(TlsAcceptor::from(build_server_config(
+        tls,
+        http2_enabled,
+        None,
+    )?))
 }
 
 /// Builds a hot-reloadable TLS config: the initial `ServerConfig` wrapped in an
 /// [`ArcSwap`] so [`spawn_cert_watcher`] can swap it in on cert rotation.
 /// Fail-fast: a bad cert/key at startup surfaces here.
-pub fn build_reloadable(tls: &TlsConfig, http2_enabled: bool) -> Result<SharedTlsConfig, TlsError> {
+pub fn build_reloadable(
+    tls: &TlsConfig,
+    http2_enabled: bool,
+    acme: Option<&AcmeHooks>,
+) -> Result<SharedTlsConfig, TlsError> {
     Ok(Arc::new(ArcSwap::new(build_server_config(
         tls,
         http2_enabled,
+        acme,
     )?)))
 }
 
@@ -271,6 +381,12 @@ pub fn build_reloadable(tls: &TlsConfig, http2_enabled: bool) -> Result<SharedTl
 /// an atomic load + `Arc` clone) so reloads take effect for new connections.
 pub fn current_acceptor(shared: &SharedTlsConfig) -> TlsAcceptor {
     TlsAcceptor::from(shared.load_full())
+}
+
+/// True when the finished handshake negotiated `acme-tls/1`: the connection
+/// was a CA validation and must be closed without serving anything.
+pub fn negotiated_acme_challenge<IO>(stream: &tokio_rustls::server::TlsStream<IO>) -> bool {
+    stream.get_ref().1.alpn_protocol() == Some(ACME_TLS_ALPN)
 }
 
 /// Verified identity of an mTLS client, read from its leaf certificate.
@@ -348,6 +464,7 @@ pub fn spawn_cert_watcher(
     http2_enabled: bool,
     shared: SharedTlsConfig,
     label: &'static str,
+    acme: Option<AcmeHooks>,
 ) {
     let (tx, mut rx) = mpsc::channel::<()>(1);
 
@@ -417,7 +534,7 @@ pub fn spawn_cert_watcher(
             tokio::time::sleep(Duration::from_millis(500)).await;
             while rx.try_recv().is_ok() {}
 
-            match build_server_config(&tls, http2_enabled) {
+            match build_server_config(&tls, http2_enabled, acme.as_ref()) {
                 Ok(config) => {
                     shared.store(config);
                     info!("{} TLS certificate reloaded", label);
@@ -570,13 +687,13 @@ mod tests {
     fn test_alpn_reflects_http2_flag() {
         let (tls, cert, key) = self_signed("alpn", "1.2");
 
-        let with_h2 = build_server_config(&tls, true).unwrap();
+        let with_h2 = build_server_config(&tls, true, None).unwrap();
         assert_eq!(
             with_h2.alpn_protocols,
             vec![b"h2".to_vec(), b"http/1.1".to_vec()]
         );
 
-        let without_h2 = build_server_config(&tls, false).unwrap();
+        let without_h2 = build_server_config(&tls, false, None).unwrap();
         assert_eq!(without_h2.alpn_protocols, vec![b"http/1.1".to_vec()]);
 
         let _ = std::fs::remove_file(cert);
@@ -586,10 +703,10 @@ mod tests {
     #[test]
     fn test_min_version_1_3_ok_and_bad_rejected() {
         let (mut tls, cert, key) = self_signed("minver", "1.3");
-        build_server_config(&tls, true).unwrap();
+        build_server_config(&tls, true, None).unwrap();
 
         tls.min_version = "sslv3".to_string();
-        let err = build_server_config(&tls, true).unwrap_err();
+        let err = build_server_config(&tls, true, None).unwrap_err();
         assert!(matches!(err, TlsError::BadMinVersion(v) if v == "sslv3"));
 
         let _ = std::fs::remove_file(cert);
@@ -691,12 +808,32 @@ mod tests {
             cert: &rustls::pki_types::CertificateDer<'_>,
             dss: &rustls::DigitallySignedStruct,
         ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-            rustls::crypto::verify_tls13_signature(
+            match rustls::crypto::verify_tls13_signature(
                 message,
                 cert,
                 dss,
                 &self.provider.signature_verification_algorithms,
-            )
+            ) {
+                Ok(v) => Ok(v),
+                // rustls-webpki's `EndEntityCert` parse is strict about unknown
+                // *critical* X.509 extensions and fails before the signature is
+                // even checked — which is exactly what RFC 8737's critical
+                // `acmeIdentifier` extension on a TLS-ALPN-01 challenge cert
+                // triggers. Fall back to verifying against the raw
+                // SubjectPublicKeyInfo (same key, same signature, no extension
+                // gate); production code never verifies signatures over ACME
+                // certificates, only this test client does.
+                Err(_) => {
+                    let spki = crate::acme::leaf_spki(cert.as_ref())
+                        .map_err(|e| rustls::Error::General(e.to_string()))?;
+                    rustls::crypto::verify_tls13_signature_with_raw_key(
+                        message,
+                        &rustls::pki_types::SubjectPublicKeyInfoDer::from(spki),
+                        dss,
+                        &self.provider.signature_verification_algorithms,
+                    )
+                }
+            }
         }
         fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
             self.provider
@@ -765,7 +902,7 @@ mod tests {
             acme: None,
         };
 
-        let shared = build_reloadable(&tls, false).unwrap();
+        let shared = build_reloadable(&tls, false, None).unwrap();
         let addr = spawn_reload_server(shared.clone()).await;
 
         let leaf_a = served_leaf_cert(addr).await;
@@ -773,7 +910,7 @@ mod tests {
         // Rotate: overwrite the files with a new cert and swap it in (the
         // deterministic path the watcher also takes).
         write_fresh_cert(&cert, &key);
-        shared.store(build_server_config(&tls, false).unwrap());
+        shared.store(build_server_config(&tls, false, None).unwrap());
 
         let leaf_b = served_leaf_cert(addr).await;
 
@@ -803,8 +940,8 @@ mod tests {
             acme: None,
         };
 
-        let shared = build_reloadable(&tls, false).unwrap();
-        spawn_cert_watcher(tls.clone(), false, shared.clone(), "test");
+        let shared = build_reloadable(&tls, false, None).unwrap();
+        spawn_cert_watcher(tls.clone(), false, shared.clone(), "test", None);
         let addr = spawn_reload_server(shared.clone()).await;
 
         let leaf_a = served_leaf_cert(addr).await;
@@ -1015,10 +1152,10 @@ mod tests {
     fn test_mtls_config_builds_and_rejects_empty_ca() {
         let (tls, _ca_cert, _ca_key, paths) = mtls_config("cfg", true);
         // Required and optional both build.
-        build_server_config(&tls, false).unwrap();
+        build_server_config(&tls, false, None).unwrap();
         let mut optional = tls.clone();
         optional.client_cert_required = false;
-        build_server_config(&optional, false).unwrap();
+        build_server_config(&optional, false, None).unwrap();
 
         // A client-CA path with no certs is an error.
         let empty = std::env::temp_dir().join(format!("fb_mtls_empty_{}.pem", std::process::id()));
@@ -1026,7 +1163,7 @@ mod tests {
         let mut bad = tls;
         bad.client_ca_path = Some(empty.to_string_lossy().into_owned());
         assert!(matches!(
-            build_server_config(&bad, false),
+            build_server_config(&bad, false, None),
             Err(TlsError::NoClientCaCerts(_))
         ));
 
@@ -1138,7 +1275,7 @@ mod tests {
             acme: None,
         };
 
-        let shared = build_reloadable(&tls, false).unwrap();
+        let shared = build_reloadable(&tls, false, None).unwrap();
         let addr = spawn_reload_server(shared).await;
 
         // Exact match, wildcard match, and default fallback each get their cert.
@@ -1158,5 +1295,191 @@ mod tests {
         for p in [def_cert, def_key, a_cert, a_key, w_cert, w_key] {
             let _ = std::fs::remove_file(p);
         }
+    }
+
+    // ---- ACME: managed slots + TLS-ALPN-01 ----
+
+    #[derive(Debug)]
+    struct FakeSolver(std::sync::Mutex<std::collections::HashMap<String, Arc<CertifiedKey>>>);
+
+    impl crate::acme::challenge::ChallengeSolver for FakeSolver {
+        fn challenge_cert(&self, server_name: &str) -> Option<Arc<CertifiedKey>> {
+            self.0.lock().unwrap().get(server_name).cloned()
+        }
+    }
+
+    fn managed_tls(domains: &[&str]) -> TlsConfig {
+        TlsConfig {
+            cert_path: None,
+            key_path: None,
+            acme: Some(crate::config::AcmeSlot {
+                domains: domains.iter().map(|d| d.to_string()).collect(),
+            }),
+            min_version: "1.2".to_string(),
+            client_ca_path: None,
+            client_cert_required: true,
+            sni_certs: Vec::new(),
+        }
+    }
+
+    fn hooks_with_placeholder(
+        domains: &[&str],
+    ) -> (crate::server::tls::AcmeHooks, crate::acme::CertId, Vec<u8>) {
+        let domains: Vec<String> = domains.iter().map(|d| d.to_string()).collect();
+        let (id, norm) = crate::acme::CertId::from_domains(&domains).unwrap();
+        let (key, leaf) = crate::acme::placeholder_cert(&norm).unwrap();
+        let certs = crate::acme::new_managed_certs();
+        crate::acme::publish(
+            &certs,
+            &id,
+            crate::acme::ManagedCert {
+                key,
+                leaf_der: leaf.clone(),
+                state: crate::acme::CertState::Placeholder,
+                meta: crate::acme::CertMeta::default(),
+                domains: norm,
+            },
+        );
+        let solver: Arc<dyn crate::acme::challenge::ChallengeSolver> =
+            Arc::new(FakeSolver(std::sync::Mutex::new(Default::default())));
+        (AcmeHooks { certs, solver }, id, leaf)
+    }
+
+    /// Like `served_leaf_cert_sni` but offering the given ALPN list; `Err` when
+    /// the handshake is refused.
+    async fn handshake_with_alpn(
+        addr: std::net::SocketAddr,
+        sni: &str,
+        alpn: Vec<Vec<u8>>,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+        use tokio::net::TcpStream;
+        install_crypto_provider();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let verifier = std::sync::Arc::new(CapturingVerifier {
+            captured: captured.clone(),
+            provider: rustls::crypto::ring::default_provider(),
+        });
+        let mut config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth();
+        config.alpn_protocols = alpn;
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let name = rustls::pki_types::ServerName::try_from(sni.to_string()).unwrap();
+        let stream = connector
+            .connect(name, tcp)
+            .await
+            .map_err(|e| e.to_string())?;
+        let negotiated = stream.get_ref().1.alpn_protocol().map(|p| p.to_vec());
+        let leaf = captured.lock().unwrap().clone().ok_or("no cert")?;
+        Ok((leaf, negotiated))
+    }
+
+    #[tokio::test]
+    async fn test_managed_slot_serves_placeholder_then_swapped_cert_without_rebuild() {
+        let (hooks, id, placeholder_leaf) = hooks_with_placeholder(&["m.example.com"]);
+        let tls = managed_tls(&["m.example.com"]);
+        let shared = build_reloadable(&tls, false, Some(&hooks)).unwrap();
+        let addr = spawn_reload_server(shared).await;
+
+        assert_eq!(
+            served_leaf_cert_sni(addr, "m.example.com").await,
+            placeholder_leaf
+        );
+        // No SNI / unknown SNI falls back to the managed default too.
+        assert_eq!(
+            served_leaf_cert_sni(addr, "other.example.com").await,
+            placeholder_leaf
+        );
+
+        // "Issue": publish a new cert into the map — no ServerConfig rebuild.
+        let issued = rcgen::generate_simple_self_signed(vec!["m.example.com".to_string()]).unwrap();
+        let (key, leaf) = crate::acme::load_certified_key(
+            &issued.cert.pem(),
+            &issued.signing_key.serialize_pem(),
+        )
+        .unwrap();
+        crate::acme::update(&hooks.certs, &id, |c| {
+            c.key = key;
+            c.leaf_der = leaf.clone();
+            c.state = crate::acme::CertState::Issued;
+        });
+        assert_eq!(served_leaf_cert_sni(addr, "m.example.com").await, leaf);
+    }
+
+    #[tokio::test]
+    async fn test_acme_tls_alpn_serves_challenge_cert_and_refuses_without_one() {
+        // `hooks_with_placeholder` installs an empty FakeSolver; build a second
+        // hooks value sharing the same cert map but with a pending challenge.
+        let (empty_hooks, _, placeholder_leaf) = hooks_with_placeholder(&["m.example.com"]);
+        let challenge =
+            crate::acme::challenge::build_challenge_cert("m.example.com", "ka").unwrap();
+        let challenge_leaf = challenge.end_entity_cert().unwrap().as_ref().to_vec();
+        let pending = Arc::new(FakeSolver(std::sync::Mutex::new(Default::default())));
+        pending
+            .0
+            .lock()
+            .unwrap()
+            .insert("m.example.com".to_string(), challenge.clone());
+        let pending_hooks = AcmeHooks {
+            certs: empty_hooks.certs.clone(),
+            solver: pending,
+        };
+        let tls = managed_tls(&["m.example.com"]);
+
+        let addr_pending =
+            spawn_reload_server(build_reloadable(&tls, true, Some(&pending_hooks)).unwrap()).await;
+        let addr_empty =
+            spawn_reload_server(build_reloadable(&tls, true, Some(&empty_hooks)).unwrap()).await;
+
+        // Validator: gets the challenge cert and negotiates acme-tls/1.
+        let (leaf, alpn) =
+            handshake_with_alpn(addr_pending, "m.example.com", vec![b"acme-tls/1".to_vec()])
+                .await
+                .unwrap();
+        assert_eq!(leaf, challenge_leaf);
+        assert_eq!(alpn.as_deref(), Some(&b"acme-tls/1"[..]));
+
+        // A normal client on the same listener is unaffected.
+        let (leaf, alpn) = handshake_with_alpn(
+            addr_pending,
+            "m.example.com",
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(leaf, placeholder_leaf);
+        assert_eq!(alpn.as_deref(), Some(&b"h2"[..]));
+
+        // No pending challenge for the name ⇒ handshake refused (RFC 8737 §3).
+        assert!(
+            handshake_with_alpn(addr_empty, "m.example.com", vec![b"acme-tls/1".to_vec()])
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_acme_alpn_not_advertised_without_acme() {
+        let (tls, cert, key) = self_signed("noacme", "1.2");
+        let shared = build_reloadable(&tls, true, None).unwrap();
+        let addr = spawn_reload_server(shared).await;
+        // Client offering only acme-tls/1 against a non-ACME listener: rustls
+        // refuses (no overlap), which is the pre-existing behavior.
+        assert!(
+            handshake_with_alpn(addr, "localhost", vec![b"acme-tls/1".to_vec()])
+                .await
+                .is_err()
+        );
+        let _ = std::fs::remove_file(cert);
+        let _ = std::fs::remove_file(key);
+    }
+
+    #[test]
+    fn test_managed_slot_without_hooks_is_a_wiring_error() {
+        let tls = managed_tls(&["m.example.com"]);
+        let err = build_server_config(&tls, true, None).unwrap_err();
+        assert!(matches!(err, TlsError::AcmeNotWired(_)), "{err}");
     }
 }
