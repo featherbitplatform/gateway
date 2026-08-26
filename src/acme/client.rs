@@ -285,6 +285,9 @@ pub(crate) mod mock {
         pub ari: Option<(i64, i64)>,
         /// Sign a random key instead of the CSR's (verification must reject it).
         pub wrong_key_chain: bool,
+        /// Echo back an authorization for an identifier that was never
+        /// requested (a hostile/broken CA).
+        pub extra_pending_domain: Option<String>,
         pub validity_secs: i64,
     }
 
@@ -294,6 +297,7 @@ pub(crate) mod mock {
                 fail_step: None,
                 ari: None,
                 wrong_key_chain: false,
+                extra_pending_domain: None,
                 validity_secs: 90 * 86_400,
             }
         }
@@ -396,14 +400,21 @@ pub(crate) mod mock {
     #[async_trait]
     impl AcmeOrder for MockOrder {
         async fn pending_challenges(&mut self) -> Result<Vec<PendingChallenge>, AcmeError> {
-            Ok(self
+            let mut out: Vec<PendingChallenge> = self
                 .domains
                 .iter()
                 .map(|d| PendingChallenge {
                     domain: d.clone(),
                     key_auth: format!("tok-{d}.mockthumb"),
                 })
-                .collect())
+                .collect();
+            if let Some(extra) = self.client.behavior().extra_pending_domain {
+                out.push(PendingChallenge {
+                    key_auth: format!("tok-{extra}.mockthumb"),
+                    domain: extra,
+                });
+            }
+            Ok(out)
         }
 
         async fn mark_ready(&mut self, domain: &str) -> Result<(), AcmeError> {

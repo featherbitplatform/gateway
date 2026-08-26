@@ -122,6 +122,21 @@ async fn run(
     let key = generate_key(key_type)?;
     let mut order = client.new_order(domains).await?;
     let pending: Vec<PendingChallenge> = order.pending_challenges().await?;
+    // The CA echoes the identifiers back, and those strings become filesystem
+    // paths and redis keys in the challenge store. Anything we did not ask for
+    // is refused *before* the solver (and therefore storage) ever sees it, so a
+    // hostile or broken CA cannot steer a write with something like
+    // `../../evil`.
+    let requested: std::collections::HashSet<String> =
+        domains.iter().map(|d| d.to_ascii_lowercase()).collect();
+    for p in &pending {
+        if !requested.contains(&p.domain.to_ascii_lowercase()) {
+            return Err(AcmeError::Protocol(format!(
+                "CA returned an authorization for an unrequested identifier '{}'",
+                p.domain
+            )));
+        }
+    }
     for p in &pending {
         solver.register(&p.domain, &p.key_auth).await?;
         registered.push(p.domain.clone());
@@ -220,6 +235,26 @@ mod tests {
                 "{step:?}: challenges must be cleared"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn issue_rejects_an_authorization_for_an_unrequested_identifier() {
+        let client = MockAcmeClient::new(MockBehavior {
+            extra_pending_domain: Some("../../evil".into()),
+            ..Default::default()
+        });
+        let solver = solver("bogusident");
+        let err = issue(&client, &solver, &doms(), KeyType::EcdsaP256)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, AcmeError::Protocol(m) if m.contains("unrequested identifier")),
+            "{err}"
+        );
+        assert!(
+            solver.cached_domains().is_empty(),
+            "nothing is registered — not even the legitimate domains —              before the whole set is validated"
+        );
     }
 
     #[test]
