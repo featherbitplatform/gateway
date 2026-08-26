@@ -27,6 +27,8 @@ use storage::CertStorage;
 
 pub mod challenge;
 pub mod client;
+#[cfg(test)]
+mod live_tests;
 pub mod manager;
 pub mod metrics;
 pub mod order;
