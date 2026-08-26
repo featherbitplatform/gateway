@@ -75,7 +75,7 @@ rustls-native-certs = "0.8"
 x509-parser = "0.18"
 # ACME (RFC 8555) client for automatic certificates (src/acme). Ring-only like
 # the rest of the tree: default features would pull aws-lc-rs.
-instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls"] }
+instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls", "time", "x509-parser"] }
 # CSRs, TLS-ALPN-01 challenge certs and placeholder certs (runtime), plus the
 # self-signed certs the TLS tests use. `x509-parser` lets the test-only mock CA
 # sign a CSR. Ring-only.
