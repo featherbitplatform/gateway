@@ -48,6 +48,11 @@ pub struct SystemConfig {
     /// Policy-execution tracing and the plugin sandbox; disabled by default.
     #[serde(default)]
     pub debug: DebugConfig,
+    /// Automatic certificates via ACME (RFC 8555, TLS-ALPN-01). `None` (the
+    /// default) disables the feature; any `tls.acme` / `sni_certs[].acme` slot
+    /// then fails validation.
+    #[serde(default)]
+    pub acme: Option<AcmeConfig>,
 }
 
 /// Debug mode: per-request policy-execution tracing plus the plugin sandbox.
@@ -249,10 +254,13 @@ pub struct StreamUpstreamConfig {
 /// TLS termination settings for a listener (data plane or admin).
 #[derive(Debug, Deserialize, Clone)]
 pub struct TlsConfig {
-    /// Path to the PEM certificate chain. Required.
-    pub cert_path: String,
-    /// Path to the PEM private key. Required.
-    pub key_path: String,
+    /// Path to the PEM certificate chain. Required unless this slot is
+    /// ACME-managed (`acme`).
+    #[serde(default)]
+    pub cert_path: Option<String>,
+    /// Path to the PEM private key. Required unless this slot is ACME-managed.
+    #[serde(default)]
+    pub key_path: Option<String>,
     /// Minimum TLS protocol version, `"1.2"` or `"1.3"`; defaults to `"1.2"`.
     #[serde(default = "default_tls_min_version")]
     pub min_version: String,
@@ -271,6 +279,12 @@ pub struct TlsConfig {
     /// default/fallback.
     #[serde(default)]
     pub sni_certs: Vec<SniCert>,
+    /// Obtain this certificate automatically via ACME instead of files.
+    /// Mutually exclusive with `cert_path`/`key_path`; requires the top-level
+    /// `acme:` block. `domains` is mandatory here (a default cert has no
+    /// server name to infer from).
+    #[serde(default)]
+    pub acme: Option<AcmeSlot>,
 }
 
 /// One SNI-selected certificate for multi-domain TLS termination: an exact or
@@ -280,10 +294,349 @@ pub struct SniCert {
     /// SNI hostname to match: exact (`api.example.com`) or single-label
     /// wildcard (`*.example.com`). Case-insensitive.
     pub server_name: String,
-    /// PEM certificate chain to present for this hostname.
-    pub cert_path: String,
-    /// PEM private key for this hostname's certificate.
-    pub key_path: String,
+    /// PEM certificate chain to present for this hostname. Required unless
+    /// this slot is ACME-managed (`acme`).
+    #[serde(default)]
+    pub cert_path: Option<String>,
+    /// PEM private key for this hostname's certificate. Required unless this
+    /// slot is ACME-managed.
+    #[serde(default)]
+    pub key_path: Option<String>,
+    /// Obtain this certificate automatically via ACME instead of files.
+    /// Mutually exclusive with `cert_path`/`key_path`; requires the top-level
+    /// `acme:` block. `domains` defaults to `[server_name]` when omitted.
+    #[serde(default)]
+    pub acme: Option<AcmeSlot>,
+}
+
+/// One ACME-managed certificate slot.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct AcmeSlot {
+    /// DNS names on the certificate. On an `sni_certs` entry an empty list
+    /// means `[server_name]`. Wildcards are rejected (TLS-ALPN-01 cannot
+    /// issue them).
+    #[serde(default)]
+    pub domains: Vec<String>,
+}
+
+/// Top-level ACME settings (`acme:` in `system.yaml`).
+#[derive(Debug, Deserialize, Clone)]
+pub struct AcmeConfig {
+    /// ACME directory URL; defaults to Let's Encrypt production. Must be `https://`.
+    #[serde(default = "default_acme_directory")]
+    pub directory_url: String,
+    /// PEM trust root(s) for the CA's own HTTPS endpoint (private CAs, Pebble).
+    /// Replaces the system roots for that connection only.
+    #[serde(default)]
+    pub directory_ca_path: Option<String>,
+    /// Account contacts, e.g. `mailto:ops@example.com`.
+    #[serde(default)]
+    pub contact: Vec<String>,
+    /// Must be `true`: registering an account asserts agreement to the CA's terms.
+    #[serde(default)]
+    pub terms_of_service_agreed: bool,
+    /// External Account Binding (ZeroSSL, Google Trust Services, step-ca).
+    #[serde(default)]
+    pub eab: Option<AcmeEabConfig>,
+    /// Certificate key type: `ecdsa-p256` (default) or `ecdsa-p384`.
+    #[serde(default = "default_acme_key_type")]
+    pub key_type: String,
+    /// Renew when less than this remains before `not_after` (`30d`, `12h`,
+    /// `90s`, or bare seconds); the CA's ARI window, when offered, may renew earlier.
+    #[serde(default = "default_acme_renew_before")]
+    pub renew_before: String,
+    /// Where account, keys, certificates, challenges and leases live.
+    #[serde(default)]
+    pub storage: AcmeStorageConfig,
+}
+
+/// External Account Binding credentials issued by the CA.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AcmeEabConfig {
+    pub key_id: String,
+    /// base64url (or standard base64) HMAC key as handed out by the CA.
+    pub hmac_key: String,
+}
+
+/// ACME state storage backend (`acme.storage.type`).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum AcmeStorageConfig {
+    /// A directory on local disk (default `/var/lib/featherbit/acme`).
+    Filesystem {
+        #[serde(default = "default_acme_dir")]
+        dir: String,
+    },
+    /// A declared `stores:` entry from `gateway.yaml`; keys are sealed with
+    /// `encryption_key` (AES-256-GCM, key derived by SHA-256) before storage.
+    Store {
+        store: String,
+        /// Only read when the `redis-store` feature is on (the headless build
+        /// refuses `type: store` at validation, so nothing consumes it there).
+        #[cfg_attr(not(feature = "redis-store"), allow(dead_code))]
+        #[serde(default)]
+        encryption_key: String,
+    },
+}
+
+impl Default for AcmeStorageConfig {
+    fn default() -> Self {
+        Self::Filesystem {
+            dir: default_acme_dir(),
+        }
+    }
+}
+
+fn default_acme_directory() -> String {
+    "https://acme-v02.api.letsencrypt.org/directory".to_string()
+}
+fn default_acme_key_type() -> String {
+    "ecdsa-p256".to_string()
+}
+fn default_acme_renew_before() -> String {
+    "30d".to_string()
+}
+fn default_acme_dir() -> String {
+    "/var/lib/featherbit/acme".to_string()
+}
+
+/// Parses `30d` / `12h` / `5m` / `90s` / bare seconds into a [`Duration`].
+pub fn parse_duration(s: &str) -> Result<std::time::Duration, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("duration must not be empty".to_string());
+    }
+    let (num, mult) = match s.chars().last().unwrap() {
+        'd' => (&s[..s.len() - 1], 86_400u64),
+        'h' => (&s[..s.len() - 1], 3_600),
+        'm' => (&s[..s.len() - 1], 60),
+        's' => (&s[..s.len() - 1], 1),
+        c if c.is_ascii_digit() => (s, 1),
+        other => {
+            return Err(format!(
+                "unknown duration unit '{other}' in '{s}' (use d/h/m/s)"
+            ))
+        }
+    };
+    let n: u64 = num.parse().map_err(|_| format!("invalid duration '{s}'"))?;
+    let secs = n
+        .checked_mul(mult)
+        .ok_or_else(|| format!("duration '{s}' is out of range"))?;
+    Ok(std::time::Duration::from_secs(secs))
+}
+
+/// Lowercases and validates one ACME DNS identifier: no wildcards, no IPs, only
+/// `[a-z0-9.-]`, non-empty labels.
+pub fn normalize_domain(d: &str) -> Result<String, String> {
+    let d = d.trim().to_ascii_lowercase();
+    if d.is_empty() {
+        return Err("domain must not be empty".to_string());
+    }
+    if d.contains('*') {
+        return Err(format!(
+            "'{d}': TLS-ALPN-01 cannot issue wildcard certificates; use a file-based cert"
+        ));
+    }
+    if d.parse::<std::net::IpAddr>().is_ok() || d.contains(':') {
+        return Err(format!(
+            "'{d}': IP addresses are not supported ACME identifiers"
+        ));
+    }
+    if !d
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        || d.split('.').any(|label| label.is_empty())
+    {
+        return Err(format!("'{d}' is not a valid DNS name"));
+    }
+    Ok(d)
+}
+
+impl SniCert {
+    /// Normalized ACME domains for this entry, or `None` when file-based.
+    /// An empty `acme.domains` means `[server_name]`.
+    pub fn acme_domains(&self) -> Result<Option<Vec<String>>, String> {
+        match &self.acme {
+            None => Ok(None),
+            Some(slot) if slot.domains.is_empty() => {
+                Ok(Some(vec![normalize_domain(&self.server_name)?]))
+            }
+            Some(slot) => Ok(Some(
+                slot.domains
+                    .iter()
+                    .map(|d| normalize_domain(d))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+        }
+    }
+}
+
+impl TlsConfig {
+    /// Normalized domain lists of every ACME-managed slot, default cert first,
+    /// then `sni_certs` in order. Empty when nothing is managed. Assumes
+    /// [`TlsConfig::validate`] passed.
+    pub fn managed_domains(&self) -> Vec<Vec<String>> {
+        let mut out = Vec::new();
+        if let Some(slot) = &self.acme {
+            out.push(
+                slot.domains
+                    .iter()
+                    .filter_map(|d| normalize_domain(d).ok())
+                    .collect(),
+            );
+        }
+        for sc in &self.sni_certs {
+            if let Ok(Some(domains)) = sc.acme_domains() {
+                out.push(domains);
+            }
+        }
+        out
+    }
+
+    /// Structural validation of every cert slot. `acme_enabled` is whether the
+    /// top-level `acme:` block exists; `label` names the block in errors
+    /// (`"tls"` / `"admin.tls"`).
+    pub fn validate(&self, acme_enabled: bool, label: &str) -> Result<(), String> {
+        fn check_slot(
+            what: &str,
+            cert: &Option<String>,
+            key: &Option<String>,
+            acme: &Option<AcmeSlot>,
+            acme_enabled: bool,
+        ) -> Result<(), String> {
+            match (cert, key, acme) {
+                (Some(_), Some(_), None) => Ok(()),
+                (None, None, Some(_)) if acme_enabled => Ok(()),
+                (None, None, Some(_)) => Err(format!(
+                    "{what}: acme slot requires the top-level `acme:` block in system.yaml"
+                )),
+                (None, None, None) => Err(format!("{what}: set cert_path + key_path, or acme")),
+                (Some(_), None, _) | (None, Some(_), _) => Err(format!(
+                    "{what}: cert_path and key_path must be set together"
+                )),
+                (Some(_), Some(_), Some(_)) => Err(format!(
+                    "{what}: set exactly one of cert_path/key_path or acme"
+                )),
+            }
+        }
+        check_slot(
+            label,
+            &self.cert_path,
+            &self.key_path,
+            &self.acme,
+            acme_enabled,
+        )?;
+        if let Some(slot) = &self.acme {
+            if slot.domains.is_empty() {
+                return Err(format!(
+                    "{label}.acme: a managed default certificate needs explicit `domains`"
+                ));
+            }
+            for d in &slot.domains {
+                normalize_domain(d).map_err(|e| format!("{label}.acme.domains: {e}"))?;
+            }
+        }
+        for (i, sc) in self.sni_certs.iter().enumerate() {
+            let what = format!("{label}.sni_certs[{i}] ({})", sc.server_name);
+            check_slot(&what, &sc.cert_path, &sc.key_path, &sc.acme, acme_enabled)?;
+            sc.acme_domains().map_err(|e| format!("{what}: {e}"))?;
+        }
+        Ok(())
+    }
+}
+
+impl AcmeConfig {
+    pub fn renew_before_duration(&self) -> Result<std::time::Duration, String> {
+        parse_duration(&self.renew_before).map_err(|e| format!("acme.renew_before: {e}"))
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.terms_of_service_agreed {
+            return Err("acme.terms_of_service_agreed must be true to register an account".into());
+        }
+        if !self.directory_url.starts_with("https://") {
+            return Err(format!(
+                "acme.directory_url must be https:// (got '{}')",
+                self.directory_url
+            ));
+        }
+        if let Some(p) = &self.directory_ca_path {
+            std::fs::metadata(p)
+                .map_err(|e| format!("acme.directory_ca_path '{p}' is not readable: {e}"))?;
+        }
+        if !matches!(self.key_type.as_str(), "ecdsa-p256" | "ecdsa-p384") {
+            return Err(format!(
+                "acme.key_type '{}' is not supported; use ecdsa-p256 or ecdsa-p384 (RSA needs a non-ring crypto backend)",
+                self.key_type
+            ));
+        }
+        self.renew_before_duration()?;
+        if let Some(eab) = &self.eab {
+            if eab.key_id.is_empty() || eab.hmac_key.is_empty() {
+                return Err("acme.eab: key_id and hmac_key must both be set".into());
+            }
+        }
+        match &self.storage {
+            AcmeStorageConfig::Filesystem { dir } if dir.trim().is_empty() => {
+                Err("acme.storage.dir must not be empty".into())
+            }
+            AcmeStorageConfig::Filesystem { .. } => Ok(()),
+            #[cfg(not(feature = "redis-store"))]
+            AcmeStorageConfig::Store { .. } => Err(
+                "acme.storage.type: store — this binary was built without the redis-store feature"
+                    .into(),
+            ),
+            #[cfg(feature = "redis-store")]
+            AcmeStorageConfig::Store { encryption_key, .. } if encryption_key.trim().is_empty() => {
+                Err("acme.storage.encryption_key is required for type: store".into())
+            }
+            #[cfg(feature = "redis-store")]
+            AcmeStorageConfig::Store { .. } => Ok(()),
+        }
+    }
+}
+
+impl SystemConfig {
+    /// Fail-fast structural validation, run once after loading `system.yaml`.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(acme) = &self.acme {
+            acme.validate()?;
+        }
+        if let Some(tls) = &self.tls {
+            tls.validate(self.acme.is_some(), "tls")?;
+        }
+        if let Some(admin) = &self.admin {
+            if let Some(tls) = &admin.tls {
+                if tls.acme.is_some() || tls.sni_certs.iter().any(|s| s.acme.is_some()) {
+                    return Err(
+                        "admin.tls does not support acme (the admin listener is not validated by the CA); use cert_path/key_path"
+                            .into(),
+                    );
+                }
+                tls.validate(false, "admin.tls")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Cross-file checks that need `gateway.yaml`: an ACME `store` must be declared.
+    pub fn validate_against_gateway(
+        &self,
+        gw: &crate::config::GatewayConfig,
+    ) -> Result<(), String> {
+        if let Some(AcmeConfig {
+            storage: AcmeStorageConfig::Store { store, .. },
+            ..
+        }) = &self.acme
+        {
+            if !gw.stores.iter().any(|s| &s.name == store) {
+                return Err(format!(
+                    "acme.storage.store references unknown store '{store}' (declare it under `stores:` in gateway.yaml)"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// HTTP/2 support toggle; enabled by default.
@@ -490,5 +843,177 @@ mod tests {
         let cfg: AdminConfig =
             serde_yaml::from_str("username: u\npassword: p\nui_enabled: false\n").unwrap();
         assert!(!cfg.ui_enabled);
+    }
+}
+
+#[cfg(test)]
+mod acme_config_tests {
+    use super::*;
+
+    fn sys(yaml: &str) -> SystemConfig {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    #[test]
+    fn parse_duration_units() {
+        assert_eq!(parse_duration("30d").unwrap().as_secs(), 30 * 86_400);
+        assert_eq!(parse_duration("12h").unwrap().as_secs(), 12 * 3_600);
+        assert_eq!(parse_duration("5m").unwrap().as_secs(), 300);
+        assert_eq!(parse_duration("90s").unwrap().as_secs(), 90);
+        assert_eq!(parse_duration("42").unwrap().as_secs(), 42);
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("3w").is_err());
+        assert!(parse_duration("-1d").is_err());
+        // `n * mult` used to wrap in release builds and panic in debug ones.
+        assert_eq!(
+            parse_duration("18446744073709551615d").unwrap_err(),
+            "duration '18446744073709551615d' is out of range"
+        );
+        assert!(parse_duration("999999999999999999h").is_err());
+        assert_eq!(
+            parse_duration("18446744073709551615").unwrap().as_secs(),
+            u64::MAX,
+            "bare seconds have no multiplier to overflow"
+        );
+    }
+
+    #[test]
+    fn normalize_domain_rules() {
+        assert_eq!(
+            normalize_domain("API.Example.com").unwrap(),
+            "api.example.com"
+        );
+        assert!(normalize_domain("*.example.com")
+            .unwrap_err()
+            .contains("wildcard"));
+        assert!(normalize_domain("10.0.0.1").is_err());
+        assert!(normalize_domain("::1").is_err());
+        assert!(normalize_domain("").is_err());
+        assert!(normalize_domain("bad_host.example.com").is_err());
+    }
+
+    #[test]
+    fn file_tls_without_acme_block_is_valid_and_has_no_managed_domains() {
+        let s = sys("tls:\n  cert_path: a.pem\n  key_path: a.key\n");
+        s.validate().unwrap();
+        assert!(s.tls.as_ref().unwrap().managed_domains().is_empty());
+    }
+
+    #[test]
+    fn half_file_pair_is_rejected() {
+        let s = sys("tls:\n  cert_path: a.pem\n");
+        assert!(s.validate().unwrap_err().contains("cert_path"));
+    }
+
+    #[test]
+    fn acme_slot_requires_top_level_block() {
+        let s = sys("tls:\n  acme:\n    domains: [api.example.com]\n");
+        assert!(s.validate().unwrap_err().contains("acme:"));
+    }
+
+    #[test]
+    fn acme_slot_and_file_pair_are_mutually_exclusive() {
+        let s = sys(
+            "acme:\n  terms_of_service_agreed: true\ntls:\n  cert_path: a.pem\n  key_path: a.key\n  acme:\n    domains: [api.example.com]\n",
+        );
+        assert!(s.validate().unwrap_err().contains("exactly one"));
+    }
+
+    #[test]
+    fn managed_default_needs_explicit_domains_and_sni_defaults_to_server_name() {
+        let s = sys("acme:\n  terms_of_service_agreed: true\ntls:\n  acme: {}\n");
+        assert!(s.validate().unwrap_err().contains("domains"));
+
+        let s = sys(
+            "acme:\n  terms_of_service_agreed: true\ntls:\n  acme:\n    domains: [B.example.com, a.example.com]\n  sni_certs:\n    - server_name: Tenant.example.com\n      acme: {}\n",
+        );
+        s.validate().unwrap();
+        assert_eq!(
+            s.tls.as_ref().unwrap().managed_domains(),
+            vec![
+                vec!["b.example.com".to_string(), "a.example.com".to_string()],
+                vec!["tenant.example.com".to_string()]
+            ]
+        );
+    }
+
+    #[test]
+    fn wildcard_acme_domains_are_rejected() {
+        let s = sys(
+            "acme:\n  terms_of_service_agreed: true\ntls:\n  acme:\n    domains: [\"*.example.com\"]\n",
+        );
+        assert!(s.validate().unwrap_err().contains("wildcard"));
+    }
+
+    #[test]
+    fn tos_must_be_agreed() {
+        let s = sys("acme:\n  terms_of_service_agreed: false\ntls:\n  acme:\n    domains: [a.example.com]\n");
+        assert!(s
+            .validate()
+            .unwrap_err()
+            .contains("terms_of_service_agreed"));
+    }
+
+    #[test]
+    fn directory_must_be_https_and_key_type_ecdsa() {
+        let s =
+            sys("acme:\n  terms_of_service_agreed: true\n  directory_url: http://ca.local/dir\n");
+        assert!(s.validate().unwrap_err().contains("https"));
+        let s = sys("acme:\n  terms_of_service_agreed: true\n  key_type: rsa-2048\n");
+        let err = s.validate().unwrap_err();
+        assert!(
+            err.contains("ecdsa-p256") && err.contains("ecdsa-p384"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn admin_tls_rejects_acme() {
+        let s = sys(
+            "acme:\n  terms_of_service_agreed: true\nadmin:\n  username: a\n  password: b\n  tls:\n    acme:\n      domains: [admin.example.com]\n",
+        );
+        assert!(s.validate().unwrap_err().contains("admin.tls"));
+    }
+
+    #[test]
+    fn store_storage_requires_encryption_key_and_declared_store() {
+        let s = sys(
+            "acme:\n  terms_of_service_agreed: true\n  storage:\n    type: store\n    store: r\n",
+        );
+        let err = s.validate().unwrap_err();
+        #[cfg(feature = "redis-store")]
+        assert!(err.contains("encryption_key"), "{err}");
+        #[cfg(not(feature = "redis-store"))]
+        assert!(err.contains("redis-store"), "{err}");
+
+        #[cfg(feature = "redis-store")]
+        {
+            let s = sys(
+                "acme:\n  terms_of_service_agreed: true\n  storage:\n    type: store\n    store: r\n    encryption_key: k\n",
+            );
+            s.validate().unwrap();
+            let gw: crate::config::GatewayConfig = serde_yaml::from_str("{}").unwrap();
+            assert!(s.validate_against_gateway(&gw).unwrap_err().contains("'r'"));
+            let gw: crate::config::GatewayConfig = serde_yaml::from_str(
+                "stores:\n  - name: r\n    type: redis\n    url: redis://127.0.0.1:6379\n",
+            )
+            .unwrap();
+            s.validate_against_gateway(&gw).unwrap();
+        }
+    }
+
+    #[test]
+    fn defaults() {
+        let s = sys("acme:\n  terms_of_service_agreed: true\n");
+        let a = s.acme.unwrap();
+        assert_eq!(
+            a.directory_url,
+            "https://acme-v02.api.letsencrypt.org/directory"
+        );
+        assert_eq!(a.key_type, "ecdsa-p256");
+        assert_eq!(a.renew_before_duration().unwrap().as_secs(), 30 * 86_400);
+        assert!(
+            matches!(a.storage, AcmeStorageConfig::Filesystem { ref dir } if dir == "/var/lib/featherbit/acme")
+        );
     }
 }

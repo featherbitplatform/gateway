@@ -6,7 +6,7 @@
  * @module components/Sidebar
  */
 import { useEffect, useState } from 'react';
-import { Plus, RotateCw, X, FileCode, Bug, KeyRound } from 'lucide-react';
+import { Plus, RotateCw, X, FileCode, Bug, KeyRound, ShieldCheck } from 'lucide-react';
 import type { Route, Supernode, PluginConfigDef, StoreConfig, GatewayStatus } from '../types';
 import { api } from '../api/client';
 
@@ -66,6 +66,8 @@ interface SidebarProps {
   debugEnabled: boolean;
   /** Called when "Sessions" is clicked; the parent opens the sessions panel. */
   onOpenSessions: () => void;
+  /** Called when "Certificates" is clicked; the parent opens the certificates panel. */
+  onOpenCertificates: () => void;
 }
 
 /**
@@ -106,6 +108,7 @@ export function Sidebar({
   onOpenDebug,
   debugEnabled,
   onOpenSessions,
+  onOpenCertificates,
 }: SidebarProps) {
   const [status, setStatus] = useState<GatewayStatus | null>(null);
 
@@ -494,6 +497,26 @@ export function Sidebar({
 
       {/* Footer */}
       <div style={{ padding: 12, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <button
+          onClick={onOpenCertificates}
+          aria-label="Certificates"
+          title="ACME-managed TLS certificates"
+          className="w-full flex items-center justify-center gap-1.5 transition-colors"
+          style={{
+            padding: '7px 0',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: 'var(--text-xs)',
+            fontWeight: 'var(--weight-medium)' as never,
+            background: 'var(--surface-input)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--border)',
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+          onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+        >
+          <ShieldCheck size={12} />
+          Certificates
+        </button>
         {/* Always rendered, even with no stores declared: a developer who
             cannot find the button files a bug, one who sees it greyed out
             fixes their config (declares a redis/valkey store). */}

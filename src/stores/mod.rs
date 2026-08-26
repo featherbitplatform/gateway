@@ -144,6 +144,25 @@ impl StoreRegistry {
         }
     }
 
+    /// The raw client for `name` (ACME storage borrows it; sessions/counters have
+    /// their own typed accessors).
+    #[cfg(feature = "redis-store")]
+    pub fn client(&self, name: &str) -> Result<Arc<redis_store::RedisStoreClient>, String> {
+        self.clients.get(name).cloned().ok_or_else(|| {
+            let mut names: Vec<&str> = self.clients.keys().map(String::as_str).collect();
+            names.sort_unstable();
+            format!(
+                "unknown store '{}' — declared stores: {}",
+                name,
+                if names.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    names.join(", ")
+                }
+            )
+        })
+    }
+
     /// Resolves the counter backend for a named store; the error carries the
     /// declared-store list so a typo is self-explanatory.
     #[cfg(feature = "redis-store")]
