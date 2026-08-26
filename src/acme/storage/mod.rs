@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use super::{AcmeError, CertId, StoredCert};
 
 pub mod fs;
-// #[cfg(feature = "redis-store")]
-// pub mod redis; // Task 5
+#[cfg(feature = "redis-store")]
+pub mod redis;
 
 #[async_trait]
 pub trait CertStorage: Send + Sync {
