@@ -73,6 +73,15 @@ rustls-pki-types = "1.12"
 rustls-native-certs = "0.8"
 # X.509 parsing for mTLS client identity (CN/SAN); already in the tree via ldap3.
 x509-parser = "0.18"
+# ACME (RFC 8555) client for automatic certificates (src/acme). Ring-only like
+# the rest of the tree: default features would pull aws-lc-rs.
+instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls"] }
+# CSRs, TLS-ALPN-01 challenge certs and placeholder certs (runtime), plus the
+# self-signed certs the TLS tests use. `x509-parser` lets the test-only mock CA
+# sign a CSR. Ring-only.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+# ARI (renewal-info) windows from instant-acme are `time::OffsetDateTime`s.
+time = "0.3"
 arc-swap = "1.9.2"
 flate2 = "1.1.9"
 brotli = "8.0.4"
@@ -94,8 +103,6 @@ ldap3 = { version = "0.12.1", default-features = false, features = ["tls-rustls-
 reqwest = { version = "0.12", features = ["json", "http2", "rustls-tls"] }
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
-# Self-signed certs for TLS listener tests (ring-based, emits PEM).
-rcgen = "0.13"
 # WebSocket echo upstream + client for the in-process WS proxy test
 # (versions already in the tree via axum, so they unify — no second copy).
 tokio-tungstenite = "0.28"
