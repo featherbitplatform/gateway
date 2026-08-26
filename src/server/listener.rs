@@ -681,7 +681,7 @@ policies:
         let cert_path = dir.join(format!("fb_wss_{}.crt", pid));
         let key_path = dir.join(format!("fb_wss_{}.key", pid));
         std::fs::write(&cert_path, certified.cert.pem()).unwrap();
-        std::fs::write(&key_path, certified.key_pair.serialize_pem()).unwrap();
+        std::fs::write(&key_path, certified.signing_key.serialize_pem()).unwrap();
         let tls_cfg = TlsConfig {
             cert_path: cert_path.to_string_lossy().into_owned(),
             key_path: key_path.to_string_lossy().into_owned(),
