@@ -35,6 +35,17 @@ async fn list_certs(State(state): State<Arc<SharedState>>) -> impl IntoResponse 
         .iter()
         .filter_map(|slot| map.get(slot.id.as_str()).map(|c| (slot, c)))
         .map(|(slot, c)| {
+            // A placeholder's `meta` carries the real validity of the
+            // self-signed stand-in (the manager needs it to know when to
+            // re-mint it), but the API contract is that a placeholder has no
+            // certificate dates: `0`, matching the expiry gauge and letting
+            // the UI render "—" instead of an hour-away expiry in red.
+            let placeholder = c.state == crate::acme::CertState::Placeholder;
+            let (not_before, not_after) = if placeholder {
+                (0, 0)
+            } else {
+                (c.meta.not_before, c.meta.not_after)
+            };
             serde_json::json!({
                 "id": slot.id.as_str(),
                 "domains": c.domains,
@@ -43,8 +54,8 @@ async fn list_certs(State(state): State<Arc<SharedState>>) -> impl IntoResponse 
                 } else {
                     c.state
                 },
-                "not_before": c.meta.not_before,
-                "not_after": c.meta.not_after,
+                "not_before": not_before,
+                "not_after": not_after,
                 "issuer": c.meta.issuer,
                 "serial": c.meta.serial,
                 "next_renewal_at": c.meta.next_renewal_at,
@@ -222,6 +233,29 @@ mod tests {
             ])));
         let (status, _) = call(p, Method::POST, "/api/acme/certs/p.example.com/renew").await;
         assert_eq!(status, StatusCode::ACCEPTED);
+    }
+
+    /// The documented contract (`ui/src/types/index.ts`, the TLS guide, and the
+    /// `not_after` gauge) is that a placeholder has no certificate dates. The
+    /// manager needs a real `meta.not_after` internally to know when to re-mint
+    /// the stand-in, so the zeroing happens here at the API boundary.
+    #[tokio::test]
+    async fn placeholder_certs_report_zero_validity_dates() {
+        let s = state();
+        s.acme
+            .store(Some(crate::acme::testing::placeholder_runtime(&[
+                "p.example.com",
+            ])));
+        let (status, body) = call(s.clone(), Method::GET, "/api/acme/certs").await;
+        assert_eq!(status, StatusCode::OK);
+        let cert = &body["certs"][0];
+        assert_eq!(cert["state"], "placeholder");
+        assert_eq!(cert["not_after"], 0);
+        assert_eq!(cert["not_before"], 0);
+        // The runtime itself still holds real dates — that is what drives the
+        // hourly re-mint.
+        let rt = s.acme.load_full().unwrap();
+        assert!(rt.certs.load().get("p.example.com").unwrap().meta.not_after > 0);
     }
 
     /// A cert id is its normalized domain set, so any spelling of that set has
