@@ -492,7 +492,7 @@ mod tests {
         let cert_path = dir.join(format!("featherbit_{}_{}.crt", tag, pid));
         let key_path = dir.join(format!("featherbit_{}_{}.key", tag, pid));
         std::fs::write(&cert_path, certified.cert.pem()).unwrap();
-        std::fs::write(&key_path, certified.key_pair.serialize_pem()).unwrap();
+        std::fs::write(&key_path, certified.signing_key.serialize_pem()).unwrap();
         let tls = TlsConfig {
             cert_path: cert_path.to_string_lossy().into_owned(),
             key_path: key_path.to_string_lossy().into_owned(),
@@ -618,7 +618,7 @@ mod tests {
     fn write_fresh_cert(cert_path: &std::path::Path, key_path: &std::path::Path) {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
         std::fs::write(cert_path, certified.cert.pem()).unwrap();
-        std::fs::write(key_path, certified.key_pair.serialize_pem()).unwrap();
+        std::fs::write(key_path, certified.signing_key.serialize_pem()).unwrap();
     }
 
     /// A client cert verifier that records the presented leaf certificate and
@@ -818,7 +818,9 @@ mod tests {
             .distinguished_name
             .push(rcgen::DnType::CommonName, cn);
         let key = rcgen::KeyPair::generate().unwrap();
-        let cert = params.signed_by(&key, ca_cert, ca_key).unwrap();
+        // rcgen 0.14: signing goes through an `Issuer` built from the CA cert + key.
+        let issuer = rcgen::Issuer::from_ca_cert_der(ca_cert.der(), ca_key).unwrap();
+        let cert = params.signed_by(&key, &issuer).unwrap();
         (cert, key)
     }
 
@@ -850,7 +852,7 @@ mod tests {
         let skey = dir.join(format!("fb_mtls_{}_{}.key", tag, pid));
         let ca = dir.join(format!("fb_mtls_{}_{}_ca.crt", tag, pid));
         std::fs::write(&scert, server.cert.pem()).unwrap();
-        std::fs::write(&skey, server.key_pair.serialize_pem()).unwrap();
+        std::fs::write(&skey, server.signing_key.serialize_pem()).unwrap();
         std::fs::write(&ca, ca_cert.pem()).unwrap();
         let tls = TlsConfig {
             cert_path: scert.to_string_lossy().into_owned(),
@@ -1061,7 +1063,7 @@ mod tests {
         let cert = dir.join(format!("fb_sni_{}_{}.crt", tag, pid));
         let key = dir.join(format!("fb_sni_{}_{}.key", tag, pid));
         std::fs::write(&cert, certified.cert.pem()).unwrap();
-        std::fs::write(&key, certified.key_pair.serialize_pem()).unwrap();
+        std::fs::write(&key, certified.signing_key.serialize_pem()).unwrap();
         let leaf = certified.cert.der().as_ref().to_vec();
         (
             cert.to_string_lossy().into_owned(),
