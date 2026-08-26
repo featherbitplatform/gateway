@@ -17,6 +17,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::sign::CertifiedKey;
 use serde::{Deserialize, Serialize};
 
+pub mod challenge;
 pub mod storage;
 
 #[derive(Debug, thiserror::Error)]
