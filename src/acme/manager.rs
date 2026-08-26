@@ -95,6 +95,19 @@ struct SlotControl {
     in_flight: AtomicBool,
 }
 
+/// Aborts the wrapped task on drop — including when the future holding it is
+/// simply cancelled (e.g. a slot task dropped on shutdown) rather than run to
+/// completion, so a lease-keepalive loop can never outlive the order it was
+/// keeping alive for. A plain `abort()` call reached only via a specific
+/// success/error path does not cover that case.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub struct Manager {
     cfg: ManagerConfig,
     factory: Arc<dyn AcmeClientFactory>,
@@ -282,7 +295,18 @@ impl Manager {
                 }
                 Ok(false) => {
                     // A peer holds the lease: adopt its result, keep challenges fresh.
-                    self.follow_peer(&slot, ctl).await;
+                    if self.follow_peer(&slot, ctl).await {
+                        // We adopted a peer's fresh certificate: any failure
+                        // streak (and cached ARI) we accumulated is about the
+                        // *old* certificate and no longer applies. Without
+                        // this reset, the next loop pass would take the
+                        // `failures > 0` branch off a stale streak and fire a
+                        // pointless duplicate order `backoff_secs(failures)`
+                        // seconds later.
+                        failures = 0;
+                        ari = None;
+                        ari_checked_at = 0;
+                    }
                 }
                 Err(e) => {
                     failures += 1;
@@ -340,8 +364,12 @@ impl Manager {
         self.observe(&slot.id);
         let result = async {
             let client = self.client().await?;
-            // Keep the lease alive while the (possibly slow) order runs.
-            let keepalive = {
+            // Keep the lease alive across the order *and* its persistence —
+            // an abort-on-drop guard so a cancelled slot future can't leave
+            // this loop renewing the lease forever (which would lock every
+            // peer out of it). `?` below drops (and so aborts) it on any
+            // failure; the explicit `drop` ends it right after `save_cert`.
+            let keepalive = AbortOnDrop({
                 let storage = self.storage.clone();
                 let id = slot.id.clone();
                 let owner = self.owner.clone();
@@ -352,17 +380,16 @@ impl Manager {
                         let _ = storage.renew_lease(&id, &owner, ttl).await;
                     }
                 })
-            };
-            let issued = issue(
+            });
+            let stored = issue(
                 client.as_ref(),
                 &self.solver,
                 &slot.domains,
                 self.cfg.key_type,
             )
-            .await;
-            keepalive.abort();
-            let stored = issued?;
+            .await?;
             self.storage.save_cert(&slot.id, &stored).await?;
+            drop(keepalive);
             let (key, leaf) = load_certified_key(&stored.chain_pem, &stored.key_pem)?;
             let meta = parse_cert_meta(&leaf)?;
             let now = now_unix();
@@ -406,8 +433,10 @@ impl Manager {
 
     /// Non-leaseholder path: refresh challenge certs from storage every
     /// `challenge_refresh` and look for the peer's certificate every `peer_poll`,
-    /// for at most one lease TTL (then the outer loop re-evaluates).
-    async fn follow_peer(&self, slot: &ManagedSlot, ctl: &SlotControl) {
+    /// for at most one lease TTL (then the outer loop re-evaluates). Returns
+    /// whether a peer's certificate was adopted, so the caller can reset any
+    /// failure/backoff state that no longer applies to it.
+    async fn follow_peer(&self, slot: &ManagedSlot, ctl: &SlotControl) -> bool {
         let deadline = tokio::time::Instant::now() + self.cfg.lease_ttl;
         let mut next_adopt = tokio::time::Instant::now();
         while tokio::time::Instant::now() < deadline {
@@ -417,7 +446,7 @@ impl Manager {
             if tokio::time::Instant::now() >= next_adopt {
                 next_adopt = tokio::time::Instant::now() + self.cfg.peer_poll;
                 match self.adopt_from_storage(slot).await {
-                    Ok(true) => return,
+                    Ok(true) => return true,
                     Ok(false) => {}
                     Err(e) => warn!(
                         "acme: reading peer certificate for {} failed: {}",
@@ -426,10 +455,11 @@ impl Manager {
                 }
             }
             if ctl.force.load(Ordering::SeqCst) {
-                return;
+                return false;
             }
             tokio::time::sleep(self.cfg.challenge_refresh).await;
         }
+        false
     }
 
     /// Publishes the stored certificate when it is newer than what we serve.
@@ -589,6 +619,52 @@ mod tests {
         .await
     }
 
+    /// `renew_now(id, true)`, retried while the slot is `InProgress` with an
+    /// *unrelated* attempt (rather than treating that as a silently dropped
+    /// force), bounded by a deadline. A single unretried call would make the
+    /// caller's force lost with no signal beyond an eventual, confusing
+    /// timeout somewhere else.
+    async fn force_renew_scheduled(m: &Manager, id: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match m.renew_now(id, true) {
+                RenewOutcome::Scheduled => return,
+                RenewOutcome::InProgress => {}
+                other => panic!(
+                    "renew_now({id}, true) returned {other:?}, expected Scheduled or InProgress"
+                ),
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out getting renew_now to schedule for {id}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Waits for the mock factory's remaining scripted connect failures to
+    /// reach `want` — i.e. for a connect attempt to have actually run (the
+    /// counter is decremented from inside `MockFactory::connect`). Used as a
+    /// deterministic barrier between two forced retries so the second
+    /// `renew_now` call can't coalesce with the first before the scheduler
+    /// gives the slot task a chance to run it (the `force` flag is a single
+    /// bool, so two signals delivered before either is consumed collapse into
+    /// one attempt).
+    async fn wait_fail_connects(factory: &MockFactory, want: usize) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while factory
+            .fail_connects
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != want
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for fail_connects to reach {want}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     #[tokio::test]
     async fn placeholder_is_issued_on_start_and_persisted() {
         let h = harness("issue", MockBehavior::default());
@@ -673,11 +749,17 @@ mod tests {
         let m = manager(&h, fast_cfg());
         m.clone().run().await;
         // Two failed connects → still Placeholder (with a recorded error) and
-        // backing off; force-renew skips the wait.
+        // backing off; force-renew (retried instead of a single racy call, in
+        // case it lands while the previous forced attempt is still
+        // in-flight) skips the wait for each of the two remaining connects.
         wait_failed_placeholder(&h.certs, &h.slot.id).await;
-        m.renew_now(h.slot.id.as_str(), true);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        m.renew_now(h.slot.id.as_str(), true);
+        force_renew_scheduled(&m, h.slot.id.as_str()).await;
+        // Deterministic barrier: wait for *this* forced attempt's connect()
+        // to have actually run (and consumed the last scripted failure)
+        // before issuing the second force, so the two forces can't collapse
+        // into a single attempt via the shared `force` flag.
+        wait_fail_connects(&h.factory, 0).await;
+        force_renew_scheduled(&m, h.slot.id.as_str()).await;
         wait_state(&h.certs, &h.slot.id, CertState::Issued).await;
     }
 
@@ -707,5 +789,70 @@ mod tests {
         let adopted = wait_state(&h.certs, &h.slot.id, CertState::Issued).await;
         assert!(adopted.meta.issuer.contains("Mock ACME CA"));
         assert_eq!(h.client.orders(), 1, "only the peer's order happened");
+    }
+
+    /// Regression test for a duplicate-order bug: this node fails a local
+    /// issuance first (so its in-loop `failures` counter is nonzero), then a
+    /// peer takes the lease and writes a valid certificate that this node
+    /// adopts. Adoption must reset the stale failure/backoff state — leaving
+    /// it set would (per `backoff_secs`) eventually fire a pointless
+    /// duplicate order off the *old* failure streak even though we're now
+    /// serving a freshly issued certificate.
+    #[tokio::test]
+    async fn peer_adoption_resets_backoff_so_no_stale_duplicate_order_follows() {
+        let h = harness(
+            "peer_backoff",
+            MockBehavior {
+                fail_step: Some(MockStep::NewOrder),
+                ..Default::default()
+            },
+        );
+        let m = manager(&h, fast_cfg());
+        m.clone().run().await;
+        // Our own first attempt fails and accumulates a failure/backoff.
+        wait_failed_placeholder(&h.certs, &h.slot.id).await;
+        assert_eq!(h.client.orders(), 1);
+
+        // A peer now takes the lease (ours was released after the failed
+        // attempt) while we still have `failures > 0` recorded locally, and
+        // force us to notice — we must not order while it holds the lease.
+        assert!(h
+            .storage
+            .try_acquire_lease(&h.slot.id, "peer", Duration::from_secs(30))
+            .await
+            .unwrap());
+        force_renew_scheduled(&m, h.slot.id.as_str()).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            h.client.orders(),
+            1,
+            "must not order while a peer holds the lease"
+        );
+
+        // Let the CA recover and have the "peer" issue and persist a valid
+        // certificate while still holding the lease.
+        h.client.set_behavior(MockBehavior::default());
+        let solver = TlsAlpnSolver::new(h.storage.clone());
+        let stored =
+            crate::acme::order::issue(&h.client, &solver, &h.slot.domains, KeyType::EcdsaP256)
+                .await
+                .unwrap();
+        h.storage.save_cert(&h.slot.id, &stored).await.unwrap();
+        let adopted = wait_state(&h.certs, &h.slot.id, CertState::Issued).await;
+        assert!(adopted.meta.issuer.contains("Mock ACME CA"));
+        assert_eq!(
+            h.client.orders(),
+            2,
+            "our failed attempt + the peer's order"
+        );
+
+        // No stale-backoff duplicate order follows adoption.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            h.client.orders(),
+            2,
+            "adopting a peer's certificate must reset local backoff state, \
+             not leave a duplicate order pending"
+        );
     }
 }
