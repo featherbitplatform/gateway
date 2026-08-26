@@ -1,0 +1,19 @@
+# Pebble — Let's Encrypt's ACME test CA — for exercising the gateway's ACME
+# support locally. Host networking so Pebble's validator can reach a gateway
+# listening on 127.0.0.1:18443 (tlsPort in pebble-config.json).
+#
+#   docker compose -f dev/pebble/docker-compose.yml up -d
+#   curl -sk https://localhost:14000/dir | head          # directory
+#   docker compose -f dev/pebble/docker-compose.yml cp pebble:/test/certs/pebble.minica.pem /tmp/pebble.minica.pem
+#   FEATHERBIT_TEST_PEBBLE_URL=https://localhost:14000/dir \
+#   FEATHERBIT_TEST_PEBBLE_CA=/tmp/pebble.minica.pem cargo test acme::live_tests -- --nocapture
+services:
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:latest
+    network_mode: host
+    command: ["-config", "/test/config/pebble-config.json", "-strict"]
+    environment:
+      # Validate immediately instead of sleeping a random 0-15 s per challenge.
+      PEBBLE_VA_NOSLEEP: "1"
+    volumes:
+      - ./pebble-config.json:/test/config/pebble-config.json:ro
