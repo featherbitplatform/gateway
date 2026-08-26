@@ -13,6 +13,7 @@ import { StoresPanel } from './components/StoresPanel';
 import { Dialog, DialogButton, DialogField } from './components/Dialog';
 import { DebugPanel } from './components/DebugPanel';
 import { SessionsPanel } from './components/SessionsPanel';
+import { CertificatesPanel } from './components/CertificatesPanel';
 import { Toast, type ToastData } from './components/Toast';
 import { CommandPalette } from './components/CommandPalette';
 import { buildCommands, matchesShortcut, type CommandContext } from './commands';
@@ -113,6 +114,9 @@ export default function App() {
 
   // Sessions panel state.
   const [sessionsOpen, setSessionsOpen] = useState(false);
+
+  // Certificates panel state.
+  const [certsOpen, setCertsOpen] = useState(false);
 
   // Port-name visibility (P) and the command palette (Ctrl+K). Owned here —
   // a single usePortNames() call — so the palette's toggle and the canvas
@@ -774,6 +778,7 @@ export default function App() {
         onOpenDebug={() => setDebugOpen(true)}
         debugEnabled={debugConfig?.enabled ?? false}
         onOpenSessions={() => setSessionsOpen(true)}
+        onOpenCertificates={() => setCertsOpen(true)}
       />
       {selectedStoreDef ? (
         <StoresPanel
@@ -1117,6 +1122,8 @@ export default function App() {
         stores={stores}
         onError={handlePanelError}
       />
+
+      <CertificatesPanel open={certsOpen} onClose={() => setCertsOpen(false)} onError={handlePanelError} />
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
