@@ -1460,6 +1460,122 @@ mod tests {
         );
     }
 
+    /// Accepts TLS and mirrors `server::listener`'s post-handshake branch: a
+    /// connection that negotiated `acme-tls/1` is dropped without being served,
+    /// anything else gets a fixed HTTP/1.1 response.
+    async fn spawn_acme_aware_server(shared: SharedTlsConfig) -> std::net::SocketAddr {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let acceptor = current_acceptor(&shared);
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(stream).await else {
+                        return;
+                    };
+                    if negotiated_acme_challenge(&tls) {
+                        return;
+                    }
+                    let _ = tls
+                        .write_all(
+                            b"HTTP/1.1 200 OK
+content-length: 2
+
+ok",
+                        )
+                        .await;
+                    let _ = tls.shutdown().await;
+                });
+            }
+        });
+        addr
+    }
+
+    /// Handshakes with `alpn`, sends a request, and returns whatever comes
+    /// back (empty when the server closed without answering).
+    async fn read_response_over_alpn(
+        addr: std::net::SocketAddr,
+        sni: &str,
+        alpn: Vec<Vec<u8>>,
+    ) -> Vec<u8> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+        install_crypto_provider();
+        let verifier = std::sync::Arc::new(CapturingVerifier {
+            captured: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            provider: rustls::crypto::ring::default_provider(),
+        });
+        let mut config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth();
+        config.alpn_protocols = alpn;
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let name = rustls::pki_types::ServerName::try_from(sni.to_string()).unwrap();
+        let mut stream = connector.connect(name, tcp).await.unwrap();
+        let _ = stream
+            .write_all(
+                format!(
+                    "GET / HTTP/1.1
+host: {sni}
+
+"
+                )
+                .as_bytes(),
+            )
+            .await;
+        let mut buf = Vec::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.read_to_end(&mut buf),
+        )
+        .await
+        .expect("server neither answered nor closed the connection");
+        buf
+    }
+
+    /// RFC 8737 §3: the validator only needs the handshake. A connection that
+    /// negotiated `acme-tls/1` must be closed without anything being served on
+    /// it, while a normal client on the same listener is answered as usual.
+    #[tokio::test]
+    async fn test_acme_challenge_connection_is_closed_without_a_response() {
+        let (empty_hooks, _, _) = hooks_with_placeholder(&["m.example.com"]);
+        let challenge =
+            crate::acme::challenge::build_challenge_cert("m.example.com", "ka").unwrap();
+        let pending = Arc::new(FakeSolver(std::sync::Mutex::new(Default::default())));
+        pending
+            .0
+            .lock()
+            .unwrap()
+            .insert("m.example.com".to_string(), challenge);
+        let hooks = AcmeHooks {
+            certs: empty_hooks.certs.clone(),
+            solver: pending,
+        };
+        let tls = managed_tls(&["m.example.com"]);
+        let addr =
+            spawn_acme_aware_server(build_reloadable(&tls, false, Some(&hooks)).unwrap()).await;
+
+        let answered =
+            read_response_over_alpn(addr, "m.example.com", vec![b"http/1.1".to_vec()]).await;
+        assert!(
+            answered.starts_with(b"HTTP/1.1 200"),
+            "{:?}",
+            String::from_utf8_lossy(&answered)
+        );
+
+        let validation =
+            read_response_over_alpn(addr, "m.example.com", vec![b"acme-tls/1".to_vec()]).await;
+        assert!(
+            validation.is_empty(),
+            "acme-tls/1 connections must be closed without a response, got {:?}",
+            String::from_utf8_lossy(&validation)
+        );
+    }
+
     #[tokio::test]
     async fn test_acme_alpn_not_advertised_without_acme() {
         let (tls, cert, key) = self_signed("noacme", "1.2");
