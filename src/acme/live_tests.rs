@@ -158,11 +158,10 @@ async fn pebble_issues_renews_and_restart_reuses_the_stored_cert() {
 
     // A restart (new runtime over the same storage) adopts the stored cert: no
     // placeholder, no new order.
-    let stores = crate::stores::StoreRegistry::default();
     let rt2 = crate::acme::start(
         system.acme.as_ref().unwrap(),
         system.tls.as_ref().unwrap(),
-        &stores,
+        &state.resources,
         &crate::metrics::GatewayMetrics::new(),
     )
     .await
