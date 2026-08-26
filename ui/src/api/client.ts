@@ -22,6 +22,8 @@ import type {
   StoreConfig,
   StorePing,
   SessionPage,
+  AcmeCertsResponse,
+  AcmeRenewResponse,
 } from '../types';
 
 const BASE = '';
@@ -242,4 +244,14 @@ export const api = {
     const q = new URLSearchParams({ store, subject });
     return request<{ revoked: number }>(`/api/sessions?${q.toString()}`, { method: 'DELETE' });
   },
+
+  // ACME certificates
+  /** `GET /api/acme/certs` — managed certificate states; `enabled: false` when acme is not configured. */
+  listAcmeCerts: () => request<AcmeCertsResponse>('/api/acme/certs'),
+  /** `POST /api/acme/certs/{id}/renew[?force=true]` — 202 scheduled, 200 not_due, 409 in_progress, 404 unknown. */
+  renewAcmeCert: (id: string, force: boolean) =>
+    request<AcmeRenewResponse>(
+      `/api/acme/certs/${encodeURIComponent(id)}/renew${force ? '?force=true' : ''}`,
+      { method: 'POST' },
+    ),
 };
