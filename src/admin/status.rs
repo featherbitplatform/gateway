@@ -34,21 +34,43 @@ async fn healthz() -> impl IntoResponse {
 
 /// `GET /readyz` — readiness probe. Exempt from auth.
 ///
-/// Returns `200 OK` with the compiled route count once at least one route is
-/// loaded, or `503 Service Unavailable` while the route table is empty.
+/// Ready means the route table is loaded **and** no ACME-managed certificate
+/// is still serving a placeholder — renewal failures never affect readiness,
+/// only a cert that has never successfully issued does. Returns `200 OK` with
+/// the compiled route count (and the empty `acme.placeholder` list) once
+/// both hold, or `503 Service Unavailable` while either does not.
 async fn readyz(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let routes = state.routes.read().await;
     if routes.is_empty() {
-        (
+        return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"status": "not_ready", "reason": "no routes loaded"})),
-        )
-    } else {
-        (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "ready", "routes": routes.len()})),
-        )
+        );
     }
+    let placeholders = state
+        .acme
+        .load()
+        .as_ref()
+        .map(|rt| rt.placeholder_ids())
+        .unwrap_or_default();
+    if !placeholders.is_empty() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "not_ready",
+                "reason": "acme placeholder certs",
+                "acme": {"placeholder": placeholders},
+            })),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ready",
+            "routes": routes.len(),
+            "acme": {"placeholder": placeholders},
+        })),
+    )
 }
 
 /// `GET /api/status` — gateway version plus route and policy counts.
@@ -122,5 +144,72 @@ async fn reload_config(State(state): State<Arc<SharedState>>) -> impl IntoRespon
             Json(serde_json::json!({"error": e})),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod acme_readyz_tests {
+    use super::*;
+    use crate::config::{GatewayConfig, SystemConfig};
+    use crate::config_store::FileConfigStore;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn state() -> Arc<SharedState> {
+        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = serde_yaml::from_str(
+            "routes:\n  - name: r\n    match:\n      path: /x\n    policy: p\npolicies:\n  - name: p\n    nodes:\n      - id: in\n        type: listener\n      - id: out\n        type: client\n    edges:\n      - { from: in.out, to: out.in }\n",
+        )
+        .unwrap();
+        Arc::new(
+            SharedState::new(
+                system,
+                gateway,
+                None,
+                Arc::new(FileConfigStore::new("g.yaml".into())),
+            )
+            .unwrap(),
+        )
+    }
+
+    async fn readyz_status(state: Arc<SharedState>) -> (StatusCode, serde_json::Value) {
+        let resp = router()
+            .with_state(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/readyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn readyz_is_503_while_a_managed_cert_is_a_placeholder() {
+        let s = state();
+        let (status, _) = readyz_status(s.clone()).await;
+        assert_eq!(status, StatusCode::OK, "no acme ⇒ ready");
+
+        s.acme
+            .store(Some(crate::acme::testing::placeholder_runtime(&[
+                "p.example.com",
+            ])));
+        let (status, body) = readyz_status(s.clone()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["acme"]["placeholder"][0], "p.example.com");
+
+        s.acme.store(Some(crate::acme::testing::issued_runtime(&[
+            "p.example.com",
+        ])));
+        let (status, body) = readyz_status(s).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["acme"]["placeholder"].as_array().unwrap().len(), 0);
     }
 }

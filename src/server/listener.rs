@@ -58,13 +58,24 @@ pub async fn start_server(
     // a cert-file change swaps it in for new connections without a restart.
     let tls_config: Option<tls::SharedTlsConfig> = match &system.tls {
         Some(tls_cfg) => {
-            let shared = tls::build_reloadable(tls_cfg, http2_enabled, None)?;
+            // ACME: seed managed certs (stored or placeholder) before the config
+            // is built, so the listener is up — and validatable — immediately.
+            let hooks = match &system.acme {
+                Some(acme_cfg) if !tls_cfg.managed_domains().is_empty() => {
+                    let stores = state.resources.stores.load();
+                    let rt = crate::acme::start(acme_cfg, tls_cfg, &stores, &state.metrics).await?;
+                    state.acme.store(Some(rt.clone()));
+                    Some(rt.hooks())
+                }
+                _ => None,
+            };
+            let shared = tls::build_reloadable(tls_cfg, http2_enabled, hooks.as_ref())?;
             tls::spawn_cert_watcher(
                 tls_cfg.clone(),
                 http2_enabled,
                 shared.clone(),
                 "data-plane",
-                None,
+                hooks,
             );
             Some(shared)
         }
