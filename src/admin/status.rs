@@ -38,13 +38,20 @@ async fn healthz() -> impl IntoResponse {
 /// is still serving a placeholder — renewal failures never affect readiness,
 /// only a cert that has never successfully issued does. Returns `200 OK` with
 /// the compiled route count (and the empty `acme.placeholder` list) once
-/// both hold, or `503 Service Unavailable` while either does not.
+/// both hold, or `503 Service Unavailable` while either does not. Every
+/// branch carries the same `acme.placeholder` shape, even "no routes loaded"
+/// (where the acme runtime hasn't necessarily been consulted), so callers
+/// can rely on one JSON shape regardless of why readiness failed.
 async fn readyz(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let routes = state.routes.read().await;
     if routes.is_empty() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"status": "not_ready", "reason": "no routes loaded"})),
+            Json(serde_json::json!({
+                "status": "not_ready",
+                "reason": "no routes loaded",
+                "acme": {"placeholder": Vec::<String>::new()},
+            })),
         );
     }
     let placeholders = state

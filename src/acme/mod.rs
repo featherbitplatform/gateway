@@ -568,8 +568,13 @@ mod tests {
     async fn start_seeds_placeholders_then_reuses_a_stored_cert() {
         let dir = std::env::temp_dir().join(format!("fb_acme_start_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        // directory_url pins to a closed local port: start() spawns the manager,
+        // whose placeholder slot is immediately due, so without this the test
+        // would have the InstantAcmeFactory dial the real Let's Encrypt
+        // production directory in the background. Both start() calls below
+        // share this cfg, so one pin covers both.
         let system: crate::config::SystemConfig = serde_yaml::from_str(&format!(
-            "acme:\n  terms_of_service_agreed: true\n  storage:\n    type: filesystem\n    dir: {}\ntls:\n  acme:\n    domains: [s.example.com]\n",
+            "acme:\n  terms_of_service_agreed: true\n  directory_url: https://127.0.0.1:1/directory\n  storage:\n    type: filesystem\n    dir: {}\ntls:\n  acme:\n    domains: [s.example.com]\n",
             dir.display().to_string().replace('\\', "/")
         ))
         .unwrap();
