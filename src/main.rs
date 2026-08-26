@@ -86,6 +86,11 @@ async fn main() {
         }
     };
 
+    if let Err(e) = system.validate() {
+        eprintln!("Invalid system config: {}", e);
+        std::process::exit(1);
+    }
+
     // Initialize logging
     init_logging(&system.logging);
 
@@ -116,6 +121,11 @@ async fn main() {
             }
         },
     };
+
+    if let Err(e) = system.validate_against_gateway(&gateway) {
+        eprintln!("Invalid config: {}", e);
+        std::process::exit(1);
+    }
 
     // Build shared state
     let state = match SharedState::new(system.clone(), gateway, config_path, config_store) {

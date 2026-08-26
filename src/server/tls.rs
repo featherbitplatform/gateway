@@ -94,6 +94,22 @@ pub enum TlsError {
     NoClientCaCerts(String),
     #[error("failed to build client certificate verifier: {0}")]
     ClientVerifier(String),
+    #[error("TLS slot '{0}' has no certificate source (set cert_path/key_path, or acme)")]
+    MissingCertSource(String),
+}
+
+/// The file pair of a file-based slot. ACME-managed slots are handled by the
+/// resolver (see `CertSlot`); calling this on one is a wiring bug surfaced as
+/// `MissingCertSource`.
+fn file_pair<'a>(
+    cert: &'a Option<String>,
+    key: &'a Option<String>,
+    what: &str,
+) -> Result<(&'a str, &'a str), TlsError> {
+    match (cert, key) {
+        (Some(c), Some(k)) => Ok((c.as_str(), k.as_str())),
+        _ => Err(TlsError::MissingCertSource(what.to_string())),
+    }
 }
 
 /// Installs the process-level rustls **ring** `CryptoProvider` exactly once.
@@ -169,8 +185,9 @@ pub fn build_server_config(
         other => return Err(TlsError::BadMinVersion(other.to_string())),
     };
 
-    let chain = load_cert_chain(&tls.cert_path)?;
-    let key = load_private_key(&tls.key_path)?;
+    let (cert_path, key_path) = file_pair(&tls.cert_path, &tls.key_path, "default")?;
+    let chain = load_cert_chain(cert_path)?;
+    let key = load_private_key(key_path)?;
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = ServerConfig::builder_with_provider(provider.clone())
@@ -209,8 +226,9 @@ pub fn build_server_config(
         let default = Arc::new(certified_key(chain, key, &provider)?);
         let mut certs = Vec::with_capacity(tls.sni_certs.len());
         for sc in &tls.sni_certs {
-            let c = load_cert_chain(&sc.cert_path)?;
-            let k = load_private_key(&sc.key_path)?;
+            let (c_path, k_path) = file_pair(&sc.cert_path, &sc.key_path, &sc.server_name)?;
+            let c = load_cert_chain(c_path)?;
+            let k = load_private_key(k_path)?;
             certs.push((
                 SniPattern::parse(&sc.server_name),
                 Arc::new(certified_key(c, k, &provider)?),
@@ -334,11 +352,21 @@ pub fn spawn_cert_watcher(
     let (tx, mut rx) = mpsc::channel::<()>(1);
 
     // Unique parent directories of every cert/key file (default + per-SNI), so
-    // rotating any of them triggers a reload.
-    let mut paths: Vec<&String> = vec![&tls.cert_path, &tls.key_path];
+    // rotating any of them triggers a reload. ACME-managed slots have no file
+    // paths to watch.
+    let mut paths: Vec<&String> = Vec::new();
+    paths.extend(tls.cert_path.iter());
+    paths.extend(tls.key_path.iter());
     for sc in &tls.sni_certs {
-        paths.push(&sc.cert_path);
-        paths.push(&sc.key_path);
+        paths.extend(sc.cert_path.iter());
+        paths.extend(sc.key_path.iter());
+    }
+    if paths.is_empty() {
+        info!(
+            "{} has no file-based certificates; cert watcher not started",
+            label
+        );
+        return;
     }
     let mut dirs: Vec<PathBuf> = Vec::new();
     for path in paths {
@@ -494,12 +522,13 @@ mod tests {
         std::fs::write(&cert_path, certified.cert.pem()).unwrap();
         std::fs::write(&key_path, certified.signing_key.serialize_pem()).unwrap();
         let tls = TlsConfig {
-            cert_path: cert_path.to_string_lossy().into_owned(),
-            key_path: key_path.to_string_lossy().into_owned(),
+            cert_path: Some(cert_path.to_string_lossy().into_owned()),
+            key_path: Some(key_path.to_string_lossy().into_owned()),
             min_version: min_version.to_string(),
             client_ca_path: None,
             client_cert_required: true,
             sni_certs: Vec::new(),
+            acme: None,
         };
         (tls, cert_path, key_path)
     }
@@ -513,8 +542,10 @@ mod tests {
     #[test]
     fn test_load_cert_and_key() {
         let (tls, cert, key) = self_signed("load", "1.2");
-        assert!(!load_cert_chain(&tls.cert_path).unwrap().is_empty());
-        load_private_key(&tls.key_path).unwrap();
+        assert!(!load_cert_chain(tls.cert_path.as_deref().unwrap())
+            .unwrap()
+            .is_empty());
+        load_private_key(tls.key_path.as_deref().unwrap()).unwrap();
         let _ = std::fs::remove_file(cert);
         let _ = std::fs::remove_file(key);
     }
@@ -529,7 +560,7 @@ mod tests {
     fn test_load_key_no_key_in_pem() {
         // A cert-only file has no private key.
         let (tls, cert, key) = self_signed("nokey", "1.2");
-        let err = load_private_key(&tls.cert_path).unwrap_err();
+        let err = load_private_key(tls.cert_path.as_deref().unwrap()).unwrap_err();
         assert!(matches!(err, TlsError::NoKey(_)));
         let _ = std::fs::remove_file(cert);
         let _ = std::fs::remove_file(key);
@@ -725,12 +756,13 @@ mod tests {
         let key = dir.join(format!("featherbit_reload_{}.key", pid));
         write_fresh_cert(&cert, &key);
         let tls = TlsConfig {
-            cert_path: cert.to_string_lossy().into_owned(),
-            key_path: key.to_string_lossy().into_owned(),
+            cert_path: Some(cert.to_string_lossy().into_owned()),
+            key_path: Some(key.to_string_lossy().into_owned()),
             min_version: "1.2".to_string(),
             client_ca_path: None,
             client_cert_required: true,
             sni_certs: Vec::new(),
+            acme: None,
         };
 
         let shared = build_reloadable(&tls, false).unwrap();
@@ -762,12 +794,13 @@ mod tests {
         let key = dir.join(format!("featherbit_watch_{}.key", pid));
         write_fresh_cert(&cert, &key);
         let tls = TlsConfig {
-            cert_path: cert.to_string_lossy().into_owned(),
-            key_path: key.to_string_lossy().into_owned(),
+            cert_path: Some(cert.to_string_lossy().into_owned()),
+            key_path: Some(key.to_string_lossy().into_owned()),
             min_version: "1.2".to_string(),
             client_ca_path: None,
             client_cert_required: true,
             sni_certs: Vec::new(),
+            acme: None,
         };
 
         let shared = build_reloadable(&tls, false).unwrap();
@@ -855,12 +888,13 @@ mod tests {
         std::fs::write(&skey, server.signing_key.serialize_pem()).unwrap();
         std::fs::write(&ca, ca_cert.pem()).unwrap();
         let tls = TlsConfig {
-            cert_path: scert.to_string_lossy().into_owned(),
-            key_path: skey.to_string_lossy().into_owned(),
+            cert_path: Some(scert.to_string_lossy().into_owned()),
+            key_path: Some(skey.to_string_lossy().into_owned()),
             min_version: "1.2".to_string(),
             client_ca_path: Some(ca.to_string_lossy().into_owned()),
             client_cert_required: required,
             sni_certs: Vec::new(),
+            acme: None,
         };
         (tls, ca_cert, ca_key, vec![scert, skey, ca])
     }
@@ -1082,23 +1116,26 @@ mod tests {
             write_named_cert("wild", vec!["x.tenant.example.com".to_string()]);
 
         let tls = TlsConfig {
-            cert_path: def_cert.clone(),
-            key_path: def_key.clone(),
+            cert_path: Some(def_cert.clone()),
+            key_path: Some(def_key.clone()),
             min_version: "1.2".to_string(),
             client_ca_path: None,
             client_cert_required: true,
             sni_certs: vec![
                 SniCert {
                     server_name: "a.example.com".to_string(),
-                    cert_path: a_cert.clone(),
-                    key_path: a_key.clone(),
+                    cert_path: Some(a_cert.clone()),
+                    key_path: Some(a_key.clone()),
+                    acme: None,
                 },
                 SniCert {
                     server_name: "*.tenant.example.com".to_string(),
-                    cert_path: w_cert.clone(),
-                    key_path: w_key.clone(),
+                    cert_path: Some(w_cert.clone()),
+                    key_path: Some(w_key.clone()),
+                    acme: None,
                 },
             ],
+            acme: None,
         };
 
         let shared = build_reloadable(&tls, false).unwrap();

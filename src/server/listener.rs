@@ -683,12 +683,13 @@ policies:
         std::fs::write(&cert_path, certified.cert.pem()).unwrap();
         std::fs::write(&key_path, certified.signing_key.serialize_pem()).unwrap();
         let tls_cfg = TlsConfig {
-            cert_path: cert_path.to_string_lossy().into_owned(),
-            key_path: key_path.to_string_lossy().into_owned(),
+            cert_path: Some(cert_path.to_string_lossy().into_owned()),
+            key_path: Some(key_path.to_string_lossy().into_owned()),
             min_version: "1.2".to_string(),
             client_ca_path: None,
             client_cert_required: true,
             sni_certs: Vec::new(),
+            acme: None,
         };
         // http2=false → ALPN advertises http/1.1 only, matching the WS handshake.
         let acceptor = tls::build_acceptor(&tls_cfg, false).unwrap();
