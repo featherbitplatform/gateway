@@ -28,6 +28,8 @@ interface DebugPanelProps {
   selectedPolicy: string | null;
   /** Surfaces errors through the app's toast. */
   onError: (title: string, message: string) => void;
+  /** Renders the named prompt and copies it, MCP-hinted, to the clipboard. */
+  onCopyPrompt: (name: string, args: Record<string, string>) => void;
 }
 
 type Tab = 'traces' | 'sandbox';
@@ -105,6 +107,7 @@ export function DebugPanel({
   policies,
   selectedPolicy,
   onError,
+  onCopyPrompt,
 }: DebugPanelProps) {
   const [tab, setTab] = useState<Tab>('traces');
 
@@ -341,9 +344,13 @@ export function DebugPanel({
               <div style={{ flex: 1, minWidth: 0 }}>
                 {detail ? (
                   <>
-                    <TraceHeader trace={detail} onCopyToSandbox={() => copyTraceToSandbox(detail)} />
+                    <TraceHeader
+                      trace={detail}
+                      onCopyToSandbox={() => copyTraceToSandbox(detail)}
+                      onCopyPrompt={(p) => onCopyPrompt(p, { trace_id: detail.id })}
+                    />
                     {/* Keyed by id: a different trace remounts the viewer with fresh step state. */}
-                    <TraceViewer key={detail.id} trace={detail} />
+                    <TraceViewer key={detail.id} trace={detail} onCopyPrompt={(nodeId) => onCopyPrompt('why_this_port', { trace_id: detail.id, node_id: nodeId })} />
                   </>
                 ) : (
                   <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
