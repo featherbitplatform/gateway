@@ -292,6 +292,47 @@ mod tests {
         assert_eq!(&body[..], br#"{"error":"not_found"}"#);
     }
 
+    /// Restructuring `build_router` to mount `mcp::router()` alongside the
+    /// other `.merge()`d API routers is easy to get subtly wrong (e.g.
+    /// merging it inside vs. outside the Basic Auth `.layer()`, or before vs.
+    /// after `.with_state()`). The other tests here only assert `/api/*` is
+    /// *not 404*, or that `/mcp` behaves correctly — none of them positively
+    /// prove Basic Auth still gates `/api/*`. This closes that gap: a real
+    /// 401 without credentials, a real 200 with correct ones, and `/healthz`
+    /// staying exempt either way.
+    #[tokio::test]
+    async fn test_api_path_still_behind_basic_auth_after_mcp_restructure() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+
+        let app = build_router(&admin_config(true), test_state());
+        let resp = app
+            .oneshot(Request::get("/api/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let creds = STANDARD.encode("u:p");
+        let app = build_router(&admin_config(true), test_state());
+        let resp = app
+            .oneshot(
+                Request::get("/api/status")
+                    .header("Authorization", format!("Basic {creds}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let app = build_router(&admin_config(true), test_state());
+        let resp = app
+            .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn test_non_api_path_404_when_ui_disabled() {
         let app = build_router(&admin_config(false), test_state());
