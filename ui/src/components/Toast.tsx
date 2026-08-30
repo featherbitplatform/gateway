@@ -16,6 +16,10 @@ export interface ToastData {
   title: string;
   /** Optional monospace detail line, typically the admin API error message. */
   message?: string;
+  /** Id of the matching notification-log entry, when the toast was logged. */
+  id?: string;
+  /** Full inspectable payload (e.g. the pretty-printed server error body). */
+  details?: string;
 }
 
 /** Props for Toast. */
@@ -24,6 +28,11 @@ interface ToastProps {
   toast: ToastData | null;
   /** Clears the toast; called by the close button and the auto-dismiss timer. */
   onDismiss: () => void;
+  /**
+   * Opens the notification log on this toast's entry. Rendered as a
+   * "Details" link only when both this handler and `toast.details` exist.
+   */
+  onDetails?: (toast: ToastData) => void;
 }
 
 /**
@@ -31,7 +40,7 @@ interface ToastProps {
  * Auto-dismisses after 5 seconds (timer resets whenever a new toast arrives)
  * and can be dismissed early via the close button.
  */
-export function Toast({ toast, onDismiss }: ToastProps) {
+export function Toast({ toast, onDismiss, onDetails }: ToastProps) {
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(onDismiss, 5000);
@@ -83,6 +92,23 @@ export function Toast({ toast, onDismiss }: ToastProps) {
           >
             {toast.message}
           </p>
+        )}
+        {onDetails && toast.details && (
+          <button
+            onClick={() => onDetails(toast)}
+            style={{
+              marginTop: 6,
+              padding: 0,
+              background: 'transparent',
+              border: 'none',
+              fontSize: 'var(--text-xs)',
+              fontWeight: 600,
+              color: 'var(--accent)',
+              cursor: 'pointer',
+            }}
+          >
+            Details
+          </button>
         )}
       </div>
       <button
