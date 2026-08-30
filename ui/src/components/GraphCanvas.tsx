@@ -23,7 +23,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { Boxes, Command, GitFork, Plus, Save, Trash2 } from 'lucide-react';
+import { Bot, Boxes, Command, GitFork, Plus, Save, Trash2 } from 'lucide-react';
 import { PluginNode, type PluginNodeData } from './PluginNode';
 import { PluginDrawer } from './PluginDrawer';
 import { NodeInspector } from './NodeInspector';
@@ -126,6 +126,8 @@ interface GraphCanvasProps {
    * `StoreConfig[]` and shared with PluginConfigPanel.
    */
   storeOptions: FieldOption[];
+  /** Copies a "review this policy" agent prompt; omitted hides the toolbar button. Policy mode only. */
+  onReviewWithAgent?: () => void;
 }
 
 /** ReactFlow custom node-type registry; every policy node renders as a {@link PluginNode}. */
@@ -270,6 +272,7 @@ export function GraphCanvas({
   onOpenPalette,
   onCreateSupernodeDef,
   storeOptions,
+  onReviewWithAgent,
 }: GraphCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -883,6 +886,18 @@ export function GraphCanvas({
               <Plus size={13} />
               Add Node
             </button>
+            {kind === 'policy' && onReviewWithAgent && (
+              <button
+                onClick={onReviewWithAgent}
+                title="Copy a prompt asking an agent to review this policy"
+                style={{ ...toolbarButtonStyle('var(--surface-input)'), color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+                onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+              >
+                <Bot size={13} />
+                Review with agent
+              </button>
+            )}
             {extractEligible && (
               <button
                 onClick={handleExtract}

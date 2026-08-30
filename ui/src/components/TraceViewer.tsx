@@ -7,7 +7,7 @@
  *
  * @module components/TraceViewer
  */
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
 import type { Change, EdgeKind, NodeStep, TraceDetail } from '../types';
 import { getPluginMeta } from '../pluginMeta';
@@ -17,7 +17,22 @@ import { formatDuration } from '../format';
 interface TraceViewerProps {
   /** The trace to render, from GET /api/debug/traces/{id} or a sandbox run. */
   trace: TraceDetail;
+  /** When set, shows a "Why this port?" button beside the selected step's Changes eyebrow. */
+  onCopyPrompt?: (nodeId: string) => void;
 }
+
+/** Shared small-button style for the trace header/detail-pane actions
+ *  ("Copy to sandbox", "Copy as agent prompt", "Why this port?", …). */
+const headerButton: CSSProperties = {
+  flexShrink: 0,
+  padding: '3px 10px',
+  borderRadius: 'var(--radius-sm)',
+  fontSize: 'var(--text-2xs)',
+  fontWeight: 500,
+  background: 'var(--surface-input)',
+  color: 'var(--text-primary)',
+  border: '1px solid var(--border)',
+};
 
 /** Human wording for each edge the engine can follow after a node. */
 const EDGE_LABEL: Record<EdgeKind, string> = {
@@ -121,7 +136,7 @@ function ChangeRow({ change }: { change: Change }) {
  * policy author actually has; the full context snapshot is one collapse away
  * for when the answer is not enough.
  */
-export function TraceViewer({ trace }: TraceViewerProps) {
+export function TraceViewer({ trace, onCopyPrompt }: TraceViewerProps) {
   // Callers key this component by trace id, so a different trace remounts it
   // and both start fresh — the rail can never point past the end.
   const [selected, setSelected] = useState(0);
@@ -275,8 +290,20 @@ export function TraceViewer({ trace }: TraceViewerProps) {
               </div>
             </div>
 
-            <div className="eyebrow" style={{ marginBottom: 6 }}>
-              Changes
+            <div
+              className="flex items-center justify-between"
+              style={{ marginBottom: 6 }}
+            >
+              <div className="eyebrow">Changes</div>
+              {onCopyPrompt && (
+                <button
+                  onClick={() => onCopyPrompt(step.node_id)}
+                  title={`Copy a prompt asking why ${step.node_id} exited on port ${step.port ?? 'error'}`}
+                  style={headerButton}
+                >
+                  Why this port?
+                </button>
+              )}
             </div>
             {step.changes.length === 0 ? (
               <p
@@ -340,10 +367,13 @@ export function TraceViewer({ trace }: TraceViewerProps) {
 export function TraceHeader({
   trace,
   onCopyToSandbox,
+  onCopyPrompt,
 }: {
   trace: TraceDetail;
   /** When set, shows a button that replays this trace's request in the sandbox. */
   onCopyToSandbox?: () => void;
+  /** When set, shows "Copy as agent prompt" / "Why {status}?" buttons. */
+  onCopyPrompt?: (prompt: 'explain_trace' | 'why_this_response') => void;
 }) {
   return (
     <div style={{ marginBottom: 10 }}>
@@ -361,21 +391,22 @@ export function TraceHeader({
           <button
             onClick={onCopyToSandbox}
             title="Load this request's context into the Sandbox tab to replay or tweak it"
-            style={{
-              flexShrink: 0,
-              padding: '3px 10px',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-2xs)',
-              fontWeight: 500,
-              background: 'var(--surface-input)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border)',
-            }}
+            style={headerButton}
             onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
             onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
             Copy to sandbox
           </button>
+        )}
+        {onCopyPrompt && (
+          <>
+            <button onClick={() => onCopyPrompt('explain_trace')} title="Copy a prompt asking an agent to explain this whole trace" style={headerButton}>
+              Copy as agent prompt
+            </button>
+            <button onClick={() => onCopyPrompt('why_this_response')} title={`Copy a prompt asking why the client got ${trace.status}`} style={headerButton}>
+              Why {trace.status}?
+            </button>
+          </>
         )}
       </div>
       <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)', marginTop: 2 }}>
