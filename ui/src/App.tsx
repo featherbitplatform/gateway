@@ -15,7 +15,10 @@ import { DebugPanel } from './components/DebugPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import { CertificatesPanel } from './components/CertificatesPanel';
 import { Toast, type ToastData } from './components/Toast';
+import { NotificationsPanel } from './components/NotificationsPanel';
 import { CommandPalette } from './components/CommandPalette';
+import { useNotificationLog } from './useNotificationLog';
+import { detailsFromMessage } from './notifications';
 import { buildCommands, matchesShortcut, type CommandContext } from './commands';
 import { useEditorActions } from './editorActions';
 import { usePortNames } from './usePortNames';
@@ -72,6 +75,23 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastData | null>(null);
 
+  // Every toast is also appended to the persistent notification log, so an
+  // outcome that flashed by (above all a rejected save) stays inspectable.
+  // `notify` is the single entry point: it derives the inspectable payload
+  // from the api client's "<status>: <body>" message, logs, then shows the
+  // toast tagged with the log entry's id (for the toast's "Details" link).
+  const notifications = useNotificationLog();
+  const logNotification = notifications.notify;
+  const notify = useCallback(
+    (t: ToastData) => {
+      const details = t.details ?? detailsFromMessage(t.message);
+      const entry = logNotification({ tone: t.tone, title: t.title, message: t.message, details });
+      const next: ToastData = { ...t, id: entry.id, details };
+      setToast(next);
+    },
+    [logNotification]
+  );
+
   // Create-route dialog state
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
@@ -114,6 +134,24 @@ export default function App() {
 
   // Sessions panel state.
   const [sessionsOpen, setSessionsOpen] = useState(false);
+
+  // Notifications panel state: open flag plus the entry to pre-expand (set
+  // when opened from a toast's "Details", null from the bell/palette).
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationsFocusId, setNotificationsFocusId] = useState<string | null>(null);
+  // Bumped on every open and used as the panel's `key`, so each open starts
+  // from fresh expansion/filter state seeded with `notificationsFocusId`.
+  const [notificationsSession, setNotificationsSession] = useState(0);
+  const markNotificationsSeen = notifications.markSeen;
+  const openNotifications = useCallback(
+    (focusId: string | null = null) => {
+      setNotificationsFocusId(focusId);
+      setNotificationsSession((n) => n + 1);
+      setNotificationsOpen(true);
+      markNotificationsSeen();
+    },
+    [markNotificationsSeen]
+  );
 
   // Certificates panel state.
   const [certsOpen, setCertsOpen] = useState(false);
@@ -266,9 +304,9 @@ export default function App() {
       });
       await loadData();
       setSelectedRoute(name);
-      setToast({ tone: 'success', title: 'Route created', message: `${name} · ${path}` });
+      notify({ tone: 'success', title: 'Route created', message: `${name} · ${path}` });
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to create route', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to create route', message: `${e}` });
     }
   };
 
@@ -280,9 +318,9 @@ export default function App() {
       await api.deleteRoute(name);
       await loadData();
       if (selectedRoute === name) setSelectedRoute(null);
-      setToast({ tone: 'success', title: 'Route deleted', message: name });
+      notify({ tone: 'success', title: 'Route deleted', message: name });
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to delete route', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to delete route', message: `${e}` });
     }
   };
 
@@ -313,9 +351,9 @@ export default function App() {
       });
       await loadData();
       handleSelectSupernode(name);
-      setToast({ tone: 'success', title: 'Supernode created', message: name });
+      notify({ tone: 'success', title: 'Supernode created', message: name });
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to create supernode', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to create supernode', message: `${e}` });
     }
   };
 
@@ -327,13 +365,13 @@ export default function App() {
     try {
       await api.updateSupernode(sn.name, sn);
       await loadData();
-      setToast({ tone: 'success', title: 'Supernode created', message: sn.name });
+      notify({ tone: 'success', title: 'Supernode created', message: sn.name });
       return true;
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to create supernode', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to create supernode', message: `${e}` });
       return false;
     }
-  }, [loadData]);
+  }, [loadData, notify]);
 
   const submitDeleteSupernode = async () => {
     const name = deleteSupernodeTarget;
@@ -343,9 +381,9 @@ export default function App() {
       await api.deleteSupernode(name);
       await loadData();
       if (selectedSupernode === name) setSelectedSupernode(null);
-      setToast({ tone: 'success', title: 'Supernode deleted', message: name });
+      notify({ tone: 'success', title: 'Supernode deleted', message: name });
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to delete supernode', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to delete supernode', message: `${e}` });
     }
   };
 
@@ -365,9 +403,9 @@ export default function App() {
       await api.updatePluginConfig(name, { name, type, config: {} });
       await loadData();
       handleSelectPluginConfig(name);
-      setToast({ tone: 'success', title: 'Plugin config created', message: `${name} · ${type}` });
+      notify({ tone: 'success', title: 'Plugin config created', message: `${name} · ${type}` });
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to create plugin config', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to create plugin config', message: `${e}` });
     }
   };
 
@@ -379,9 +417,9 @@ export default function App() {
       await api.deletePluginConfig(name);
       await loadData();
       if (selectedPluginConfig === name) setSelectedPluginConfig(null);
-      setToast({ tone: 'success', title: 'Plugin config deleted', message: name });
+      notify({ tone: 'success', title: 'Plugin config deleted', message: name });
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to delete plugin config', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to delete plugin config', message: `${e}` });
     }
   };
 
@@ -408,9 +446,9 @@ export default function App() {
       });
       await loadData();
       handleSelectStore(name);
-      setToast({ tone: 'success', title: 'Store created', message: `${name} · ${newStoreType}` });
+      notify({ tone: 'success', title: 'Store created', message: `${name} · ${newStoreType}` });
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to create store', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to create store', message: `${e}` });
     }
   };
 
@@ -422,10 +460,10 @@ export default function App() {
       await api.deleteStore(name);
       await loadData();
       if (selectedStore === name) setSelectedStore(null);
-      setToast({ tone: 'success', title: 'Store deleted', message: name });
+      notify({ tone: 'success', title: 'Store deleted', message: name });
     } catch (e) {
       const parsed = parseApiError(e);
-      setToast({
+      notify({
         tone: 'error',
         title: 'Failed to delete store',
         message:
@@ -440,9 +478,9 @@ export default function App() {
     try {
       await api.updateStore(store.name, store);
       await loadData();
-      setToast({ tone: 'success', title: 'Store saved', message: store.name });
+      notify({ tone: 'success', title: 'Store saved', message: store.name });
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to save store', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to save store', message: `${e}` });
     }
   };
 
@@ -455,10 +493,10 @@ export default function App() {
     try {
       await api.updatePluginConfig(def.name, def);
       await loadData();
-      setToast({ tone: 'success', title: 'Shared config saved', message: `${def.name} · ${def.type}` });
+      notify({ tone: 'success', title: 'Shared config saved', message: `${def.name} · ${def.type}` });
       return true;
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to save shared config', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to save shared config', message: `${e}` });
       return false;
     }
   };
@@ -467,9 +505,9 @@ export default function App() {
     try {
       await api.updatePluginConfig(def.name, def);
       await loadData();
-      setToast({ tone: 'success', title: 'Plugin config saved', message: def.name });
+      notify({ tone: 'success', title: 'Plugin config saved', message: def.name });
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to save plugin config', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to save plugin config', message: `${e}` });
     }
   };
 
@@ -478,17 +516,17 @@ export default function App() {
       const yaml = await api.exportConfig();
       setYamlView(yaml);
     } catch (e) {
-      setToast({ tone: 'error', title: 'Failed to export config', message: `${e}` });
+      notify({ tone: 'error', title: 'Failed to export config', message: `${e}` });
     }
-  }, []);
+  }, [notify]);
 
   const copyYaml = async () => {
     if (yamlView == null) return;
     try {
       await navigator.clipboard.writeText(yamlView);
-      setToast({ tone: 'success', title: 'Copied to clipboard' });
+      notify({ tone: 'success', title: 'Copied to clipboard' });
     } catch (e) {
-      setToast({ tone: 'error', title: 'Copy failed', message: `${e}` });
+      notify({ tone: 'error', title: 'Copy failed', message: `${e}` });
     }
   };
 
@@ -507,11 +545,11 @@ export default function App() {
     try {
       await api.reload();
       await loadData();
-      setToast({ tone: 'success', title: 'Config reloaded' });
+      notify({ tone: 'success', title: 'Config reloaded' });
     } catch (e) {
-      setToast({ tone: 'error', title: 'Reload failed', message: `${e}` });
+      notify({ tone: 'error', title: 'Reload failed', message: `${e}` });
     }
-  }, [loadData]);
+  }, [loadData, notify]);
 
   // Wrapped in useCallback (rather than a plain function, as most handlers
   // in this file are) because it's registered as the canvas's `save-graph`
@@ -526,16 +564,16 @@ export default function App() {
       try {
         await api.updatePolicy(policy.name, policy);
         await loadData();
-        setToast({
+        notify({
           tone: 'success',
           title: 'Policy saved',
           message: `${policy.name} · ${policy.nodes.length} nodes persisted`,
         });
       } catch (e) {
-        setToast({ tone: 'error', title: 'Failed to save policy', message: `${e}` });
+        notify({ tone: 'error', title: 'Failed to save policy', message: `${e}` });
       }
     },
-    [loadData]
+    [loadData, notify]
   );
 
   // Same stability requirement as handleSavePolicy above — this is the
@@ -554,15 +592,15 @@ export default function App() {
             edges: graph.edges,
           });
           await loadData();
-          setToast({ tone: 'success', title: 'Supernode saved', message: graph.name });
+          notify({ tone: 'success', title: 'Supernode saved', message: graph.name });
         } catch (e) {
-          setToast({ tone: 'error', title: 'Failed to save supernode', message: `${e}` });
+          notify({ tone: 'error', title: 'Failed to save supernode', message: `${e}` });
         }
         return;
       }
       await handleSavePolicy(graph);
     },
-    [selectedSupernodeDef, loadData, handleSavePolicy]
+    [selectedSupernodeDef, loadData, handleSavePolicy, notify]
   );
 
   // Hoisted out of the GraphCanvas JSX (where an inline arrow would be a
@@ -570,8 +608,8 @@ export default function App() {
   // GraphCanvas's `handleSave`, which is registered as an editor action.
   // `setToast` is a stable setState setter, so this has no real deps.
   const handleSaveWarning = useCallback((title: string, message: string) => {
-    setToast({ tone: 'warning', title, message });
-  }, []);
+    notify({ tone: 'warning', title, message });
+  }, [notify]);
 
   /**
    * Stable error reporter for the dialog panels. Memoized deliberately:
@@ -580,8 +618,8 @@ export default function App() {
    * failing store that becomes an unbounded request/toast loop.
    */
   const handlePanelError = useCallback(
-    (title: string, message?: string) => setToast({ tone: 'error', title, message }),
-    [],
+    (title: string, message?: string) => notify({ tone: 'error', title, message }),
+    [notify],
   );
 
   // Selection across routes/supernodes/plugin configs/stores is mutually
@@ -610,6 +648,7 @@ export default function App() {
       viewYaml: handleViewYaml,
       reloadConfig: handleReload,
       toggleTheme,
+      openNotifications: () => openNotifications(),
       // Bridged to whatever GraphCanvas has registered (see editorActions.tsx).
       // Registration alone is not "a graph is open" — GraphCanvas registers
       // even when mounted with `policy={null}` — so the canvas commands' when()
@@ -626,6 +665,7 @@ export default function App() {
       handleCreatePluginConfig,
       handleViewYaml,
       handleReload,
+      openNotifications,
       editorActions,
     ]
   );
@@ -779,6 +819,8 @@ export default function App() {
         debugEnabled={debugConfig?.enabled ?? false}
         onOpenSessions={() => setSessionsOpen(true)}
         onOpenCertificates={() => setCertsOpen(true)}
+        onOpenNotifications={() => openNotifications()}
+        unreadNotifications={notifications.unread}
       />
       {selectedStoreDef ? (
         <StoresPanel
@@ -1125,7 +1167,23 @@ export default function App() {
 
       <CertificatesPanel open={certsOpen} onClose={() => setCertsOpen(false)} onError={handlePanelError} />
 
-      <Toast toast={toast} onDismiss={() => setToast(null)} />
+      <NotificationsPanel
+        key={notificationsSession}
+        open={notificationsOpen}
+        onClose={() => setNotificationsOpen(false)}
+        entries={notifications.entries}
+        onClear={notifications.clear}
+        focusId={notificationsFocusId}
+      />
+
+      <Toast
+        toast={toast}
+        onDismiss={() => setToast(null)}
+        onDetails={(t) => {
+          setToast(null);
+          openNotifications(t.id ?? null);
+        }}
+      />
     </div>
   );
 }

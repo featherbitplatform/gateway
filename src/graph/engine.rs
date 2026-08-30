@@ -200,6 +200,16 @@ impl CompiledGraph {
 
                     // Tag the error with the node_id that produced it
                     err.error.node_id = current_node_id.clone();
+                    // Operational visibility: an error-port exit is the only
+                    // signal an operator gets without debug traces, so it is
+                    // logged here regardless of which edge picks it up.
+                    tracing::warn!(
+                        "policy '{}': node '{}' exited on error port: {} ({})",
+                        self.policy_name,
+                        current_node_id,
+                        err.error.code,
+                        err.error.message
+                    );
                     let outcome = StepOutcome::Error {
                         code: err.error.code.clone(),
                         message: err.error.message.clone(),
@@ -946,6 +956,26 @@ mod tests {
         // The error was recorded on the context the step captured.
         assert_eq!(trace.steps[0].after.errors.len(), 1);
         assert_eq!(trace.steps[0].after.errors[0].node_id, "boom");
+    }
+
+    /// A node leaving through its error port is an operational event, not
+    /// just a response body: it must be logged at WARN with the node id and
+    /// the error code/message so an operator can see why a request failed
+    /// without enabling debug traces.
+    #[tokio::test]
+    async fn test_error_port_exit_is_logged_at_warn() {
+        let graph = failing_graph(
+            HashMap::from([("boom".to_string(), "client".to_string())]),
+            None,
+        );
+        let (_guard, logs) = crate::test_log::capture_warnings();
+        let _ = graph.execute(test_context("/x")).await;
+
+        let out = logs.contents();
+        assert!(out.contains("WARN"), "expected a WARN line, got: {out:?}");
+        for needle in ["policy 'p'", "node 'boom'", "BOOM", "exploded"] {
+            assert!(out.contains(needle), "missing {needle:?} in: {out:?}");
+        }
     }
 
     #[tokio::test]
