@@ -166,10 +166,20 @@ pub async fn render(
             )
             .await?;
             let node_type = step["step"]["node_type"].as_str().unwrap_or("").to_string();
-            let port = step["step"]["port"]
-                .as_str()
-                .unwrap_or("success")
-                .to_string();
+            // `port` is only present when the step took a named outcome port
+            // (`denied`, `redirect`, …). When it is absent, the exit was
+            // either the plain success edge or the error edge — tell them
+            // apart from `edge`, which is always present.
+            let port = match step["step"]["port"].as_str() {
+                Some(p) => p.to_string(),
+                None => match step["step"]["edge"].as_str() {
+                    Some("error")
+                    | Some("catch_all")
+                    | Some("unhandled")
+                    | Some("node_not_found") => "error".to_string(),
+                    _ => "success".to_string(),
+                },
+            };
             let docs = crate::mcp::docs::plugin_page(&node_type).unwrap_or_default();
             format!(
                 "{MCP_HINT}# Why did node `{node}` (`{node_type}`) exit on port `{port}`?\n\nExplain, pointing at the exact config keys and context values (headers, query, message, errors) that decided it. If it is an error, name the error code and the fix.\n\n{}{}## Documentation for `{node_type}`\n\n{docs}\n",
@@ -353,6 +363,57 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.code, "not_found");
+    }
+
+    #[tokio::test]
+    async fn why_this_port_labels_error_edge_exits_as_error() {
+        use crate::debug::sandbox::SandboxContextInput;
+        use crate::debug::{CaptureOptions, EdgeKind, StepOutcome, TraceRecorder, TraceSource};
+
+        let s = state("debug:\n  enabled: true\n", ECHO_GATEWAY);
+        let ctx = SandboxContextInput::default().into_context().unwrap();
+        let mut rec = TraceRecorder::new(&ctx, CaptureOptions::default(), 10);
+        let after = SandboxContextInput::default().into_context().unwrap();
+        // A step that exited on the error edge: `port` is always `None` here
+        // (see `src/graph/engine.rs`'s `Err` branch), so the prompt must not
+        // fall back to labeling it `success`.
+        rec.record_step(
+            "e",
+            "echo",
+            StepOutcome::Error {
+                code: "BOOM".into(),
+                message: "boom".into(),
+            },
+            std::time::Duration::from_micros(1),
+            EdgeKind::Error,
+            None,
+            None,
+            &after,
+        );
+        let trace = rec.finish(
+            "err-trace".into(),
+            1,
+            TraceSource::Sandbox,
+            None,
+            "echo-policy".into(),
+            &after,
+            std::time::Duration::from_micros(2),
+        );
+        s.debug.record(trace);
+
+        let p = render(
+            &s,
+            "why_this_port",
+            &args(&[("trace_id", "err-trace"), ("node_id", "e")]),
+        )
+        .await
+        .unwrap();
+        assert!(
+            p.text.contains("exit on port `error`"),
+            "{}",
+            &p.text[..200]
+        );
+        assert!(p.text.contains("is an error — start from its"));
     }
 
     #[tokio::test]
