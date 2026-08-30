@@ -171,7 +171,7 @@ async fn list_plugin_types() -> impl IntoResponse {
 }
 
 /// The palette catalog: `(type, description)` for every registered node type.
-fn plugin_catalog() -> Vec<serde_json::Value> {
+pub(crate) fn plugin_catalog() -> Vec<serde_json::Value> {
     const CATALOG: &[(&str, &str)] = &[
         // Structural & core proxy
         ("listener", "Route entry point — receives incoming request"),

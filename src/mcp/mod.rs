@@ -9,3 +9,9 @@
 //! sits behind the `mcp` cargo feature.
 
 pub mod auth;
+
+// wired to the rmcp server in Task 9; the registry is exercised by tests until then
+#[allow(dead_code)]
+pub mod tools;
+
+pub mod docs;
