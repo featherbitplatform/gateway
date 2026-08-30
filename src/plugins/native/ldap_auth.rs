@@ -28,9 +28,9 @@ use std::time::Duration;
 
 use ldap3::{LdapConnAsync, LdapConnSettings};
 
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 use crate::vars::template::Template;
 
 /// Authenticates HTTP Basic credentials against an LDAP server via simple bind.
@@ -163,34 +163,16 @@ impl LdapAuthPlugin {
     /// Builds a genuine infrastructure-failure `Err` (LDAP unreachable, or the
     /// connect+bind operation timed out) — unlike `reject`, this exits
     /// through the `error` port because the node could not do its job, not
-    /// because a presented credential was deliberately refused. The response
-    /// shape mirrors `reject`'s so client-visible behavior over this path is
-    /// unchanged by the port split.
+    /// because a presented credential was deliberately refused. The prepared
+    /// response is the shared `502 provider_error` shape: no `Basic`
+    /// challenge, so a browser does not re-prompt for a password that was
+    /// never checked.
     fn infra_error(&self, ctx: Context, message: String) -> PluginResult {
-        let mut ctx = ctx;
-        let realm = self.realm.render(&ctx).into_owned();
-        ctx.response.status_code = 401;
-        ctx.response.body = Bytes::from(format!(
-            r#"{{"error": "unauthorized", "message": "{}"}}"#,
-            message.replace('"', "'")
-        ));
-        ctx.response.headers.insert(
-            "content-type".to_string(),
-            vec!["application/json".to_string()],
-        );
-        ctx.response.headers.insert(
-            "www-authenticate".to_string(),
-            vec![format!("Basic realm=\"{}\"", realm)],
-        );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "LDAP_AUTH_FAILED".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        })
+        Err(crate::plugins::util::provider_error::provider_error(
+            ctx,
+            "LDAP_AUTH_PROVIDER_ERROR",
+            message,
+        ))
     }
 
     /// Attempts a simple bind with `dn`/`password` against the LDAP server.
@@ -491,6 +473,9 @@ mod tests {
             protocol: crate::context::Protocol::Http1,
         });
         let err = plugin.execute(ctx).await.unwrap_err();
-        assert_eq!(err.error.code, "LDAP_AUTH_FAILED");
+        crate::plugins::util::provider_error::testing::assert_provider_error(
+            &err,
+            "LDAP_AUTH_PROVIDER_ERROR",
+        );
     }
 }

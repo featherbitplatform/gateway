@@ -46,7 +46,11 @@ On a missing header, malformed credentials, empty username/password, or a bind r
 - `WWW-Authenticate: Basic realm="<realm>"` challenge header
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
 
-A connection error or a connect+bind timeout is a genuine **infrastructure failure**, not a credential decision — it stays on the **error** port instead, with error code `LDAP_AUTH_FAILED`. The prepared response mirrors the `denied` shape exactly (same `401`, same `WWW-Authenticate` challenge, same JSON body and `content-type`), so what the client sees is unchanged if the error edge leads to `client`.
+A connection error or a connect+bind timeout is a genuine **infrastructure failure**, not a credential decision — it stays on the **error** port instead, with error code `LDAP_AUTH_PROVIDER_ERROR`. The prepared response is a `502` `{"error": "provider_error", "message": "<reason>"}` with **no** `WWW-Authenticate` challenge — an LDAP outage must not make the browser re-prompt for a password that was never checked.
+
+:::caution Breaking change
+Before v0.8 this provider-failure response reused the `denied` shape (`401` + `WWW-Authenticate: Basic`, `{"error": "unauthorized"}`, error code `LDAP_AUTH_FAILED`), so an unreachable LDAP server was indistinguishable from a rejected credential (and a browser would re-prompt for the password). It is now the shared `502 {"error": "provider_error", "message": "<reason>"}` response with no challenge header, the same shape every provider-backed auth plugin prepares (`openid-connect`, `cas-auth`, `ldap-auth`, `authz-keycloak`, `authz-casdoor`). The error code was renamed from `LDAP_AUTH_FAILED` to `LDAP_AUTH_PROVIDER_ERROR` — "failed" is the denial word. Match on the `error` port / the error code, or on the `502`, instead of the old status.
+:::
 
 ## Ports
 
