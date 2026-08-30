@@ -69,12 +69,21 @@ pub async fn commit_candidate(
 ) -> Result<Value, ToolError> {
     let mut candidate = state.gateway.read().await.clone();
     mutate(&mut candidate)?;
-    // Validate first in both modes so a store failure after a clean
-    // validation is reported as store_error, not invalid_config.
-    state
-        .validate_gateway(&candidate)
-        .map_err(|e| ToolError::invalid_config(vec![e]))?;
-    if !dry_run {
+    if dry_run {
+        // `validate_gateway_dry` restores `resources.stores` on both success
+        // and failure, so a dry run never durably swaps in the candidate
+        // store registry (see its doc comment on `SharedState`).
+        state
+            .validate_gateway_dry(&candidate)
+            .map_err(|e| ToolError::invalid_config(vec![e]))?;
+    } else {
+        // Validate first so a store failure after a clean validation is
+        // reported as store_error, not invalid_config; `commit` re-validates
+        // and applies, so the candidate registry it leaves live is the one
+        // actually being committed.
+        state
+            .validate_gateway(&candidate)
+            .map_err(|e| ToolError::invalid_config(vec![e]))?;
         state
             .config_store
             .clone()
@@ -390,5 +399,68 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    /// `dry_run: true` must not leave a durable trace in the live store
+    /// registry: `compile_routes` (called by `validate_gateway`) installs the
+    /// candidate registry as a side effect of validating, and only restores
+    /// the previous one on *failure* — every other caller follows with an
+    /// apply that keeps that candidate for real. The MCP dry-run path has no
+    /// such follow-up, so without `validate_gateway_dry` a dry-run
+    /// `delete_store` would durably drop the store's live client and a
+    /// dry-run `put_store` would durably stand one up.
+    #[cfg(feature = "redis-store")]
+    #[tokio::test]
+    async fn store_dry_run_does_not_swap_the_live_registry() {
+        let gw = format!(
+            "{ECHO_GATEWAY}\nstores:\n  - name: st\n    type: redis\n    url: redis://127.0.0.1:1\n"
+        );
+        let s = state("{}", &gw);
+        assert!(s.resources.stores.load().contains("st"));
+
+        // dry_run delete_store: registry and gateway config both keep 'st'.
+        let v = call(
+            &s,
+            "delete_store",
+            obj(serde_json::json!({"name": "st", "dry_run": true})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["applied"], false);
+        assert!(
+            s.resources.stores.load().contains("st"),
+            "dry-run delete_store must not durably drop the live client"
+        );
+        assert!(s
+            .gateway
+            .read()
+            .await
+            .stores
+            .iter()
+            .any(|store| store.name == "st"));
+
+        // dry_run put_store for a brand-new name: registry never gets it.
+        let v = call(
+            &s,
+            "put_store",
+            obj(serde_json::json!({"name": "new-st", "dry_run": true, "definition": {"type": "redis", "url": "redis://127.0.0.1:1"}})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["applied"], false);
+        assert!(
+            !s.resources.stores.load().contains("new-st"),
+            "dry-run put_store must not durably install an uncommitted client"
+        );
+        assert!(s
+            .gateway
+            .read()
+            .await
+            .stores
+            .iter()
+            .all(|store| store.name != "new-st"));
+
+        // Sanity: the original store is still functionally there afterwards.
+        assert!(s.resources.stores.load().contains("st"));
     }
 }
