@@ -652,30 +652,14 @@ impl OpenidConnectPlugin {
     /// returned a non-2xx status, or handed back unparseable data). Unlike
     /// `reject`, this exits through the `error` port because the node could
     /// not do its job, not because a presented credential was deliberately
-    /// refused — and the response says so: a `502` with
-    /// `{"error": "provider_error"}` and no `www-authenticate` challenge, so
-    /// neither an API client nor a browser user mistakes an IdP outage for
+    /// refused — and the response says so (see [`provider_error`]): a `502`
+    /// with `{"error": "provider_error"}` and no `www-authenticate` challenge,
+    /// so neither an API client nor a browser user mistakes an IdP outage for
     /// a failed login.
+    ///
+    /// [`provider_error`]: crate::plugins::util::provider_error::provider_error
     fn infra_error(ctx: Context, message: String) -> PluginExecutionError {
-        let mut ctx = ctx;
-        ctx.response.status_code = 502;
-        ctx.response.headers.remove("www-authenticate");
-        ctx.response.body = Bytes::from(
-            serde_json::json!({ "error": "provider_error", "message": message }).to_string(),
-        );
-        ctx.response.headers.insert(
-            "content-type".to_string(),
-            vec!["application/json".to_string()],
-        );
-        PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "OIDC_PROVIDER_ERROR".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        }
+        crate::plugins::util::provider_error::provider_error(ctx, "OIDC_PROVIDER_ERROR", message)
     }
 
     /// Session-store outage: 503 through the error port. Deliberately NOT
@@ -1849,6 +1833,7 @@ impl Plugin for OpenidConnectPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::util::provider_error::testing::assert_provider_error;
     use jsonwebtoken::{encode, EncodingKey, Header};
 
     // Test RSA keypair (PKCS#8). The public modulus/exponent below are the same
@@ -2358,24 +2343,6 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         );
     }
 
-    /// Shared shape of a provider-failure response: a 502 that is clearly
-    /// not an authentication decision — no `www-authenticate` challenge, an
-    /// `error` discriminator distinct from `reject`'s `unauthorized`.
-    fn assert_provider_error(err: &PluginExecutionError) {
-        assert_eq!(err.error.code, "OIDC_PROVIDER_ERROR");
-        assert_eq!(err.context.response.status_code, 502);
-        assert!(
-            !err.context
-                .response
-                .headers
-                .contains_key("www-authenticate"),
-            "a provider failure must not challenge the client"
-        );
-        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
-        assert_eq!(body["error"], "provider_error", "{body}");
-        assert_eq!(body["message"], err.error.message, "{body}");
-    }
-
     /// Regression: before the port split, every failure (deliberate or
     /// infra) flowed through the same `Err`. A JWKS endpoint that is
     /// unreachable (nothing listening) is a genuine provider failure and
@@ -2395,7 +2362,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             .execute(with_bearer(req_ctx("/", HashMap::new()), &token))
             .await
             .unwrap_err();
-        assert_provider_error(&err);
+        assert_provider_error(&err, "OIDC_PROVIDER_ERROR");
     }
 
     /// Same regression, via the discovery path: an unreachable discovery
@@ -2416,7 +2383,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             .execute(with_bearer(req_ctx("/", HashMap::new()), &token))
             .await
             .unwrap_err();
-        assert_provider_error(&err);
+        assert_provider_error(&err, "OIDC_PROVIDER_ERROR");
     }
 
     /// Same regression, via introspection: an unreachable introspection
@@ -2438,7 +2405,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             .execute(with_bearer(req_ctx("/", HashMap::new()), "opaque-token"))
             .await
             .unwrap_err();
-        assert_provider_error(&err);
+        assert_provider_error(&err, "OIDC_PROVIDER_ERROR");
     }
 
     /// An introspection response that reports the token inactive is a
@@ -2539,7 +2506,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             .execute(req_ctx("/dashboard", HashMap::new()))
             .await
             .unwrap_err();
-        assert_provider_error(&err);
+        assert_provider_error(&err, "OIDC_PROVIDER_ERROR");
         assert!(
             err.error.message.contains("discovery fetch failed"),
             "{}",
@@ -2649,7 +2616,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         );
 
         let err = plugin.execute(c).await.unwrap_err();
-        assert_provider_error(&err);
+        assert_provider_error(&err, "OIDC_PROVIDER_ERROR");
     }
 
     // ---- Redis session storage ---------------------------------------
