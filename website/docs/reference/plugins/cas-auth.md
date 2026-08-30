@@ -76,7 +76,11 @@ On success the context passes through the **success** port, with the username ex
 Otherwise the outcome depends on whether CAS gave a verdict:
 
 - **Missing ticket**, or an authentication-failure (or unparseable) `/serviceValidate` body — CAS said no, so this is a deliberate rejection: the **`denied`** port, with `context.response.status_code = 401` and body `{"error": "unauthorized", "message": "<reason>"}`.
-- **Callout failure** (CAS unreachable, timed out) or a **non-200** `/serviceValidate` reply — no verdict was obtained, so this is an infrastructure failure: the **`error`** port, error code `CAS_AUTH_PROVIDER_ERROR`. The prepared response mirrors the `denied` shape, so what the client sees is unchanged if the error edge leads to `client`.
+- **Callout failure** (CAS unreachable, timed out) or a **non-200** `/serviceValidate` reply — no verdict was obtained, so this is an infrastructure failure: the **`error`** port, error code `CAS_AUTH_PROVIDER_ERROR`. The prepared response is a `502` `{"error": "provider_error", "message": "<reason>"}` with no challenge header — a CAS outage must not read as a refused ticket.
+
+:::caution Breaking change
+Before v0.8 this provider-failure response reused the `denied` shape (`401` `{"error": "unauthorized"}`), so an unreachable CAS server was indistinguishable from a refused ticket. It is now the shared `502 {"error": "provider_error", "message": "<reason>"}` response with no challenge header, the same shape every provider-backed auth plugin prepares (`openid-connect`, `cas-auth`, `ldap-auth`, `authz-keycloak`, `authz-casdoor`). Match on the `error` port / the error code, or on the `502`, instead of the old status.
+:::
 
 ### Interactive mode (session secret set)
 
@@ -105,7 +109,7 @@ Every `302` in interactive mode (login redirect, post-callback redirect, logout)
 | `success` | The request is authenticated (valid ticket, or a valid session cookie in interactive mode). |
 | `denied` | A deliberate `401` is prepared: no ticket at all, or the CAS server answered and refused the ticket. |
 | `redirect` | A `302` browser move is prepared — login, post-callback, or logout. Interactive mode only, but the port is always declared. |
-| `error` | The ticket-validation callout **failed**: the CAS server was unreachable, timed out, or answered `/serviceValidate` with a non-200. The node never obtained a verdict, so this is not a denial. Error code `CAS_AUTH_PROVIDER_ERROR`; the client-visible response is the same `401` JSON shape as `denied`. In `session.storage: redis` mode, a session-store failure also exits here, as a `503` with error code `SESSION_STORE_ERROR`. |
+| `error` | The ticket-validation callout **failed**: the CAS server was unreachable, timed out, or answered `/serviceValidate` with a non-200. The node never obtained a verdict, so this is not a denial. Error code `CAS_AUTH_PROVIDER_ERROR`; the client-visible response is a `502` `provider_error`, not the `401` `denied` shape. In `session.storage: redis` mode, a session-store failure also exits here, as a `503` with error code `SESSION_STORE_ERROR`. |
 
 Like `success`, `denied` and `redirect` are both mandatory ports: the policy compiler rejects any policy that leaves either unwired, **even in stateless mode where `redirect` is never actually taken**. Wire both straight to `client`; `error` is optional and falls back to the policy catch-all:
 
