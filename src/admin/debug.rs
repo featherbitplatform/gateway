@@ -11,20 +11,15 @@
 //! the web UI can render an explanatory empty state instead of a mystery.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
 
-use crate::debug::diff::{diff, Change};
-use crate::debug::sandbox::{synthesize_policy, SandboxRequest};
-use crate::debug::store::TraceSummary;
-use crate::debug::{new_trace_id, NodeStep, Trace, TraceRecorder, TraceSource};
-use crate::graph::{compile_policy, validate_policy};
+use crate::debug::render::{apply_filter, render_trace, TraceFilter};
+use crate::debug::sandbox::SandboxRequest;
 use crate::state::SharedState;
 
 /// Builds the router for the `/api/debug/*` endpoints.
@@ -71,51 +66,6 @@ async fn get_config(State(state): State<Arc<SharedState>>) -> impl IntoResponse 
     }))
 }
 
-/// Optional filters for the trace list, so a developer can pull just the recent
-/// requests on the policy or route they are working on. All are ANDed; empty
-/// strings are ignored (a bare `?route=` is not a filter).
-#[derive(Debug, Default, Deserialize)]
-struct TraceFilter {
-    route: Option<String>,
-    policy: Option<String>,
-    status: Option<u16>,
-    /// `request` or `sandbox`.
-    source: Option<String>,
-    /// Cap on the number of rows returned, applied after filtering.
-    limit: Option<usize>,
-}
-
-fn non_empty(s: &Option<String>) -> Option<&str> {
-    s.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
-
-fn source_str(source: TraceSource) -> &'static str {
-    match source {
-        TraceSource::Request => "request",
-        TraceSource::Sandbox => "sandbox",
-    }
-}
-
-/// Keeps only the summaries matching every supplied filter.
-fn apply_filter(mut traces: Vec<TraceSummary>, f: &TraceFilter) -> Vec<TraceSummary> {
-    if let Some(route) = non_empty(&f.route) {
-        traces.retain(|t| t.route.as_deref() == Some(route));
-    }
-    if let Some(policy) = non_empty(&f.policy) {
-        traces.retain(|t| t.policy == policy);
-    }
-    if let Some(status) = f.status {
-        traces.retain(|t| t.status == status);
-    }
-    if let Some(source) = non_empty(&f.source) {
-        traces.retain(|t| source_str(t.source).eq_ignore_ascii_case(source));
-    }
-    if let Some(limit) = f.limit {
-        traces.truncate(limit);
-    }
-    traces
-}
-
 /// `GET /api/debug/traces` — summaries, newest first.
 ///
 /// Optional query filters (`route`, `policy`, `status`, `source`, `limit`) let
@@ -130,34 +80,6 @@ async fn list_traces(
     }
     let traces = apply_filter(state.debug.list(), &filter);
     Json(serde_json::json!({ "traces": traces })).into_response()
-}
-
-/// A step plus the changes derived from the preceding snapshot.
-#[derive(Serialize)]
-struct StepWithChanges<'a> {
-    #[serde(flatten)]
-    step: &'a NodeStep,
-    changes: Vec<Change>,
-}
-
-/// Renders a trace with per-step `changes` computed at read time.
-///
-/// The diff is derived here rather than stored because the context flows
-/// linearly: `before(step N) == after(step N-1)`, so the snapshots already hold
-/// everything needed.
-fn render_trace(trace: &Trace) -> serde_json::Value {
-    let mut prev = &trace.initial;
-    let mut steps = Vec::with_capacity(trace.steps.len());
-    for step in &trace.steps {
-        steps.push(StepWithChanges {
-            step,
-            changes: diff(prev, &step.after),
-        });
-        prev = &step.after;
-    }
-    let mut out = serde_json::to_value(trace).unwrap_or_else(|_| serde_json::json!({}));
-    out["steps"] = serde_json::to_value(steps).unwrap_or_else(|_| serde_json::json!([]));
-    out
 }
 
 /// `GET /api/debug/traces/{id}` — one trace with computed changes.
@@ -213,133 +135,34 @@ async fn run_sandbox(
     State(state): State<Arc<SharedState>>,
     Json(req): Json<SandboxRequest>,
 ) -> impl IntoResponse {
-    if !state.debug.enabled {
-        return disabled("sandbox");
+    use crate::debug::sandbox::{run_sandbox as run, SandboxError};
+    match run(&state, req).await {
+        Ok(r) => Json(serde_json::json!({
+            "mode": r.mode,
+            "policy": r.policy,
+            "warning": "plugins executed for real: outbound calls were made and shared \
+                        rate-limit/breaker state was mutated",
+            "stored_trace_id": r.stored_trace_id,
+            "trace": r.trace,
+        }))
+        .into_response(),
+        Err(SandboxError::Disabled) => disabled("sandbox"),
+        Err(SandboxError::SandboxDisabled) => disabled("sandbox (debug.sandbox is false)"),
+        Err(SandboxError::BadRequest(e)) => bad_request(e),
+        Err(SandboxError::UnknownPolicy(name)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("unknown policy '{name}'")})),
+        )
+            .into_response(),
+        Err(SandboxError::Timeout(secs)) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(serde_json::json!({
+                "error": "sandbox_timeout",
+                "message": format!("run exceeded debug.sandbox_timeout_seconds ({}s)", secs),
+            })),
+        )
+            .into_response(),
     }
-    if !state.debug.sandbox_enabled {
-        return disabled("sandbox (debug.sandbox is false)");
-    }
-
-    let (mode, policy_name, policy) = match (req.nodes, req.policy) {
-        (Some(_), Some(_)) | (None, None) => {
-            return bad_request("provide exactly one of 'nodes' or 'policy'")
-        }
-        (Some(nodes), None) => match synthesize_policy(nodes, req.on_error) {
-            Ok(p) => ("nodes", "__sandbox".to_string(), p),
-            Err(e) => return bad_request(e),
-        },
-        (None, Some(name)) => {
-            let gw = state.gateway.read().await;
-            match gw.policies.iter().find(|p| p.name == name) {
-                // Recompile rather than reusing a route's graph: a policy with
-                // no route attached is exactly the one being iterated on.
-                Some(p) => ("policy", name.clone(), p.clone()),
-                None => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({"error": format!("unknown policy '{name}'")})),
-                    )
-                        .into_response()
-                }
-            }
-        }
-    };
-
-    if let Err(errors) = validate_policy(&policy) {
-        return bad_request(errors.join("; "));
-    }
-
-    // Resolve shared plugin configs and inline supernode references the same
-    // way compile_routes does — the sandbox must never diverge from what the
-    // data plane executes. Resolution runs on a synthetic single-policy
-    // gateway so ad-hoc nodes and stored policies behave identically.
-    let (supernodes, plugin_configs) = {
-        let gw = state.gateway.read().await;
-        (gw.supernodes.clone(), gw.plugin_configs.clone())
-    };
-    let resolved = {
-        let mut tmp: crate::config::GatewayConfig = serde_yaml::from_str("{}").unwrap();
-        tmp.policies = vec![policy];
-        tmp.supernodes = supernodes;
-        tmp.plugin_configs = plugin_configs;
-        match crate::config::resolve_plugin_configs(&tmp) {
-            Ok(r) => r,
-            Err(e) => return bad_request(e),
-        }
-    };
-    // Same load-time template-warning sweep compile_routes runs, on the same
-    // resolved single-policy gateway, so the sandbox never diverges from what
-    // the data plane would warn about for this policy.
-    for warning in crate::config::collect_template_warnings(&resolved) {
-        tracing::warn!("{warning}");
-    }
-    let policy = resolved.policies.into_iter().next().expect("one policy in");
-    let policy = match crate::graph::expand_policy(&policy, &resolved.supernodes) {
-        Ok(p) => p,
-        Err(e) => return bad_request(e),
-    };
-
-    let graph = match compile_policy(&policy, state.resources.clone()) {
-        Ok(g) => g,
-        Err(e) => return bad_request(e),
-    };
-
-    let ctx = match crate::debug::sandbox::materialize_context(req.context) {
-        Ok(c) => c,
-        Err(e) => return bad_request(e),
-    };
-
-    tracing::warn!(
-        "sandbox run ({}): plugins execute for real against live resources",
-        mode
-    );
-
-    let recorder = TraceRecorder::new(&ctx, state.debug.capture_options(), state.debug.max_steps);
-    let started = Instant::now();
-    let timeout = Duration::from_secs(state.debug.sandbox_timeout_seconds.max(1));
-
-    let run = graph.execute_traced(ctx, recorder);
-    let (out_ctx, recorder) = match tokio::time::timeout(timeout, run).await {
-        Ok(pair) => pair,
-        Err(_) => {
-            return (
-                StatusCode::GATEWAY_TIMEOUT,
-                Json(serde_json::json!({
-                    "error": "sandbox_timeout",
-                    "message": format!(
-                        "run exceeded debug.sandbox_timeout_seconds ({}s)",
-                        state.debug.sandbox_timeout_seconds
-                    ),
-                })),
-            )
-                .into_response()
-        }
-    };
-
-    let id = new_trace_id();
-    let trace = recorder.finish(
-        id.clone(),
-        state.debug.next_seq(),
-        TraceSource::Sandbox,
-        None,
-        policy_name.clone(),
-        &out_ctx,
-        started.elapsed(),
-    );
-    let rendered = render_trace(&trace);
-    // Stored alongside live traces so a sandbox run and a real request can be
-    // compared side by side in the UI.
-    state.debug.record(trace);
-
-    Json(serde_json::json!({
-        "mode": mode,
-        "policy": policy_name,
-        "warning": "plugins executed for real: outbound calls were made and shared \
-                    rate-limit/breaker state was mutated",
-        "stored_trace_id": id,
-        "trace": rendered,
-    }))
-    .into_response()
 }
 
 #[cfg(test)]
@@ -347,6 +170,8 @@ mod tests {
     use super::*;
     use crate::config::{DebugConfig, GatewayConfig, SystemConfig};
     use crate::config_store::FileConfigStore;
+    use crate::debug::store::TraceSummary;
+    use crate::debug::TraceSource;
 
     fn state_with(debug: DebugConfig) -> Arc<SharedState> {
         // Every section of both configs has a serde default, so an empty
