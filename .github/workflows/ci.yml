@@ -44,6 +44,12 @@ jobs:
 
       - run: cargo test --locked
 
+      # Everything but MCP still compiles: the mcp feature is default-on, so this
+      # is the only job proving the crate builds without it (headless-check has
+      # no UI build step, so it can't carry `ui`).
+      - name: check (ui + redis-store, no mcp)
+        run: cargo check --no-default-features --features ui,redis-store --locked
+
       # The tree is clippy-clean today; keep it that way.
       - run: cargo clippy --all-targets --locked -- -D warnings
 
