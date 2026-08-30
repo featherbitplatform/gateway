@@ -224,8 +224,6 @@ pub fn attach_consumer(ctx: &mut Context, consumer: &Consumer, auth_type: &str) 
 /// Every scalar leaf under `credentials` is masked except the identifying
 /// halves of a credential pair (`username`, `access_key`), so a read-only
 /// viewer can still tell *which* credential exists without learning it.
-// consumed by the MCP tools (Task 4)
-#[allow(dead_code)]
 pub fn mask_credentials(c: &ConsumerConfig) -> ConsumerConfig {
     fn mask(v: &serde_json::Value, key: Option<&str>) -> serde_json::Value {
         match v {
