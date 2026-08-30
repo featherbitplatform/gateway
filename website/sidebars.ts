@@ -34,6 +34,7 @@ const sidebars: SidebarsConfig = {
         'guides/admin-api',
         'guides/observability',
         'guides/debugging',
+        'guides/mcp',
         'guides/tls',
         'guides/stream',
         'guides/deployment',
