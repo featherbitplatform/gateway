@@ -43,6 +43,8 @@ impl DocSection {
             DocSection::Reference => "reference/",
         }
     }
+    // Only reached via `read_uri`, which is `mcp`-only (below).
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
     fn parse(slug: &str) -> Option<Self> {
         match slug {
             "plugins" => Some(DocSection::Plugins),
@@ -53,7 +55,8 @@ impl DocSection {
     }
 }
 
-/// A listable page.
+/// A listable page. Only constructed by `list_pages`, which is `mcp`-only.
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocPage {
     pub uri: String,
@@ -227,11 +230,16 @@ pub fn concept_page(name: &str) -> Option<String> {
 }
 
 /// A reference page by file stem (`context-vars`, `conditions`, `templates`).
+/// Only reached via `read_uri`, which is `mcp`-only (the Admin API's
+/// `render_prompt` calls `plugin_page`/`concept_page` directly).
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub fn reference_page(name: &str) -> Option<String> {
     page(DocSection::Reference, name)
 }
 
-/// Resolves a `featherbit://docs/{section}/{name}` URI.
+/// Resolves a `featherbit://docs/{section}/{name}` URI. Only used by the MCP
+/// `resources/read` handler in `src/mcp/server.rs`.
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub fn read_uri(uri: &str) -> Option<String> {
     let rest = uri.strip_prefix(DOCS_URI_PREFIX)?;
     let (section, name) = rest.split_once('/')?;
@@ -243,7 +251,9 @@ pub fn read_uri(uri: &str) -> Option<String> {
     }
 }
 
-/// Every page, for `resources/list`.
+/// Every page, for `resources/list`. Only used by the MCP `resources/list`
+/// handler in `src/mcp/server.rs`.
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub fn list_pages() -> Vec<DocPage> {
     let mut pages = Vec::new();
     for path in DocsAssets::iter() {

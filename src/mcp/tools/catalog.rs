@@ -7,7 +7,9 @@ use serde_json::Value;
 use super::ToolError;
 use crate::state::SharedState;
 
-/// Tools that take no arguments.
+/// Tools that take no arguments. Only referenced by the `mcp`-only `TOOLS`
+/// registry in `src/mcp/tools/mod.rs`.
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct NoArgs {}
 
