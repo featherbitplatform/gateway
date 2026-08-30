@@ -25,6 +25,10 @@ export interface CommandContext {
   invokeEditorAction: (id: string) => void;
   /** True when the canvas has registered that action. */
   hasEditorAction: (id: string) => boolean;
+  /** Copies a policy-authoring prompt for the agent (opens a goal dialog for design_*). */
+  agentPrompt: (name: 'review_policy' | 'design_policy' | 'design_supernode' | 'design_route') => void;
+  /** Opens the Agent (MCP) panel. */
+  openAgentPanel: () => void;
 }
 
 /** One palette entry. */
@@ -80,6 +84,11 @@ export function buildCommands(): Command[] {
     { id: 'reload-config', title: 'Reload gateway config', run: (c) => c.reloadConfig() },
     { id: 'show-notifications', title: 'Show notifications', shortcut: 'N', run: (c) => c.openNotifications() },
     { id: 'toggle-theme', title: 'Toggle theme', run: (c) => c.toggleTheme() },
+    { id: 'open-agent-panel', title: 'Open Agent panel (MCP)', run: (c) => c.openAgentPanel() },
+    { id: 'agent-review-policy', title: 'Agent: copy "review this policy" prompt', when: (c) => c.editorOpen, run: (c) => c.agentPrompt('review_policy') },
+    { id: 'agent-design-policy', title: 'Agent: copy "design a policy" prompt…', run: (c) => c.agentPrompt('design_policy') },
+    { id: 'agent-design-supernode', title: 'Agent: copy "design a supernode" prompt…', run: (c) => c.agentPrompt('design_supernode') },
+    { id: 'agent-design-route', title: 'Agent: copy "design a route" prompt…', run: (c) => c.agentPrompt('design_route') },
   ];
 }
 

@@ -26,6 +26,7 @@ import { usePortNames } from './usePortNames';
 import { toggleTheme } from './theme';
 import { api } from './api/client';
 import { parseApiError } from './apiError';
+import { withMcpHint } from './agentPrompts';
 import type {
   Route,
   Policy,
@@ -161,6 +162,10 @@ export default function App() {
   // Agent (MCP) panel state.
   const [agentOpen, setAgentOpen] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
+
+  // Goal dialog for the `design_*` agent prompts (review_policy needs no goal).
+  const [goalDialog, setGoalDialog] = useState<null | 'design_policy' | 'design_supernode' | 'design_route'>(null);
+  const [goalText, setGoalText] = useState('');
 
   // Port-name visibility (P) and the command palette (Ctrl+K). Owned here —
   // a single usePortNames() call — so the palette's toggle and the canvas
@@ -652,6 +657,45 @@ export default function App() {
     [notify],
   );
 
+  /**
+   * Renders a named agent prompt (GET /api/mcp/prompts/{name}) and copies it,
+   * MCP-hinted, to the clipboard. Shared by the trace viewer's "Copy as agent
+   * prompt"/"Why …?" buttons, the policy toolbar's "Review with agent", and
+   * the command palette's `agent-*` commands.
+   */
+  const copyPrompt = useCallback(
+    async (name: string, args: Record<string, string>) => {
+      try {
+        const r = await api.renderPrompt(name, args);
+        await copyText(r.description, withMcpHint(r.text));
+      } catch (e) {
+        const p = parseApiError(e);
+        handlePanelError('Could not build the agent prompt', p.error || p.raw);
+      }
+    },
+    [copyText, handlePanelError],
+  );
+
+  /**
+   * `review_policy` copies immediately against the open policy; the
+   * `design_*` prompts need a goal, so they open {@link goalDialog} instead.
+   */
+  const agentPrompt = useCallback(
+    (name: 'review_policy' | 'design_policy' | 'design_supernode' | 'design_route') => {
+      if (name === 'review_policy') {
+        if (!selectedPolicy) {
+          notify({ tone: 'warning', title: 'Open a policy first' });
+          return;
+        }
+        void copyPrompt('review_policy', { policy_name: selectedPolicy.name });
+        return;
+      }
+      setGoalText('');
+      setGoalDialog(name);
+    },
+    [selectedPolicy, copyPrompt, notify],
+  );
+
   // Selection across routes/supernodes/plugin configs/stores is mutually
   // exclusive (see handleSelect* above), so any one of them being set means
   // "something is selected" for the view-yaml command's `when`.
@@ -685,6 +729,8 @@ export default function App() {
       // pairs `hasEditorAction` with `editorOpen` (see commands.ts).
       invokeEditorAction: editorActions.invoke,
       hasEditorAction: editorActions.has,
+      agentPrompt,
+      openAgentPanel: () => setAgentOpen(true),
     }),
     [
       editorOpen,
@@ -697,6 +743,7 @@ export default function App() {
       handleReload,
       openNotifications,
       editorActions,
+      agentPrompt,
     ]
   );
 
@@ -888,6 +935,7 @@ export default function App() {
           onOpenPalette={() => setPaletteOpen(true)}
           onCreateSupernodeDef={handleCreateSupernodeDef}
           storeOptions={storeOptions}
+          onReviewWithAgent={() => agentPrompt('review_policy')}
         />
       )}
 
@@ -1181,6 +1229,29 @@ export default function App() {
         </pre>
       </Dialog>
 
+      <Dialog
+        open={goalDialog !== null}
+        title="Describe the goal for the agent"
+        onClose={() => setGoalDialog(null)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setGoalDialog(null)}>Cancel</DialogButton>
+            <DialogButton
+              disabled={!goalText.trim()}
+              onClick={() => {
+                const name = goalDialog!;
+                setGoalDialog(null);
+                void copyPrompt(name, { goal: goalText.trim() });
+              }}
+            >
+              Copy prompt
+            </DialogButton>
+          </>
+        }
+      >
+        <DialogField label="Goal" value={goalText} onChange={setGoalText} placeholder="rate-limit /api by API key, 100 req/min, 429 on excess" autoFocus />
+      </Dialog>
+
       <DebugPanel
         open={debugOpen}
         onClose={() => setDebugOpen(false)}
@@ -1188,6 +1259,7 @@ export default function App() {
         policies={policies}
         selectedPolicy={selectedPolicy?.name ?? null}
         onError={handlePanelError}
+        onCopyPrompt={copyPrompt}
       />
 
       <SessionsPanel
