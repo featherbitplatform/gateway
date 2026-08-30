@@ -38,6 +38,7 @@ mod context;
 mod debug;
 mod graph;
 mod hot_reload;
+mod mcp;
 mod metrics;
 mod outbound;
 mod plugins;
