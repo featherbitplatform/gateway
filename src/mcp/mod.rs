@@ -8,16 +8,54 @@
 //! [`server`] (the `rmcp` adapter and the mounted Streamable HTTP service)
 //! sits behind the `mcp` cargo feature.
 
+// The tool/resource/prompt layer is transport-agnostic and compiles in every
+// build, but until the Admin API's `/api/mcp/*` endpoints land it is reached
+// only through the `mcp` transport below.
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub mod auth;
-
-// wired to the rmcp server in Task 9; the registry is exercised by tests until then
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
+pub mod docs;
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
+pub mod prompts;
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub mod tools;
 
-// resources are served by the rmcp server in Task 9
-#[allow(dead_code)]
-pub mod docs;
+#[cfg(feature = "mcp")]
+pub mod server;
 
-// served by the rmcp server (Task 9) and /api/mcp/prompts (Task 10)
-#[allow(dead_code)]
-pub mod prompts;
+#[cfg(feature = "mcp")]
+use std::sync::Arc;
+
+use axum::response::IntoResponse;
+use axum::routing::any;
+use axum::Router;
+
+/// Router fragment answering the MCP path with `404` when the feature is off
+/// or `admin.mcp.enabled` is false (the `/api/debug/*` convention: never
+/// advertise a disabled surface). Logs a warning naming the key.
+pub fn disabled_router(path: &str) -> Router {
+    async fn not_found() -> axum::response::Response {
+        tracing::warn!(
+            "MCP endpoint was requested but is disabled; set `admin.mcp.enabled: true` \
+             (FEATHERBIT_MCP_ENABLED=true) with at least one token in system.yaml and restart"
+        );
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "not_found"})),
+        )
+            .into_response()
+    }
+    Router::new().route(path, any(not_found))
+}
+
+/// The live MCP endpoint: bearer auth → rmcp Streamable HTTP service.
+#[cfg(feature = "mcp")]
+pub fn router(cfg: &crate::config::McpConfig, state: Arc<crate::state::SharedState>) -> Router {
+    let auth_state = Arc::new(auth::McpAuthState::from_config(cfg));
+    Router::new()
+        .route_service(&cfg.path, server::build_service(state))
+        .route_layer(axum::middleware::from_fn_with_state(
+            auth_state,
+            auth::bearer_middleware,
+        ))
+}

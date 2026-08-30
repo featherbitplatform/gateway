@@ -153,6 +153,9 @@ pub async fn run_sandbox_tool(state: &SharedState, a: Value) -> Result<Value, To
 
 /// Schema for `run_sandbox`: a permissive object (the body is documented by
 /// the sandbox docs; nodes/policy are mutually exclusive).
+// Only ever used through `schema_of::<SandboxArgs>()`: the tool hands the raw
+// JSON to the sandbox runner, which does its own field-level validation.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxArgs {
     /// Ad-hoc node list to run in order (exclusive with `policy`).
