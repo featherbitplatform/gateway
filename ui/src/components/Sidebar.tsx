@@ -6,7 +6,7 @@
  * @module components/Sidebar
  */
 import { useEffect, useState } from 'react';
-import { Plus, RotateCw, X, FileCode, Bug, KeyRound, ShieldCheck } from 'lucide-react';
+import { Plus, RotateCw, X, FileCode, Bug, KeyRound, ShieldCheck, Bell } from 'lucide-react';
 import type { Route, Supernode, PluginConfigDef, StoreConfig, GatewayStatus } from '../types';
 import { api } from '../api/client';
 
@@ -68,6 +68,10 @@ interface SidebarProps {
   onOpenSessions: () => void;
   /** Called when "Certificates" is clicked; the parent opens the certificates panel. */
   onOpenCertificates: () => void;
+  /** Called when the bell is clicked; the parent opens the notifications panel. */
+  onOpenNotifications: () => void;
+  /** Error notifications raised since the panel was last opened; shown as the bell's badge when > 0. */
+  unreadNotifications: number;
 }
 
 /**
@@ -109,6 +113,8 @@ export function Sidebar({
   debugEnabled,
   onOpenSessions,
   onOpenCertificates,
+  onOpenNotifications,
+  unreadNotifications,
 }: SidebarProps) {
   const [status, setStatus] = useState<GatewayStatus | null>(null);
 
@@ -497,6 +503,50 @@ export function Sidebar({
 
       {/* Footer */}
       <div style={{ padding: 12, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {/* Persistent log of every toast: a rejected save that flashed by
+            during a busy moment stays inspectable here, server reason included. */}
+        <button
+          onClick={onOpenNotifications}
+          aria-label="Notifications"
+          title={
+            unreadNotifications > 0
+              ? `${unreadNotifications} unread error${unreadNotifications === 1 ? '' : 's'} — open the notification log`
+              : 'Notification log — every save outcome, inspectable afterwards'
+          }
+          className="w-full flex items-center justify-center gap-1.5 transition-colors"
+          style={{
+            padding: '7px 0',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: 'var(--text-xs)',
+            fontWeight: 'var(--weight-medium)' as never,
+            background: 'var(--surface-input)',
+            color: 'var(--text-primary)',
+            border: `1px solid ${unreadNotifications > 0 ? 'var(--error)' : 'var(--border)'}`,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+          onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+        >
+          <Bell size={12} />
+          Notifications
+          {unreadNotifications > 0 && (
+            <span
+              data-testid="notifications-badge"
+              style={{
+                minWidth: 16,
+                padding: '0 5px',
+                borderRadius: 999,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10,
+                lineHeight: '16px',
+                fontWeight: 700,
+                background: 'var(--error)',
+                color: '#fff',
+              }}
+            >
+              {unreadNotifications}
+            </span>
+          )}
+        </button>
         <button
           onClick={onOpenCertificates}
           aria-label="Certificates"

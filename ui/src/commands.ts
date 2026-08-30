@@ -19,6 +19,8 @@ export interface CommandContext {
   viewYaml: () => void;
   reloadConfig: () => void;
   toggleTheme: () => void;
+  /** Opens the notification log (every toast, inspectable afterwards). */
+  openNotifications: () => void;
   /** Runs an action owned by the canvas (see editorActions.tsx). */
   invokeEditorAction: (id: string) => void;
   /** True when the canvas has registered that action. */
@@ -76,6 +78,7 @@ export function buildCommands(): Command[] {
     },
     { id: 'view-yaml', title: 'View YAML', shortcut: 'Y', when: (c) => c.hasSelection, run: (c) => c.viewYaml() },
     { id: 'reload-config', title: 'Reload gateway config', run: (c) => c.reloadConfig() },
+    { id: 'show-notifications', title: 'Show notifications', shortcut: 'N', run: (c) => c.openNotifications() },
     { id: 'toggle-theme', title: 'Toggle theme', run: (c) => c.toggleTheme() },
   ];
 }
