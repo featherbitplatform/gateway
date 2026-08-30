@@ -64,7 +64,7 @@ curl -s -X POST http://localhost:9090/mcp -H "Authorization: Bearer $TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
-The web UI's **Agent** panel (footer) shows these snippets with your actual endpoint.
+The web UI's **Agent** panel (footer) shows these snippets with your actual endpoint, and the Debug panel / policy editor offer **Copy as agent prompt** actions that produce the same prompts with data inlined.
 
 ## Tools, resources, prompts
 
