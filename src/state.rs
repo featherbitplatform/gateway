@@ -14,6 +14,9 @@ use crate::graph::{
 use crate::metrics::GatewayMetrics;
 use crate::plugins::resources::PluginResources;
 
+/// The compiled route table: each route paired with its compiled policy graph.
+type CompiledRoutes = Vec<(RouteConfig, Arc<CompiledGraph>)>;
+
 /// Shared gateway state, accessible from both the data-plane server and the Admin API.
 ///
 /// Wrapped in an [`Arc`] and cloned into every server task. The data plane
@@ -127,8 +130,16 @@ impl SharedState {
     /// and policy compilation — happens **before** any swap, so a failure
     /// leaves the running config untouched (the last-good guarantee).
     pub async fn apply_gateway(&self, new_gw: GatewayConfig) -> Result<(), String> {
-        let consumers = crate::consumers::ConsumerStore::from_config(&new_gw.consumers)?;
-        let routes = Self::compile_routes(&new_gw, &self.resources)?;
+        let (consumers, routes) = match Self::build_candidate(&new_gw, &self.resources) {
+            Ok(built) => built,
+            Err(e) => {
+                // A rejected candidate leaves the running config untouched, so
+                // this line is the only server-side trace that a save (from
+                // the UI, the Admin API, the file watcher or etcd) was refused.
+                tracing::warn!("Rejected config: {}", e);
+                return Err(e);
+            }
+        };
         tracing::info!(
             "Applied config: {} routes from {} policies",
             routes.len(),
@@ -140,6 +151,17 @@ impl SharedState {
         let mut r = self.routes.write().await;
         *r = routes;
         Ok(())
+    }
+
+    /// Builds everything a swap needs — consumer store and compiled route
+    /// table — failing before anything is touched.
+    fn build_candidate(
+        gw: &GatewayConfig,
+        resources: &Arc<PluginResources>,
+    ) -> Result<(crate::consumers::ConsumerStore, CompiledRoutes), String> {
+        let consumers = crate::consumers::ConsumerStore::from_config(&gw.consumers)?;
+        let routes = Self::compile_routes(gw, resources)?;
+        Ok((consumers, routes))
     }
 
     /// Validates and compiles `gw` **without** swapping anything.
@@ -178,7 +200,7 @@ impl SharedState {
     fn compile_routes(
         gateway: &GatewayConfig,
         resources: &Arc<PluginResources>,
-    ) -> Result<Vec<(RouteConfig, Arc<CompiledGraph>)>, String> {
+    ) -> Result<CompiledRoutes, String> {
         crate::stores::validate_stores(&gateway.stores)?;
         // Swap the candidate store registry in for the duration of the
         // compile (plugins resolve `store:` names at construction). The
@@ -320,6 +342,50 @@ policies:
       - { from: listener.out, to: sec.in }
       - { from: sec.success, to: client.in }
 "#;
+
+    /// A candidate the compiler rejects must leave an operational trace: a
+    /// WARN line carrying the reason, whichever driver (file watcher, etcd,
+    /// Admin API) submitted it. Without it a rejected UI save is invisible
+    /// server-side.
+    #[tokio::test]
+    async fn test_rejected_apply_is_logged_at_warn() {
+        let system: crate::config::SystemConfig = serde_yaml::from_str("{}").unwrap();
+        let state = SharedState::new(
+            system,
+            serde_yaml::from_str("{}").unwrap(),
+            None,
+            std::sync::Arc::new(crate::config_store::FileConfigStore::new(
+                std::path::PathBuf::from("gateway.yaml"),
+            )),
+        )
+        .unwrap();
+        // `client` is never reached: listener.out is unwired.
+        let candidate: crate::config::GatewayConfig = serde_yaml::from_str(
+            r#"
+routes:
+  - name: r
+    match: { path: "/*" }
+    policy: p
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: client, type: client }
+    edges: []
+"#,
+        )
+        .unwrap();
+
+        let (_guard, logs) = crate::test_log::capture_warnings();
+        let err = state.apply_gateway(candidate).await.unwrap_err();
+
+        let out = logs.contents();
+        assert!(out.contains("WARN"), "expected a WARN line, got: {out:?}");
+        assert!(
+            out.contains("Rejected config") && out.contains(&err),
+            "expected the rejection reason {err:?} in the log, got: {out:?}"
+        );
+    }
 
     #[test]
     fn test_policy_with_supernode_compiles() {
