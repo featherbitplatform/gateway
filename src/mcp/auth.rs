@@ -20,7 +20,6 @@ use crate::config::{McpConfig, McpScope};
 
 /// The identity behind an authenticated MCP request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // mounted by src/mcp/server.rs (Task 9)
 pub struct McpPrincipal {
     /// The token's optional label (`admin.mcp.tokens[].name`), for logs.
     pub name: Option<String>,
@@ -29,7 +28,6 @@ pub struct McpPrincipal {
 }
 
 /// Configured tokens, ready for constant-time lookup.
-#[allow(dead_code)] // mounted by src/mcp/server.rs (Task 9)
 pub struct McpAuthState {
     tokens: Vec<(Vec<u8>, McpPrincipal)>,
     allowed_origins: Vec<String>,
@@ -37,7 +35,6 @@ pub struct McpAuthState {
 
 impl McpAuthState {
     /// Builds the lookup table from validated config.
-    #[allow(dead_code)] // mounted by src/mcp/server.rs (Task 9)
     pub fn from_config(cfg: &McpConfig) -> Self {
         Self {
             tokens: cfg
@@ -61,7 +58,6 @@ impl McpAuthState {
 /// Why a request was refused. Deliberately coarse: callers must not leak
 /// whether a token was unknown, malformed, or absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // mounted by src/mcp/server.rs (Task 9)
 pub enum AuthFailure {
     /// An `Origin` header was present and not allow-listed.
     OriginNotAllowed,
@@ -70,7 +66,6 @@ pub enum AuthFailure {
 }
 
 /// Resolves the principal for a request from its headers.
-#[allow(dead_code)] // mounted by src/mcp/server.rs (Task 9)
 pub fn authenticate(auth: &McpAuthState, headers: &HeaderMap) -> Result<McpPrincipal, AuthFailure> {
     if let Some(origin) = headers.get("origin") {
         let allowed = origin
@@ -108,7 +103,6 @@ pub fn authenticate(auth: &McpAuthState, headers: &HeaderMap) -> Result<McpPrinc
 
 /// axum middleware for the MCP path: authenticates, then stores the
 /// [`McpPrincipal`] in request extensions for the server handler to read.
-#[allow(dead_code)] // mounted by src/mcp/server.rs (Task 9)
 pub async fn bearer_middleware(
     State(auth): State<Arc<McpAuthState>>,
     mut req: Request<Body>,
