@@ -24,6 +24,9 @@ import type {
   SessionPage,
   AcmeCertsResponse,
   AcmeRenewResponse,
+  McpStatus,
+  PromptDef,
+  RenderedPrompt,
 } from '../types';
 
 const BASE = '';
@@ -254,4 +257,15 @@ export const api = {
       `/api/acme/certs/${encodeURIComponent(id)}/renew${force ? '?force=true' : ''}`,
       { method: 'POST' },
     ),
+
+  // MCP
+  /** `GET /api/mcp/status` — MCP availability; answers even when MCP is off. */
+  mcpStatus: () => request<McpStatus>('/api/mcp/status'),
+  /** `GET /api/mcp/prompts` — the precompiled agent prompts. */
+  listPrompts: () => request<{ prompts: PromptDef[] }>('/api/mcp/prompts').then((r) => r.prompts),
+  /** `GET /api/mcp/prompts/{name}?…` — a prompt rendered with live data. */
+  renderPrompt: (name: string, args: Record<string, string>) => {
+    const q = new URLSearchParams(args).toString();
+    return request<RenderedPrompt>(`/api/mcp/prompts/${name}${q ? '?' + q : ''}`);
+  },
 };
