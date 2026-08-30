@@ -743,7 +743,6 @@ pub struct McpConfig {
     /// `Origin` header not listed here is refused (DNS-rebinding defence);
     /// non-browser agents send no `Origin`, so the empty default costs nothing.
     #[serde(default)]
-    #[allow(dead_code)] // parsed config; CORS check lands with the transport (later task)
     pub allowed_origins: Vec<String>,
 }
 
@@ -753,11 +752,9 @@ pub struct McpTokenConfig {
     /// The secret; usually `${FEATHERBIT_MCP_READ_TOKEN}`. At least 16 chars.
     pub token: String,
     /// `read` (list/get/validate/traces/sandbox) or `write` (also mutations).
-    #[allow(dead_code)] // parsed config; consumed by the auth layer (later task)
     pub scope: McpScope,
     /// Optional label used in logs only; never returned by any endpoint.
     #[serde(default)]
-    #[allow(dead_code)] // parsed config; logged by the auth layer (later task)
     pub name: Option<String>,
 }
 
@@ -777,7 +774,7 @@ impl McpScope {
     }
 
     /// The wire/log spelling.
-    #[allow(dead_code)] // consumed by the auth layer (later task)
+    #[allow(dead_code)] // only exercised by auth.rs's tests until a later task logs it
     pub fn as_str(self) -> &'static str {
         match self {
             McpScope::Read => "read",
