@@ -41,6 +41,14 @@ describe('withMcpHint', () => {
     expect(out).toContain('featherbit');
     expect(out).toContain('get_trace_step');
   });
+
+  it('only names tools that are actually in READ_TOOLS (guards hint-text drift)', () => {
+    const out = withMcpHint('body');
+    for (const tool of ['get_trace_step', 'get_node_type', 'validate_policy', 'run_sandbox']) {
+      expect(out).toContain(tool);
+      expect(READ_TOOLS).toContain(tool);
+    }
+  });
 });
 
 describe('promptQuery', () => {
