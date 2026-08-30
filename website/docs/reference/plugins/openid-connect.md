@@ -103,7 +103,20 @@ On a missing token, or the token being deliberately invalid (bad signature, expi
 - `WWW-Authenticate: Bearer error="invalid_token"`
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
 
-A **genuine provider failure** — the discovery document, JWKS endpoint, or introspection endpoint being unreachable, timing out, returning a non-2xx status, or handing back unparseable data — is not a token rejection; the node could not do its job, so it exits through the ordinary **error** port instead (same response shape, error code `OIDC_PROVIDER_ERROR` appended to `context.errors`).
+The missing-token reason names the mode — `No bearer token found in request (bearer_only is true; set bearer_only: false for interactive login)` — so a node that was *meant* to run the interactive flow but is still compiled in bearer mode (for example because the save that flipped `bearer_only` was rejected and the last-good config kept running) is recognizable from the response body alone.
+
+A **genuine provider failure** — the discovery document, JWKS endpoint, or introspection/token endpoint being unreachable, timing out, returning a non-2xx status, or handing back unparseable data — is not a token rejection; the node could not do its job, so it exits through the ordinary **error** port instead, and the prepared response says so rather than masquerading as an authentication decision:
+
+- `context.response.status_code` = `502`
+- no `WWW-Authenticate` challenge
+- Body: `{"error": "provider_error", "message": "<reason>"}` with `content-type: application/json`
+- error code `OIDC_PROVIDER_ERROR` appended to `context.errors` (and a `WARN` log line naming the policy and node)
+
+This applies in both modes. In interactive mode it is what a browser user sees when the IdP cannot even be reached to start the login: a `502`, not a `401` and not a redirect loop.
+
+:::caution Breaking change
+Before v0.8, provider failures reused the `denied` response shape (`401`, `WWW-Authenticate: Bearer`, `{"error": "unauthorized"}`). Clients that keyed on that `401` to distinguish "IdP down" from "token rejected" could not, and browser users saw an "unauthorized" JSON body instead of a login redirect. Match on the `error` port / `OIDC_PROVIDER_ERROR`, or on the `502`, instead.
+:::
 
 ## Interactive login
 
@@ -185,7 +198,7 @@ In the default `session.storage: cookie` mode, sessions live entirely in the enc
 
 ## Ports
 
-`openid-connect` declares four output ports: `success`, `denied` (a deliberate `401` rejection is prepared — missing/invalid bearer token, or in interactive mode a CSRF/nonce/session-flow failure), `redirect` (a `302` browser move is prepared — login, callback, or logout; interactive mode only, but the port is always declared), and `error` (a genuine provider failure — discovery, JWKS, or introspection/token-endpoint callout trouble — or, in `session.storage: redis` mode, a session-store failure: `503`, error code `SESSION_STORE_ERROR`). `denied` and `redirect` are both mandatory ports, same as `success`: the policy compiler rejects any policy that leaves either unwired, **even in bearer-only mode where `redirect` is never actually taken**. Wire both straight to `client`:
+`openid-connect` declares four output ports: `success`, `denied` (a deliberate `401` rejection is prepared — missing/invalid bearer token, or in interactive mode a CSRF/nonce/session-flow failure), `redirect` (a `302` browser move is prepared — login, callback, or logout; interactive mode only, but the port is always declared), and `error` (a genuine provider failure — discovery, JWKS, or introspection/token-endpoint callout trouble: `502`, error code `OIDC_PROVIDER_ERROR` — or, in `session.storage: redis` mode, a session-store failure: `503`, error code `SESSION_STORE_ERROR`). `denied` and `redirect` are both mandatory ports, same as `success`: the policy compiler rejects any policy that leaves either unwired, **even in bearer-only mode where `redirect` is never actually taken**. Wire both straight to `client`:
 
 ```yaml
 edges:

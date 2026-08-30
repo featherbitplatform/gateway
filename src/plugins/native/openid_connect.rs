@@ -652,22 +652,20 @@ impl OpenidConnectPlugin {
     /// returned a non-2xx status, or handed back unparseable data). Unlike
     /// `reject`, this exits through the `error` port because the node could
     /// not do its job, not because a presented credential was deliberately
-    /// refused. The response shape mirrors `reject`'s so client-visible
-    /// behavior over this path is unchanged by the port split.
+    /// refused — and the response says so: a `502` with
+    /// `{"error": "provider_error"}` and no `www-authenticate` challenge, so
+    /// neither an API client nor a browser user mistakes an IdP outage for
+    /// a failed login.
     fn infra_error(ctx: Context, message: String) -> PluginExecutionError {
         let mut ctx = ctx;
-        ctx.response.status_code = 401;
-        ctx.response.body = Bytes::from(format!(
-            r#"{{"error": "unauthorized", "message": "{}"}}"#,
-            message.replace('"', "'")
-        ));
+        ctx.response.status_code = 502;
+        ctx.response.headers.remove("www-authenticate");
+        ctx.response.body = Bytes::from(
+            serde_json::json!({ "error": "provider_error", "message": message }).to_string(),
+        );
         ctx.response.headers.insert(
             "content-type".to_string(),
             vec!["application/json".to_string()],
-        );
-        ctx.response.headers.insert(
-            "www-authenticate".to_string(),
-            vec!["Bearer error=\"invalid_token\"".to_string()],
         );
         PluginExecutionError {
             context: ctx,
@@ -1823,7 +1821,12 @@ impl Plugin for OpenidConnectPlugin {
 
         let token = match token {
             Some(t) => t,
-            None => return Self::reject(ctx, "No bearer token found in request"),
+            None => {
+                return Self::reject(
+                    ctx,
+                    "No bearer token found in request (bearer_only is true; set                      bearer_only: false for interactive login)",
+                )
+            }
         };
 
         let result = if self.use_jwks {
@@ -2344,6 +2347,33 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             .response
             .headers
             .contains_key("www-authenticate"));
+        // The message names the mode, so a misconfigured interactive setup
+        // that silently fell back to bearer mode is recognizable from the body.
+        let body = String::from_utf8(out.context.response.body.to_vec()).unwrap();
+        assert!(
+            body.contains("No bearer token found in request")
+                && body.contains("bearer_only is true")
+                && body.contains("bearer_only: false"),
+            "{body}"
+        );
+    }
+
+    /// Shared shape of a provider-failure response: a 502 that is clearly
+    /// not an authentication decision — no `www-authenticate` challenge, an
+    /// `error` discriminator distinct from `reject`'s `unauthorized`.
+    fn assert_provider_error(err: &PluginExecutionError) {
+        assert_eq!(err.error.code, "OIDC_PROVIDER_ERROR");
+        assert_eq!(err.context.response.status_code, 502);
+        assert!(
+            !err.context
+                .response
+                .headers
+                .contains_key("www-authenticate"),
+            "a provider failure must not challenge the client"
+        );
+        let body: serde_json::Value = serde_json::from_slice(&err.context.response.body).unwrap();
+        assert_eq!(body["error"], "provider_error", "{body}");
+        assert_eq!(body["message"], err.error.message, "{body}");
     }
 
     /// Regression: before the port split, every failure (deliberate or
@@ -2365,8 +2395,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             .execute(with_bearer(req_ctx("/", HashMap::new()), &token))
             .await
             .unwrap_err();
-        assert_eq!(err.error.code, "OIDC_PROVIDER_ERROR");
-        assert_eq!(err.context.response.status_code, 401);
+        assert_provider_error(&err);
     }
 
     /// Same regression, via the discovery path: an unreachable discovery
@@ -2387,8 +2416,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             .execute(with_bearer(req_ctx("/", HashMap::new()), &token))
             .await
             .unwrap_err();
-        assert_eq!(err.error.code, "OIDC_PROVIDER_ERROR");
-        assert_eq!(err.context.response.status_code, 401);
+        assert_provider_error(&err);
     }
 
     /// Same regression, via introspection: an unreachable introspection
@@ -2410,8 +2438,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             .execute(with_bearer(req_ctx("/", HashMap::new()), "opaque-token"))
             .await
             .unwrap_err();
-        assert_eq!(err.error.code, "OIDC_PROVIDER_ERROR");
-        assert_eq!(err.context.response.status_code, 401);
+        assert_provider_error(&err);
     }
 
     /// An introspection response that reports the token inactive is a
@@ -2480,6 +2507,44 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         );
         let set = &out.context.response.headers.get("set-cookie").unwrap()[0];
         assert!(set.starts_with("oidc_session_flow="), "{set}");
+    }
+
+    /// Interactive mode, no session, discovery unreachable: the node cannot
+    /// even build the redirect. That is a provider failure on the error port
+    /// (502), not a `denied` 401 — a browser user is not "unauthorized", the
+    /// IdP is unreachable.
+    #[tokio::test]
+    async fn test_interactive_discovery_unreachable_is_provider_error() {
+        let c = cfg(&[
+            (
+                "discovery",
+                serde_json::json!("http://127.0.0.1:1/.well-known/openid-configuration"),
+            ),
+            ("timeout", serde_json::json!(1)),
+            ("bearer_only", serde_json::json!(false)),
+            ("client_id", serde_json::json!("app")),
+            ("client_secret", serde_json::json!("s")),
+            (
+                "redirect_uri",
+                serde_json::json!("https://app.example.com/oidc/callback"),
+            ),
+            (
+                "session",
+                serde_json::json!({ "secret": "cookie-signing-secret" }),
+            ),
+        ]);
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+
+        let err = plugin
+            .execute(req_ctx("/dashboard", HashMap::new()))
+            .await
+            .unwrap_err();
+        assert_provider_error(&err);
+        assert!(
+            err.error.message.contains("discovery fetch failed"),
+            "{}",
+            err.error.message
+        );
     }
 
     #[tokio::test]
@@ -2584,8 +2649,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         );
 
         let err = plugin.execute(c).await.unwrap_err();
-        assert_eq!(err.error.code, "OIDC_PROVIDER_ERROR");
-        assert_eq!(err.context.response.status_code, 401);
+        assert_provider_error(&err);
     }
 
     // ---- Redis session storage ---------------------------------------
