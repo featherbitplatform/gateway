@@ -438,6 +438,21 @@ is unset.
 | E2E-SESS-02 | *Gated.* `GET /api/sessions?store=e2e-redis` after establishing a session | The listing includes the session with `subject: 'alice'`, `plugin: 'openid-connect'`, `policy: 'oidc-redis-policy'`, `route: 'oidc-redis'`; the record has no payload-like fields beyond `id`/`subject`/`plugin`/`policy`/`route`/`created_at`/`expires_at` |
 | E2E-SESS-03 | *Gated.* **Browser.** Log in via `/oidc-redis/echo`, then in the admin UI open the Sessions panel (footer button), select store `e2e-redis`, and click the session's revoke button | The row disappears; a subsequent data-plane request carrying the old cookie is bounced back into login (302 to the IdP) |
 
+## Notifications — `tests/notifications.spec.ts`
+
+Every toast the UI raises is also appended to a persistent notification log
+(`ui/src/notifications.ts`, localStorage per browser, newest first, capped at
+200) so an outcome that flashed by — above all a rejected save, which the
+gateway refuses with a `400` while keeping the last-good config live — can be
+inspected afterwards with the server's full response attached. The log opens
+from the bell in the sidebar footer (unread-error badge), from the error
+toast's **Details** link, and from the Ctrl+K palette (`Show notifications`, `N`).
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-NOTIF-01 | Open `echo-api`, delete `cors`'s `preflight` edge, Save Policy, click the toast's **Details**; then reload and open the bell | The bell shows an unread badge of `1`; the Notifications dialog opens on the `Failed to save policy` entry with the server's `must be wired — add an edge from 'cors'…` reason expanded; opening the panel clears the badge; after a reload the entry is still listed and expandable |
+| E2E-NOTIF-02 | Save `echo-api` unchanged (success), then unwire `preflight` and save again (rejected); open the panel via Ctrl+K → `Show notifications`; click **Errors**; click **Clear log** | Both `Policy saved` and `Failed to save policy` are listed (successes never raise the badge); the Errors filter hides the success; Clear empties the list and the persisted `featherbit.notifications` key |
+
 ## ACME certificates — `tests/acme.spec.ts`
 
 The main fixture gateway has no `acme:` block, so `E2E-ACME-01` proves the

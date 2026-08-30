@@ -48,6 +48,8 @@ mod sessions;
 mod state;
 mod stores;
 mod stream;
+#[cfg(test)]
+mod test_log;
 mod traffic;
 mod vars;
 
