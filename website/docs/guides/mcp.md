@@ -21,16 +21,24 @@ admin:
     allowed_origins: []
 ```
 
-Restart-gated like everything in `system.yaml`. Rules enforced at load: `enabled: true` needs at least one token; tokens are at least 16 characters (use 32+ random bytes: `openssl rand -base64 32`); duplicates are rejected; `path` must be absolute and outside `/api`. Disabled (the default), the path answers `404 {"error":"not_found"}` — indistinguishable from a route that was never mounted. The gateway names the config key to set at startup, and warns again the first time the path is hit — but only that once per process, so a stream of unauthenticated requests can't be used to spam the log.
+Restart-gated like everything in `system.yaml`. Rules enforced at load: `enabled: true` needs at least one token; tokens are at least 16 characters (use 32+ random bytes: `openssl rand -base64 32`); duplicates are rejected; `path` must be absolute and outside `/api`, and outside the reserved `/`, `/healthz`, `/readyz`, `/metrics` paths. Disabled (the default), the path answers `404 {"error":"not_found"}` — indistinguishable from a route that was never mounted. The gateway names the config key to set at startup, and warns again the first time the path is hit — but only that once per process, so a stream of unauthenticated requests can't be used to spam the log.
+
+::::warning Restart required
+`system.yaml` is read once at startup and never hot-reloaded, so **enabling/disabling the MCP endpoint, its tokens, and its path all require a restart**. Nothing here is hot-reloadable, unlike `gateway.yaml`.
+:::
 
 ### Scopes
 
 | Scope | Unlocks |
 |---|---|
-| `read` | `list_node_types`, `get_node_type`, `list_vars`, `get_status`, `export_config`, `list_/get_` for routes, policies, supernodes, plugin configs, stores, consumers (credentials masked), `validate_policy`, `validate_supernode`, `list_traces`, `get_trace`, `get_trace_step`, `run_sandbox` |
+| `read` | `list_node_types`, `get_node_type`, `list_vars`, `get_status`, `export_config` (whole-gateway YAML, consumer credentials masked, same as below), `list_/get_` for routes, policies, supernodes, plugin configs, stores, consumers (credentials masked), `validate_policy`, `validate_supernode`, `list_traces`, `get_trace`, `get_trace_step`, `run_sandbox` |
 | `write` | everything above plus `put_/delete_` for routes, policies, supernodes, plugin configs, stores, and `reload_config`. Every `put_`/`delete_` accepts `dry_run: true`. |
 
 Read tokens never see write tools in `tools/list`; a write call with a read token returns a `forbidden` tool error. Use a read token against production and a write token only where an agent should be allowed to change config.
+
+:::warning run_sandbox is real plugin execution, even at read scope
+`run_sandbox` sits at `read` scope by design, but with `debug.enabled: true` that means a *read* token can execute plugins for real: an ad-hoc `nodes:` list can include `script` (Lua) and any node that makes outbound calls, and shared rate-limit/circuit-breaker state is mutated — see [the sandbox's own warning](./debugging.md) about live resources. Set `debug.sandbox: false` to keep tracing while removing that capability. Do not hand read tokens to untrusted agents on a gateway with the sandbox enabled.
+:::
 
 ## Connecting a client
 
