@@ -108,6 +108,12 @@ fn link_re() -> &'static Regex {
 /// Strips frontmatter (keeping the title as an H1), `import` lines, and JSX
 /// elements (single-line `<span …>…</span>` and multi-line `<Component … />`
 /// blocks), and rewrites relative `.md` links to `featherbit://docs/…` URIs.
+/// Fenced code blocks (opened/closed by a line whose trimmed form starts
+/// with ```` ``` ````) pass through verbatim — no import/JSX/link
+/// processing — since example bodies routinely contain `<Uppercase...>`
+/// tokens (e.g. an RFC 5424 `<PRI>...` syslog frame) that would otherwise be
+/// mistaken for an unterminated JSX block, silently swallowing everything
+/// after it for the rest of the page.
 ///
 /// Deviation from the literal brief: a captured link directory hint that
 /// contains `guides/` is left as plain text instead of being rewritten. The
@@ -135,8 +141,20 @@ pub fn clean(md: &str, section: DocSection) -> String {
         out.push_str(&format!("# {title}\n"));
     }
     let mut in_jsx = false;
+    let mut in_fence = false;
     for line in body.lines() {
         let t = line.trim_start();
+        if t.starts_with("```") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_fence {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
         if in_jsx {
             if t.ends_with("/>") || t.starts_with("</") {
                 in_jsx = false;
@@ -356,5 +374,63 @@ mod tests {
             let content = read_uri(&p.uri).unwrap_or_else(|| panic!("no content for {}", p.uri));
             assert!(!content.is_empty(), "{} cleaned to empty content", p.uri);
         }
+    }
+
+    /// `syslog`'s raw page wraps an RFC 5424 example (`<PRI>...`) in a fenced
+    /// code block. Before fenced blocks were exempted from JSX detection,
+    /// that line tripped the multi-line-JSX heuristic (`<Uppercase...>` with
+    /// no closing `/>`/`</` on the same line) and never found a closing tag,
+    /// silently dropping the closing fence plus everything after it —
+    /// the whole Configuration table included — for the rest of the file.
+    #[test]
+    fn syslog_page_survives_fenced_uppercase_tag() {
+        let md = plugin_page("syslog").unwrap();
+        assert!(
+            md.contains("<PRI>1 TIMESTAMP HOSTNAME APP-NAME PROCID"),
+            "fenced RFC 5424 example line dropped: {}",
+            &md[..200.min(md.len())]
+        );
+        assert!(
+            md.contains("## Configuration"),
+            "Configuration heading dropped"
+        );
+        assert!(md.contains("| `host` |"), "Configuration table row dropped");
+    }
+
+    /// Structural invariant across every embedded plugin page: cleaning must
+    /// never truncate a page partway through, so any page whose raw source
+    /// has a `## Configuration` section must still have it after `clean()`.
+    /// This is the regression guard for silent wholesale content loss (as
+    /// happened with `syslog`) that `clean_never_panics_on_any_embedded_page`
+    /// alone can't catch, since a truncated-but-non-empty page still passes
+    /// that test.
+    #[test]
+    fn configuration_sections_survive_cleaning_for_every_plugin_page() {
+        let mut checked = 0;
+        for path in DocsAssets::iter() {
+            let path = path.as_ref();
+            let Some(stem) = path
+                .strip_prefix("reference/plugins/")
+                .and_then(|s| s.strip_suffix(".md"))
+            else {
+                continue;
+            };
+            if stem == "index" {
+                continue;
+            }
+            let raw_md = raw(DocSection::Plugins, stem).unwrap();
+            if raw_md.contains("## Configuration") {
+                checked += 1;
+                let cleaned = page(DocSection::Plugins, stem).unwrap();
+                assert!(
+                    cleaned.contains("## Configuration"),
+                    "'{stem}' lost its Configuration section during cleaning"
+                );
+            }
+        }
+        assert!(
+            checked > 80,
+            "sanity: expected most plugin pages to have a Configuration section, got {checked}"
+        );
     }
 }
