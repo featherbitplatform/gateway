@@ -233,28 +233,14 @@ impl CasAuthPlugin {
     /// unreachable, timed out, or answered `/serviceValidate` with a non-200).
     /// Unlike [`CasAuthPlugin::reject`], this exits through the `error` port
     /// because the node could not do its job, not because a presented ticket
-    /// was deliberately refused. The response shape mirrors `reject`'s so
-    /// client-visible behavior over this path is unchanged by the port split.
+    /// was deliberately refused — and the prepared response is the shared
+    /// `502 provider_error` shape, not a `401` that would read as a bad ticket.
     fn infra_error(&self, ctx: Context, message: String) -> PluginExecutionError {
-        let mut ctx = ctx;
-        ctx.response.status_code = 401;
-        ctx.response.body = Bytes::from(format!(
-            r#"{{"error": "unauthorized", "message": "{}"}}"#,
-            message.replace('"', "'")
-        ));
-        ctx.response.headers.insert(
-            "content-type".to_string(),
-            vec!["application/json".to_string()],
-        );
-        PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "CAS_AUTH_PROVIDER_ERROR".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        }
+        crate::plugins::util::provider_error::provider_error(
+            ctx,
+            "CAS_AUTH_PROVIDER_ERROR",
+            message,
+        )
     }
 
     /// Session-store outage: 503 through the error port. Deliberately NOT
@@ -872,12 +858,10 @@ mod tests {
             .execute(ctx("/", query))
             .await
             .expect_err("transport failure must be an Err on the error port");
-        assert_eq!(err.error.code, "CAS_AUTH_PROVIDER_ERROR");
-        // The client-visible shape still mirrors `reject`'s 401 JSON.
-        assert_eq!(err.context.response.status_code, 401);
-        assert_eq!(
-            err.context.response.headers.get("content-type").unwrap()[0],
-            "application/json"
+        // A CAS outage is a provider failure, not a refused ticket: 502, no challenge.
+        crate::plugins::util::provider_error::testing::assert_provider_error(
+            &err,
+            "CAS_AUTH_PROVIDER_ERROR",
         );
     }
 
