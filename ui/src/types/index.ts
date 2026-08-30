@@ -465,3 +465,33 @@ export interface AcmeRenewResponse {
   scheduled: boolean;
   reason?: string;
 }
+
+/** `GET /api/mcp/status` — never includes token values. */
+export interface McpStatus {
+  compiled: boolean;
+  enabled: boolean;
+  path: string;
+  token_count: number;
+  scopes: Array<'read' | 'write'>;
+}
+
+/** One argument of a precompiled agent prompt. */
+export interface PromptArgDef {
+  name: string;
+  description: string;
+  required: boolean;
+}
+
+/** A precompiled agent prompt, from `GET /api/mcp/prompts`. */
+export interface PromptDef {
+  name: string;
+  description: string;
+  arguments: PromptArgDef[];
+}
+
+/** A rendered prompt, from `GET /api/mcp/prompts/{name}`. */
+export interface RenderedPrompt {
+  name: string;
+  description: string;
+  text: string;
+}
