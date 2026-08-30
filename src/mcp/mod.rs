@@ -32,13 +32,23 @@ use axum::Router;
 
 /// Router fragment answering the MCP path with `404` when the feature is off
 /// or `admin.mcp.enabled` is false (the `/api/debug/*` convention: never
-/// advertise a disabled surface). Logs a warning naming the key.
+/// advertise a disabled surface).
+///
+/// The warning naming the key fires **once per process**, not once per
+/// request: this route answers before any credential is checked, so a
+/// per-request log would let anyone who can reach the admin listener drive
+/// unbounded WARN volume. The first hit carries the whole diagnosis (and
+/// `build_router` already logs the disabled state at startup); the rest is
+/// noise.
 pub fn disabled_router(path: &str) -> Router {
+    static WARNED: std::sync::Once = std::sync::Once::new();
     async fn not_found() -> axum::response::Response {
-        tracing::warn!(
-            "MCP endpoint was requested but is disabled; set `admin.mcp.enabled: true` \
-             (FEATHERBIT_MCP_ENABLED=true) with at least one token in system.yaml and restart"
-        );
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "MCP endpoint was requested but is disabled; set `admin.mcp.enabled: true` \
+                 (FEATHERBIT_MCP_ENABLED=true) with at least one token in system.yaml and restart"
+            );
+        });
         (
             axum::http::StatusCode::NOT_FOUND,
             axum::Json(serde_json::json!({"error": "not_found"})),
