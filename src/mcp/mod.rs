@@ -17,3 +17,7 @@ pub mod tools;
 // resources are served by the rmcp server in Task 9
 #[allow(dead_code)]
 pub mod docs;
+
+// served by the rmcp server (Task 9) and /api/mcp/prompts (Task 10)
+#[allow(dead_code)]
+pub mod prompts;
