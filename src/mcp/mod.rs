@@ -7,3 +7,5 @@
 //! API's `/api/mcp/prompts` uses the renderer even without a transport. Only
 //! [`server`] (the `rmcp` adapter and the mounted Streamable HTTP service)
 //! sits behind the `mcp` cargo feature.
+
+pub mod auth;
