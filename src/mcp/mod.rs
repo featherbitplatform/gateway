@@ -8,16 +8,17 @@
 //! [`server`] (the `rmcp` adapter and the mounted Streamable HTTP service)
 //! sits behind the `mcp` cargo feature.
 
-// The tool/resource/prompt layer is transport-agnostic and compiles in every
-// build, but until the Admin API's `/api/mcp/*` endpoints land it is reached
-// only through the `mcp` transport below.
+// `auth` (bearer tokens → scope) is reached only through the `mcp`
+// transport below; without the feature nothing calls into it.
 #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub mod auth;
-#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
+// `docs`, `prompts` and `tools` are transport-agnostic and compile in every
+// build: the Admin API's `/api/mcp/*` endpoints (`src/admin/mcp.rs`) reach
+// them directly, whether or not the `mcp` feature/transport is present.
+// Individual items still unreachable in a headless build carry their own
+// per-item `allow(dead_code)`.
 pub mod docs;
-#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub mod prompts;
-#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub mod tools;
 
 #[cfg(feature = "mcp")]

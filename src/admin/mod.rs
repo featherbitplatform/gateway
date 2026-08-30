@@ -11,6 +11,7 @@ mod auth;
 mod consumers;
 mod debug;
 mod env_vars;
+mod mcp;
 mod plugin_configs;
 pub(crate) mod policies;
 mod routes;
@@ -148,6 +149,7 @@ pub(crate) fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) 
         .merge(plugin_configs::router())
         .merge(supernodes::router())
         .merge(consumers::router())
+        .merge(mcp::router())
         .merge(sessions::router())
         .merge(status::router())
         .merge(stores::router())
