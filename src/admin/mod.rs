@@ -139,8 +139,8 @@ pub async fn start_admin_server(
 /// Builds the admin router: authed API routes, plus — only when compiled with
 /// the `ui` feature AND `admin.ui_enabled` is true — the unauthenticated SPA
 /// fallback. Without it, non-API paths get axum's default 404.
-fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
-    let app = Router::new()
+pub(crate) fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
+    let api = Router::new()
         // API routes (with auth)
         .merge(routes::router())
         .merge(acme::router())
@@ -161,7 +161,35 @@ fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
             }),
             auth::basic_auth_middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
+
+    // MCP lives OUTSIDE the Basic Auth layer: it has its own bearer tokens,
+    // and its own explicit 404-when-disabled route, so `ui_enabled` cannot
+    // turn the path into the SPA index.
+    let mcp_path = admin_config
+        .mcp
+        .as_ref()
+        .map(|m| m.path.clone())
+        .unwrap_or_else(|| "/mcp".to_string());
+    #[cfg(feature = "mcp")]
+    let mcp_router = match &admin_config.mcp {
+        Some(cfg) if cfg.enabled => crate::mcp::router(cfg, state),
+        _ => {
+            info!("MCP server disabled (admin.mcp.enabled = false)");
+            crate::mcp::disabled_router(&mcp_path)
+        }
+    };
+    #[cfg(not(feature = "mcp"))]
+    let mcp_router = {
+        if admin_config.mcp.as_ref().is_some_and(|m| m.enabled) {
+            warn!(
+                "MCP server not compiled in (built without the \"mcp\" feature); admin.mcp ignored"
+            );
+        }
+        let _ = &state;
+        crate::mcp::disabled_router(&mcp_path)
+    };
+    let app = api.merge(mcp_router);
 
     // UI static files (no auth — the API calls from the UI will authenticate).
     //
@@ -246,6 +274,20 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_path_is_404_when_disabled_even_with_ui() {
+        let app = build_router(&admin_config(true), test_state());
+        let resp = app
+            .oneshot(Request::post("/mcp").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], br#"{"error":"not_found"}"#);
     }
 
     #[tokio::test]

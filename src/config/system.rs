@@ -768,13 +768,13 @@ pub enum McpScope {
 
 impl McpScope {
     /// Whether a token with this scope may use a tool requiring `required`.
-    #[allow(dead_code)] // consumed by the tool-dispatch layer (later task)
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))] // scope-gates tools in src/mcp/server.rs
     pub fn allows(self, required: McpScope) -> bool {
         self == McpScope::Write || required == McpScope::Read
     }
 
     /// The wire/log spelling.
-    #[allow(dead_code)] // only exercised by auth.rs's tests until a later task logs it
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))] // logged by src/mcp/server.rs
     pub fn as_str(self) -> &'static str {
         match self {
             McpScope::Read => "read",
