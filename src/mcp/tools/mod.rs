@@ -5,6 +5,7 @@
 pub mod catalog;
 pub mod config;
 pub mod debug;
+pub mod writes;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -162,15 +163,25 @@ pub async fn call(state: &SharedState, name: &str, a: JsonObject) -> Result<Valu
         "get_trace" => debug::get_trace(state, args(a)?).await,
         "get_trace_step" => debug::get_trace_step(state, args(a)?).await,
         "run_sandbox" => debug::run_sandbox_tool(state, Value::Object(a)).await,
+        "put_route" => writes::put_route(state, args(a)?).await,
+        "delete_route" => writes::delete_route(state, args(a)?).await,
+        "put_policy" => writes::put_policy(state, args(a)?).await,
+        "delete_policy" => writes::delete_policy(state, args(a)?).await,
+        "put_supernode" => writes::put_supernode(state, args(a)?).await,
+        "delete_supernode" => writes::delete_supernode(state, args(a)?).await,
+        "put_plugin_config" => writes::put_plugin_config(state, args(a)?).await,
+        "delete_plugin_config" => writes::delete_plugin_config(state, args(a)?).await,
+        "put_store" => writes::put_store(state, args(a)?).await,
+        "delete_store" => writes::delete_store(state, args(a)?).await,
+        "reload_config" => writes::reload_config(state).await,
         _ => Err(ToolError::unknown_tool(name)),
     }
 }
 
 use McpScope::Read;
-#[cfg(test)]
 use McpScope::Write;
 
-static TOOLS: [ToolDef; 22] = [
+static TOOLS: [ToolDef; 33] = [
     ToolDef { name: "list_node_types", scope: Read, description: "List every node (plugin) type with its description and declared ports. Start here when designing a policy.", input_schema: schema_of::<catalog::NoArgs> },
     ToolDef { name: "get_node_type", scope: Read, description: "Full reference for one node type: description, input/output ports (which must be wired), and its documentation page with every config key and a YAML example.", input_schema: schema_of::<catalog::TypeArgs> },
     ToolDef { name: "list_vars", scope: Read, description: "The $var catalog usable in plugin config (e.g. $remote_addr, $http_<header>, $consumer_name) with examples.", input_schema: schema_of::<catalog::NoArgs> },
@@ -193,6 +204,17 @@ static TOOLS: [ToolDef; 22] = [
     ToolDef { name: "get_trace", scope: Read, description: "One trace: the request, final response, and every node step with outcome, exit port, edge taken and the context changes it made. Snapshots omitted unless include_snapshots.", input_schema: schema_of::<debug::GetTraceArgs> },
     ToolDef { name: "get_trace_step", scope: Read, description: "One step of a trace in full: context before and after the node, the diff, outcome/port, and the node's stored config. Use to answer 'why did this node exit on this port?'.", input_schema: schema_of::<debug::GetTraceStepArgs> },
     ToolDef { name: "run_sandbox", scope: Read, description: "Run a stored policy or an ad-hoc node list against a synthetic request, for real (outbound calls happen), and get the resulting trace. Requires debug.enabled and debug.sandbox.", input_schema: schema_of::<debug::SandboxArgs> },
+    ToolDef { name: "put_route", scope: Write, description: "Create or replace a route {match: {path, methods?, host?, headers?}, policy}. Set dry_run=true first to validate the whole resulting config without applying.", input_schema: schema_of::<writes::PutArgs> },
+    ToolDef { name: "delete_route", scope: Write, description: "Delete a route by name (dry_run supported).", input_schema: schema_of::<writes::DeleteArgs> },
+    ToolDef { name: "put_policy", scope: Write, description: "Create or replace a policy {nodes, edges, error_handler?}. Every success/outcome port must be wired. Use dry_run=true first.", input_schema: schema_of::<writes::PutArgs> },
+    ToolDef { name: "delete_policy", scope: Write, description: "Delete a policy by name; fails while a route still references it (dry_run supported).", input_schema: schema_of::<writes::DeleteArgs> },
+    ToolDef { name: "put_supernode", scope: Write, description: "Create or replace a supernode definition {nodes, edges, description?} with input/output/error boundary nodes. Use dry_run=true first.", input_schema: schema_of::<writes::PutArgs> },
+    ToolDef { name: "delete_supernode", scope: Write, description: "Delete a supernode by name; fails while a policy still uses it (dry_run supported).", input_schema: schema_of::<writes::DeleteArgs> },
+    ToolDef { name: "put_plugin_config", scope: Write, description: "Create or replace a shared plugin config profile {type, config, description?} referenced by nodes via config_ref.", input_schema: schema_of::<writes::PutArgs> },
+    ToolDef { name: "delete_plugin_config", scope: Write, description: "Delete a plugin config profile by name; fails while referenced (dry_run supported).", input_schema: schema_of::<writes::DeleteArgs> },
+    ToolDef { name: "put_store", scope: Write, description: "Create or replace a redis/valkey store {type, url, password?, key_prefix?, tls?}. Keep secrets as ${ENV_VAR} placeholders.", input_schema: schema_of::<writes::PutArgs> },
+    ToolDef { name: "delete_store", scope: Write, description: "Delete a store by name; fails with the list of referrers while in use (dry_run supported).", input_schema: schema_of::<writes::DeleteArgs> },
+    ToolDef { name: "reload_config", scope: Write, description: "Re-read gateway.yaml from disk and apply it (file config source only).", input_schema: schema_of::<catalog::NoArgs> },
 ];
 
 #[cfg(test)]
