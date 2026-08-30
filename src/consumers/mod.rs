@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn mask_credentials_keeps_identifiers_only() {
         let c: ConsumerConfig = serde_yaml::from_str(
-            "name: alice\ncredentials:\n  key-auth:\n    key: s3cret\n  basic-auth:\n    username: alice\n    password: pw\n  hmac-auth:\n    access_key: ak\n    secret_key: sk\n    nested: {inner: x}\n",
+            "name: alice\ncredentials:\n  key-auth:\n    key: s3cret\n  basic-auth:\n    username: alice\n    password: pw\n  hmac-auth:\n    access_key: ak\n    secret_key: sk\n    nested: {inner: x}\n    tags: [tag1, tag2]\n",
         )
         .unwrap();
         let m = mask_credentials(&c);
@@ -271,6 +271,8 @@ mod tests {
         assert_eq!(m.credentials["hmac-auth"]["access_key"], "ak");
         assert_eq!(m.credentials["hmac-auth"]["secret_key"], "<masked>");
         assert_eq!(m.credentials["hmac-auth"]["nested"]["inner"], "<masked>");
+        assert_eq!(m.credentials["hmac-auth"]["tags"][0], "<masked>");
+        assert_eq!(m.credentials["hmac-auth"]["tags"][1], "<masked>");
         // The original is untouched.
         assert_eq!(c.credentials["key-auth"]["key"], "s3cret");
     }
