@@ -56,9 +56,18 @@ pub async fn get_status(state: &SharedState) -> Result<Value, ToolError> {
 }
 
 pub async fn export_config(state: &SharedState) -> Result<Value, ToolError> {
-    let gw = state.gateway.read().await;
-    let yaml = serde_yaml::to_string(&*gw).map_err(|e| ToolError::internal(e.to_string()))?;
-    Ok(serde_json::json!({ "format": "yaml", "content": yaml }))
+    let mut gw = state.gateway.read().await.clone();
+    gw.consumers = gw
+        .consumers
+        .iter()
+        .map(crate::consumers::mask_credentials)
+        .collect();
+    let yaml = serde_yaml::to_string(&gw).map_err(|e| ToolError::internal(e.to_string()))?;
+    Ok(serde_json::json!({
+        "format": "yaml",
+        "content": yaml,
+        "note": "consumer credential secrets are masked",
+    }))
 }
 
 #[cfg(test)]
@@ -104,7 +113,10 @@ mod tests {
 
     #[tokio::test]
     async fn vars_status_export() {
-        let s = state("debug:\n  enabled: true\n", ECHO_GATEWAY);
+        let gw = format!(
+            "{ECHO_GATEWAY}\nconsumers:\n  - name: alice\n    credentials:\n      key-auth: {{ key: topsecret }}\n"
+        );
+        let s = state("debug:\n  enabled: true\n", &gw);
         let v = call(&s, "list_vars", obj(serde_json::json!({})))
             .await
             .unwrap();
@@ -121,6 +133,10 @@ mod tests {
         let v = call(&s, "export_config", obj(serde_json::json!({})))
             .await
             .unwrap();
-        assert!(v["content"].as_str().unwrap().contains("echo-policy"));
+        let content = v["content"].as_str().unwrap();
+        assert!(content.contains("echo-policy"));
+        assert!(content.contains("<masked>"));
+        assert!(!content.contains("topsecret"));
+        assert_eq!(v["note"], "consumer credential secrets are masked");
     }
 }
