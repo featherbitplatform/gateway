@@ -14,4 +14,6 @@ pub mod auth;
 #[allow(dead_code)]
 pub mod tools;
 
+// resources are served by the rmcp server in Task 9
+#[allow(dead_code)]
 pub mod docs;
