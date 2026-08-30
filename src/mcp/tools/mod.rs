@@ -4,6 +4,7 @@
 
 pub mod catalog;
 pub mod config;
+pub mod debug;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -157,6 +158,10 @@ pub async fn call(state: &SharedState, name: &str, a: JsonObject) -> Result<Valu
         "get_consumer" => config::get_consumer(state, args(a)?).await,
         "validate_policy" => config::validate_policy(state, args(a)?).await,
         "validate_supernode" => config::validate_supernode(args(a)?).await,
+        "list_traces" => debug::list_traces(state, args(a)?).await,
+        "get_trace" => debug::get_trace(state, args(a)?).await,
+        "get_trace_step" => debug::get_trace_step(state, args(a)?).await,
+        "run_sandbox" => debug::run_sandbox_tool(state, Value::Object(a)).await,
         _ => Err(ToolError::unknown_tool(name)),
     }
 }
@@ -165,7 +170,7 @@ use McpScope::Read;
 #[cfg(test)]
 use McpScope::Write;
 
-static TOOLS: [ToolDef; 18] = [
+static TOOLS: [ToolDef; 22] = [
     ToolDef { name: "list_node_types", scope: Read, description: "List every node (plugin) type with its description and declared ports. Start here when designing a policy.", input_schema: schema_of::<catalog::NoArgs> },
     ToolDef { name: "get_node_type", scope: Read, description: "Full reference for one node type: description, input/output ports (which must be wired), and its documentation page with every config key and a YAML example.", input_schema: schema_of::<catalog::TypeArgs> },
     ToolDef { name: "list_vars", scope: Read, description: "The $var catalog usable in plugin config (e.g. $remote_addr, $http_<header>, $consumer_name) with examples.", input_schema: schema_of::<catalog::NoArgs> },
@@ -184,6 +189,10 @@ static TOOLS: [ToolDef; 18] = [
     ToolDef { name: "get_consumer", scope: Read, description: "One consumer by name; credential secrets are masked.", input_schema: schema_of::<config::NameArgs> },
     ToolDef { name: "validate_policy", scope: Read, description: "Validate and compile an unsaved policy (JSON object or YAML string) against the live gateway: structure, port wiring, config_ref/store references, and every node's config. Returns {valid, errors}. Persists nothing.", input_schema: schema_of::<config::ValidatePolicyArgs> },
     ToolDef { name: "validate_supernode", scope: Read, description: "Structurally validate an unsaved supernode definition (boundary nodes, reserved ids, inner wiring). Node config errors surface when a policy using it is validated or saved with dry_run.", input_schema: schema_of::<config::ValidateSupernodeArgs> },
+    ToolDef { name: "list_traces", scope: Read, description: "Recent debug traces (newest first): id, route, policy, method, path, status, step and error counts. Filter by route/policy/status/source. Requires debug.enabled.", input_schema: schema_of::<debug::ListTracesArgs> },
+    ToolDef { name: "get_trace", scope: Read, description: "One trace: the request, final response, and every node step with outcome, exit port, edge taken and the context changes it made. Snapshots omitted unless include_snapshots.", input_schema: schema_of::<debug::GetTraceArgs> },
+    ToolDef { name: "get_trace_step", scope: Read, description: "One step of a trace in full: context before and after the node, the diff, outcome/port, and the node's stored config. Use to answer 'why did this node exit on this port?'.", input_schema: schema_of::<debug::GetTraceStepArgs> },
+    ToolDef { name: "run_sandbox", scope: Read, description: "Run a stored policy or an ad-hoc node list against a synthetic request, for real (outbound calls happen), and get the resulting trace. Requires debug.enabled and debug.sandbox.", input_schema: schema_of::<debug::SandboxArgs> },
 ];
 
 #[cfg(test)]
