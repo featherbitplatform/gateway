@@ -40,10 +40,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::context::{Context, GatewayError};
+use crate::context::Context;
 use crate::outbound::{OutboundClient, OutboundError, OutboundRequest};
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginOutput, PluginResult};
 
 const UMA_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:uma-ticket";
 
@@ -188,27 +188,17 @@ impl AuthzKeycloakPlugin {
     }
 
     /// Builds a genuine infrastructure-failure `Err` (the Keycloak token
-    /// endpoint unreachable, timed out, or otherwise untransportable) — exits
-    /// through the `error` port because the node could not do its job, unlike
-    /// `deny` which is a deliberate, client-facing decision.
+    /// endpoint unreachable, timed out, or answering with a status that is not
+    /// a decision) — exits through the `error` port because the node could not
+    /// do its job, unlike `deny` which is a deliberate, client-facing decision.
+    /// The prepared response is the shared `502 provider_error` shape, not a
+    /// `403` that would hide a broken deployment behind a plausible denial.
     fn callout_error(ctx: Context, message: String) -> PluginResult {
-        let mut ctx = ctx;
-        ctx.response.status_code = 403;
-        ctx.response.body =
-            Bytes::from(r#"{"error":"access_denied","error_description":"not_authorized"}"#);
-        ctx.response.headers.insert(
-            "content-type".to_string(),
-            vec!["application/json".to_string()],
-        );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "AUTHZ_KEYCLOAK_ERROR".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        })
+        Err(crate::plugins::util::provider_error::provider_error(
+            ctx,
+            "AUTHZ_KEYCLOAK_ERROR",
+            message,
+        ))
     }
 }
 
@@ -553,8 +543,10 @@ mod tests {
             .execute(ctx_with_auth(Some("Bearer x")))
             .await
             .unwrap_err();
-        assert_eq!(err.error.code, "AUTHZ_KEYCLOAK_ERROR");
-        assert_eq!(err.context.response.status_code, 403);
+        crate::plugins::util::provider_error::testing::assert_provider_error(
+            &err,
+            "AUTHZ_KEYCLOAK_ERROR",
+        );
     }
 
     /// Minimal one-shot HTTP server that answers any request with a fixed
@@ -622,13 +614,15 @@ mod tests {
             .execute(ctx_with_auth(Some("Bearer x")))
             .await
             .unwrap_err();
-        assert_eq!(err.error.code, "AUTHZ_KEYCLOAK_ERROR");
+        crate::plugins::util::provider_error::testing::assert_provider_error(
+            &err,
+            "AUTHZ_KEYCLOAK_ERROR",
+        );
         assert!(
             err.error.message.contains("unexpected status 500"),
             "{}",
             err.error.message
         );
-        assert_eq!(err.context.response.status_code, 403);
     }
 
     /// A `404` from a wrong `token_endpoint` path is the same class of problem.
@@ -642,7 +636,10 @@ mod tests {
             .execute(ctx_with_auth(Some("Bearer x")))
             .await
             .unwrap_err();
-        assert_eq!(err.error.code, "AUTHZ_KEYCLOAK_ERROR");
+        crate::plugins::util::provider_error::testing::assert_provider_error(
+            &err,
+            "AUTHZ_KEYCLOAK_ERROR",
+        );
     }
 
     #[test]
