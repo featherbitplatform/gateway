@@ -14,6 +14,7 @@ import { Dialog, DialogButton, DialogField } from './components/Dialog';
 import { DebugPanel } from './components/DebugPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import { CertificatesPanel } from './components/CertificatesPanel';
+import { AgentPanel } from './components/AgentPanel';
 import { Toast, type ToastData } from './components/Toast';
 import { NotificationsPanel } from './components/NotificationsPanel';
 import { CommandPalette } from './components/CommandPalette';
@@ -34,6 +35,7 @@ import type {
   ScriptFile,
   DebugConfig,
   StoreConfig,
+  McpStatus,
 } from './types';
 
 /**
@@ -156,6 +158,10 @@ export default function App() {
   // Certificates panel state.
   const [certsOpen, setCertsOpen] = useState(false);
 
+  // Agent (MCP) panel state.
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
+
   // Port-name visibility (P) and the command palette (Ctrl+K). Owned here —
   // a single usePortNames() call — so the palette's toggle and the canvas
   // it re-renders can never see two different copies of the preference.
@@ -191,6 +197,13 @@ export default function App() {
       setDebugConfig(await api.debugConfig());
     } catch {
       setDebugConfig(null);
+    }
+    // MCP status is likewise advisory: the Agent panel explains an
+    // unreachable/disabled server rather than the editor failing to load.
+    try {
+      setMcpStatus(await api.mcpStatus());
+    } catch {
+      setMcpStatus(null);
     }
   }, []);
 
@@ -622,6 +635,23 @@ export default function App() {
     [notify],
   );
 
+  /**
+   * Clipboard+toast helper shared by the Agent panel's snippet "Copy"
+   * buttons (and, per Task 3, the "Copy as agent prompt" actions). Memoized
+   * for the same reason as `handlePanelError` above.
+   */
+  const copyText = useCallback(
+    async (label: string, text: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        notify({ tone: 'success', title: 'Copied to clipboard', message: label });
+      } catch (e) {
+        notify({ tone: 'error', title: 'Copy failed', message: `${e}` });
+      }
+    },
+    [notify],
+  );
+
   // Selection across routes/supernodes/plugin configs/stores is mutually
   // exclusive (see handleSelect* above), so any one of them being set means
   // "something is selected" for the view-yaml command's `when`.
@@ -821,6 +851,8 @@ export default function App() {
         onOpenCertificates={() => setCertsOpen(true)}
         onOpenNotifications={() => openNotifications()}
         unreadNotifications={notifications.unread}
+        onOpenAgent={() => setAgentOpen(true)}
+        mcpEnabled={mcpStatus?.enabled ?? false}
       />
       {selectedStoreDef ? (
         <StoresPanel
@@ -1166,6 +1198,13 @@ export default function App() {
       />
 
       <CertificatesPanel open={certsOpen} onClose={() => setCertsOpen(false)} onError={handlePanelError} />
+      <AgentPanel
+        open={agentOpen}
+        onClose={() => setAgentOpen(false)}
+        status={mcpStatus}
+        onCopy={copyText}
+        onError={handlePanelError}
+      />
 
       <NotificationsPanel
         key={notificationsSession}
