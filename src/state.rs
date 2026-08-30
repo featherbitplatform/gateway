@@ -179,6 +179,27 @@ impl SharedState {
         Ok(())
     }
 
+    /// `validate_gateway`, but guaranteed to leave `resources.stores` exactly
+    /// as it found it, on both success and failure.
+    ///
+    /// `compile_routes` only restores the pre-compile store registry when it
+    /// *fails* — on success the candidate registry is left live, because
+    /// every other caller (`apply_gateway`, config-store commits) follows a
+    /// successful validate with an apply that installs that same candidate
+    /// for real. A true dry-run has no such follow-up: without this, a
+    /// `dry_run: true` MCP write (e.g. `delete_store`) would durably swap in
+    /// the candidate registry — tearing down a live store's client (breaking
+    /// `/api/sessions`/ACME redis storage until the next apply) or standing
+    /// up a client for a store that was never committed — even though
+    /// nothing was meant to change. Use this wherever validation must not
+    /// have that side effect.
+    pub fn validate_gateway_dry(&self, gw: &GatewayConfig) -> Result<(), String> {
+        let prev = self.resources.stores.load_full();
+        let result = self.validate_gateway(gw);
+        self.resources.stores.store(prev);
+        result
+    }
+
     /// Reloads from disk (re-reads `gateway.yaml` raw, keeping `${VAR}`
     /// placeholders — resolution happens at compile/build time), recompiles,
     /// and swaps in the new config.
