@@ -4,7 +4,7 @@ import { Dialog, DialogButton } from './Dialog';
 import { api } from '../api/client';
 import { parseApiError } from '../apiError';
 import { clientSnippets, mcpEndpoint, READ_TOOLS, WRITE_TOOLS } from '../agentPrompts';
-import type { McpStatus, PromptDef } from '../types';
+import type { McpStatus, PromptArgDef, PromptDef } from '../types';
 
 /** Props for {@link AgentPanel}. */
 interface AgentPanelProps {
@@ -16,6 +16,12 @@ interface AgentPanelProps {
   status: McpStatus | null;
   /** Copies text to the clipboard and toasts (owned by App). */
   onCopy: (label: string, text: string) => void;
+  /**
+   * Copies a named prompt, prompting for its arguments first when it has any
+   * required ones (the generalized prompt-argument dialog in App); prompts
+   * whose arguments are all optional copy immediately.
+   */
+  onCopyPromptWithArgs: (name: string, args: PromptArgDef[]) => void;
   /** Surfaces errors through the app's toast. */
   onError: (title: string, message: string) => void;
 }
@@ -68,7 +74,7 @@ function DisabledNotice({ status }: { status: McpStatus | null }) {
   );
 }
 
-export function AgentPanel({ open, onClose, status, onCopy, onError }: AgentPanelProps) {
+export function AgentPanel({ open, onClose, status, onCopy, onCopyPromptWithArgs, onError }: AgentPanelProps) {
   const [prompts, setPrompts] = useState<PromptDef[]>([]);
 
   useEffect(() => {
@@ -124,9 +130,29 @@ export function AgentPanel({ open, onClose, status, onCopy, onError }: AgentPane
           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', marginBottom: 4 }}>Prompt library</div>
           <ul style={{ margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
             {prompts.map((p) => (
-              <li key={p.name} style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }}>
-                <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{p.name}</code>(
-                {p.arguments.map((a) => (a.required ? a.name : `${a.name}?`)).join(', ')}) — {p.description}
+              <li
+                key={p.name}
+                className="flex items-center justify-between"
+                style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)', gap: 8 }}
+              >
+                <span>
+                  <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{p.name}</code>(
+                  {p.arguments.map((a) => (a.required ? a.name : `${a.name}?`)).join(', ')}) — {p.description}
+                </span>
+                <button
+                  aria-label={`Copy prompt ${p.name}`}
+                  onClick={() => onCopyPromptWithArgs(p.name, p.arguments)}
+                  className="flex items-center gap-1"
+                  style={{
+                    flexShrink: 0,
+                    fontSize: 'var(--text-2xs)',
+                    color: 'var(--text-primary)',
+                    background: 'transparent',
+                    border: 'none',
+                  }}
+                >
+                  <Copy size={11} /> Copy
+                </button>
               </li>
             ))}
           </ul>

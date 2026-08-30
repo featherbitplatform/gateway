@@ -28,6 +28,7 @@ import type {
   PromptDef,
   RenderedPrompt,
 } from '../types';
+import { promptQuery } from '../agentPrompts';
 
 const BASE = '';
 
@@ -265,7 +266,7 @@ export const api = {
   listPrompts: () => request<{ prompts: PromptDef[] }>('/api/mcp/prompts').then((r) => r.prompts),
   /** `GET /api/mcp/prompts/{name}?…` — a prompt rendered with live data. */
   renderPrompt: (name: string, args: Record<string, string>) => {
-    const q = new URLSearchParams(args).toString();
+    const q = promptQuery(args);
     return request<RenderedPrompt>(`/api/mcp/prompts/${name}${q ? '?' + q : ''}`);
   },
 };

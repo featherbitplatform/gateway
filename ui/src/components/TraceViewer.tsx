@@ -300,6 +300,8 @@ export function TraceViewer({ trace, onCopyPrompt }: TraceViewerProps) {
                   onClick={() => onCopyPrompt(step.node_id)}
                   title={`Copy a prompt asking why ${step.node_id} exited on port ${step.port ?? 'error'}`}
                   style={headerButton}
+                  onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
                 >
                   Why this port?
                 </button>
@@ -387,27 +389,41 @@ export function TraceHeader({
         >
           {trace.method} {trace.path} · {trace.status}
         </div>
-        {onCopyToSandbox && (
-          <button
-            onClick={onCopyToSandbox}
-            title="Load this request's context into the Sandbox tab to replay or tweak it"
-            style={headerButton}
-            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
-          >
-            Copy to sandbox
-          </button>
-        )}
-        {onCopyPrompt && (
-          <>
-            <button onClick={() => onCopyPrompt('explain_trace')} title="Copy a prompt asking an agent to explain this whole trace" style={headerButton}>
-              Copy as agent prompt
+        <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
+          {onCopyToSandbox && (
+            <button
+              onClick={onCopyToSandbox}
+              title="Load this request's context into the Sandbox tab to replay or tweak it"
+              style={headerButton}
+              onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+              onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+            >
+              Copy to sandbox
             </button>
-            <button onClick={() => onCopyPrompt('why_this_response')} title={`Copy a prompt asking why the client got ${trace.status}`} style={headerButton}>
-              Why {trace.status}?
-            </button>
-          </>
-        )}
+          )}
+          {onCopyPrompt && (
+            <>
+              <button
+                onClick={() => onCopyPrompt('explain_trace')}
+                title="Copy a prompt asking an agent to explain this whole trace"
+                style={headerButton}
+                onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+                onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+              >
+                Copy as agent prompt
+              </button>
+              <button
+                onClick={() => onCopyPrompt('why_this_response')}
+                title={`Copy a prompt asking why the client got ${trace.status}`}
+                style={headerButton}
+                onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+                onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+              >
+                Why {trace.status}?
+              </button>
+            </>
+          )}
+        </div>
       </div>
       <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)', marginTop: 2 }}>
         policy {trace.policy}

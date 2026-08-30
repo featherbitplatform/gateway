@@ -37,6 +37,7 @@ import type {
   DebugConfig,
   StoreConfig,
   McpStatus,
+  PromptArgDef,
 } from './types';
 
 /**
@@ -63,6 +64,22 @@ import type {
  * The Admin API served from src/admin/ persists these changes into the
  * gateway's shared state (src/state.rs) used by the data plane.
  */
+
+/**
+ * Arguments for the `design_*` agent prompts (`review_policy` never reaches
+ * the dialog — see `agentPrompt` below). Mirrors `src/mcp/prompts.rs`; kept
+ * hardcoded here (rather than fetched) because these three are wired to
+ * fixed toolbar/palette actions, unlike the Agent panel's per-prompt Copy
+ * button, which fetches `PromptDef.arguments` live for any prompt.
+ */
+const DESIGN_PROMPT_ARGS: Record<'design_policy' | 'design_supernode' | 'design_route', PromptArgDef[]> = {
+  design_policy: [{ name: 'goal', description: 'What the policy must do, in plain words', required: true }],
+  design_supernode: [{ name: 'goal', description: 'What the supernode must do', required: true }],
+  design_route: [
+    { name: 'goal', description: 'Which requests should match and which policy should handle them', required: true },
+  ],
+};
+
 export default function App() {
   const [routes, setRoutes] = useState<Route[]>([]);
   const [policies, setPolicies] = useState<Policy[]>([]);
@@ -163,9 +180,13 @@ export default function App() {
   const [agentOpen, setAgentOpen] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
 
-  // Goal dialog for the `design_*` agent prompts (review_policy needs no goal).
-  const [goalDialog, setGoalDialog] = useState<null | 'design_policy' | 'design_supernode' | 'design_route'>(null);
-  const [goalText, setGoalText] = useState('');
+  // Generalized argument dialog for agent prompts that need input beyond what
+  // can be auto-filled (the `design_*` prompts' `goal`, and any prompt copied
+  // via the Agent panel's per-prompt Copy button). `review_policy` never
+  // opens this — it auto-fills `policy_name` from the open policy and copies
+  // immediately.
+  const [promptDialog, setPromptDialog] = useState<null | { name: string; args: PromptArgDef[] }>(null);
+  const [promptValues, setPromptValues] = useState<Record<string, string>>({});
 
   // Port-name visibility (P) and the command palette (Ctrl+K). Owned here —
   // a single usePortNames() call — so the palette's toggle and the canvas
@@ -678,7 +699,8 @@ export default function App() {
 
   /**
    * `review_policy` copies immediately against the open policy; the
-   * `design_*` prompts need a goal, so they open {@link goalDialog} instead.
+   * `design_*` prompts need a goal, so they open {@link promptDialog}
+   * instead, seeded from {@link DESIGN_PROMPT_ARGS}.
    */
   const agentPrompt = useCallback(
     (name: 'review_policy' | 'design_policy' | 'design_supernode' | 'design_route') => {
@@ -690,10 +712,27 @@ export default function App() {
         void copyPrompt('review_policy', { policy_name: selectedPolicy.name });
         return;
       }
-      setGoalText('');
-      setGoalDialog(name);
+      setPromptValues({});
+      setPromptDialog({ name, args: DESIGN_PROMPT_ARGS[name] });
     },
     [selectedPolicy, copyPrompt, notify],
+  );
+
+  /**
+   * The Agent panel's per-prompt "Copy" (Finding 1): copies immediately when
+   * every argument is optional (nothing to ask for), otherwise opens the
+   * generalized {@link promptDialog} for the user to fill in.
+   */
+  const copyPromptWithArgs = useCallback(
+    (name: string, args: PromptArgDef[]) => {
+      if (args.every((a) => !a.required)) {
+        void copyPrompt(name, {});
+        return;
+      }
+      setPromptValues({});
+      setPromptDialog({ name, args });
+    },
+    [copyPrompt],
   );
 
   // Selection across routes/supernodes/plugin configs/stores is mutually
@@ -1230,18 +1269,26 @@ export default function App() {
       </Dialog>
 
       <Dialog
-        open={goalDialog !== null}
-        title="Describe the goal for the agent"
-        onClose={() => setGoalDialog(null)}
+        open={promptDialog !== null}
+        title="Copy agent prompt"
+        onClose={() => setPromptDialog(null)}
         footer={
           <>
-            <DialogButton variant="ghost" onClick={() => setGoalDialog(null)}>Cancel</DialogButton>
+            <DialogButton variant="ghost" onClick={() => setPromptDialog(null)}>Cancel</DialogButton>
             <DialogButton
-              disabled={!goalText.trim()}
+              disabled={
+                !promptDialog ||
+                promptDialog.args.some((a) => a.required && !(promptValues[a.name] ?? '').trim())
+              }
               onClick={() => {
-                const name = goalDialog!;
-                setGoalDialog(null);
-                void copyPrompt(name, { goal: goalText.trim() });
+                const { name, args } = promptDialog!;
+                setPromptDialog(null);
+                const values: Record<string, string> = {};
+                for (const a of args) {
+                  const v = (promptValues[a.name] ?? '').trim();
+                  if (v !== '') values[a.name] = v;
+                }
+                void copyPrompt(name, values);
               }}
             >
               Copy prompt
@@ -1249,7 +1296,16 @@ export default function App() {
           </>
         }
       >
-        <DialogField label="Goal" value={goalText} onChange={setGoalText} placeholder="rate-limit /api by API key, 100 req/min, 429 on excess" autoFocus />
+        {promptDialog?.args.map((a, i) => (
+          <DialogField
+            key={a.name}
+            label={a.name}
+            value={promptValues[a.name] ?? ''}
+            onChange={(v) => setPromptValues((s) => ({ ...s, [a.name]: v }))}
+            placeholder={a.description}
+            autoFocus={i === 0}
+          />
+        ))}
       </Dialog>
 
       <DebugPanel
@@ -1275,6 +1331,7 @@ export default function App() {
         onClose={() => setAgentOpen(false)}
         status={mcpStatus}
         onCopy={copyText}
+        onCopyPromptWithArgs={copyPromptWithArgs}
         onError={handlePanelError}
       />
 

@@ -482,9 +482,16 @@ export function DebugPanel({
                 <div style={{ flex: 1, minWidth: 0 }}>
                   {result ? (
                     <>
-                      <TraceHeader trace={result} />
+                      <TraceHeader
+                        trace={result}
+                        onCopyPrompt={(p) => onCopyPrompt(p, { trace_id: result.id })}
+                      />
                       {/* Keyed by id: each sandbox run remounts the viewer with fresh step state. */}
-                      <TraceViewer key={result.id} trace={result} />
+                      <TraceViewer
+                        key={result.id}
+                        trace={result}
+                        onCopyPrompt={(nodeId) => onCopyPrompt('why_this_port', { trace_id: result.id, node_id: nodeId })}
+                      />
                     </>
                   ) : (
                     <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
