@@ -12,11 +12,11 @@ mod consumers;
 mod debug;
 mod env_vars;
 mod plugin_configs;
-mod policies;
+pub(crate) mod policies;
 mod routes;
 mod sessions;
 mod status;
-mod stores;
+pub(crate) mod stores;
 mod supernodes;
 #[cfg(feature = "ui")]
 mod ui;
