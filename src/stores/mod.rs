@@ -144,6 +144,15 @@ impl StoreRegistry {
         }
     }
 
+    /// True when `name` has a live client in this registry. Used by tests
+    /// (and anything else that needs a lookup without a client-typed error)
+    /// to assert what a dry-run compile did or did not durably swap in.
+    #[cfg(feature = "redis-store")]
+    #[allow(dead_code)] // exercised by mcp::tools::writes dry-run tests
+    pub fn contains(&self, name: &str) -> bool {
+        self.clients.contains_key(name)
+    }
+
     /// The raw client for `name` (ACME storage borrows it; sessions/counters have
     /// their own typed accessors).
     #[cfg(feature = "redis-store")]
