@@ -63,6 +63,8 @@ impl ToolError {
         Self::new("sandbox_disabled", "the plugin sandbox is disabled")
             .with_hint("set debug.sandbox: true in system.yaml and restart")
     }
+    // Only raised by the scope check in `src/mcp/server.rs`.
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
     pub fn forbidden(have: McpScope) -> Self {
         Self::new("forbidden", "this token may not use write tools").with_hint(format!(
             "this token has scope {}; write tools need a token with scope write. Return the YAML for a human to apply instead.",
@@ -78,7 +80,9 @@ impl ToolError {
     pub fn internal(msg: impl Into<String>) -> Self {
         Self::new("internal", msg)
     }
-    /// The body of the `isError` tool result.
+    /// The body of the `isError` tool result. Only called from
+    /// `src/mcp/server.rs` (outside `#[cfg(test)]`, which uses it too).
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
     pub fn to_json(&self) -> Value {
         let mut v = serde_json::json!({"code": self.code, "message": self.message});
         if !self.errors.is_empty() {
@@ -110,7 +114,9 @@ pub fn parse_payload<T: DeserializeOwned>(v: Value, what: &str) -> Result<T, Too
 }
 
 /// JSON Schema (draft 2020-12, as schemars 1 emits) for a tool's arguments,
-/// with the `$schema`/`title` noise removed.
+/// with the `$schema`/`title` noise removed. Only used to build `TOOLS`
+/// below, which is `mcp`-only (the Admin API exposes prompts, not tools).
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub fn schema_of<T: schemars::JsonSchema>() -> JsonObject {
     let schema = schemars::schema_for!(T);
     let mut v = serde_json::to_value(schema).expect("schema serializes");
@@ -120,7 +126,10 @@ pub fn schema_of<T: schemars::JsonSchema>() -> JsonObject {
     obj.clone()
 }
 
-/// Static description of one tool.
+/// Static description of one tool. The MCP tool registry, advertised only
+/// by the `mcp` transport (`src/mcp/server.rs`) — the Admin API exposes
+/// prompts, not tools.
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub struct ToolDef {
     pub name: &'static str,
     pub scope: McpScope,
@@ -129,11 +138,13 @@ pub struct ToolDef {
 }
 
 /// Every tool, in the order clients see them.
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub fn tool_defs() -> &'static [ToolDef] {
     &TOOLS
 }
 
 /// Looks up a tool by name.
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub fn tool_def(name: &str) -> Option<&'static ToolDef> {
     TOOLS.iter().find(|t| t.name == name)
 }
@@ -181,6 +192,7 @@ pub async fn call(state: &SharedState, name: &str, a: JsonObject) -> Result<Valu
 use McpScope::Read;
 use McpScope::Write;
 
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 static TOOLS: [ToolDef; 33] = [
     ToolDef { name: "list_node_types", scope: Read, description: "List every node (plugin) type with its description and declared ports. Start here when designing a policy.", input_schema: schema_of::<catalog::NoArgs> },
     ToolDef { name: "get_node_type", scope: Read, description: "Full reference for one node type: description, input/output ports (which must be wired), and its documentation page with every config key and a YAML example.", input_schema: schema_of::<catalog::TypeArgs> },

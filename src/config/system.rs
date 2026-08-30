@@ -773,8 +773,9 @@ impl McpScope {
         self == McpScope::Write || required == McpScope::Read
     }
 
-    /// The wire/log spelling.
-    #[cfg_attr(not(feature = "mcp"), allow(dead_code))] // logged by src/mcp/server.rs
+    /// The wire/log spelling. Consumed in every build by
+    /// `src/admin/mcp.rs`'s `status()` handler (and, with the `mcp`
+    /// feature, logged by `src/mcp/server.rs`).
     pub fn as_str(self) -> &'static str {
         match self {
             McpScope::Read => "read",
