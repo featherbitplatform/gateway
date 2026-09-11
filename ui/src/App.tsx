@@ -15,6 +15,7 @@ import { DebugPanel } from './components/DebugPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import { CertificatesPanel } from './components/CertificatesPanel';
 import { AgentPanel } from './components/AgentPanel';
+import { ChatPanel } from './components/ChatPanel';
 import { Toast, type ToastData } from './components/Toast';
 import { NotificationsPanel } from './components/NotificationsPanel';
 import { CommandPalette } from './components/CommandPalette';
@@ -26,7 +27,8 @@ import { usePortNames } from './usePortNames';
 import { toggleTheme } from './theme';
 import { api } from './api/client';
 import { parseApiError } from './apiError';
-import { withMcpHint } from './agentPrompts';
+import { withMcpHint, mcpEndpoint } from './agentPrompts';
+import { useChat } from './chat/useChat';
 import type {
   Route,
   Policy,
@@ -178,7 +180,12 @@ export default function App() {
 
   // Agent (MCP) panel state.
   const [agentOpen, setAgentOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
+  const chat = useChat({
+    mcpUrl: mcpEndpoint(window.location.origin, mcpStatus?.path ?? '/mcp'),
+    mcpEnabled: mcpStatus?.enabled ?? false,
+  });
 
   // Generalized argument dialog for agent prompts that need input beyond what
   // can be auto-filled (the `design_*` prompts' `goal`, and any prompt copied
@@ -770,6 +777,7 @@ export default function App() {
       hasEditorAction: editorActions.has,
       agentPrompt,
       openAgentPanel: () => setAgentOpen(true),
+      openChat: () => setChatOpen(true),
     }),
     [
       editorOpen,
@@ -939,6 +947,7 @@ export default function App() {
         unreadNotifications={notifications.unread}
         onOpenAgent={() => setAgentOpen(true)}
         mcpEnabled={mcpStatus?.enabled ?? false}
+        onOpenChat={() => setChatOpen(true)}
       />
       {selectedStoreDef ? (
         <StoresPanel
@@ -1333,7 +1342,12 @@ export default function App() {
         onCopy={copyText}
         onCopyPromptWithArgs={copyPromptWithArgs}
         onError={handlePanelError}
+        onOpenChat={() => {
+          setAgentOpen(false);
+          setChatOpen(true);
+        }}
       />
+      <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} chat={chat} mcpStatus={mcpStatus} />
 
       <NotificationsPanel
         key={notificationsSession}
