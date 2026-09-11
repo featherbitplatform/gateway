@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Settings, Square } from 'lucide-react';
 import { Dialog, DialogButton } from './Dialog';
 import { ChatSettingsForm, connectionLabel } from './chat/ChatSettingsForm';
@@ -16,16 +16,12 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({ open, onClose, chat, mcpStatus }: ChatPanelProps) {
-  const [showSettings, setShowSettings] = useState(false);
+  // null = automatic (settings form when there is no API key yet); a
+  // boolean is an explicit override from the gear button or a navigation
+  // action, until the panel is closed and the automatic behaviour resumes.
+  const [settingsToggle, setSettingsToggle] = useState<boolean | null>(null);
   const [draft, setDraft] = useState('');
-
-  // With no API key the panel opens on the settings form.
-  useEffect(() => {
-    if (open && chat.connection.kind === 'no-key') {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setShowSettings(true);
-    }
-  }, [open, chat.connection.kind]);
+  const showSettings = settingsToggle ?? chat.connection.kind === 'no-key';
 
   const active = chat.threads.find((t) => t.id === chat.activeId) ?? null;
   const busy = chat.busyThreadId !== null;
@@ -38,14 +34,19 @@ export function ChatPanel({ open, onClose, chat, mcpStatus }: ChatPanelProps) {
     void chat.send(id, text);
   };
 
+  const close = () => {
+    setSettingsToggle(null);
+    onClose();
+  };
+
   return (
     <Dialog
       open={open}
       title="Chat"
       width={1040}
-      onClose={onClose}
+      onClose={close}
       footer={
-        <DialogButton variant="ghost" onClick={onClose}>
+        <DialogButton variant="ghost" onClick={close}>
           Close
         </DialogButton>
       }
@@ -56,11 +57,11 @@ export function ChatPanel({ open, onClose, chat, mcpStatus }: ChatPanelProps) {
           activeId={chat.activeId}
           onSelect={(id) => {
             chat.setActive(id);
-            setShowSettings(false);
+            setSettingsToggle(false);
           }}
           onNew={() => {
             chat.newThread();
-            setShowSettings(false);
+            setSettingsToggle(false);
           }}
           onDelete={chat.deleteThread}
           onClearAll={chat.clearAll}
@@ -75,7 +76,7 @@ export function ChatPanel({ open, onClose, chat, mcpStatus }: ChatPanelProps) {
             </span>
             <button
               aria-label="Chat settings"
-              onClick={() => setShowSettings((s) => !s)}
+              onClick={() => setSettingsToggle(!showSettings)}
               style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)' }}
             >
               <Settings size={14} />
@@ -87,7 +88,7 @@ export function ChatPanel({ open, onClose, chat, mcpStatus }: ChatPanelProps) {
               connection={chat.connection}
               onSave={chat.saveSettings}
               onForget={chat.forgetCredentials}
-              onDone={() => setShowSettings(false)}
+              onDone={() => setSettingsToggle(false)}
             />
           ) : (
             <>

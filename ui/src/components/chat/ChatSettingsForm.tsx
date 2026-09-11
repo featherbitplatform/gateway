@@ -90,6 +90,7 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
             aria-expanded={suggestionsOpen && suggestions.length > 0}
             aria-controls="chat-model-options"
             aria-autocomplete="list"
+            aria-activedescendant={suggestionsOpen && suggestions.length > 0 ? `chat-model-option-${highlight}` : undefined}
             value={draft.model}
             onChange={(e) => {
               setDraft((d) => ({ ...d, model: e.target.value }));
@@ -106,6 +107,7 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
                 setHighlight((h) => Math.min(h + 1, suggestions.length - 1));
               } else if (e.key === 'ArrowUp') {
                 e.preventDefault();
+                setSuggestionsOpen(true);
                 setHighlight((h) => Math.max(h - 1, 0));
               } else if (e.key === 'Enter' && suggestionsOpen) {
                 e.preventDefault();
@@ -144,6 +146,7 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
               {suggestions.map((m, i) => (
                 <li
                   key={m}
+                  id={`chat-model-option-${i}`}
                   role="option"
                   aria-selected={i === highlight}
                   // mousedown (not click) so the input's blur does not close the list first.
@@ -203,7 +206,13 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
       </label>
       <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }} data-testid="chat-connection">{connectionLabel(connection)}</div>
       <div className="flex justify-between">
-        <DialogButton variant="danger" onClick={onForget}>
+        <DialogButton
+          variant="danger"
+          onClick={() => {
+            setDraft((d) => ({ ...d, apiKey: '', mcpToken: '' }));
+            onForget();
+          }}
+        >
           Forget credentials
         </DialogButton>
         <div className="flex gap-2">
