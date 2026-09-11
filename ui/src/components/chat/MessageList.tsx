@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { ChatMessage, Thread } from '../../chat/store';
 import type { PendingConfirm } from '../../chat/useChat';
+import { Markdown } from './Markdown';
 import { ToolCallCard } from './ToolCallCard';
 
 interface MessageListProps {
@@ -38,7 +39,11 @@ export function MessageList({ thread, pendingConfirm, onResolveConfirm }: Messag
         if (m.role === 'tool') return null;
         return (
           <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 6, alignSelf: 'stretch' }}>
-            {m.content !== '' && <div style={bubble('assistant')} data-role="assistant">{m.content}</div>}
+            {m.content !== '' && (
+              <div style={{ ...bubble('assistant'), whiteSpace: 'normal' }} data-role="assistant">
+                <Markdown text={m.content} />
+              </div>
+            )}
             {m.error && (
               <div style={{ ...bubble('assistant'), color: 'var(--error)', borderColor: 'var(--error)' }} data-role="error">
                 {m.error}
