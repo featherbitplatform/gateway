@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Copy } from 'lucide-react';
+import { Copy, MessageSquare } from 'lucide-react';
 import { Dialog, DialogButton } from './Dialog';
 import { api } from '../api/client';
 import { parseApiError } from '../apiError';
@@ -22,6 +22,8 @@ interface AgentPanelProps {
    * whose arguments are all optional copy immediately.
    */
   onCopyPromptWithArgs: (name: string, args: PromptArgDef[]) => void;
+  /** Starts a chat with the named prompt (asks for required arguments first). */
+  onAskPromptWithArgs: (name: string, args: PromptArgDef[]) => void;
   /** Surfaces errors through the app's toast. */
   onError: (title: string, message: string) => void;
   /** Opens the in-UI chat. */
@@ -76,7 +78,7 @@ function DisabledNotice({ status }: { status: McpStatus | null }) {
   );
 }
 
-export function AgentPanel({ open, onClose, status, onCopy, onCopyPromptWithArgs, onError, onOpenChat }: AgentPanelProps) {
+export function AgentPanel({ open, onClose, status, onCopy, onCopyPromptWithArgs, onAskPromptWithArgs, onError, onOpenChat }: AgentPanelProps) {
   const [prompts, setPrompts] = useState<PromptDef[]>([]);
 
   useEffect(() => {
@@ -148,20 +150,30 @@ export function AgentPanel({ open, onClose, status, onCopy, onCopyPromptWithArgs
                   <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{p.name}</code>(
                   {p.arguments.map((a) => (a.required ? a.name : `${a.name}?`)).join(', ')}) — {p.description}
                 </span>
-                <button
-                  aria-label={`Copy prompt ${p.name}`}
-                  onClick={() => onCopyPromptWithArgs(p.name, p.arguments)}
-                  className="flex items-center gap-1"
-                  style={{
-                    flexShrink: 0,
-                    fontSize: 'var(--text-2xs)',
-                    color: 'var(--text-primary)',
-                    background: 'transparent',
-                    border: 'none',
-                  }}
-                >
-                  <Copy size={11} /> Copy
-                </button>
+                <span className="flex items-center gap-2">
+                  <button
+                    aria-label={`Copy prompt ${p.name}`}
+                    onClick={() => onCopyPromptWithArgs(p.name, p.arguments)}
+                    className="flex items-center gap-1"
+                    style={{
+                      flexShrink: 0,
+                      fontSize: 'var(--text-2xs)',
+                      color: 'var(--text-primary)',
+                      background: 'transparent',
+                      border: 'none',
+                    }}
+                  >
+                    <Copy size={11} /> Copy
+                  </button>
+                  <button
+                    aria-label={`Ask agent ${p.name}`}
+                    onClick={() => onAskPromptWithArgs(p.name, p.arguments)}
+                    className="flex items-center gap-1"
+                    style={{ flexShrink: 0, fontSize: 'var(--text-2xs)', color: 'var(--text-primary)', background: 'transparent', border: 'none' }}
+                  >
+                    <MessageSquare size={11} /> Ask
+                  </button>
+                </span>
               </li>
             ))}
           </ul>
