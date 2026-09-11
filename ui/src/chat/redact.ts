@@ -26,8 +26,15 @@ const SECRET_KEYS = [
 
 const KEY_ALT = SECRET_KEYS.map((k) => k.replace(/-/g, '\\-')).join('|');
 
-/** `key: value`, `"key": "value"`, `key=value` — the value runs to a delimiter. */
-const KEYED_VALUE = new RegExp(`(?<![\\w-])((?:"|')?(?:${KEY_ALT})(?:"|')?\\s*[:=]\\s*)("?)([^"\\r\\n,}]*)`, 'gi');
+/**
+ * `key: value`, `"key": "value"`, `key=value` — the value runs to a delimiter.
+ * The lookbehind rejects only an alphanumeric left neighbour, so a *suffix*
+ * match still fires on prefixed keys (`db_password`, `oauth_client_secret`,
+ * `custom-api-key`, `csrf_token`) while `token_count`/`passthrough`/`bypass`
+ * stay untouched — those fail on the key's own right-hand boundary (`[:=]`)
+ * rather than on the lookbehind.
+ */
+const KEYED_VALUE = new RegExp(`(?<![A-Za-z0-9])((?:"|')?(?:${KEY_ALT})(?:"|')?\\s*[:=]\\s*)("?)([^"\\r\\n,}]*)`, 'gi');
 const AUTH_SCHEME = /\b(Bearer|Basic|Digest|Token)\s+([A-Za-z0-9\-._~+/=]{8,})/g;
 const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
 const PEM = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;

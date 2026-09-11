@@ -32,6 +32,17 @@ describe('redactSecrets', () => {
     expect(r.count).toBe(1);
   });
 
+  it('redacts prefixed secret keys without catching lookalike keys', () => {
+    const r = redactSecrets('db_password: x\n"oauth_client_secret":"y"\ncustom-api-key: z\ncsrf_token=abc');
+    expect(r.text).toBe(
+      `db_password: ${REDACTED}\n"oauth_client_secret":"${REDACTED}"\ncustom-api-key: ${REDACTED}\ncsrf_token=${REDACTED}`,
+    );
+    expect(r.count).toBe(4);
+
+    const safe = 'token_count: 3\npassthrough: true\nbypass: 1';
+    expect(redactSecrets(safe)).toEqual({ text: safe, count: 0 });
+  });
+
   it('is idempotent', () => {
     const once = redactSecrets('password: x\nBearer abcdefgh12345678').text;
     expect(redactSecrets(once)).toEqual({ text: once, count: 0 });
