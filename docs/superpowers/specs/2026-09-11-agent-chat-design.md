@@ -104,6 +104,7 @@ interface ChatSettings {
   model: string;     // free text; default is a single constant (DEFAULT_MODEL)
   apiKey: string;    // '' → drawer opens on the settings form
   mcpToken: string;  // '' → toolless mode, stated in the thread header
+  redact: boolean;   // default true — client-side secret redaction (§3)
 }
 ```
 
@@ -195,6 +196,22 @@ via `AbortController`; partial assistant text is kept. Provider HTTP errors
 end the turn with history intact, so the user can fix settings and resend. A
 stale MCP session (`404`) is re-initialized once transparently; a second
 failure surfaces as a tool error.
+
+**Secret redaction.** The gateway already keeps most secrets out of what the
+chat can see: traces redact sensitive headers, query parameters and message
+keys at capture time, MCP tools mask consumer credentials, and config is
+served with raw `${ENV}` placeholders. The chat adds a client-side second
+line of defence (`ui/src/chat/redact.ts`, on by default, `settings.redact`):
+before any text is stored or sent to the provider — seeded prompts, typed
+messages, tool results — it replaces with `[REDACTED]`: `Bearer`/`Basic`
+credentials, `Cookie`/`Set-Cookie` values, values of secret-looking keys
+(`password`, `secret`, `client_secret`, `api_key`, `*_token`, `private_key`,
+`access_key`, `secret_key`, `x-api-key`, …) in JSON/YAML/header form, JWTs,
+PEM private-key blocks, well-known key prefixes (`sk-…`, `ghp_…`, `AKIA…`,
+`xox…`), and the literal values of the user's own API key and MCP token.
+`${ENV}` placeholders and already-masked markers are left alone. Redaction
+can hide a value the model needs (e.g. debugging an auth header), so the
+settings form has a toggle; the connection line says when it is off.
 
 **Titles.** Seeded threads: `<prompt> · <first arg value>` (e.g.
 `why_this_port · 3f9a…` or `review_policy · api-policy`). Others: the first
