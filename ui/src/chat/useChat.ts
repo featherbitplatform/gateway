@@ -80,6 +80,7 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [busyThreadId, setBusyThreadId] = useState<string | null>(null);
   const [storageBlocked, setStorageBlocked] = useState(false);
+  const [connectNonce, setConnectNonce] = useState(0);
 
   const mcpRef = useRef<McpClient | null>(null);
   const toolsRef = useRef<ToolDef[]>([]);
@@ -87,6 +88,10 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
   const confirmRef = useRef<((ok: boolean) => void) | null>(null);
   const threadsRef = useRef(threads);
   threadsRef.current = threads;
+  /** Mirrors `busyThreadId` synchronously so `runOn`'s guard is not a stale closure. */
+  const busyRef = useRef<string | null>(null);
+  /** Thread ids dismissed (deleted / cleared) while a turn may still be streaming into them. */
+  const dismissedRef = useRef(new Set<string>());
 
   useEffect(() => {
     const out = saveThreads(threads, safeStorage());
@@ -99,6 +104,10 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
     persistSettings(next, safeStorage());
     mcpRef.current = null;
     toolsRef.current = [];
+    // `connect`'s identity depends only on credential/URL fields, so a save that
+    // only touches e.g. baseUrl/model/redact would not re-run the connect effect
+    // on its own; force a reconnect unconditionally.
+    setConnectNonce((n) => n + 1);
   }, []);
 
   const forgetCredentials = useCallback(() => {
@@ -137,7 +146,9 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
 
   useEffect(() => {
     void connect();
-  }, [connect]);
+    // connectNonce forces a reconnect even when `connect`'s own identity is
+    // unchanged (a settings save that touched no credential/URL field).
+  }, [connect, connectNonce]);
 
   // Client-side secret redaction (chat/redact.ts) over everything stored or
   // sent; the user's own key/token are removed as literals wherever they appear.
@@ -147,6 +158,9 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
   );
 
   const updateThread = useCallback((t: Thread) => {
+    // A deleted/cleared thread may still have a turn streaming into it; drop
+    // those updates instead of letting upsertThread resurrect the thread.
+    if (dismissedRef.current.has(t.id)) return;
     setThreads((list) => upsertThread(list, t));
   }, []);
 
@@ -157,20 +171,28 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
     return t.id;
   }, []);
 
-  const deleteThread = useCallback((id: string) => {
-    setThreads((list) => list.filter((t) => t.id !== id));
-    setActiveId((cur) => (cur === id ? null : cur));
-  }, []);
-
-  const clearAll = useCallback(() => {
-    setThreads([]);
-    setActiveId(null);
-  }, []);
-
   const stop = useCallback(() => {
     abortRef.current?.abort();
     confirmRef.current?.(false);
   }, []);
+
+  const deleteThread = useCallback(
+    (id: string) => {
+      dismissedRef.current.add(id);
+      if (busyRef.current === id) stop();
+      setThreads((list) => list.filter((t) => t.id !== id));
+      setActiveId((cur) => (cur === id ? null : cur));
+    },
+    [stop],
+  );
+
+  const clearAll = useCallback(() => {
+    for (const t of threadsRef.current) dismissedRef.current.add(t.id);
+    if (busyRef.current) dismissedRef.current.add(busyRef.current);
+    stop();
+    setThreads([]);
+    setActiveId(null);
+  }, [stop]);
 
   const resolveConfirm = useCallback((run: boolean) => {
     confirmRef.current?.(run);
@@ -178,9 +200,12 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
 
   const runOn = useCallback(
     async (thread: Thread) => {
-      if (busyThreadId) return;
+      // A ref check is synchronous, unlike `busyThreadId` state: two calls to
+      // send/seedThread in the same tick must not both pass this guard.
+      if (abortRef.current) return;
       const ctl = new AbortController();
       abortRef.current = ctl;
+      busyRef.current = thread.id;
       setBusyThreadId(thread.id);
       const provider: Provider = {
         stream: (messages, tools, signal) => streamChat(settings, messages, tools, signal),
@@ -217,11 +242,12 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
         });
       } finally {
         abortRef.current = null;
+        busyRef.current = null;
         setBusyThreadId(null);
         setPendingConfirm(null);
       }
     },
-    [busyThreadId, settings, updateThread, redact],
+    [settings, updateThread, redact],
   );
 
   const send = useCallback(
