@@ -186,7 +186,18 @@ adjust.
 the server by E2E-MCP-02) wait: the card shows **Run** and **Skip**. Run calls
 the tool and continues. Skip stores `status: 'declined'` with content
 `Declined by the user.` and continues, so the model can propose an alternative.
-A pending confirmation blocks its own thread only.
+`run_sandbox` is confirmed the same way even though its MCP scope is `read`:
+it executes an ad-hoc node list for real (outbound calls happen), so a
+prompt-injected tool result must not be able to drive it unseen.
+
+**One turn at a time.** The hook runs a single turn across all threads (one
+abort controller, one busy thread); a pending confirmation therefore blocks
+the whole panel until Run or Skip, and "Ask agent" while a turn is running
+is refused with a warning toast instead of creating a dead thread. (Amended
+during implementation: the first draft said "blocks its own thread only".)
+When Stop aborts a turn between or inside tool calls, every tool call that
+has no result yet gets a synthetic `declined` result `Aborted by the user.`
+so the replayed history stays valid for the provider.
 
 **Ending a turn.** Text-only reply → done. Round cap: 16 tool rounds per user
 turn, then an assistant-side notice ("stopped after 16 tool rounds — send a
@@ -219,9 +230,12 @@ user message, trimmed to 60 chars.
 
 ## 4. UI surfaces and entry points
 
-**Chat drawer** (`ui/src/components/ChatDrawer.tsx` plus small children:
-`ThreadList`, `MessageList`, `ToolCallCard`, `ChatSettingsForm`). Right-side
-panel opened from a footer **Chat** button and a Ctrl+K entry.
+**Chat panel** (`ui/src/components/ChatPanel.tsx` plus small children under
+`ui/src/components/chat/`: `ThreadList`, `MessageList`, `ToolCallCard`,
+`ChatSettingsForm`). Rendered in the shared `Dialog` shell like the Debug,
+Sessions and Certificates panels (amended during implementation from the
+"right-side drawer" first draft, for consistency with the other panels),
+opened from a footer **Chat** button and a Ctrl+K entry.
 
 - Left column: thread list (title, relative time), **New**, per-thread Delete,
   **Clear all chats**.
