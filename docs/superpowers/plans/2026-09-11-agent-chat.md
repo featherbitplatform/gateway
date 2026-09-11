@@ -1101,7 +1101,7 @@ describe('rankModels', () => {
     expect(rankModels('', IDS, 3)).toEqual(['gpt-4.1', 'gpt-4.1-mini', 'gpt-5']);
   });
   it('lets subsequence matches through when nothing closer exists', () => {
-    expect(rankModels('tes3', IDS)).toEqual(['text-embedding-3-small']);
+    expect(rankModels('tem3', IDS)).toEqual(['text-embedding-3-small']);
   });
 });
 ```
