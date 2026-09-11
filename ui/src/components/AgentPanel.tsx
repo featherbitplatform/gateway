@@ -24,6 +24,8 @@ interface AgentPanelProps {
   onCopyPromptWithArgs: (name: string, args: PromptArgDef[]) => void;
   /** Surfaces errors through the app's toast. */
   onError: (title: string, message: string) => void;
+  /** Opens the in-UI chat. */
+  onOpenChat: () => void;
 }
 
 const pre: React.CSSProperties = {
@@ -74,7 +76,7 @@ function DisabledNotice({ status }: { status: McpStatus | null }) {
   );
 }
 
-export function AgentPanel({ open, onClose, status, onCopy, onCopyPromptWithArgs, onError }: AgentPanelProps) {
+export function AgentPanel({ open, onClose, status, onCopy, onCopyPromptWithArgs, onError, onOpenChat }: AgentPanelProps) {
   const [prompts, setPrompts] = useState<PromptDef[]>([]);
 
   useEffect(() => {
@@ -99,6 +101,13 @@ export function AgentPanel({ open, onClose, status, onCopy, onCopyPromptWithArgs
       }
     >
       <div style={{ maxHeight: '64vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <p style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)', margin: 0 }}>
+          Prefer chatting here? Open{' '}
+          <button onClick={onOpenChat} style={{ background: 'transparent', border: 'none', color: 'var(--accent)', padding: 0, fontSize: 'inherit' }}>
+            Chat
+          </button>{' '}
+          and bring your own OpenAI-compatible API key.
+        </p>
         {!enabled ? (
           <DisabledNotice status={status} />
         ) : (

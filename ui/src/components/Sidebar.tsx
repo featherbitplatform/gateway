@@ -6,7 +6,7 @@
  * @module components/Sidebar
  */
 import { useEffect, useState } from 'react';
-import { Plus, RotateCw, X, FileCode, Bug, KeyRound, ShieldCheck, Bell, Bot } from 'lucide-react';
+import { Plus, RotateCw, X, FileCode, Bug, KeyRound, ShieldCheck, Bell, Bot, MessageSquare } from 'lucide-react';
 import type { Route, Supernode, PluginConfigDef, StoreConfig, GatewayStatus } from '../types';
 import { api } from '../api/client';
 
@@ -76,6 +76,8 @@ interface SidebarProps {
   onOpenAgent: () => void;
   /** Whether the MCP server is on (dims the button when off, like Debug). */
   mcpEnabled: boolean;
+  /** Opens the in-UI agent chat. */
+  onOpenChat: () => void;
 }
 
 /**
@@ -121,6 +123,7 @@ export function Sidebar({
   unreadNotifications,
   onOpenAgent,
   mcpEnabled,
+  onOpenChat,
 }: SidebarProps) {
   const [status, setStatus] = useState<GatewayStatus | null>(null);
 
@@ -572,6 +575,26 @@ export function Sidebar({
         >
           <Bot size={12} />
           Agent
+        </button>
+        <button
+          onClick={onOpenChat}
+          aria-label="Chat"
+          title="Chat with an AI agent about this gateway (your own OpenAI-compatible API key, stored in this browser)"
+          className="w-full flex items-center justify-center gap-1.5 transition-colors"
+          style={{
+            padding: '7px 0',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: 'var(--text-xs)',
+            fontWeight: 'var(--weight-medium)' as never,
+            background: 'var(--surface-input)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--border)',
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+          onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+        >
+          <MessageSquare size={12} />
+          Chat
         </button>
         <button
           onClick={onOpenCertificates}
