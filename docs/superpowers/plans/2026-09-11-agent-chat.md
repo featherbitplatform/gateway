@@ -672,6 +672,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Files:**
 - Create: `ui/src/chat/openai.ts`
 - Test: `ui/src/chat/openai.test.ts`
+- Create: `ui/src/chat/modelMatch.ts`
+- Test: `ui/src/chat/modelMatch.test.ts`
 
 **Interfaces:**
 - Consumes: `ChatMessage`, `ToolCall` from `./store`.
@@ -686,6 +688,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   - `class ToolCallAccumulator { apply(deltas: unknown): void; finish(): ToolCall[] }`
   - `async function* streamChat(settings, messages: WireMessage[], tools: ToolDef[], signal: AbortSignal, fetchImpl?: typeof fetch): AsyncGenerator<StreamEvent>`
   - `async function listModels(settings: ProviderSettings, fetchImpl?: typeof fetch): Promise<string[]>` — `GET {baseUrl}/models`, returns the sorted `data[].id` list; throws `ProviderError` on non-2xx.
+  - In a separate file `ui/src/chat/modelMatch.ts` (tested in `ui/src/chat/modelMatch.test.ts`): `scoreModel(query: string, id: string): number` (0 = no match; exact 100, prefix 80, substring 60, in-order subsequence 30; case-insensitive; empty query = 1) and `rankModels(query: string, ids: string[], limit = 8): string[]` (score desc, then id asc, non-matches dropped). Feeds the settings form's combobox in Task 7.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1065,10 +1068,89 @@ export async function listModels(settings: ProviderSettings, fetchImpl: typeof f
 Run: `cd ui && npx vitest run src/chat/openai.test.ts`
 Expected: PASS.
 
+- [ ] **Step 4b: Write the failing model-matcher tests**
+
+Create `ui/src/chat/modelMatch.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { rankModels, scoreModel } from './modelMatch';
+
+const IDS = ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'gpt-4.1-mini', 'o3', 'o4-mini', 'text-embedding-3-small'];
+
+describe('scoreModel', () => {
+  it('ranks exact > prefix > substring > subsequence > none, case-insensitively', () => {
+    expect(scoreModel('gpt-5', 'gpt-5')).toBe(100);
+    expect(scoreModel('GPT-5', 'gpt-5-mini')).toBe(80);
+    expect(scoreModel('mini', 'gpt-5-mini')).toBe(60);
+    expect(scoreModel('g5m', 'gpt-5-mini')).toBe(30);
+    expect(scoreModel('claude', 'gpt-5-mini')).toBe(0);
+  });
+  it('treats an empty or blank query as a weak match for everything', () => {
+    expect(scoreModel('', 'o3')).toBe(1);
+    expect(scoreModel('   ', 'o3')).toBe(1);
+  });
+});
+
+describe('rankModels', () => {
+  it('orders by score then id, drops non-matches, and caps the list', () => {
+    expect(rankModels('gpt-4', IDS)).toEqual(['gpt-4.1', 'gpt-4.1-mini']);
+    expect(rankModels('mini', IDS)).toEqual(['gpt-4.1-mini', 'gpt-5-mini', 'o4-mini']);
+    expect(rankModels('gpt-5', IDS)).toEqual(['gpt-5', 'gpt-5-mini']);
+    expect(rankModels('zzz', IDS)).toEqual([]);
+    expect(rankModels('', IDS, 3)).toEqual(['gpt-4.1', 'gpt-4.1-mini', 'gpt-5']);
+  });
+  it('lets subsequence matches through when nothing closer exists', () => {
+    expect(rankModels('tes3', IDS)).toEqual(['text-embedding-3-small']);
+  });
+});
+```
+
+Run: `cd ui && npx vitest run src/chat/modelMatch.test.ts` — Expected: FAIL, cannot resolve `./modelMatch`.
+
+- [ ] **Step 4c: Implement `ui/src/chat/modelMatch.ts`**
+
+```ts
+/**
+ * Ranks provider model ids against what the user has typed, for the chat
+ * settings combobox. Pure string scoring — no fetching.
+ *
+ * @module chat/modelMatch
+ */
+
+/** 100 exact · 80 prefix · 60 substring · 30 in-order subsequence · 0 none; blank query = 1. */
+export function scoreModel(query: string, id: string): number {
+  const q = query.trim().toLowerCase();
+  if (q === '') return 1;
+  const s = id.toLowerCase();
+  if (s === q) return 100;
+  if (s.startsWith(q)) return 80;
+  if (s.includes(q)) return 60;
+  let i = 0;
+  for (const ch of s) {
+    if (ch === q[i]) i += 1;
+    if (i === q.length) return 30;
+  }
+  return 0;
+}
+
+/** Best matches first (score desc, id asc), non-matches dropped, at most `limit`. */
+export function rankModels(query: string, ids: string[], limit = 8): string[] {
+  return ids
+    .map((id) => ({ id, score: scoreModel(query, id) }))
+    .filter((m) => m.score > 0)
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+    .slice(0, limit)
+    .map((m) => m.id);
+}
+```
+
+Run: `cd ui && npx vitest run src/chat/modelMatch.test.ts` — Expected: PASS.
+
 - [ ] **Step 5: Commit**
 
 ```bash
-git add ui/src/chat/openai.ts ui/src/chat/openai.test.ts
+git add ui/src/chat/openai.ts ui/src/chat/openai.test.ts ui/src/chat/modelMatch.ts ui/src/chat/modelMatch.test.ts
 git commit -m "feat(ui): OpenAI-compatible streaming chat client
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
@@ -2368,6 +2450,7 @@ export function ThreadList({ threads, activeId, onSelect, onNew, onDelete, onCle
 import { useState } from 'react';
 import { DialogButton, DialogField } from '../Dialog';
 import { ProviderError, listModels } from '../../chat/openai';
+import { rankModels } from '../../chat/modelMatch';
 import type { ChatSettings } from '../../chat/store';
 import type { ConnectionState } from '../../chat/useChat';
 
@@ -2398,17 +2481,29 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
   const [draft, setDraft] = useState<ChatSettings>(settings);
   const [models, setModels] = useState<string[]>([]);
   const [modelsNote, setModelsNote] = useState<string>('');
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
   const set = (k: keyof ChatSettings) => (v: string) => setDraft((d) => ({ ...d, [k]: v }));
 
-  // Fills the <datalist> under the model field from the provider's own
-  // GET /models. The field stays free text: servers without that endpoint
-  // (or with a different auth model) still work by typing the name.
+  // Closest matches to what is typed, from the loaded ids (empty until "Load models").
+  const suggestions = rankModels(draft.model, models);
+  const pickModel = (m: string | undefined) => {
+    if (m === undefined) return;
+    setDraft((d) => ({ ...d, model: m }));
+    setSuggestionsOpen(false);
+  };
+
+  // Loads the provider's own GET /models into the combobox. The field stays
+  // free text: servers without that endpoint (or with a different auth
+  // model) still work by typing the name.
   const loadModels = async () => {
     setModelsNote('Loading…');
     try {
       const ids = await listModels(draft);
       setModels(ids);
-      setModelsNote(ids.length === 0 ? 'The provider returned no models.' : `${ids.length} models — start typing to filter.`);
+      setSuggestionsOpen(true);
+      setHighlight(0);
+      setModelsNote(ids.length === 0 ? 'The provider returned no models.' : `${ids.length} models — type to see the closest matches.`);
     } catch (e) {
       setModels([]);
       setModelsNote(e instanceof ProviderError ? `Could not load models: ${e.status} ${e.body}` : `Could not load models: ${String(e)}`);
@@ -2434,20 +2529,93 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
             Load models
           </button>
         </span>
-        <input
-          list="chat-model-options"
-          value={draft.model}
-          onChange={(e) => setDraft((d) => ({ ...d, model: e.target.value }))}
-          placeholder="model name"
-          aria-label="Model"
-          autoComplete="off"
-          style={{ padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--surface-input)', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}
-        />
-        <datalist id="chat-model-options">
-          {models.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
+        {/* Combobox: free-text input + a ranked dropdown of the loaded model
+            ids (closest matches first, see chat/modelMatch.ts). Arrow keys
+            move, Enter picks, Escape closes; clicking an option picks it. */}
+        <div style={{ position: 'relative' }}>
+          <input
+            role="combobox"
+            aria-expanded={suggestionsOpen && suggestions.length > 0}
+            aria-controls="chat-model-options"
+            aria-autocomplete="list"
+            value={draft.model}
+            onChange={(e) => {
+              setDraft((d) => ({ ...d, model: e.target.value }));
+              setSuggestionsOpen(true);
+              setHighlight(0);
+            }}
+            onFocus={() => setSuggestionsOpen(true)}
+            onBlur={() => setSuggestionsOpen(false)}
+            onKeyDown={(e) => {
+              if (suggestions.length === 0) return;
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setSuggestionsOpen(true);
+                setHighlight((h) => Math.min(h + 1, suggestions.length - 1));
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setHighlight((h) => Math.max(h - 1, 0));
+              } else if (e.key === 'Enter' && suggestionsOpen) {
+                e.preventDefault();
+                pickModel(suggestions[highlight]);
+              } else if (e.key === 'Escape') {
+                setSuggestionsOpen(false);
+              }
+            }}
+            placeholder="model name"
+            aria-label="Model"
+            autoComplete="off"
+            style={{ width: '100%', boxSizing: 'border-box', padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--surface-input)', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}
+          />
+          {suggestionsOpen && suggestions.length > 0 && (
+            <ul
+              id="chat-model-options"
+              role="listbox"
+              data-testid="chat-model-options"
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                top: '100%',
+                zIndex: 5,
+                margin: '2px 0 0',
+                padding: 2,
+                listStyle: 'none',
+                maxHeight: 200,
+                overflowY: 'auto',
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)',
+                boxShadow: 'var(--shadow-lg)',
+              }}
+            >
+              {suggestions.map((m, i) => (
+                <li
+                  key={m}
+                  role="option"
+                  aria-selected={i === highlight}
+                  // mousedown (not click) so the input's blur does not close the list first.
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pickModel(m);
+                  }}
+                  onMouseEnter={() => setHighlight(i)}
+                  style={{
+                    padding: '4px 6px',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-2xs)',
+                    background: i === highlight ? 'var(--surface-input)' : 'transparent',
+                    color: 'var(--text-primary)',
+                  }}
+                >
+                  {m}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         {modelsNote && <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }}>{modelsNote}</span>}
       </label>
       <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
