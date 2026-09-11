@@ -5,10 +5,31 @@
  *
  * @module components/Sidebar
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { Plus, RotateCw, X, FileCode, Bug, KeyRound, ShieldCheck, Bell, Bot, MessageSquare } from 'lucide-react';
 import type { Route, Supernode, PluginConfigDef, StoreConfig, GatewayStatus } from '../types';
 import { api } from '../api/client';
+
+/**
+ * Shared style of the eight two-column footer buttons. The last four
+ * properties keep a long label ("Notifications" plus its unread badge,
+ * "Certificates", "Reload Config") on one line inside a half-width grid cell
+ * instead of wrapping and growing the footer; the text and aria-label are
+ * unchanged, only what an overflow does.
+ */
+const footerButtonStyle: CSSProperties = {
+  padding: '7px 0',
+  borderRadius: 'var(--radius-sm)',
+  fontSize: 'var(--text-xs)',
+  fontWeight: 'var(--weight-medium)' as never,
+  background: 'var(--surface-input)',
+  color: 'var(--text-primary)',
+  border: '1px solid var(--border)',
+  minWidth: 0,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
 
 /** Props for Sidebar. Route data and mutations are owned by the parent (App). */
 interface SidebarProps {
@@ -530,12 +551,7 @@ export function Sidebar({
             }
             className="w-full flex items-center justify-center gap-1.5 transition-colors"
             style={{
-              padding: '7px 0',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-xs)',
-              fontWeight: 'var(--weight-medium)' as never,
-              background: 'var(--surface-input)',
-              color: 'var(--text-primary)',
+              ...footerButtonStyle,
               border: `1px solid ${unreadNotifications > 0 ? 'var(--error)' : 'var(--border)'}`,
             }}
             onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
@@ -567,15 +583,7 @@ export function Sidebar({
             aria-label="Agent"
             title={mcpEnabled ? 'Connect an AI agent over MCP; copy prompts' : 'MCP is off — set admin.mcp.enabled in system.yaml and restart'}
             className="w-full flex items-center justify-center gap-1.5 transition-colors"
-            style={{
-              padding: '7px 0',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-xs)',
-              fontWeight: 'var(--weight-medium)' as never,
-              background: 'var(--surface-input)',
-              color: mcpEnabled ? 'var(--text-primary)' : 'var(--text-muted)',
-              border: '1px solid var(--border)',
-            }}
+            style={{ ...footerButtonStyle, color: mcpEnabled ? 'var(--text-primary)' : 'var(--text-muted)' }}
             onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
             onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
@@ -587,15 +595,7 @@ export function Sidebar({
             aria-label="Chat"
             title="Chat with an AI agent about this gateway (your own OpenAI-compatible API key, stored in this browser)"
             className="w-full flex items-center justify-center gap-1.5 transition-colors"
-            style={{
-              padding: '7px 0',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-xs)',
-              fontWeight: 'var(--weight-medium)' as never,
-              background: 'var(--surface-input)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border)',
-            }}
+            style={footerButtonStyle}
             onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
             onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
@@ -607,15 +607,7 @@ export function Sidebar({
             aria-label="Certificates"
             title="ACME-managed TLS certificates"
             className="w-full flex items-center justify-center gap-1.5 transition-colors"
-            style={{
-              padding: '7px 0',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-xs)',
-              fontWeight: 'var(--weight-medium)' as never,
-              background: 'var(--surface-input)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border)',
-            }}
+            style={footerButtonStyle}
             onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
             onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
@@ -634,15 +626,7 @@ export function Sidebar({
             }
             aria-label="Sessions"
             className="w-full flex items-center justify-center gap-1.5 transition-colors"
-            style={{
-              padding: '7px 0',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-xs)',
-              fontWeight: 'var(--weight-medium)' as never,
-              background: 'var(--surface-input)',
-              color: stores.length === 0 ? 'var(--text-muted)' : 'var(--text-primary)',
-              border: '1px solid var(--border)',
-            }}
+            style={{ ...footerButtonStyle, color: stores.length === 0 ? 'var(--text-muted)' : 'var(--text-primary)' }}
             onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
             onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
@@ -659,15 +643,7 @@ export function Sidebar({
                 : 'Debug mode is off — set debug.enabled in system.yaml and restart'
             }
             className="w-full flex items-center justify-center gap-1.5 transition-colors"
-            style={{
-              padding: '7px 0',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-xs)',
-              fontWeight: 'var(--weight-medium)' as never,
-              background: 'var(--surface-input)',
-              color: debugEnabled ? 'var(--text-primary)' : 'var(--text-muted)',
-              border: '1px solid var(--border)',
-            }}
+            style={{ ...footerButtonStyle, color: debugEnabled ? 'var(--text-primary)' : 'var(--text-muted)' }}
             onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
             onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
@@ -677,15 +653,7 @@ export function Sidebar({
           <button
             onClick={onViewYaml}
             className="w-full flex items-center justify-center gap-1.5 transition-colors"
-            style={{
-              padding: '7px 0',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-xs)',
-              fontWeight: 'var(--weight-medium)' as never,
-              background: 'var(--surface-input)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border)',
-            }}
+            style={footerButtonStyle}
             onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
             onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
@@ -695,15 +663,7 @@ export function Sidebar({
           <button
             onClick={onReload}
             className="w-full flex items-center justify-center gap-1.5 transition-colors"
-            style={{
-              padding: '7px 0',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-xs)',
-              fontWeight: 'var(--weight-medium)' as never,
-              background: 'var(--surface-input)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border)',
-            }}
+            style={footerButtonStyle}
             onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
             onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
