@@ -126,7 +126,7 @@ interface Thread {
 
 type ChatMessage =
   | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string; toolCalls?: ToolCall[] }
+  | { role: 'assistant'; content: string; toolCalls?: ToolCall[]; error?: string /* provider failure line; skipped on replay */ }
   | { role: 'tool'; toolCallId: string; name: string; status: 'done' | 'declined' | 'error'; content: string };
 
 interface ToolCall { id: string; name: string; arguments: string /* JSON */ }
@@ -140,7 +140,7 @@ translation (`tool` → `{role:'tool', tool_call_id, content}`).
 | Limit | Value |
 |---|---|
 | Threads kept | 50, oldest by `updatedAt` dropped |
-| Stored tool result | 32 KB, truncated with a `…[truncated N bytes]` marker |
+| Stored tool result | 32 000 characters, truncated with a `…[truncated N chars]` marker |
 | On `QuotaExceededError` | drop the oldest thread and retry; if still failing, warn once and keep in memory |
 
 The truncated result is also what the model receives, so the stored thread and
