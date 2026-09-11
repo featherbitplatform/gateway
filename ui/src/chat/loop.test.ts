@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_ROUNDS, isWriteTool, runTurn, type Provider, type ToolRunner, type TurnHooks } from './loop';
+import { MAX_ROUNDS, isWriteTool, needsConfirmation, runTurn, type Provider, type ToolRunner, type TurnHooks } from './loop';
 import type { StreamEvent, WireMessage } from './openai';
-import { ProviderError } from './openai';
+import { ProviderError, toWire } from './openai';
 import { appendMessage, newThread, type Thread, type ToolCall } from './store';
 
 type Script = (messages: WireMessage[], round: number) => StreamEvent[];
@@ -42,6 +42,15 @@ describe('isWriteTool', () => {
   it('classifies by the shared WRITE_TOOLS list', () => {
     expect(isWriteTool('put_policy')).toBe(true);
     expect(isWriteTool('get_policy')).toBe(false);
+  });
+});
+
+describe('needsConfirmation', () => {
+  it('covers every write tool plus run_sandbox, which executes nodes for real', () => {
+    expect(needsConfirmation('put_policy')).toBe(true);
+    expect(needsConfirmation('run_sandbox')).toBe(true);
+    expect(isWriteTool('run_sandbox')).toBe(false);
+    expect(needsConfirmation('get_policy')).toBe(false);
   });
 });
 
@@ -102,6 +111,59 @@ describe('runTurn', () => {
     ]);
   });
 
+  it('asks before run_sandbox even though it is not a write tool', async () => {
+    const p = provider((_m, round) =>
+      round === 0
+        ? [{ type: 'tool_calls', calls: [{ id: 's1', name: 'run_sandbox', arguments: '{"nodes":[]}' }] }, { type: 'done' }]
+        : [{ type: 'text', delta: 'ok' }, { type: 'done' }],
+    );
+    const r = runner({ run_sandbox: { text: 'never' } });
+    const asked: string[] = [];
+    const h = hooks(async (c) => {
+      asked.push(c.name);
+      return false;
+    });
+    const out = await runTurn(start(), { provider: p, tools: r, hooks: h, signal: signal() });
+    expect(asked).toEqual(['run_sandbox']);
+    expect(r.calls).toEqual([]);
+    expect(out.messages.filter((m) => m.role === 'tool')).toEqual([
+      { role: 'tool', toolCallId: 's1', name: 'run_sandbox', status: 'declined', content: 'Declined by the user.' },
+    ]);
+  });
+
+  it('answers every dangling tool call when the turn is aborted mid-round', async () => {
+    const ctl = new AbortController();
+    const p = provider(() => [
+      {
+        type: 'tool_calls',
+        calls: [
+          { id: 'c1', name: 'get_policy', arguments: '{}' },
+          { id: 'c2', name: 'list_routes', arguments: '{}' },
+        ],
+      },
+      { type: 'done' },
+    ]);
+    const r: ToolRunner = {
+      tools: [],
+      async call() {
+        ctl.abort();
+        throw new DOMException('aborted', 'AbortError');
+      },
+    };
+    const out = await runTurn(start(), { provider: p, tools: r, hooks: hooks(), signal: ctl.signal });
+    expect(out.messages.filter((m) => m.role === 'tool')).toEqual([
+      { role: 'tool', toolCallId: 'c1', name: 'get_policy', status: 'declined', content: 'Aborted by the user.' },
+      { role: 'tool', toolCallId: 'c2', name: 'list_routes', status: 'declined', content: 'Aborted by the user.' },
+    ]);
+    // The replayed wire history must answer every advertised tool_call_id, or
+    // the provider rejects every later send of this thread with a 400.
+    const wire = toWire('s', out.messages);
+    const advertised = wire.flatMap((m) => (m.role === 'assistant' ? (m.tool_calls ?? []).map((c) => c.id) : []));
+    const answered = wire.flatMap((m) => (m.role === 'tool' ? [m.tool_call_id] : []));
+    expect(advertised).toEqual(['c1', 'c2']);
+    expect(answered).toEqual(advertised);
+  });
+
   it('marks isError results and malformed arguments as errors without stopping', async () => {
     const p = provider((_m, round) =>
       round === 0
@@ -134,6 +196,26 @@ describe('runTurn', () => {
     };
     const out = await runTurn(start(), { provider: p, tools: null, hooks: hooks(), signal: signal() });
     expect(out.messages.at(-1)).toEqual({ role: 'assistant', content: '', error: 'Provider returned 401: {"error":"bad key"}' });
+  });
+
+  it('redacts the provider error text before storing it', async () => {
+    const key = 'sk-abcdefghijklmnopqrstuvwxyz';
+    const p: Provider = {
+      // eslint-disable-next-line require-yield -- stream throws before yielding
+      async *stream() {
+        throw new ProviderError(401, `key ${key} leaked`);
+      },
+    };
+    const out = await runTurn(start(), {
+      provider: p,
+      tools: null,
+      hooks: hooks(),
+      signal: signal(),
+      redact: (t) => t.replace(key, '[REDACTED]'),
+    });
+    const last = out.messages.at(-1) as { error: string };
+    expect(last.error).toContain('[REDACTED]');
+    expect(last.error).not.toContain(key);
   });
 
   it('keeps partial text on abort', async () => {
