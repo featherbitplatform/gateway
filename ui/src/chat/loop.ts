@@ -18,6 +18,18 @@ export function isWriteTool(name: string): boolean {
   return WRITE_TOOLS.includes(name);
 }
 
+/**
+ * Tools that must not run without the operator's explicit go-ahead. Every
+ * write tool, plus `run_sandbox`: its MCP scope is `read`, but it executes an
+ * ad-hoc node list for real — outbound calls included — so a prompt injected
+ * through a trace or a documentation page could otherwise drive it unattended.
+ */
+export const CONFIRM_TOOLS: readonly string[] = [...WRITE_TOOLS, 'run_sandbox'];
+
+export function needsConfirmation(name: string): boolean {
+  return CONFIRM_TOOLS.includes(name);
+}
+
 export interface Provider {
   stream(messages: WireMessage[], tools: ToolDef[], signal: AbortSignal): AsyncIterable<StreamEvent>;
 }
@@ -46,6 +58,23 @@ export interface TurnDeps {
 
 function isAbort(e: unknown): boolean {
   return (e instanceof DOMException && e.name === 'AbortError') || (e instanceof Error && e.name === 'AbortError');
+}
+
+/**
+ * Answers every call in `calls` that has no `tool` message yet. An abort in
+ * the middle of a tool round otherwise leaves the assistant message
+ * advertising `tool_call_id`s that the wire replay ({@link toWire}) never
+ * answers, and OpenAI rejects the whole thread with a 400 on every later send.
+ */
+function closeDanglingCalls(thread: Thread, calls: ToolCall[], now: number): Thread {
+  const answered = new Set<string>();
+  for (const m of thread.messages) if (m.role === 'tool') answered.add(m.toolCallId);
+  let t = thread;
+  for (const c of calls) {
+    if (answered.has(c.id)) continue;
+    t = appendMessage(t, { role: 'tool', toolCallId: c.id, name: c.name, status: 'declined', content: 'Aborted by the user.' }, now);
+  }
+  return t;
 }
 
 function describeError(e: unknown): string {
@@ -82,7 +111,7 @@ export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
         if (content !== '') emit(replaceLastAssistant(t, { role: 'assistant', content }, now()));
         return t;
       }
-      emit(appendMessage(t, { role: 'assistant', content: '', error: describeError(e) }, now()));
+      emit(appendMessage(t, { role: 'assistant', content: '', error: truncateToolResult(redact(describeError(e))) }, now()));
       return t;
     }
 
@@ -99,7 +128,10 @@ export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
     emit(replaceLastAssistant(t, { role: 'assistant', content, toolCalls: calls }, now()));
 
     for (const call of calls) {
-      if (deps.signal.aborted) return t;
+      if (deps.signal.aborted) {
+        emit(closeDanglingCalls(t, calls, now()));
+        return t;
+      }
       let args: unknown;
       try {
         args = call.arguments.trim() === '' ? {} : JSON.parse(call.arguments);
@@ -113,7 +145,7 @@ export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
         );
         continue;
       }
-      if (isWriteTool(call.name)) {
+      if (needsConfirmation(call.name)) {
         const ok = await deps.hooks.confirm(call);
         if (!ok) {
           emit(appendMessage(t, { role: 'tool', toolCallId: call.id, name: call.name, status: 'declined', content: 'Declined by the user.' }, now()));
@@ -140,7 +172,10 @@ export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
           ),
         );
       } catch (e) {
-        if (isAbort(e)) return t;
+        if (isAbort(e)) {
+          emit(closeDanglingCalls(t, calls, now()));
+          return t;
+        }
         emit(appendMessage(t, { role: 'tool', toolCallId: call.id, name: call.name, status: 'error', content: truncateToolResult(redact(describeError(e))) }, now()));
       }
     }
