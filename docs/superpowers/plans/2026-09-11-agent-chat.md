@@ -2389,10 +2389,15 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
 }
 ```
 
+**Amendments from the task review (apply on top of the code above):**
+1. *Reconnect on any settings save.* Add `const [connectNonce, setConnectNonce] = useState(0);`; `saveSettings` bumps it (`setConnectNonce((n) => n + 1)`) after clearing the refs; the connect effect becomes `useEffect(() => { void connect(); }, [connect, connectNonce]);`. Otherwise a save that changes only base URL/model/redact leaves `connection` at a stale `ready` with the tool cache gone.
+2. *Synchronous turn lock.* `runOn` guards with `if (abortRef.current) return;` (a ref is synchronous; `busyThreadId` state is stale within one tick) and drops `busyThreadId` from its deps; a `busyRef` mirrors `busyThreadId` for synchronous reads.
+3. *No resurrecting deleted threads.* `const dismissedRef = useRef(new Set<string>())`; `updateThread` ignores dismissed ids; `deleteThread` adds the id and calls `stop()` when that thread is in flight; `clearAll` adds every current id (and `busyRef.current`) and calls `stop()`. Without this the loop's `onThread` re-inserts a thread the user just deleted on the next streamed token.
+
 - [ ] **Step 2: Type-check and lint**
 
 Run: `cd ui && npx tsc -b && npm run lint`
-Expected: clean. (The `react-hooks/exhaustive-deps` rule may flag `runOn`'s `busyThreadId` dependency — it is intentional and listed.)
+Expected: clean.
 
 - [ ] **Step 3: Commit**
 
