@@ -66,6 +66,29 @@ curl -s -X POST http://localhost:9090/mcp -H "Authorization: Bearer $TOKEN" \
 
 The web UI's **Agent** panel (footer) shows these snippets with your actual endpoint, and the Debug panel / policy editor offer **Copy as agent prompt** actions that produce the same prompts with data inlined.
 
+## Chat in the UI
+
+The web UI has a **Chat** panel (footer button, or `Ctrl+K` → "Open Chat") that talks to an OpenAI-compatible Chat Completions endpoint **from your browser** and uses this gateway's MCP tools during the conversation. The gateway itself still runs no model and holds no provider key.
+
+Settings (gear icon in the panel) are stored in this browser's local storage under `featherbit.chat.settings`:
+
+| Field | Meaning |
+|---|---|
+| Base URL | `https://api.openai.com/v1` by default; any compatible server works (Azure, OpenRouter, a local Ollama, …) |
+| Model | Free text; **Load models** fetches the provider's `GET /models` list into a suggestion dropdown, so nothing is hardcoded |
+| API key | Sent only to the base URL above |
+| MCP token | One of `admin.mcp.tokens`; sent only to this gateway's MCP endpoint. Leave empty for a toolless chat |
+
+Threads live under `featherbit.chat.threads` (50 newest kept, tool results truncated at 32 000 characters). Each thread has **Delete**; **Clear all chats** removes them all; **Forget credentials** clears the key and token but keeps base URL and model. Nothing in the chat is sent to the gateway's Admin API.
+
+**Secrets.** The gateway already keeps most secrets out of what the chat can see: traces redact sensitive headers, query parameters and message keys when they are captured, MCP tools mask consumer credentials, and config is served with raw `${ENV}` placeholders. The chat adds a client-side pass on top (**Redact secrets before sending**, on by default): before any text is stored or sent to the provider — seeded prompts, what you type, tool results — it replaces `Bearer`/`Basic` credentials, `Cookie` values, values of secret-looking keys (`password`, `secret`, `api_key`, `*_token`, `private_key`, …), JWTs, PEM private keys, well-known key prefixes, and your own API key and MCP token with `[REDACTED]`. It is a heuristic, not a guarantee: keep genuinely sensitive request bodies out of traces you hand to a third-party model, and turn the toggle off only when you need the model to see a real value (the connection line says when it is off).
+
+**Tools.** With a token set, the panel loads `tools/list` and hands the schemas to the model. Read tools run as soon as the model asks. Write tools (`put_*`, `delete_*`, `reload_config`) render a card with **Run** and **Skip**; Skip returns "Declined by the user." to the model so it can propose something else. A turn stops after 16 tool rounds; **Stop** aborts the current request.
+
+**Ask agent.** Beside every "Copy as agent prompt" action — the trace header, "Why this port?" on a trace step, "Review with agent" in the policy toolbar, the `Agent: ask …` palette entries and the Agent panel's prompt library — an "Ask agent" button starts a thread seeded with that prompt, data inlined, so a trace question becomes a conversation you keep asking into.
+
+**Origins.** Browsers send `Origin` on every POST, so the MCP endpoint accepts a request whose `Origin` authority equals its `Host` (the UI calling the gateway it was served from) even with an empty `allowed_origins`. The Vite dev server on another port still needs listing. Self-hosted providers must allow the admin origin in their own CORS configuration (for Ollama: `OLLAMA_ORIGINS`).
+
 ## Tools, resources, prompts
 
 22 read tools and 11 write tools return JSON; failures come back as tool errors `{code, message, errors?, hint?}` with codes `not_found`, `invalid_input`, `invalid_config` (with the compiler's error list), `debug_disabled`, `sandbox_disabled`, `forbidden`, `store_error`, `internal`.
@@ -80,7 +103,7 @@ Trace and sandbox tools need [debug mode](./debugging.md); they say so when it i
 
 - Two credentials, two surfaces: Basic Auth never works on the MCP path; MCP tokens never work on `/api/*`.
 - Constant-time token comparison; disabled MCP is indistinguishable from a missing route.
-- A request carrying an `Origin` header is refused unless listed in `allowed_origins` (DNS-rebinding defence). Non-browser agents send none.
+- A request carrying an `Origin` header is refused unless it is same-origin (its authority equals the request's `Host`) or listed in `allowed_origins` (DNS-rebinding defence — and either way the bearer token is still required). Non-browser agents send none.
 - Writes go through the same validate → compile → commit path as the Admin API and are logged (`mcp tool call token=… scope=… tool=… outcome=…`). With the file config source, edits are live but not written back to `gateway.yaml` — the same as Admin API edits; with etcd they persist cluster-wide.
 - `${ENV}` placeholders are served raw, never resolved. Consumer credentials are masked on read.
 - Put TLS on the admin listener (`admin.tls`) when the agent is remote.
