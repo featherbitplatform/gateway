@@ -8,7 +8,7 @@
  * @module components/TraceViewer
  */
 import { useState, type CSSProperties } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, MessageSquare } from 'lucide-react';
 import type { Change, EdgeKind, NodeStep, TraceDetail } from '../types';
 import { getPluginMeta } from '../pluginMeta';
 import { formatDuration } from '../format';
@@ -19,6 +19,8 @@ interface TraceViewerProps {
   trace: TraceDetail;
   /** When set, shows a "Why this port?" button beside the selected step's Changes eyebrow. */
   onCopyPrompt?: (nodeId: string) => void;
+  /** When set, shows an "Ask agent" icon beside "Why this port?" that opens the chat with the same question. */
+  onAskAgent?: (nodeId: string) => void;
 }
 
 /** Shared small-button style for the trace header/detail-pane actions
@@ -136,7 +138,7 @@ function ChangeRow({ change }: { change: Change }) {
  * policy author actually has; the full context snapshot is one collapse away
  * for when the answer is not enough.
  */
-export function TraceViewer({ trace, onCopyPrompt }: TraceViewerProps) {
+export function TraceViewer({ trace, onCopyPrompt, onAskAgent }: TraceViewerProps) {
   // Callers key this component by trace id, so a different trace remounts it
   // and both start fresh — the rail can never point past the end.
   const [selected, setSelected] = useState(0);
@@ -295,17 +297,33 @@ export function TraceViewer({ trace, onCopyPrompt }: TraceViewerProps) {
               style={{ marginBottom: 6 }}
             >
               <div className="eyebrow">Changes</div>
-              {onCopyPrompt && (
-                <button
-                  onClick={() => onCopyPrompt(step.node_id)}
-                  title={`Copy a prompt asking why ${step.node_id} exited on port ${step.port ?? 'error'}`}
-                  style={headerButton}
-                  onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
-                >
-                  Why this port?
-                </button>
-              )}
+              <div className="flex items-center">
+                {onCopyPrompt && (
+                  <>
+                    <button
+                      onClick={() => onCopyPrompt(step.node_id)}
+                      title={`Copy a prompt asking why ${step.node_id} exited on port ${step.port ?? 'error'}`}
+                      style={headerButton}
+                      onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+                    >
+                      Why this port?
+                    </button>
+                    {onAskAgent && (
+                      <button
+                        onClick={() => onAskAgent(step.node_id)}
+                        aria-label="Ask agent why this port"
+                        title={`Ask the agent in chat why ${step.node_id} exited on port ${step.port ?? 'error'}`}
+                        style={{ ...headerButton, marginLeft: 4 }}
+                        onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+                        onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+                      >
+                        <MessageSquare size={11} />
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
             {step.changes.length === 0 ? (
               <p
@@ -370,12 +388,15 @@ export function TraceHeader({
   trace,
   onCopyToSandbox,
   onCopyPrompt,
+  onAskAgent,
 }: {
   trace: TraceDetail;
   /** When set, shows a button that replays this trace's request in the sandbox. */
   onCopyToSandbox?: () => void;
   /** When set, shows "Copy as agent prompt" / "Why {status}?" buttons. */
   onCopyPrompt?: (prompt: 'explain_trace' | 'why_this_response') => void;
+  /** When set, adds "Ask agent" icons next to the copy buttons. */
+  onAskAgent?: (prompt: 'explain_trace' | 'why_this_response') => void;
 }) {
   return (
     <div style={{ marginBottom: 10 }}>
@@ -412,6 +433,18 @@ export function TraceHeader({
               >
                 Copy as agent prompt
               </button>
+              {onAskAgent && (
+                <button
+                  onClick={() => onAskAgent('explain_trace')}
+                  aria-label="Ask agent to explain this trace"
+                  title="Ask the agent in chat to explain this whole trace"
+                  style={headerButton}
+                  onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+                >
+                  <MessageSquare size={11} />
+                </button>
+              )}
               <button
                 onClick={() => onCopyPrompt('why_this_response')}
                 title={`Copy a prompt asking why the client got ${trace.status}`}
@@ -421,6 +454,18 @@ export function TraceHeader({
               >
                 Why {trace.status}?
               </button>
+              {onAskAgent && (
+                <button
+                  onClick={() => onAskAgent('why_this_response')}
+                  aria-label={`Ask agent why ${trace.status}`}
+                  title={`Ask the agent in chat why the client got ${trace.status}`}
+                  style={headerButton}
+                  onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+                >
+                  <MessageSquare size={11} />
+                </button>
+              )}
             </>
           )}
         </div>

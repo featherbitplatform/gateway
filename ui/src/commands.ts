@@ -25,8 +25,8 @@ export interface CommandContext {
   invokeEditorAction: (id: string) => void;
   /** True when the canvas has registered that action. */
   hasEditorAction: (id: string) => boolean;
-  /** Copies a policy-authoring prompt for the agent (opens a goal dialog for design_*). */
-  agentPrompt: (name: 'review_policy' | 'design_policy' | 'design_supernode' | 'design_route') => void;
+  /** Copies (default) or asks in chat a policy-authoring prompt; design_* open a goal dialog first. */
+  agentPrompt: (name: 'review_policy' | 'design_policy' | 'design_supernode' | 'design_route', mode?: 'copy' | 'ask') => void;
   /** Opens the Agent (MCP) panel. */
   openAgentPanel: () => void;
   /** Opens the in-UI agent chat. */
@@ -92,6 +92,10 @@ export function buildCommands(): Command[] {
     { id: 'agent-design-policy', title: 'Agent: copy "design a policy" prompt…', run: (c) => c.agentPrompt('design_policy') },
     { id: 'agent-design-supernode', title: 'Agent: copy "design a supernode" prompt…', run: (c) => c.agentPrompt('design_supernode') },
     { id: 'agent-design-route', title: 'Agent: copy "design a route" prompt…', run: (c) => c.agentPrompt('design_route') },
+    { id: 'agent-ask-review-policy', title: 'Agent: ask to review this policy', when: (c) => c.editorOpen, run: (c) => c.agentPrompt('review_policy', 'ask') },
+    { id: 'agent-ask-design-policy', title: 'Agent: ask to design a policy…', run: (c) => c.agentPrompt('design_policy', 'ask') },
+    { id: 'agent-ask-design-supernode', title: 'Agent: ask to design a supernode…', run: (c) => c.agentPrompt('design_supernode', 'ask') },
+    { id: 'agent-ask-design-route', title: 'Agent: ask to design a route…', run: (c) => c.agentPrompt('design_route', 'ask') },
   ];
 }
 

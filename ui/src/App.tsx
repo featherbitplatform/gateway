@@ -192,7 +192,7 @@ export default function App() {
   // via the Agent panel's per-prompt Copy button). `review_policy` never
   // opens this — it auto-fills `policy_name` from the open policy and copies
   // immediately.
-  const [promptDialog, setPromptDialog] = useState<null | { name: string; args: PromptArgDef[] }>(null);
+  const [promptDialog, setPromptDialog] = useState<null | { name: string; args: PromptArgDef[]; mode: 'copy' | 'ask' }>(null);
   const [promptValues, setPromptValues] = useState<Record<string, string>>({});
 
   // Port-name visibility (P) and the command palette (Ctrl+K). Owned here —
@@ -705,42 +705,66 @@ export default function App() {
   );
 
   /**
+   * Renders a named agent prompt and starts a chat thread with it (the
+   * "Ask agent" counterpart of {@link copyPrompt}). No MCP hint line: the
+   * chat has the tools itself when a token is set.
+   */
+  const askAgent = useCallback(
+    async (name: string, args: Record<string, string>) => {
+      try {
+        const r = await api.renderPrompt(name, args);
+        setChatOpen(true);
+        await chat.seedThread({ prompt: name, args }, r.text);
+      } catch (e) {
+        const p = parseApiError(e);
+        handlePanelError('Could not build the agent prompt', p.error || p.raw);
+      }
+    },
+    [chat, handlePanelError],
+  );
+
+  /**
    * `review_policy` copies immediately against the open policy; the
    * `design_*` prompts need a goal, so they open {@link promptDialog}
-   * instead, seeded from {@link DESIGN_PROMPT_ARGS}.
+   * instead, seeded from {@link DESIGN_PROMPT_ARGS}. `mode` picks between
+   * copying to the clipboard and asking {@link askAgent} in chat.
    */
   const agentPrompt = useCallback(
-    (name: 'review_policy' | 'design_policy' | 'design_supernode' | 'design_route') => {
+    (name: 'review_policy' | 'design_policy' | 'design_supernode' | 'design_route', mode: 'copy' | 'ask' = 'copy') => {
+      const go = mode === 'ask' ? askAgent : copyPrompt;
       if (name === 'review_policy') {
         if (!selectedPolicy) {
           notify({ tone: 'warning', title: 'Open a policy first' });
           return;
         }
-        void copyPrompt('review_policy', { policy_name: selectedPolicy.name });
+        void go('review_policy', { policy_name: selectedPolicy.name });
         return;
       }
       setPromptValues({});
-      setPromptDialog({ name, args: DESIGN_PROMPT_ARGS[name] });
+      setPromptDialog({ name, args: DESIGN_PROMPT_ARGS[name], mode });
     },
-    [selectedPolicy, copyPrompt, notify],
+    [selectedPolicy, copyPrompt, askAgent, notify],
   );
 
   /**
-   * The Agent panel's per-prompt "Copy" (Finding 1): copies immediately when
-   * every argument is optional (nothing to ask for), otherwise opens the
-   * generalized {@link promptDialog} for the user to fill in.
+   * The Agent panel's per-prompt "Copy"/"Ask" (Finding 1): copies or asks
+   * immediately when every argument is optional (nothing to ask for),
+   * otherwise opens the generalized {@link promptDialog} for the user to
+   * fill in.
    */
-  const copyPromptWithArgs = useCallback(
-    (name: string, args: PromptArgDef[]) => {
+  const promptWithArgs = useCallback(
+    (mode: 'copy' | 'ask') => (name: string, args: PromptArgDef[]) => {
       if (args.every((a) => !a.required)) {
-        void copyPrompt(name, {});
+        void (mode === 'ask' ? askAgent : copyPrompt)(name, {});
         return;
       }
       setPromptValues({});
-      setPromptDialog({ name, args });
+      setPromptDialog({ name, args, mode });
     },
-    [copyPrompt],
+    [copyPrompt, askAgent],
   );
+  const copyPromptWithArgs = useMemo(() => promptWithArgs('copy'), [promptWithArgs]);
+  const askPromptWithArgs = useMemo(() => promptWithArgs('ask'), [promptWithArgs]);
 
   // Selection across routes/supernodes/plugin configs/stores is mutually
   // exclusive (see handleSelect* above), so any one of them being set means
@@ -984,6 +1008,7 @@ export default function App() {
           onCreateSupernodeDef={handleCreateSupernodeDef}
           storeOptions={storeOptions}
           onReviewWithAgent={() => agentPrompt('review_policy')}
+          onAskAgentReview={() => agentPrompt('review_policy', 'ask')}
         />
       )}
 
@@ -1290,17 +1315,17 @@ export default function App() {
                 promptDialog.args.some((a) => a.required && !(promptValues[a.name] ?? '').trim())
               }
               onClick={() => {
-                const { name, args } = promptDialog!;
+                const { name, args, mode } = promptDialog!;
                 setPromptDialog(null);
                 const values: Record<string, string> = {};
                 for (const a of args) {
                   const v = (promptValues[a.name] ?? '').trim();
                   if (v !== '') values[a.name] = v;
                 }
-                void copyPrompt(name, values);
+                void (mode === 'ask' ? askAgent : copyPrompt)(name, values);
               }}
             >
-              Copy prompt
+              {promptDialog?.mode === 'ask' ? 'Ask agent' : 'Copy prompt'}
             </DialogButton>
           </>
         }
@@ -1325,6 +1350,7 @@ export default function App() {
         selectedPolicy={selectedPolicy?.name ?? null}
         onError={handlePanelError}
         onCopyPrompt={copyPrompt}
+        onAskAgent={askAgent}
       />
 
       <SessionsPanel
@@ -1341,6 +1367,7 @@ export default function App() {
         status={mcpStatus}
         onCopy={copyText}
         onCopyPromptWithArgs={copyPromptWithArgs}
+        onAskPromptWithArgs={askPromptWithArgs}
         onError={handlePanelError}
         onOpenChat={() => {
           setAgentOpen(false);
