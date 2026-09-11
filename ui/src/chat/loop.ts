@@ -107,7 +107,7 @@ export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
         emit(
           appendMessage(
             t,
-            { role: 'tool', toolCallId: call.id, name: call.name, status: 'error', content: `Invalid JSON arguments: ${call.arguments}` },
+            { role: 'tool', toolCallId: call.id, name: call.name, status: 'error', content: truncateToolResult(redact(`Invalid JSON arguments: ${call.arguments}`)) },
             now(),
           ),
         );
@@ -141,7 +141,7 @@ export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
         );
       } catch (e) {
         if (isAbort(e)) return t;
-        emit(appendMessage(t, { role: 'tool', toolCallId: call.id, name: call.name, status: 'error', content: redact(describeError(e)) }, now()));
+        emit(appendMessage(t, { role: 'tool', toolCallId: call.id, name: call.name, status: 'error', content: truncateToolResult(redact(describeError(e))) }, now()));
       }
     }
 
