@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 import type { ChatMessage, ToolCall } from '../../chat/store';
-import { isWriteTool } from '../../chat/loop';
+import { isWriteTool, needsConfirmation } from '../../chat/loop';
 
 type ToolMessage = Extract<ChatMessage, { role: 'tool' }>;
 
@@ -32,6 +32,9 @@ const statusColor: Record<ToolMessage['status'], string> = {
 export function ToolCallCard({ call, result, awaitingConfirm, onRun, onSkip }: ToolCallCardProps) {
   const [open, setOpen] = useState(false);
   const write = isWriteTool(call.name);
+  // `run_sandbox` reads nothing back into the config but executes nodes for
+  // real, so it is gated like a write without being labelled as one.
+  const confirms = !write && needsConfirmation(call.name);
   return (
     <div
       data-testid={`tool-call-${call.name}`}
@@ -48,7 +51,7 @@ export function ToolCallCard({ call, result, awaitingConfirm, onRun, onSkip }: T
     >
       <div className="flex items-center justify-between" style={{ gap: 8 }}>
         <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
-          {write ? 'write · ' : ''}
+          {write ? 'write · ' : confirms ? 'confirm · ' : ''}
           {call.name}
         </span>
         {result ? (
