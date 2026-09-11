@@ -161,6 +161,27 @@ describe('runTurn', () => {
     expect(p.requests[1].at(-1)).toMatchObject({ role: 'tool', content: tool.content });
   });
 
+  it('redacts and bounds the malformed-arguments error text', async () => {
+    const p = provider((_m, round) =>
+      round === 0
+        ? [{ type: 'tool_calls', calls: [{ id: 'c1', name: 'get_policy', arguments: '{"name": "Bearer abcdefgh12345678"' }] }, { type: 'done' }]
+        : [{ type: 'done' }],
+    );
+    const r = runner({ get_policy: { text: 'x' } });
+    const out = await runTurn(start(), {
+      provider: p,
+      tools: r,
+      hooks: hooks(),
+      signal: signal(),
+      redact: (t) => t.replace('abcdefgh12345678', '[REDACTED]'),
+    });
+    const tool = out.messages.find((m) => m.role === 'tool') as { status: string; content: string };
+    expect(tool.status).toBe('error');
+    expect(tool.content).toBe('Invalid JSON arguments: {"name": "Bearer [REDACTED]"');
+    expect(p.requests[1].at(-1)).toMatchObject({ role: 'tool', content: tool.content });
+    expect(r.calls).toEqual([]);
+  });
+
   it('applies the redactor to tool results before storing and replaying them', async () => {
     const p = provider((_m, round) =>
       round === 0 ? [{ type: 'tool_calls', calls: [{ id: 'c', name: 'get_trace', arguments: '{}' }] }, { type: 'done' }] : [{ type: 'done' }],
