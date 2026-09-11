@@ -685,6 +685,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   - `function splitSseEvents(buffer: string): { events: string[]; rest: string }`
   - `class ToolCallAccumulator { apply(deltas: unknown): void; finish(): ToolCall[] }`
   - `async function* streamChat(settings, messages: WireMessage[], tools: ToolDef[], signal: AbortSignal, fetchImpl?: typeof fetch): AsyncGenerator<StreamEvent>`
+  - `async function listModels(settings: ProviderSettings, fetchImpl?: typeof fetch): Promise<string[]>` — `GET {baseUrl}/models`, returns the sorted `data[].id` list; throws `ProviderError` on non-2xx.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -695,6 +696,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ProviderError,
   ToolCallAccumulator,
+  listModels,
   splitSseEvents,
   streamChat,
   toWire,
@@ -842,6 +844,25 @@ describe('streamChat', () => {
     const p = collect(streamChat(settings, [], [], ctl.signal, hanging));
     ctl.abort();
     await expect(p).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('listModels', () => {
+  it('GETs {baseUrl}/models with bearer auth and returns sorted ids', async () => {
+    const cap: { init?: RequestInit; url?: string } = {};
+    const f = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      cap.url = String(url);
+      cap.init = init;
+      return new Response(JSON.stringify({ object: 'list', data: [{ id: 'gpt-b' }, { id: 'gpt-a' }, { nope: 1 }] }), { status: 200 });
+    }) as typeof fetch;
+    expect(await listModels(settings, f)).toEqual(['gpt-a', 'gpt-b']);
+    expect(cap.url).toBe('https://api.example/v1/models');
+    expect(cap.init?.method ?? 'GET').toBe('GET');
+    expect((cap.init!.headers as Record<string, string>).Authorization).toBe('Bearer sk-test');
+  });
+  it('throws ProviderError on non-2xx', async () => {
+    const f = (async () => new Response('nope', { status: 403 })) as typeof fetch;
+    await expect(listModels(settings, f)).rejects.toMatchObject<Partial<ProviderError>>({ status: 403, body: 'nope' });
   });
 });
 ```
@@ -1024,6 +1045,18 @@ export async function* streamChat(
     if (calls.length > 0) yield { type: 'tool_calls', calls };
   }
   yield { type: 'done' };
+}
+
+/** `GET {baseUrl}/models` → sorted model ids. Feeds the settings form's suggestion list. */
+export async function listModels(settings: ProviderSettings, fetchImpl: typeof fetch = fetch): Promise<string[]> {
+  const url = `${settings.baseUrl.replace(/\/+$/, '')}/models`;
+  const res = await fetchImpl(url, { method: 'GET', headers: { Authorization: `Bearer ${settings.apiKey}` } });
+  if (!res.ok) throw new ProviderError(res.status, await res.text());
+  const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
+  return (body.data ?? [])
+    .map((m) => m.id)
+    .filter((id): id is string => typeof id === 'string')
+    .sort();
 }
 ```
 
@@ -2334,6 +2367,7 @@ export function ThreadList({ threads, activeId, onSelect, onNew, onDelete, onCle
 ```tsx
 import { useState } from 'react';
 import { DialogButton, DialogField } from '../Dialog';
+import { ProviderError, listModels } from '../../chat/openai';
 import type { ChatSettings } from '../../chat/store';
 import type { ConnectionState } from '../../chat/useChat';
 
@@ -2362,14 +2396,60 @@ export function connectionLabel(c: ConnectionState): string {
 
 export function ChatSettingsForm({ settings, connection, onSave, onForget, onDone }: ChatSettingsFormProps) {
   const [draft, setDraft] = useState<ChatSettings>(settings);
+  const [models, setModels] = useState<string[]>([]);
+  const [modelsNote, setModelsNote] = useState<string>('');
   const set = (k: keyof ChatSettings) => (v: string) => setDraft((d) => ({ ...d, [k]: v }));
+
+  // Fills the <datalist> under the model field from the provider's own
+  // GET /models. The field stays free text: servers without that endpoint
+  // (or with a different auth model) still work by typing the name.
+  const loadModels = async () => {
+    setModelsNote('Loading…');
+    try {
+      const ids = await listModels(draft);
+      setModels(ids);
+      setModelsNote(ids.length === 0 ? 'The provider returned no models.' : `${ids.length} models — start typing to filter.`);
+    } catch (e) {
+      setModels([]);
+      setModelsNote(e instanceof ProviderError ? `Could not load models: ${e.status} ${e.body}` : `Could not load models: ${String(e)}`);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} data-testid="chat-settings">
       <p style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)', margin: 0 }}>
         Everything here stays in this browser's local storage. The API key is sent only to the base URL below; the MCP token only to this gateway's MCP endpoint.
       </p>
       <DialogField label="Base URL" value={draft.baseUrl} onChange={set('baseUrl')} placeholder="https://api.openai.com/v1" mono />
-      <DialogField label="Model" value={draft.model} onChange={set('model')} placeholder="model name" mono />
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
+        <span className="flex items-center justify-between">
+          Model
+          <button
+            type="button"
+            onClick={() => void loadModels()}
+            disabled={draft.apiKey === ''}
+            title={draft.apiKey === '' ? 'Enter an API key first' : 'Fetch the model list from the provider (GET /models)'}
+            style={{ background: 'transparent', border: 'none', color: draft.apiKey === '' ? 'var(--text-muted)' : 'var(--accent)', fontSize: 'var(--text-2xs)', padding: 0 }}
+          >
+            Load models
+          </button>
+        </span>
+        <input
+          list="chat-model-options"
+          value={draft.model}
+          onChange={(e) => setDraft((d) => ({ ...d, model: e.target.value }))}
+          placeholder="model name"
+          aria-label="Model"
+          autoComplete="off"
+          style={{ padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--surface-input)', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}
+        />
+        <datalist id="chat-model-options">
+          {models.map((m) => (
+            <option key={m} value={m} />
+          ))}
+        </datalist>
+        {modelsNote && <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }}>{modelsNote}</span>}
+      </label>
       <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
         API key
         <input
@@ -3107,7 +3187,7 @@ Settings (gear icon in the panel) are stored in this browser's local storage und
 | Field | Meaning |
 |---|---|
 | Base URL | `https://api.openai.com/v1` by default; any compatible server works (Azure, OpenRouter, a local Ollama, …) |
-| Model | Free text; the panel does not hardcode model names |
+| Model | Free text; **Load models** fetches the provider's `GET /models` list into a suggestion dropdown, so nothing is hardcoded |
 | API key | Sent only to the base URL above |
 | MCP token | One of `admin.mcp.tokens`; sent only to this gateway's MCP endpoint. Leave empty for a toolless chat |
 
