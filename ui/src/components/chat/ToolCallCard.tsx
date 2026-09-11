@@ -66,7 +66,7 @@ export function ToolCallCard({ call, result, awaitingConfirm, onRun, onSkip }: T
       </pre>
       {awaitingConfirm && (
         <div className="flex gap-2">
-          <button onClick={onRun} style={{ padding: '3px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--accent)', color: '#fff', border: 'none' }}>
+          <button onClick={onRun} style={{ padding: '3px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--accent)', color: 'var(--text-on-accent)', border: 'none' }}>
             Run
           </button>
           <button onClick={onSkip} style={{ padding: '3px 10px', borderRadius: 'var(--radius-sm)', background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
