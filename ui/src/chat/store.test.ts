@@ -57,6 +57,13 @@ describe('settings', () => {
     const partial = memoryStorage({ [SETTINGS_KEY]: JSON.stringify({ model: 'm' }) });
     expect(loadSettings(partial)).toEqual({ ...DEFAULT_SETTINGS, model: 'm' });
   });
+
+  it('round-trips the redact toggle and defaults it on', () => {
+    const s = memoryStorage();
+    saveSettings({ ...DEFAULT_SETTINGS, redact: false }, s);
+    expect(loadSettings(s).redact).toBe(false);
+    expect(loadSettings(memoryStorage({ [SETTINGS_KEY]: JSON.stringify({ model: 'm' }) })).redact).toBe(true);
+  });
 });
 
 describe('threads', () => {

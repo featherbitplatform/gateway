@@ -21,6 +21,8 @@ export interface ChatSettings {
   model: string;
   apiKey: string;
   mcpToken: string;
+  /** Client-side secret redaction before storing/sending (see chat/redact.ts). */
+  redact: boolean;
 }
 
 export const DEFAULT_SETTINGS: ChatSettings = {
@@ -28,6 +30,7 @@ export const DEFAULT_SETTINGS: ChatSettings = {
   model: DEFAULT_MODEL,
   apiKey: '',
   mcpToken: '',
+  redact: true,
 };
 
 /** One tool call the model requested; `arguments` is the raw JSON string. */
@@ -80,8 +83,14 @@ export function loadSettings(storage: Storage | null | undefined): ChatSettings 
     if (!raw) return { ...DEFAULT_SETTINGS };
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed)) return { ...DEFAULT_SETTINGS };
-    const pick = (k: keyof ChatSettings) => (typeof parsed[k] === 'string' ? (parsed[k] as string) : DEFAULT_SETTINGS[k]);
-    return { baseUrl: pick('baseUrl'), model: pick('model'), apiKey: pick('apiKey'), mcpToken: pick('mcpToken') };
+    const pick = (k: keyof Omit<ChatSettings, 'redact'>) => (typeof parsed[k] === 'string' ? (parsed[k] as string) : DEFAULT_SETTINGS[k]);
+    return {
+      baseUrl: pick('baseUrl'),
+      model: pick('model'),
+      apiKey: pick('apiKey'),
+      mcpToken: pick('mcpToken'),
+      redact: typeof parsed.redact === 'boolean' ? parsed.redact : true,
+    };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
