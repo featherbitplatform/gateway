@@ -49,7 +49,8 @@ export interface ChatController {
   connection: ConnectionState;
   connect(): Promise<void>;
   send(threadId: string, text: string): Promise<void>;
-  seedThread(seed: ThreadSeed, text: string): Promise<string>;
+  /** The new thread's id, or null when a turn is already running (nothing created). */
+  seedThread(seed: ThreadSeed, text: string): Promise<string | null>;
   stop(): void;
   pendingConfirm: PendingConfirm | null;
   resolveConfirm(run: boolean): void;
@@ -93,11 +94,62 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
   /** Thread ids dismissed (deleted / cleared) while a turn may still be streaming into them. */
   const dismissedRef = useRef(new Set<string>());
 
-  useEffect(() => {
-    const out = saveThreads(threads, safeStorage());
+  /**
+   * Writes the whole thread store to local storage. Debounced below: a
+   * streaming turn changes `threads` on every token, and serialising every
+   * thread per delta is the panel's one hot spot.
+   */
+  const flushThreads = useCallback(() => {
+    const current = threadsRef.current;
+    const out = saveThreads(current, safeStorage());
     if (!out.ok) setStorageBlocked(true);
-    else if (out.dropped > 0 && out.threads.length !== threads.length) setThreads(out.threads);
+    else if (out.dropped > 0 && out.threads.length !== current.length) setThreads(out.threads);
+  }, []);
+  const flushRef = useRef(flushThreads);
+  flushRef.current = flushThreads;
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // Only a streaming turn mutates `threads` fast enough to matter (one
+    // change per token). Every other mutation — send, delete, clear all — is a
+    // single user action, so it persists at once and a reload immediately
+    // afterwards never loses it.
+    if (busyRef.current === null) {
+      if (saveTimerRef.current !== null) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      flushRef.current();
+      return;
+    }
+    if (saveTimerRef.current !== null) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
+      flushRef.current();
+    }, 500);
   }, [threads]);
+
+  // A finished turn is the point the user may close the tab or reload, so
+  // persist it immediately instead of waiting out the trailing timer.
+  useEffect(() => {
+    if (busyThreadId !== null) return;
+    if (saveTimerRef.current !== null) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    flushRef.current();
+  }, [busyThreadId]);
+
+  useEffect(
+    () => () => {
+      if (saveTimerRef.current !== null) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      flushRef.current();
+    },
+    [],
+  );
 
   const saveSettings = useCallback((next: ChatSettings) => {
     setSettings(next);
@@ -199,10 +251,10 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
   }, []);
 
   const runOn = useCallback(
-    async (thread: Thread) => {
+    async (thread: Thread): Promise<boolean> => {
       // A ref check is synchronous, unlike `busyThreadId` state: two calls to
       // send/seedThread in the same tick must not both pass this guard.
-      if (abortRef.current) return;
+      if (abortRef.current) return false;
       const ctl = new AbortController();
       abortRef.current = ctl;
       busyRef.current = thread.id;
@@ -246,6 +298,7 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
         setBusyThreadId(null);
         setPendingConfirm(null);
       }
+      return true;
     },
     [settings, updateThread, redact],
   );
@@ -264,7 +317,11 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
   );
 
   const seedThread = useCallback(
-    async (seed: ThreadSeed, text: string): Promise<string> => {
+    async (seed: ThreadSeed, text: string): Promise<string | null> => {
+      // Refused by the same synchronous lock `runOn` uses — check it *before*
+      // creating anything, or "Ask agent" during a running turn leaves a
+      // switched-to thread holding a question nobody will ever answer.
+      if (abortRef.current) return null;
       const t = appendMessage(makeThread(newId(), Date.now(), seed), { role: 'user', content: redact(text) }, Date.now());
       updateThread(t);
       setActiveId(t.id);

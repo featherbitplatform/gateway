@@ -709,18 +709,30 @@ export default function App() {
    * "Ask agent" counterpart of {@link copyPrompt}). No MCP hint line: the
    * chat has the tools itself when a token is set.
    */
+  // Pulled out of `chat` (a useMemo that changes on every thread update, hence
+  // on every streamed token): depending on `chat` here would ripple through
+  // `agentPrompt` into the memoized `commandCtx` and resubscribe the global
+  // keydown listener. `seedThread`'s own identity is stable across a turn.
+  const seedThread = chat.seedThread;
   const askAgent = useCallback(
     async (name: string, args: Record<string, string>) => {
       try {
         const r = await api.renderPrompt(name, args);
         setChatOpen(true);
-        await chat.seedThread({ prompt: name, args }, r.text);
+        // null = refused: a turn is already running, and nothing was created.
+        if ((await seedThread({ prompt: name, args }, r.text)) === null) {
+          notify({
+            tone: 'warning',
+            title: 'A chat turn is already running',
+            message: 'Stop it or wait for it to finish, then ask again.',
+          });
+        }
       } catch (e) {
         const p = parseApiError(e);
         handlePanelError('Could not build the agent prompt', p.error || p.raw);
       }
     },
-    [chat, handlePanelError],
+    [seedThread, handlePanelError, notify],
   );
 
   /**
