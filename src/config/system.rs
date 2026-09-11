@@ -739,9 +739,12 @@ pub struct McpConfig {
     /// Bearer tokens and their scopes. Required (non-empty) when `enabled`.
     #[serde(default)]
     pub tokens: Vec<McpTokenConfig>,
-    /// Browser origins allowed to call the endpoint. A request carrying an
-    /// `Origin` header not listed here is refused (DNS-rebinding defence);
-    /// non-browser agents send no `Origin`, so the empty default costs nothing.
+    /// Browser origins allowed to call the endpoint, in addition to the
+    /// request's own origin (an `Origin` whose `host[:port]` equals the
+    /// request's `Host` is always accepted, so the embedded web UI's chat
+    /// works with the empty default). Any other `Origin` is refused
+    /// (DNS-rebinding defence); non-browser agents send none. List the Vite
+    /// dev server here (`http://localhost:5173`) when developing the UI.
     #[serde(default)]
     pub allowed_origins: Vec<String>,
 }

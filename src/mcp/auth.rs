@@ -59,20 +59,41 @@ impl McpAuthState {
 /// whether a token was unknown, malformed, or absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthFailure {
-    /// An `Origin` header was present and not allow-listed.
+    /// An `Origin` header was present, not allow-listed, and not same-origin.
     OriginNotAllowed,
     /// No usable bearer token.
     Unauthorized,
 }
 
-/// Resolves the principal for a request from its headers.
-pub fn authenticate(auth: &McpAuthState, headers: &HeaderMap) -> Result<McpPrincipal, AuthFailure> {
+/// Extracts `host[:port]` from an `Origin` value such as `https://a.b:9091`.
+fn origin_authority(origin: &str) -> Option<&str> {
+    let rest = origin.split_once("://")?.1;
+    let authority = rest.split('/').next()?;
+    (!authority.is_empty()).then_some(authority)
+}
+
+/// Resolves the principal for a request from its headers, taking the request
+/// authority (`Host`, or the HTTP/2 `:authority`) from `authority`.
+///
+/// An `Origin` header is accepted when it is allow-listed **or** when its
+/// authority equals the request's own authority (the embedded web UI calling
+/// `/mcp` on whatever hostname it was served from). Cross-site pages fail
+/// both tests. Under DNS rebinding both values name the attacker's domain and
+/// the request reaches the endpoint — but without the bearer token, which a
+/// foreign origin cannot read from this origin's storage, it is still `401`.
+pub fn authenticate_for(
+    auth: &McpAuthState,
+    headers: &HeaderMap,
+    authority: Option<&str>,
+) -> Result<McpPrincipal, AuthFailure> {
     if let Some(origin) = headers.get("origin") {
-        let allowed = origin
-            .to_str()
-            .map(|o| auth.allowed_origins.iter().any(|a| a == o))
-            .unwrap_or(false);
-        if !allowed {
+        let origin = origin.to_str().map_err(|_| AuthFailure::OriginNotAllowed)?;
+        let listed = auth.allowed_origins.iter().any(|a| a == origin);
+        let same_origin = match (origin_authority(origin), authority) {
+            (Some(o), Some(h)) => o.eq_ignore_ascii_case(h),
+            _ => false,
+        };
+        if !listed && !same_origin {
             return Err(AuthFailure::OriginNotAllowed);
         }
     }
@@ -101,6 +122,17 @@ pub fn authenticate(auth: &McpAuthState, headers: &HeaderMap) -> Result<McpPrinc
     matched.ok_or(AuthFailure::Unauthorized)
 }
 
+/// [`authenticate_for`] with the authority taken from the `Host` header.
+///
+/// The middleware calls [`authenticate_for`] directly so it can fall back to
+/// the URI authority for HTTP/2; this wrapper is the plain entry point kept
+/// for direct callers (and exercised throughout the tests below).
+#[allow(dead_code)]
+pub fn authenticate(auth: &McpAuthState, headers: &HeaderMap) -> Result<McpPrincipal, AuthFailure> {
+    let host = headers.get("host").and_then(|v| v.to_str().ok());
+    authenticate_for(auth, headers, host)
+}
+
 /// axum middleware for the MCP path: authenticates, then stores the
 /// [`McpPrincipal`] in request extensions for the server handler to read.
 pub async fn bearer_middleware(
@@ -108,7 +140,13 @@ pub async fn bearer_middleware(
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
-    match authenticate(&auth, req.headers()) {
+    let authority = req
+        .headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .or_else(|| req.uri().authority().map(|a| a.as_str().to_owned()));
+    match authenticate_for(&auth, req.headers(), authority.as_deref()) {
         Ok(principal) => {
             req.extensions_mut().insert(principal);
             next.run(req).await
@@ -228,6 +266,78 @@ mod tests {
         none.allowed_origins.clear();
         let auth = McpAuthState::from_config(&none);
         assert_eq!(authenticate(&auth, &ok), Err(AuthFailure::OriginNotAllowed));
+    }
+
+    #[test]
+    fn same_origin_is_accepted_without_an_allow_list() {
+        let mut none = cfg();
+        none.allowed_origins.clear();
+        let auth = McpAuthState::from_config(&none);
+        let ok = headers(&[
+            ("host", "127.0.0.1:19091"),
+            ("origin", "http://127.0.0.1:19091"),
+            ("authorization", &format!("Bearer {READ}")),
+        ]);
+        assert!(
+            authenticate(&auth, &ok).is_ok(),
+            "Origin authority == Host authority"
+        );
+
+        // Case-insensitive host comparison; scheme is ignored.
+        let https = headers(&[
+            ("host", "Gateway.Example:9091"),
+            ("origin", "https://gateway.example:9091"),
+            ("authorization", &format!("Bearer {READ}")),
+        ]);
+        assert!(authenticate(&auth, &https).is_ok());
+
+        // A different authority is still refused.
+        let cross = headers(&[
+            ("host", "127.0.0.1:19091"),
+            ("origin", "http://evil.example"),
+            ("authorization", &format!("Bearer {READ}")),
+        ]);
+        assert_eq!(
+            authenticate(&auth, &cross),
+            Err(AuthFailure::OriginNotAllowed)
+        );
+
+        // Same host but a different port is a different origin.
+        let port = headers(&[
+            ("host", "127.0.0.1:19091"),
+            ("origin", "http://127.0.0.1:5173"),
+            ("authorization", &format!("Bearer {READ}")),
+        ]);
+        assert_eq!(
+            authenticate(&auth, &port),
+            Err(AuthFailure::OriginNotAllowed)
+        );
+
+        // No Host header and no allow-list: an Origin is still refused.
+        let no_host = headers(&[
+            ("origin", "http://127.0.0.1:19091"),
+            ("authorization", &format!("Bearer {READ}")),
+        ]);
+        assert_eq!(
+            authenticate(&auth, &no_host),
+            Err(AuthFailure::OriginNotAllowed)
+        );
+    }
+
+    #[test]
+    fn authenticate_for_uses_the_uri_authority_when_host_is_absent() {
+        let mut none = cfg();
+        none.allowed_origins.clear();
+        let auth = McpAuthState::from_config(&none);
+        let h = headers(&[
+            ("origin", "http://127.0.0.1:19091"),
+            ("authorization", &format!("Bearer {READ}")),
+        ]);
+        assert!(authenticate_for(&auth, &h, Some("127.0.0.1:19091")).is_ok());
+        assert_eq!(
+            authenticate_for(&auth, &h, Some("other.example")),
+            Err(AuthFailure::OriginNotAllowed)
+        );
     }
 
     async fn echo_scope(req: Request<Body>) -> String {
