@@ -30,6 +30,9 @@ Decisions taken during brainstorming, in order:
    flushable (per-thread Delete, "Clear all chats").
 5. **Hand-rolled clients, no new npm dependencies.** The MCP wire shape is the
    one the e2e suite already uses; the OpenAI streaming client is one function.
+   (Relaxed after first use: assistant replies arrive as Markdown, so
+   `react-markdown` + `remark-gfm` render them in `components/chat/Markdown.tsx`
+   — raw HTML disabled, links `target=_blank rel=noopener noreferrer`.)
 6. **One server change:** the MCP `Origin` check accepts same-origin requests so
    the embedded UI works with the default empty `allowed_origins`.
 
