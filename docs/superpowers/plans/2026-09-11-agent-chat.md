@@ -1470,6 +1470,9 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Create: `ui/src/chat/systemPrompt.ts`
 - Create: `ui/src/chat/loop.ts`
 - Test: `ui/src/chat/loop.test.ts`
+- Create: `ui/src/chat/redact.ts`
+- Test: `ui/src/chat/redact.test.ts`
+- Modify: `ui/src/chat/store.ts` (`ChatSettings.redact`), `ui/src/chat/store.test.ts`
 
 **Interfaces:**
 - Consumes: `Thread`, `ChatMessage`, `ToolCall`, `appendMessage`, `replaceLastAssistant`, `truncateToolResult` from `./store`; `StreamEvent`, `ToolDef`, `WireMessage`, `toWire`, `ProviderError` from `./openai`; `WRITE_TOOLS` from `../agentPrompts`.
@@ -1480,7 +1483,9 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   - `interface Provider { stream(messages: WireMessage[], tools: ToolDef[], signal: AbortSignal): AsyncIterable<StreamEvent> }`
   - `interface ToolRunner { tools: ToolDef[]; call(name: string, args: unknown, signal: AbortSignal): Promise<{ text: string; isError: boolean }> }`
   - `interface TurnHooks { onThread(t: Thread): void; confirm(call: ToolCall): Promise<boolean> }`
-  - `runTurn(thread: Thread, deps: { provider: Provider; tools: ToolRunner | null; hooks: TurnHooks; signal: AbortSignal; now?: () => number }): Promise<Thread>`
+  - `runTurn(thread: Thread, deps: { provider: Provider; tools: ToolRunner | null; hooks: TurnHooks; signal: AbortSignal; now?: () => number; redact?: (text: string) => string }): Promise<Thread>` — `redact` (default identity) is applied to every tool result and tool error text before it is stored or replayed.
+  - From `ui/src/chat/redact.ts`: `REDACTED = '[REDACTED]'`, `interface RedactResult { text: string; count: number }`, `redactSecrets(text: string, literals?: readonly string[]): RedactResult`.
+  - `ChatSettings` (in `store.ts`) gains `redact: boolean` (default `true`); `loadSettings` reads it as a boolean, defaulting to `true`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1648,6 +1653,23 @@ describe('runTurn', () => {
     expect(tool.content).toContain('…[truncated');
     expect(p.requests[1].at(-1)).toMatchObject({ role: 'tool', content: tool.content });
   });
+
+  it('applies the redactor to tool results before storing and replaying them', async () => {
+    const p = provider((_m, round) =>
+      round === 0 ? [{ type: 'tool_calls', calls: [{ id: 'c', name: 'get_trace', arguments: '{}' }] }, { type: 'done' }] : [{ type: 'done' }],
+    );
+    const r = runner({ get_trace: { text: 'authorization: Bearer abc.def' } });
+    const out = await runTurn(start(), {
+      provider: p,
+      tools: r,
+      hooks: hooks(),
+      signal: signal(),
+      redact: (t) => t.replace('abc.def', '[REDACTED]'),
+    });
+    const tool = out.messages.find((m) => m.role === 'tool') as { content: string };
+    expect(tool.content).toBe('authorization: Bearer [REDACTED]');
+    expect(p.requests[1].at(-1)).toMatchObject({ role: 'tool', content: 'authorization: Bearer [REDACTED]' });
+  });
 });
 ```
 
@@ -1727,6 +1749,8 @@ export interface TurnDeps {
   hooks: TurnHooks;
   signal: AbortSignal;
   now?: () => number;
+  /** Applied to tool result/error text before it is stored or replayed (default: identity). */
+  redact?: (text: string) => string;
 }
 
 function isAbort(e: unknown): boolean {
@@ -1741,6 +1765,7 @@ function describeError(e: unknown): string {
 
 export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
   const now = deps.now ?? (() => Date.now());
+  const redact = deps.redact ?? ((s: string) => s);
   const toolDefs = deps.tools?.tools ?? [];
   const system = systemPrompt({ toolsAvailable: toolDefs.length > 0 });
   let t = thread;
@@ -1813,13 +1838,19 @@ export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
         emit(
           appendMessage(
             t,
-            { role: 'tool', toolCallId: call.id, name: call.name, status: r.isError ? 'error' : 'done', content: truncateToolResult(r.text) },
+            {
+              role: 'tool',
+              toolCallId: call.id,
+              name: call.name,
+              status: r.isError ? 'error' : 'done',
+              content: truncateToolResult(redact(r.text)),
+            },
             now(),
           ),
         );
       } catch (e) {
         if (isAbort(e)) return t;
-        emit(appendMessage(t, { role: 'tool', toolCallId: call.id, name: call.name, status: 'error', content: describeError(e) }, now()));
+        emit(appendMessage(t, { role: 'tool', toolCallId: call.id, name: call.name, status: 'error', content: redact(describeError(e)) }, now()));
       }
     }
 
@@ -1837,10 +1868,170 @@ export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
 }
 ```
 
+- [ ] **Step 4b: Write the failing redaction tests**
+
+Create `ui/src/chat/redact.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { REDACTED, redactSecrets } from './redact';
+
+describe('redactSecrets', () => {
+  it('leaves ordinary text, placeholders and already-masked values alone', () => {
+    const t = 'token_count: 3\nscope: read\ntoken: ${FEATHERBIT_MCP_READ_TOKEN}\nauthorization: <redacted>\n"port": "denied"\npassthrough: true';
+    expect(redactSecrets(t)).toEqual({ text: t, count: 0 });
+  });
+
+  it('redacts secret-keyed values in JSON, YAML and header form', () => {
+    const r = redactSecrets(
+      '{"password":"hunter2","client_secret": "abc","api_key":"k1","refresh_token":"r"}\nsecret_key: s3cr3t\nX-Api-Key: zzz\nCookie: sid=abc; theme=dark',
+    );
+    expect(r.text).toBe(
+      `{"password":"${REDACTED}","client_secret": "${REDACTED}","api_key":"${REDACTED}","refresh_token":"${REDACTED}"}\nsecret_key: ${REDACTED}\nX-Api-Key: ${REDACTED}\nCookie: ${REDACTED}`,
+    );
+    expect(r.count).toBe(7);
+  });
+
+  it('redacts auth schemes, JWTs, PEM blocks and well-known key prefixes', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+    const r = redactSecrets(
+      `use Bearer abcdefgh12345678 or ${jwt}\nkey sk-abcdefghijklmnopqrstuvwxyz and AKIAABCDEFGHIJKLMNOP\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----`,
+    );
+    expect(r.text).toBe(`use Bearer ${REDACTED} or ${REDACTED}\nkey ${REDACTED} and ${REDACTED}\n${REDACTED}`);
+    expect(r.count).toBe(5);
+  });
+
+  it('redacts literal secrets of 8+ chars anywhere and ignores shorter ones', () => {
+    const r = redactSecrets('my key is sk-live-XYZ and short is abc', ['sk-live-XYZ', 'abc']);
+    expect(r.text).toBe(`my key is ${REDACTED} and short is abc`);
+    expect(r.count).toBe(1);
+  });
+
+  it('is idempotent', () => {
+    const once = redactSecrets('password: x\nBearer abcdefgh12345678').text;
+    expect(redactSecrets(once)).toEqual({ text: once, count: 0 });
+  });
+});
+```
+
+Run: `cd ui && npx vitest run src/chat/redact.test.ts` — Expected: FAIL, cannot resolve `./redact`.
+
+- [ ] **Step 4c: Implement `ui/src/chat/redact.ts`**
+
+```ts
+/**
+ * Client-side secret redaction for the agent chat — a second line of
+ * defence behind the gateway's own capture-time trace redaction and
+ * credential masking. Runs over everything the chat stores or sends:
+ * seeded prompts, typed messages, tool results.
+ *
+ * @module chat/redact
+ */
+
+export const REDACTED = '[REDACTED]';
+
+export interface RedactResult {
+  text: string;
+  /** Number of replacements made. */
+  count: number;
+}
+
+/** Keys whose values are secrets wherever they appear (JSON, YAML, headers). */
+const SECRET_KEYS = [
+  'password', 'passwd', 'pass', 'secret', 'client_secret', 'client-secret',
+  'api_key', 'apikey', 'api-key', 'x-api-key', 'x-auth-token',
+  'access_token', 'refresh_token', 'id_token', 'auth_token', 'session_token', 'token', 'bearer',
+  'private_key', 'private-key', 'secret_key', 'secret-key', 'access_key', 'access-key',
+  'authorization', 'proxy-authorization', 'cookie', 'set-cookie',
+];
+
+const KEY_ALT = SECRET_KEYS.map((k) => k.replace(/-/g, '\\-')).join('|');
+
+/** `key: value`, `"key": "value"`, `key=value` — the value runs to a delimiter. */
+const KEYED_VALUE = new RegExp(`(?<![\\w-])((?:"|')?(?:${KEY_ALT})(?:"|')?\\s*[:=]\\s*)("?)([^"\\r\\n,}\\]]*)`, 'gi');
+const AUTH_SCHEME = /\b(Bearer|Basic|Digest|Token)\s+([A-Za-z0-9\-._~+/=]{8,})/g;
+const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
+const PEM = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
+const KEY_PREFIXES = /\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|gh[ousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g;
+
+/** Values that are safe to keep: empty, `${ENV}` placeholders, already-masked markers, plain booleans/numbers. */
+function keepValue(v: string): boolean {
+  const t = v.trim();
+  return t === '' || t.startsWith('${') || t === REDACTED || t === '<redacted>' || t === '<masked>' || /^(true|false|null|\d+)$/.test(t);
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Replaces secrets with {@link REDACTED}. `literals` are exact strings to
+ * remove wherever they appear (the user's own API key and MCP token);
+ * entries shorter than 8 characters are ignored to avoid shredding prose.
+ */
+export function redactSecrets(text: string, literals: readonly string[] = []): RedactResult {
+  let count = 0;
+  let out = text;
+  const sub = (re: RegExp, replacement: (match: string, group1: string) => string) => {
+    out = out.replace(re, (m: string, g1: string) => {
+      count += 1;
+      return replacement(m, g1);
+    });
+  };
+  for (const lit of literals) {
+    if (lit.length >= 8) sub(new RegExp(escapeRe(lit), 'g'), () => REDACTED);
+  }
+  sub(PEM, () => REDACTED);
+  sub(JWT, () => REDACTED);
+  sub(KEY_PREFIXES, () => REDACTED);
+  out = out.replace(KEYED_VALUE, (m: string, prefix: string, quote: string, value: string) => {
+    if (keepValue(value)) return m;
+    count += 1;
+    return `${prefix}${quote}${REDACTED}`;
+  });
+  sub(AUTH_SCHEME, (_m, scheme) => `${scheme} ${REDACTED}`);
+  return { text: out, count };
+}
+```
+
+Run: `cd ui && npx vitest run src/chat/redact.test.ts` — Expected: PASS.
+
+- [ ] **Step 4d: Add the `redact` setting to the store**
+
+In `ui/src/chat/store.test.ts` add inside `describe('settings', …)`:
+
+```ts
+  it('round-trips the redact toggle and defaults it on', () => {
+    const s = memoryStorage();
+    saveSettings({ ...DEFAULT_SETTINGS, redact: false }, s);
+    expect(loadSettings(s).redact).toBe(false);
+    expect(loadSettings(memoryStorage({ [SETTINGS_KEY]: JSON.stringify({ model: 'm' }) })).redact).toBe(true);
+  });
+```
+
+Run it — Expected: FAIL (`redact` does not exist on `ChatSettings`).
+
+In `ui/src/chat/store.ts`:
+- `ChatSettings` gains `/** Client-side secret redaction before storing/sending (see chat/redact.ts). */ redact: boolean;`
+- `DEFAULT_SETTINGS` gains `redact: true,`
+- `loadSettings` returns
+  ```ts
+    return {
+      baseUrl: pick('baseUrl'),
+      model: pick('model'),
+      apiKey: pick('apiKey'),
+      mcpToken: pick('mcpToken'),
+      redact: typeof parsed.redact === 'boolean' ? parsed.redact : true,
+    };
+  ```
+  and `pick`'s parameter type becomes `keyof Omit<ChatSettings, 'redact'>`.
+
+Run: `cd ui && npx vitest run src/chat/store.test.ts` — Expected: PASS.
+
 - [ ] **Step 5: Run the tests**
 
 Run: `cd ui && npx vitest run src/chat`
-Expected: PASS for store, openai, mcpClient and loop.
+Expected: PASS for store, openai, modelMatch, mcpClient, redact and loop.
 
 - [ ] **Step 6: Lint**
 
@@ -1850,8 +2041,8 @@ Expected: no errors. (If `WRITE_TOOLS.includes` complains about `readonly string
 - [ ] **Step 7: Commit**
 
 ```bash
-git add ui/src/chat/systemPrompt.ts ui/src/chat/loop.ts ui/src/chat/loop.test.ts
-git commit -m "feat(ui): agent turn loop with read auto-run, write confirmation and round cap
+git add ui/src/chat/systemPrompt.ts ui/src/chat/loop.ts ui/src/chat/loop.test.ts ui/src/chat/redact.ts ui/src/chat/redact.test.ts ui/src/chat/store.ts ui/src/chat/store.test.ts
+git commit -m "feat(ui): agent turn loop with read auto-run, write confirmation, round cap and secret redaction
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -1917,6 +2108,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isWriteTool, runTurn, type Provider, type ToolRunner } from './loop';
 import { createMcpClient, resultText, toToolDefs, type McpClient } from './mcpClient';
 import { streamChat, type ToolDef } from './openai';
+import { redactSecrets } from './redact';
 import {
   appendMessage,
   loadSettings,
@@ -2046,6 +2238,13 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
     void connect();
   }, [connect]);
 
+  // Client-side secret redaction (chat/redact.ts) over everything stored or
+  // sent; the user's own key/token are removed as literals wherever they appear.
+  const redact = useCallback(
+    (text: string) => (settings.redact ? redactSecrets(text, [settings.apiKey, settings.mcpToken]).text : text),
+    [settings.redact, settings.apiKey, settings.mcpToken],
+  );
+
   const updateThread = useCallback((t: Thread) => {
     setThreads((list) => upsertThread(list, t));
   }, []);
@@ -2101,6 +2300,7 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
           provider,
           tools,
           signal: ctl.signal,
+          redact,
           hooks: {
             onThread: updateThread,
             confirm: (call) =>
@@ -2120,7 +2320,7 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
         setPendingConfirm(null);
       }
     },
-    [busyThreadId, settings, updateThread],
+    [busyThreadId, settings, updateThread, redact],
   );
 
   const send = useCallback(
@@ -2129,22 +2329,22 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
       // is not in `threadsRef` yet; build it here so the send is not lost.
       const base = threadsRef.current.find((t) => t.id === threadId) ?? makeThread(threadId, Date.now());
       if (text.trim() === '') return;
-      const next = appendMessage(base, { role: 'user', content: text }, Date.now());
+      const next = appendMessage(base, { role: 'user', content: redact(text) }, Date.now());
       updateThread(next);
       await runOn(next);
     },
-    [runOn, updateThread],
+    [runOn, updateThread, redact],
   );
 
   const seedThread = useCallback(
     async (seed: ThreadSeed, text: string): Promise<string> => {
-      const t = appendMessage(makeThread(newId(), Date.now(), seed), { role: 'user', content: text }, Date.now());
+      const t = appendMessage(makeThread(newId(), Date.now(), seed), { role: 'user', content: redact(text) }, Date.now());
       updateThread(t);
       setActiveId(t.id);
       await runOn(t);
       return t.id;
     },
-    [runOn, updateThread],
+    [runOn, updateThread, redact],
   );
 
   return useMemo(
@@ -2640,6 +2840,15 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
           style={{ padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--surface-input)', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}
         />
       </label>
+      <label className="flex items-center gap-2" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
+        <input
+          type="checkbox"
+          checked={draft.redact}
+          onChange={(e) => setDraft((d) => ({ ...d, redact: e.target.checked }))}
+          aria-label="Redact secrets before sending"
+        />
+        Redact secrets before sending (tokens, cookies, passwords, keys, and your own API key / MCP token)
+      </label>
       <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }} data-testid="chat-connection">{connectionLabel(connection)}</div>
       <div className="flex justify-between">
         <DialogButton variant="danger" onClick={onForget}>
@@ -2742,6 +2951,7 @@ export function ChatPanel({ open, onClose, chat, mcpStatus }: ChatPanelProps) {
             <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }} data-testid="chat-connection-line">
               {chat.settings.model || 'no model'} · {connectionLabel(chat.connection)}
               {mcpStatus && !mcpStatus.compiled && ' (built without MCP)'}
+              {!chat.settings.redact && ' · secret redaction off'}
               {chat.storageBlocked && ' · storage blocked: chats will not survive a reload'}
             </span>
             <button
@@ -3276,16 +3486,26 @@ test.describe('Chat', () => {
     await api.dispose();
   });
 
-  test('E2E-CHAT-03: "Clear all chats" flushes the threads key and keeps settings', async ({page}) => {
+  test('E2E-CHAT-03: secrets are redacted before storage and sending; "Clear all chats" flushes threads and keeps settings', async ({page}) => {
+    const seen = {bodies: [] as Array<Record<string, unknown>>};
     await seedSettings(page);
-    await installFakeProvider(page, {bodies: []});
+    await installFakeProvider(page, seen);
     await page.goto('/');
     await page.getByRole('button', {name: 'Chat'}).click();
     const chat = page.getByRole('dialog', {name: 'Chat'});
     await chat.getByRole('button', {name: 'New chat'}).click();
-    await chat.getByLabel('Message').fill('hello');
+    await chat.getByLabel('Message').fill(`hello, my header is Authorization: Bearer supersecrettoken123 and my mcp token is ${WRITE}`);
     await chat.getByRole('button', {name: 'Send'}).click();
     await expect(chat.getByTestId('tool-call-list_policies')).toContainText('done');
+    // Redacted in the bubble, in what the provider received, and in local storage.
+    await expect(chat.locator('[data-role="user"]').first()).toContainText('[REDACTED]');
+    await expect(chat.locator('[data-role="user"]').first()).not.toContainText('supersecrettoken123');
+    const sent = JSON.stringify(seen.bodies);
+    expect(sent).not.toContain('supersecrettoken123');
+    expect(sent).not.toContain(WRITE);
+    const stored = await page.evaluate((k) => localStorage.getItem(k) ?? '', THREADS_KEY);
+    expect(stored).not.toContain('supersecrettoken123');
+    expect(stored).not.toContain(WRITE);
     expect(await page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? 'null')?.threads?.length, THREADS_KEY)).toBe(1);
 
     await chat.getByRole('button', {name: 'Clear all chats'}).click();
@@ -3314,7 +3534,7 @@ The in-UI agent chat. The OpenAI-compatible provider is a `page.route` fake unde
 |----|-------|----------|
 | E2E-CHAT-01 | **Browser.** Sandbox-run the first fixture policy, Debug → first trace → **Ask agent why this port**; then reload, footer → **Chat**, reopen the thread | The Chat dialog opens on a thread titled `why_this_port · …`; the first user bubble inlines the policy name; a `list_policies` tool card ends `done` without confirmation; the assistant reply is shown; the request the provider saw carried a `system` message and the gateway's tool schemas; after reload the thread and reply are still there |
 | E2E-CHAT-02 | **Browser.** Chat → **New chat** → send "please write a policy for me" → **Skip** on the `put_policy` card | The card shows `awaiting confirmation` with **Run**/**Skip**; after Skip it shows `declined`, the model's follow-up text renders, the provider received `{"role":"tool","content":"Declined by the user."}`, and `GET /api/policies/e2e-chat-tmp` is `404` |
-| E2E-CHAT-03 | **Browser.** Chat → New chat → send "hello" → **Clear all chats** | The thread list shows "No chats yet."; `featherbit.chat.threads` has zero threads; `featherbit.chat.settings` still holds the API key |
+| E2E-CHAT-03 | **Browser.** Chat → New chat → send a message containing `Authorization: Bearer supersecrettoken123` and the write MCP token → **Clear all chats** | The user bubble, the request the provider received, and `featherbit.chat.threads` all contain `[REDACTED]` and neither secret; after clearing, the thread list shows "No chats yet.", `featherbit.chat.threads` has zero threads, and `featherbit.chat.settings` still holds the API key |
 ```
 
 - [ ] **Step 4: Run the whole e2e suite once**
@@ -3360,6 +3580,8 @@ Settings (gear icon in the panel) are stored in this browser's local storage und
 | MCP token | One of `admin.mcp.tokens`; sent only to this gateway's MCP endpoint. Leave empty for a toolless chat |
 
 Threads live under `featherbit.chat.threads` (50 newest kept, tool results truncated at 32 000 characters). Each thread has **Delete**; **Clear all chats** removes them all; **Forget credentials** clears the key and token but keeps base URL and model. Nothing in the chat is sent to the gateway's Admin API.
+
+**Secrets.** The gateway already keeps most secrets out of what the chat can see: traces redact sensitive headers, query parameters and message keys when they are captured, MCP tools mask consumer credentials, and config is served with raw `${ENV}` placeholders. The chat adds a client-side pass on top (**Redact secrets before sending**, on by default): before any text is stored or sent to the provider — seeded prompts, what you type, tool results — it replaces `Bearer`/`Basic` credentials, `Cookie` values, values of secret-looking keys (`password`, `secret`, `api_key`, `*_token`, `private_key`, …), JWTs, PEM private keys, well-known key prefixes, and your own API key and MCP token with `[REDACTED]`. It is a heuristic, not a guarantee: keep genuinely sensitive request bodies out of traces you hand to a third-party model, and turn the toggle off only when you need the model to see a real value (the connection line says when it is off).
 
 **Tools.** With a token set, the panel loads `tools/list` and hands the schemas to the model. Read tools run as soon as the model asks. Write tools (`put_*`, `delete_*`, `reload_config`) render a card with **Run** and **Skip**; Skip returns "Declined by the user." to the model so it can propose something else. A turn stops after 16 tool rounds; **Stop** aborts the current request.
 
