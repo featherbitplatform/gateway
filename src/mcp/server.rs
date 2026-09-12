@@ -27,7 +27,7 @@ featherbit is an API gateway whose behavior is declared as node-graph POLICIES r
 - Supernodes are reusable subgraphs with input/output/error boundary nodes; `featherbit://docs/concepts/supernodes` explains the rules.
 - `${ENV_VAR}` placeholders in config are intentional and stay unresolved; never replace them with literal secrets.
 - If your token is read-only, write tools are hidden (or return `forbidden`): finish by returning validated YAML for a human to apply.
-Use the prompts (explain_trace, why_this_port, why_this_response, review_policy, design_policy, design_supernode, design_route, diagnose_route) for the common questions.";
+Use the prompts (troubleshoot_trace, explain_trace, why_this_port, why_this_response, review_policy, design_policy, design_supernode, design_route, diagnose_route) for the common questions.";
 
 /// The MCP server: a cheap handle over the shared state.
 #[derive(Clone)]
@@ -106,7 +106,13 @@ impl ServerHandler for McpServer {
             .filter(|d| p.scope.allows(d.scope))
             .map(tool_from_def)
             .collect();
-        Ok(ListToolsResult::with_all_items(tools))
+        // SEP-2549 cache hints are REQUIRED on list results for peers on
+        // protocol 2026-07-28+ (Claude Code rejects the list without them).
+        // Every list here is token-scoped (tools filtered by scope, resources
+        // by config), so: private, and `0` = do not cache.
+        Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private))
     }
 
     async fn call_tool(
@@ -180,6 +186,8 @@ impl ServerHandler for McpServer {
         }
         Ok(ListResourcesResult {
             resources,
+            ttl_ms: Some(0),
+            cache_scope: Some(CacheScope::Private),
             ..Default::default()
         })
     }
@@ -213,6 +221,8 @@ impl ServerHandler for McpServer {
         ];
         Ok(ListResourceTemplatesResult {
             resource_templates,
+            ttl_ms: Some(0),
+            cache_scope: Some(CacheScope::Private),
             ..Default::default()
         })
     }
@@ -320,6 +330,8 @@ impl ServerHandler for McpServer {
             .collect();
         Ok(ListPromptsResult {
             prompts,
+            ttl_ms: Some(0),
+            cache_scope: Some(CacheScope::Private),
             ..Default::default()
         })
     }
@@ -562,7 +574,22 @@ mod tests {
     async fn resources_and_prompts() {
         let (url, _) = serve(true, true).await;
         let c = client(&url, READ).await;
+        // 2026-07-28 peers (Claude Code) require SEP-2549 cache hints on every list.
+        let tl = c.list_tools(None).await.unwrap();
+        assert_eq!(
+            (tl.ttl_ms, tl.cache_scope),
+            (Some(0), Some(CacheScope::Private))
+        );
+        let tpl = c.list_resource_templates(None).await.unwrap();
+        assert_eq!(
+            (tpl.ttl_ms, tpl.cache_scope),
+            (Some(0), Some(CacheScope::Private))
+        );
         let res = c.list_resources(None).await.unwrap();
+        assert_eq!(
+            (res.ttl_ms, res.cache_scope),
+            (Some(0), Some(CacheScope::Private))
+        );
         assert!(res
             .resources
             .iter()
@@ -599,6 +626,10 @@ mod tests {
             .is_err());
 
         let prompts = c.list_prompts(None).await.unwrap();
+        assert_eq!(
+            (prompts.ttl_ms, prompts.cache_scope),
+            (Some(0), Some(CacheScope::Private))
+        );
         assert!(prompts.prompts.iter().any(|p| p.name == "why_this_port"));
         let run = c
             .call_tool(
