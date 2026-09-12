@@ -61,6 +61,7 @@ const sidebars: SidebarsConfig = {
                 'reference/plugins/proxy-rewrite',
                 'reference/plugins/response-rewrite',
                 'reference/plugins/body-transformer',
+                'reference/plugins/set-vars',
                 'reference/plugins/degraphql',
                 'reference/plugins/redirect',
                 'reference/plugins/echo',
