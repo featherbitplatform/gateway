@@ -71,6 +71,13 @@ impl ToolError {
             have.as_str()
         ))
     }
+    /// A malformed `run_sandbox` payload: the message says what failed, the
+    /// hint shows the accepted shape so the caller can fix it in one step.
+    pub fn sandbox_bad_request(msg: impl Into<String>) -> Self {
+        Self::new("invalid_input", msg).with_hint(
+            "run_sandbox payload: {\"policy\": \"<name>\"} or {\"nodes\": [{\"id\": \"n1\", \"type\": \"<node type>\", \"config\": {...}}]} (exactly one), plus a FLAT \"context\": {\"method\": \"GET\", \"path\": \"/x\", \"host\": \"...\", \"headers\": {\"name\": \"value\" | [\"v1\", \"v2\"]}, \"query_params\": {\"name\": \"value\"}, \"body\": \"text\" | {json object}, \"message\": {\"key\": value}, \"response\": {\"status_code\": 200, \"headers\": {...}, \"body\": \"...\"}}. Every context field is optional; do not nest fields under \"request\"; use query_params (not a query string) and path (not uri/url).",
+        )
+    }
     /// `reload_config` would revert live edits that were never written to
     /// gateway.yaml; `errors` lists them.
     pub fn unsaved_changes(pending: Vec<String>) -> Self {
@@ -227,7 +234,7 @@ static TOOLS: [ToolDef; 33] = [
     ToolDef { name: "list_traces", scope: Read, description: "Recent debug traces (newest first): id, route, policy, method, path, status, step and error counts. Filter by route/policy/status/source. Requires debug.enabled.", input_schema: schema_of::<debug::ListTracesArgs> },
     ToolDef { name: "get_trace", scope: Read, description: "One trace: the request, final response, and every node step with outcome, exit port, edge taken and the context changes it made. Snapshots omitted unless include_snapshots.", input_schema: schema_of::<debug::GetTraceArgs> },
     ToolDef { name: "get_trace_step", scope: Read, description: "One step of a trace in full: context before and after the node, the diff, outcome/port, and the node's stored config. Use to answer 'why did this node exit on this port?'.", input_schema: schema_of::<debug::GetTraceStepArgs> },
-    ToolDef { name: "run_sandbox", scope: Read, description: "Run a stored policy or an ad-hoc node list against a synthetic request, for real (outbound calls happen), and get the resulting trace. Requires debug.enabled and debug.sandbox.", input_schema: schema_of::<debug::SandboxArgs> },
+    ToolDef { name: "run_sandbox", scope: Read, description: "Run a stored policy or an ad-hoc node list against a synthetic request, for real (outbound calls happen), and get the resulting trace. Requires debug.enabled and debug.sandbox. Give exactly one of `policy` or `nodes`. `context` is a FLAT object — e.g. {\"policy\": \"hello-policy\", \"context\": {\"method\": \"GET\", \"path\": \"/hello/frenk\", \"headers\": {\"x-tenant\": \"acme\"}, \"query_params\": {\"page\": \"2\"}, \"body\": {\"order\": {\"id\": 42}}}} — headers/query_params are objects (string or list values), body is text or a JSON object, seed `response` {status_code, headers, body} for response-phase plugins. Nodes mode: \"nodes\": [{\"id\": \"v\", \"type\": \"set-vars\", \"config\": {...}}].", input_schema: schema_of::<debug::SandboxArgs> },
     ToolDef { name: "put_route", scope: Write, description: "Create or replace a route {match: {path, methods?, host?, headers?}, policy}. Set dry_run=true first to validate the whole resulting config without applying.", input_schema: schema_of::<writes::PutArgs> },
     ToolDef { name: "delete_route", scope: Write, description: "Delete a route by name (dry_run supported).", input_schema: schema_of::<writes::DeleteArgs> },
     ToolDef { name: "put_policy", scope: Write, description: "Create or replace a policy {nodes, edges, error_handler?}. Every success/outcome port must be wired. Use dry_run=true first.", input_schema: schema_of::<writes::PutArgs> },
