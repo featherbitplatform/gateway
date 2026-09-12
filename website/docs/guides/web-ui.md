@@ -77,7 +77,7 @@ One dialog asks for the new definition's name. On confirm, the definition is cre
 
 The footer's **Agent** button opens the MCP connection panel: the endpoint URL, copy-paste client configs (Claude Code, `mcpServers` JSON, curl) with a `<TOKEN>` placeholder you fill from your `system.yaml` tokens, a read/write scope explainer, and the library of precompiled prompts, each with its own **Copy** button that prompts for any required arguments first (e.g. `diagnose_route`'s method/path). With MCP disabled it shows the config to set instead.
 
-You do not need a connected agent to use the prompts: in the Debug panel a trace has **Copy as agent prompt** and a `Why <status>?` button (e.g. "Why 502?"), and a selected step has **Why this port?**; the policy editor's toolbar has **Review with agent**, and the Ctrl+K palette has *Agent: copy "design a policy/supernode/route" prompt…* (asks for the goal). Each copies a prompt with the relevant data inlined — paste it into any chat — plus a line telling a connected agent to prefer the live MCP tools. See [MCP server for agents](./mcp.md).
+The prompts also drive the built-in **Chat**: in the Debug panel a trace has **Troubleshoot with AI** (opens the chat with the trace and works out why the client got that status) and a selected step has **Ask AI about this step**; the policy editor's toolbar has **Review with AI**, and the Ctrl+K palette has *AI: design a policy/supernode/route…* (asks for the goal). To use an external agent instead, the trace header's **Copy prompt** and the Agent panel's prompt library copy the same prompts with the relevant data inlined plus a line telling a connected agent to prefer the live MCP tools. See [MCP server for agents](./mcp.md).
 
 ## Headless mode
 

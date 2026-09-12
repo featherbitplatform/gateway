@@ -262,6 +262,17 @@ agents), create a seeded thread, open the drawer, send the first message. This
 is how the Debug panel becomes chat-like: each trace question is a thread the
 user keeps asking into.
 
+*Amended after first use (chat is the primary path, clipboard secondary):*
+the trace header has one primary **Troubleshoot with AI** button seeding a new
+server-side `troubleshoot_trace` prompt (trace inlined, final status and the
+node that set it named; the model diagnoses step by step, verifies with the
+trace/policy/docs tools, proposes a `validate_policy`-checked YAML fix, asks
+when something is missing) plus a secondary **Copy prompt** for external
+agents; a selected step has **Ask AI about this step** (`why_this_port`); the
+policy toolbar has **Review with AI**; the palette keeps only the chat
+entries (`AI: …`). Per-step and per-toolbar clipboard buttons are gone; every
+prompt can still be copied from the Agent panel's prompt library.
+
 ## 5. Testing
 
 **Vitest** (`ui/src/chat/*.test.ts`):

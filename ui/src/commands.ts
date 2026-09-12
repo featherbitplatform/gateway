@@ -88,14 +88,12 @@ export function buildCommands(): Command[] {
     { id: 'toggle-theme', title: 'Toggle theme', run: (c) => c.toggleTheme() },
     { id: 'open-agent-panel', title: 'Open Agent panel (MCP)', run: (c) => c.openAgentPanel() },
     { id: 'open-chat', title: 'Open Chat (AI agent)', run: (c) => c.openChat() },
-    { id: 'agent-review-policy', title: 'Agent: copy "review this policy" prompt', when: (c) => c.editorOpen, run: (c) => c.agentPrompt('review_policy') },
-    { id: 'agent-design-policy', title: 'Agent: copy "design a policy" prompt…', run: (c) => c.agentPrompt('design_policy') },
-    { id: 'agent-design-supernode', title: 'Agent: copy "design a supernode" prompt…', run: (c) => c.agentPrompt('design_supernode') },
-    { id: 'agent-design-route', title: 'Agent: copy "design a route" prompt…', run: (c) => c.agentPrompt('design_route') },
-    { id: 'agent-ask-review-policy', title: 'Agent: ask to review this policy', when: (c) => c.editorOpen, run: (c) => c.agentPrompt('review_policy', 'ask') },
-    { id: 'agent-ask-design-policy', title: 'Agent: ask to design a policy…', run: (c) => c.agentPrompt('design_policy', 'ask') },
-    { id: 'agent-ask-design-supernode', title: 'Agent: ask to design a supernode…', run: (c) => c.agentPrompt('design_supernode', 'ask') },
-    { id: 'agent-ask-design-route', title: 'Agent: ask to design a route…', run: (c) => c.agentPrompt('design_route', 'ask') },
+    // Clipboard variants live only in the Agent panel's prompt library now;
+    // the palette opens the chat directly.
+    { id: 'agent-ask-review-policy', title: 'AI: review this policy', when: (c) => c.editorOpen, run: (c) => c.agentPrompt('review_policy', 'ask') },
+    { id: 'agent-ask-design-policy', title: 'AI: design a policy…', run: (c) => c.agentPrompt('design_policy', 'ask') },
+    { id: 'agent-ask-design-supernode', title: 'AI: design a supernode…', run: (c) => c.agentPrompt('design_supernode', 'ask') },
+    { id: 'agent-ask-design-route', title: 'AI: design a route…', run: (c) => c.agentPrompt('design_route', 'ask') },
   ];
 }
 

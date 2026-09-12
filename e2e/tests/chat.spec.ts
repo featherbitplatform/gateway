@@ -72,7 +72,7 @@ test.describe('Chat', () => {
     const debug = page.getByRole('dialog', {name: 'Debug'});
     const rows = debug.locator('button.w-full.text-left');
     await rows.first().click();
-    await debug.getByRole('button', {name: 'Ask agent why this port'}).click();
+    await debug.getByRole('button', {name: 'Ask AI about this step'}).click();
 
     const chat = page.getByRole('dialog', {name: 'Chat'});
     await expect(chat).toBeVisible();

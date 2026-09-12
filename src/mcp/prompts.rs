@@ -31,7 +31,16 @@ const fn arg(name: &'static str, description: &'static str, required: bool) -> P
     }
 }
 
-static PROMPTS: [PromptDef; 8] = [
+static PROMPTS: [PromptDef; 9] = [
+    PromptDef {
+        name: "troubleshoot_trace",
+        description: "Troubleshoot a request: diagnose the trace and propose a validated fix.",
+        args: &[arg(
+            "trace_id",
+            "Trace id from list_traces or the Debug panel",
+            true,
+        )],
+    },
     PromptDef {
         name: "explain_trace",
         description: "What is happening in this request? Walk through a trace node by node.",
@@ -123,6 +132,22 @@ fn obj(v: Value) -> JsonObject {
     v.as_object().cloned().unwrap_or_default()
 }
 
+/// The node that last set `response.status_code` in a trace, or a note that
+/// none did (the status is the upstream's or the default).
+fn last_status_setter(trace: &Value) -> &str {
+    trace["steps"]
+        .as_array()
+        .and_then(|steps| {
+            steps.iter().rev().find(|s| {
+                s["changes"]
+                    .as_array()
+                    .is_some_and(|c| c.iter().any(|ch| ch["path"] == "response.status_code"))
+            })
+        })
+        .and_then(|s| s["node_id"].as_str())
+        .unwrap_or("(no node changed the status — it is the upstream's or the default)")
+}
+
 fn block(title: &str, v: &Value) -> String {
     format!(
         "## {title}\n\n```json\n{}\n```\n\n",
@@ -146,6 +171,20 @@ pub async fn render(
         e
     })?;
     let text = match name {
+        "troubleshoot_trace" => {
+            let id = required(args, "trace_id")?;
+            let trace = tools::call(state, "get_trace", obj(serde_json::json!({"id": id}))).await?;
+            let status = trace["status"].clone();
+            let setter = last_status_setter(&trace);
+            let step_count = trace["steps"].as_array().map_or(0, Vec::len);
+            format!(
+                "{MCP_HINT}# Troubleshoot `{} {}` → status {status}\n\nThis request went through policy `{}` ({step_count} node steps). The last node to change `response.status_code` was `{setter}`.\n\nWork like an on-call engineer:\n1. Say in one or two sentences what happened to this request and whether the outcome looks intended or like a misconfiguration.\n2. Walk the steps that matter (skip the uneventful ones): for each, what the node did (use its `changes`), which port it exited on, and the exact config keys and context values that decided it. Fetch a step with get_trace_step, the policy with get_policy, or a node's docs with get_node_type when the inlined data is not enough.\n3. Name the root cause. If several are plausible, list them ranked and say which trace evidence would tell them apart.\n4. Propose a concrete fix as YAML (the changed nodes/edges only), validate it with validate_policy, and explain what the client would receive afterwards. Do not apply any change unless the operator asks.\n5. If you need something that is not in the trace (the intended behaviour, an upstream's contract, a header the client should have sent), ask one precise question.\n\n{}",
+                trace["method"].as_str().unwrap_or("?"),
+                trace["path"].as_str().unwrap_or("?"),
+                trace["policy"].as_str().unwrap_or("?"),
+                block("Trace", &trace)
+            )
+        }
         "explain_trace" => {
             let id = required(args, "trace_id")?;
             let trace = tools::call(state, "get_trace", obj(serde_json::json!({"id": id}))).await?;
@@ -191,17 +230,7 @@ pub async fn render(
             let id = required(args, "trace_id")?;
             let trace = tools::call(state, "get_trace", obj(serde_json::json!({"id": id}))).await?;
             let status = trace["status"].clone();
-            let setter = trace["steps"]
-                .as_array()
-                .and_then(|steps| {
-                    steps.iter().rev().find(|s| {
-                        s["changes"].as_array().is_some_and(|c| {
-                            c.iter().any(|ch| ch["path"] == "response.status_code")
-                        })
-                    })
-                })
-                .and_then(|s| s["node_id"].as_str())
-                .unwrap_or("(no node changed the status — it is the upstream's or the default)");
+            let setter = last_status_setter(&trace);
             format!(
                 "{MCP_HINT}# Why did the client receive status {status}?\n\nThe last node to change `response.status_code` was `{setter}`. Explain why it did, using the trace below, and say what would have to change for the request to succeed.\n\n{}",
                 block("Trace", &trace)
@@ -354,6 +383,22 @@ mod tests {
             .await
             .unwrap();
         assert!(p.text.contains("receive status"));
+
+        let p = render(&s, "troubleshoot_trace", &args(&[("trace_id", id)]))
+            .await
+            .unwrap();
+        assert!(
+            p.text.contains("# Troubleshoot `GET /hello`"),
+            "{}",
+            &p.text[..160]
+        );
+        assert!(p.text.contains("policy `echo-policy`"));
+        assert!(p.text.contains("validate it with validate_policy"));
+        assert!(p
+            .text
+            .contains("Do not apply any change unless the operator asks"));
+        assert!(p.text.contains("## Trace"));
+        assert!(p.text.starts_with("You are connected"));
 
         let err = render(
             &s,
