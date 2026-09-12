@@ -228,12 +228,84 @@ pub async fn delete_store(state: &SharedState, a: DeleteArgs) -> Result<Value, T
     .await
 }
 
-pub async fn reload_config(state: &SharedState) -> Result<Value, ToolError> {
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct ReloadArgs {
+    /// Re-read the file even though it would discard put_*/delete_* edits
+    /// that were never written to gateway.yaml. Default false: the tool then
+    /// refuses with `unsaved_changes` and lists what would be lost.
+    #[serde(default)]
+    pub discard_unsaved: bool,
+}
+
+/// Names of the entries in a named-resource section, keyed for comparison.
+fn named_json(section: &Value) -> Vec<(String, Value)> {
+    section
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|v| (v["name"].as_str().unwrap_or("?").to_string(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// One line per resource that differs between the live config and the file:
+/// `policy 'p' only in memory`, `route 'r' only on disk`, `store 's' differs`.
+pub fn unsaved_changes(live: &GatewayConfig, disk: &GatewayConfig) -> Vec<String> {
+    let (live, disk) = match (serde_json::to_value(live), serde_json::to_value(disk)) {
+        (Ok(l), Ok(d)) => (l, d),
+        _ => return vec!["config could not be serialized for comparison".to_string()],
+    };
+    let mut out = Vec::new();
+    for (section, label) in [
+        ("routes", "route"),
+        ("policies", "policy"),
+        ("supernodes", "supernode"),
+        ("plugin_configs", "plugin config"),
+        ("stores", "store"),
+        ("consumers", "consumer"),
+    ] {
+        let mem = named_json(&live[section]);
+        let file = named_json(&disk[section]);
+        for (name, v) in &mem {
+            match file.iter().find(|(n, _)| n == name) {
+                None => out.push(format!("{label} '{name}' exists only in memory")),
+                Some((_, fv)) if fv != v => {
+                    out.push(format!("{label} '{name}' differs from the file"))
+                }
+                Some(_) => {}
+            }
+        }
+        for (name, _) in &file {
+            if !mem.iter().any(|(n, _)| n == name) {
+                out.push(format!("{label} '{name}' exists only on disk"));
+            }
+        }
+    }
+    out
+}
+
+/// Re-reads `gateway.yaml`. With the file config source, `put_*`/`delete_*`
+/// edits are live but never written back, so a reload silently reverts them —
+/// hence the guard: unless `discard_unsaved` is set, any difference between
+/// memory and disk is reported and nothing is reloaded.
+pub async fn reload_config(state: &SharedState, args: ReloadArgs) -> Result<Value, ToolError> {
+    let disk = state
+        .load_gateway_from_disk()
+        .map_err(ToolError::store_error)?;
+    let pending = {
+        let live = state.gateway.read().await;
+        unsaved_changes(&live, &disk)
+    };
+    if !pending.is_empty() && !args.discard_unsaved {
+        return Err(ToolError::unsaved_changes(pending));
+    }
     state
-        .reload_from_disk()
+        .apply_gateway(disk)
         .await
         .map_err(ToolError::store_error)?;
-    Ok(serde_json::json!({ "status": "reloaded" }))
+    Ok(serde_json::json!({ "status": "reloaded", "discarded": pending }))
 }
 
 #[cfg(test)]
@@ -242,6 +314,113 @@ mod tests {
     use crate::mcp::tools::test_support::{obj, state, ECHO_GATEWAY};
 
     const NEW_POLICY: &str = "nodes:\n  - {id: l, type: listener}\n  - {id: e, type: echo, config: {body: hi}}\n  - {id: c, type: client}\nedges:\n  - {from: l.out, to: e.in}\n  - {from: e.out, to: c.in}\n";
+
+    /// A file-backed state whose `config_path` points at a temp copy of
+    /// `ECHO_GATEWAY`, so reload_config has a real file to compare against.
+    fn file_backed_state(
+        tag: &str,
+    ) -> (
+        std::sync::Arc<crate::state::SharedState>,
+        std::path::PathBuf,
+    ) {
+        use crate::config::{GatewayConfig, SystemConfig};
+        use crate::config_store::FileConfigStore;
+        let path =
+            std::env::temp_dir().join(format!("fb_reload_{tag}_{}.yaml", std::process::id()));
+        std::fs::write(&path, ECHO_GATEWAY).unwrap();
+        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = serde_yaml::from_str(ECHO_GATEWAY).unwrap();
+        let s = crate::state::SharedState::new(
+            system,
+            gateway,
+            Some(path.clone()),
+            std::sync::Arc::new(FileConfigStore::new(path.clone())),
+        )
+        .unwrap();
+        (std::sync::Arc::new(s), path)
+    }
+
+    #[test]
+    fn unsaved_changes_lists_per_resource_differences() {
+        use crate::config::GatewayConfig;
+        let disk: GatewayConfig = serde_yaml::from_str(ECHO_GATEWAY).unwrap();
+        let mut live = disk.clone();
+        let mut extra = live.policies[0].clone();
+        extra.name = "p2".to_string();
+        live.policies.push(extra);
+        live.routes[0].policy = "some-other-policy".to_string();
+        let diffs = super::unsaved_changes(&live, &disk);
+        assert!(
+            diffs
+                .iter()
+                .any(|d| d == "policy 'p2' exists only in memory"),
+            "{diffs:?}"
+        );
+        assert!(
+            diffs.iter().any(|d| d.contains("route 'hello' differs")),
+            "{diffs:?}"
+        );
+        assert!(super::unsaved_changes(&disk, &disk).is_empty());
+    }
+
+    #[tokio::test]
+    async fn reload_refuses_to_discard_live_edits_unless_told_to() {
+        let (s, path) = file_backed_state("guard");
+        // Live edit that is not in the file.
+        call(
+            &s,
+            "put_policy",
+            obj(serde_json::json!({"name": "p2", "definition": NEW_POLICY})),
+        )
+        .await
+        .unwrap();
+
+        let err = call(&s, "reload_config", obj(serde_json::json!({})))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "unsaved_changes");
+        assert!(
+            err.errors.iter().any(|e| e.contains("policy 'p2'")),
+            "{err:?}"
+        );
+        assert!(
+            s.gateway
+                .read()
+                .await
+                .policies
+                .iter()
+                .any(|p| p.name == "p2"),
+            "nothing reloaded"
+        );
+
+        let v = call(
+            &s,
+            "reload_config",
+            obj(serde_json::json!({"discard_unsaved": true})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["status"], "reloaded");
+        assert!(v["discarded"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d.as_str().unwrap().contains("p2")));
+        assert!(!s
+            .gateway
+            .read()
+            .await
+            .policies
+            .iter()
+            .any(|p| p.name == "p2"));
+
+        // In sync again: a plain reload is fine.
+        let v = call(&s, "reload_config", obj(serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(v["discarded"], serde_json::json!([]));
+        let _ = std::fs::remove_file(path);
+    }
 
     #[tokio::test]
     async fn dry_run_validates_without_applying() {

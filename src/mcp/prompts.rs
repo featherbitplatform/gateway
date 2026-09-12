@@ -288,7 +288,7 @@ pub async fn render(
                 .map(|n| format!(" named `{n}`"))
                 .unwrap_or_default();
             format!(
-                "{MCP_HINT}{WIRING_RULE}# Design a {what}{named}\n\nGoal: {goal}\n\nWorkflow: (1) pick node types from the catalog below and call get_node_type for each to learn its config keys and ports; (2) write the {what} as YAML; (3) validate with {validate_tool}; (4) call {put_tool} with dry_run=true, fix every reported error, then call it for real. If your token is read-only (write tools are missing or return `forbidden`), stop after validation and return the YAML for a human to apply.\n\n{extra}{}{}",
+                "{MCP_HINT}{WIRING_RULE}# Design a {what}{named}\n\nGoal: {goal}\n\nWorkflow: (1) pick node types from the catalog below and call get_node_type for each to learn its config keys and ports; (2) write the {what} as YAML; (3) validate with {validate_tool}; (4) call {put_tool} with dry_run=true, fix every reported error, then call it for real — the change is live at once; do NOT call reload_config (it re-reads the file and discards live edits). If your token is read-only (write tools are missing or return `forbidden`), stop after validation and return the YAML for a human to apply.\n\n{extra}{}{}",
                 block("Node type catalog (type, description, ports)", &catalog),
                 block("Existing definitions (avoid name clashes; reuse where sensible)", &existing)
             )
