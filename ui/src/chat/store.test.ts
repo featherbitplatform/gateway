@@ -58,6 +58,14 @@ describe('settings', () => {
     expect(loadSettings(partial)).toEqual({ ...DEFAULT_SETTINGS, model: 'm' });
   });
 
+  it('round-trips the auto-approve toggle and defaults it off', () => {
+    const s = memoryStorage();
+    saveSettings({ ...DEFAULT_SETTINGS, autoApprove: true }, s);
+    expect(loadSettings(s).autoApprove).toBe(true);
+    expect(loadSettings(memoryStorage({ [SETTINGS_KEY]: JSON.stringify({ model: 'm' }) })).autoApprove).toBe(false);
+    expect(loadSettings(memoryStorage({ [SETTINGS_KEY]: JSON.stringify({ autoApprove: 'yes' }) })).autoApprove).toBe(false);
+  });
+
   it('round-trips the redact toggle and defaults it on', () => {
     const s = memoryStorage();
     saveSettings({ ...DEFAULT_SETTINGS, redact: false }, s);
