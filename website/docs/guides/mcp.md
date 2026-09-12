@@ -64,7 +64,7 @@ curl -s -X POST http://localhost:9090/mcp -H "Authorization: Bearer $TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
-The web UI's **Agent** panel (footer) shows these snippets with your actual endpoint, and the Debug panel / policy editor offer **Copy as agent prompt** actions that produce the same prompts with data inlined.
+The web UI's **Agent** panel (footer) shows these snippets with your actual endpoint and a prompt library with per-prompt **Copy** buttons; the Debug panel's trace header also has **Copy prompt** for the troubleshooting prompt, data inlined, for an external agent.
 
 ## Chat in the UI
 
@@ -85,7 +85,7 @@ Threads live under `featherbit.chat.threads` (50 newest kept, tool results trunc
 
 **Tools.** With a token set, the panel loads `tools/list` and hands the schemas to the model. Read tools run as soon as the model asks. Write tools (`put_*`, `delete_*`, `reload_config`) render a card with **Run** and **Skip**; Skip returns "Declined by the user." to the model so it can propose something else. `run_sandbox` asks for confirmation too, even though its scope is `read`: it executes the node list the model wrote, outbound calls included. A turn stops after 16 tool rounds; **Stop** aborts the current request.
 
-**Ask agent.** Beside every "Copy as agent prompt" action — the trace header, "Why this port?" on a trace step, "Review with agent" in the policy toolbar, the `Agent: ask …` palette entries and the Agent panel's prompt library — an "Ask agent" button starts a thread seeded with that prompt, data inlined, so a trace question becomes a conversation you keep asking into.
+**Troubleshoot with AI.** A trace in the Debug panel has one primary action, **Troubleshoot with AI**: it opens the chat seeded with the `troubleshoot_trace` prompt (the trace inlined, the final status and the node that set it named) and asks the model to diagnose node by node, verify with the trace/policy/docs tools, propose a fix as YAML validated with `validate_policy`, and ask you when something is missing. A selected step has **Ask AI about this step** (`why_this_port`), the policy toolbar has **Review with AI** (`review_policy`), the `Ctrl+K` palette has `AI: review this policy` and `AI: design a policy / supernode / route…`, and the Agent panel's prompt library has an **Ask** beside every prompt. Each starts a thread you keep asking into. The Debug panel stays open behind the chat.
 
 **Origins.** Browsers send `Origin` on every POST, so the MCP endpoint accepts a request whose `Origin` authority equals its `Host` (the UI calling the gateway it was served from) even with an empty `allowed_origins`. The Vite dev server on another port still needs listing. Behind a reverse proxy that rewrites `Host` (nginx `proxy_pass` does by default) or a TLS terminator that adds `:443`, either preserve the original `Host` or list the public origin in `allowed_origins`. Self-hosted providers must allow the admin origin in their own CORS configuration (for Ollama: `OLLAMA_ORIGINS`).
 
@@ -95,7 +95,7 @@ Threads live under `featherbit.chat.threads` (50 newest kept, tool results trunc
 
 Resources: every plugin/concept/reference documentation page is embedded in the binary (`featherbit://docs/plugins/{type}`, `featherbit://docs/concepts/{name}`, `featherbit://docs/reference/{name}`) — `get_node_type` returns the page too — plus `featherbit://routes/{name}`, `featherbit://policies/{name}`, `featherbit://supernodes/{name}` (YAML) and `featherbit://traces/{id}`.
 
-Prompts (the precompiled questions): `explain_trace`, `why_this_port`, `why_this_response`, `review_policy`, `design_policy`, `design_supernode`, `design_route`, `diagnose_route`. The same texts are available from the UI's trace viewer and policy editor as "Copy as agent prompt", with the data inlined so they work in any chat.
+Prompts (the precompiled questions): `troubleshoot_trace`, `explain_trace`, `why_this_port`, `why_this_response`, `review_policy`, `design_policy`, `design_supernode`, `design_route`, `diagnose_route`. The same texts drive the UI's chat actions (Troubleshoot with AI, Ask AI about this step, Review with AI) and can be copied from the Agent panel's prompt library or the trace header's **Copy prompt**, with the data inlined so they work in any chat.
 
 Trace and sandbox tools need [debug mode](./debugging.md); they say so when it is off.
 

@@ -107,7 +107,7 @@ test.describe('MCP server', () => {
     }
   });
 
-  test('E2E-MCP-03: "Why this port?" on a trace step copies a prompt naming the node, the port and the MCP hint', async ({
+  test('E2E-MCP-03: "Copy prompt" on a trace copies the troubleshooting prompt with the policy inlined and the MCP hint', async ({
     page,
     context,
   }) => {
@@ -130,10 +130,14 @@ test.describe('MCP server', () => {
     await expect(rows.first()).toBeVisible();
     await rows.first().click();
 
-    await debug.getByRole('button', {name: 'Why this port?'}).click();
+    // The primary action opens the chat (covered by E2E-CHAT-01); the
+    // secondary "Copy prompt" keeps the clipboard path for external agents.
+    await expect(debug.getByRole('button', {name: 'Troubleshoot with AI'})).toBeVisible();
+    await debug.getByRole('button', {name: 'Copy prompt'}).click();
     await expect(page.getByText('Copied to clipboard')).toBeVisible();
     const text = await page.evaluate(() => navigator.clipboard.readText());
-    expect(text).toContain('exit on port');
+    expect(text).toContain('# Troubleshoot `GET /`');
+    expect(text).toContain('validate it with validate_policy');
     expect(text).toContain('If the `featherbit` MCP server is connected');
     expect(text).toContain(policy);
     await api.dispose();

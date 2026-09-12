@@ -477,7 +477,7 @@ The fixture `system.yaml` enables `admin.mcp` for the whole run with a `read` an
 |---|---|---|
 | E2E-MCP-01 | `initialize` without a token and with Basic Auth; `tools/list` with the read and the write token; `tools/call put_policy` with the read token; `GET /api/policies` with an MCP token | `401` / `401`; the read list has `get_policy` and no `put_*`; the write list has `put_policy`; the read-token write call is a tool error `{"code":"forbidden"}`; the Admin API answers `401` |
 | E2E-MCP-02 | **Browser.** Footer → **Agent** | The dialog shows the endpoint `http://127.0.0.1:19091/mcp`, a Claude Code snippet with `<TOKEN>`, the prompt library (`why_this_port`), and a scope explainer listing every tool name returned by `tools/list` |
-| E2E-MCP-03 | **Browser.** Sandbox-run the first fixture policy, open the trace in Debug, click **Why this port?** | Toast "Copied to clipboard"; the clipboard text contains `exit on port`, the policy name, and the MCP hint line |
+| E2E-MCP-03 | **Browser.** Sandbox-run the first fixture policy, open the trace in Debug, check **Troubleshoot with AI** is offered, click **Copy prompt** | Toast "Copied to clipboard"; the clipboard text is the `troubleshoot_trace` prompt: it starts with `# Troubleshoot \`GET /\``, asks to validate with `validate_policy`, inlines the policy name, and ends with the MCP hint line |
 
 ## Chat (`tests/chat.spec.ts`)
 
@@ -485,7 +485,7 @@ The in-UI agent chat. The OpenAI-compatible provider is a `page.route` fake unde
 
 | ID | Steps | Expected |
 |----|-------|----------|
-| E2E-CHAT-01 | **Browser.** Sandbox-run the first fixture policy, Debug → first trace → **Ask agent why this port**; then reload, footer → **Chat**, reopen the thread | The Chat dialog opens on a thread titled `why_this_port · …`; the first user bubble inlines the policy name; a `list_policies` tool card ends `done` without confirmation; the assistant reply is shown; the request the provider saw carried a `system` message and the gateway's tool schemas; after reload the thread and reply are still there |
+| E2E-CHAT-01 | **Browser.** Sandbox-run the first fixture policy, Debug → first trace → **Ask AI about this step**; then reload, footer → **Chat**, reopen the thread | The Chat dialog opens on a thread titled `why_this_port · …`; the first user bubble inlines the policy name; a `list_policies` tool card ends `done` without confirmation; the assistant reply is shown; the request the provider saw carried a `system` message and the gateway's tool schemas; after reload the thread and reply are still there |
 | E2E-CHAT-02 | **Browser.** Chat → **New chat** → send "please write a policy for me" → **Skip** on the `put_policy` card | The card shows `awaiting confirmation` with **Run**/**Skip**; after Skip it shows `declined`, the model's follow-up text renders, the provider received `{"role":"tool","content":"Declined by the user."}`, and `GET /api/policies/e2e-chat-tmp` is `404` |
 | E2E-CHAT-03 | **Browser.** Chat → New chat → send a message containing `Authorization: Bearer supersecrettoken123` and the write MCP token → **Clear all chats** | The user bubble, the request the provider received, and `featherbit.chat.threads` all contain `[REDACTED]` and neither secret; after clearing, the thread list shows "No chats yet.", `featherbit.chat.threads` has zero threads, and `featherbit.chat.settings` still holds the API key |
 

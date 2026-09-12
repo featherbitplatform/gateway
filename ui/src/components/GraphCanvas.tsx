@@ -23,7 +23,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { Bot, Boxes, Command, GitFork, MessageSquare, Plus, Save, Trash2 } from 'lucide-react';
+import { Bot, Boxes, Command, GitFork, Plus, Save, Trash2 } from 'lucide-react';
 import { PluginNode, type PluginNodeData } from './PluginNode';
 import { PluginDrawer } from './PluginDrawer';
 import { NodeInspector } from './NodeInspector';
@@ -126,9 +126,7 @@ interface GraphCanvasProps {
    * `StoreConfig[]` and shared with PluginConfigPanel.
    */
   storeOptions: FieldOption[];
-  /** Copies a "review this policy" agent prompt; omitted hides the toolbar button. Policy mode only. */
-  onReviewWithAgent?: () => void;
-  /** Asks the agent in chat to review this policy; omitted hides the icon. Policy mode only. */
+  /** Opens the chat asking the AI to review this policy; omitted hides the toolbar button. Policy mode only. */
   onAskAgentReview?: () => void;
 }
 
@@ -274,7 +272,6 @@ export function GraphCanvas({
   onOpenPalette,
   onCreateSupernodeDef,
   storeOptions,
-  onReviewWithAgent,
   onAskAgentReview,
 }: GraphCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -889,28 +886,16 @@ export function GraphCanvas({
               <Plus size={13} />
               Add Node
             </button>
-            {kind === 'policy' && onReviewWithAgent && (
+            {kind === 'policy' && onAskAgentReview && (
               <button
-                onClick={onReviewWithAgent}
-                title="Copy a prompt asking an agent to review this policy"
+                onClick={onAskAgentReview}
+                title="Open the chat and ask the AI to review this policy"
                 style={{ ...toolbarButtonStyle('var(--surface-input)'), color: 'var(--text-primary)', border: '1px solid var(--border)' }}
                 onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
                 onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
               >
                 <Bot size={13} />
-                Review with agent
-              </button>
-            )}
-            {kind === 'policy' && onAskAgentReview && (
-              <button
-                onClick={onAskAgentReview}
-                aria-label="Ask agent to review this policy"
-                title="Ask the agent in chat to review this policy"
-                style={{ ...toolbarButtonStyle('var(--surface-input)'), color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-                onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-                onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
-              >
-                <MessageSquare size={13} />
+                Review with AI
               </button>
             )}
             {extractEligible && (
