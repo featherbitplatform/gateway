@@ -177,6 +177,7 @@ pub const KNOWN_PLUGIN_TYPES: &[&str] = &[
     "workflow",
     "condition",
     "traffic-label",
+    "set-vars",
     "traffic-split",
     "mocking",
     "response-rewrite",
@@ -410,6 +411,9 @@ pub fn create_plugin(
         "traffic-label" => Ok(Box::new(
             native::traffic_label::TrafficLabelPlugin::from_config(config)?,
         )),
+        "set-vars" => Ok(Box::new(native::set_vars::SetVarsPlugin::from_config(
+            config,
+        )?)),
         "traffic-split" => Ok(Box::new(
             native::traffic_split::TrafficSplitPlugin::from_config(config, resources)?,
         )),
