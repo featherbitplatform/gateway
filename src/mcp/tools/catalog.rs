@@ -39,7 +39,41 @@ pub async fn get_node_type(a: TypeArgs) -> Result<Value, ToolError> {
 }
 
 pub async fn list_vars() -> Result<Value, ToolError> {
-    Ok(serde_json::json!({ "vars": crate::vars::catalog::var_catalog() }))
+    Ok(serde_json::json!({
+        "syntax": {
+            "summary": "Two interchangeable ways to reference request data inside any string value of traffic-bound plugin config: legacy `$name` vars (the `vars` list below) and universal `{{namespace.path}}` templates. Both resolve per request; an unknown reference passes through literally. Conditions (`match`/`vars` triple-arrays) use the bare var name without `$`, e.g. [\"arg_channel\", \"==\", \"beta\"].",
+            "legacy": {
+                "form": "$name  or  ${name}",
+                "examples": ["$uri", "$http_x_tenant", "$arg_page", "$cookie_session", "$msg_user", "${msg_label.tier}"],
+                "note": "Families: http_<header> (dashes as underscores), arg_<query>, cookie_<name>, post_arg_<field>, msg_<message key>, sent_http_<response header>."
+            },
+            "templates": {
+                "form": "{{ namespace.path }}",
+                "namespaces": {
+                    "request.method": "HTTP method",
+                    "request.path": "request path, no query string",
+                    "request.host": "Host header",
+                    "request.scheme": "http or https",
+                    "request.body": "request body (lossy UTF-8)",
+                    "request.headers.<name>": "first value of a request header, name with dashes (request.headers.x-user-id)",
+                    "request.query.<name>": "first value of a query parameter",
+                    "request.cookies.<name>": "a cookie value",
+                    "response.status": "response status code",
+                    "response.body": "response body (lossy UTF-8)",
+                    "response.headers.<name>": "first value of a response header",
+                    "message.<key>": "any context.message key (dotted keys allowed) — where set-vars, traffic-label (label.<key>) and scripts put derived values",
+                    "client.ip": "client IP without port",
+                    "client.port": "client port",
+                    "env.<NAME>": "process environment variable, substituted once at policy compile time (no default syntax)"
+                },
+                "examples": ["hello {{request.query.name}}", "{{request.headers.x-tenant}}", "user={{message.user}}"]
+            },
+            "where": "Every string config value of traffic-bound plugins: header values (proxy-rewrite/response-rewrite set_headers), mocking response_example and response_headers, limit-count/limit-conn key, redirect uri, fault-injection abort body, traffic-label set_headers/set_labels, forward-auth extra_headers, logger log_format… Not templated: regex/CIDR/IP lists, JSON-Schema/OpenAPI documents, Lua sources, upstream targets, TLS paths, logger endpoints, route match rules; body-transformer and error-handler keep their own {{...}} dialects.",
+            "derive": "To compute a new variable (a path segment, a JSON body field, a regex capture of a header) add a `set-vars` node before the consumer; it stores results in context.message → $msg_<name> / {{message.<name>}}. Example: set-vars {vars: [{name: user, from: $uri, regex: '^/hello/([^/]+)'}]} then mocking response_example: 'hello $msg_user'.",
+            "docs": ["featherbit://docs/reference/templates", "featherbit://docs/reference/context-vars", "featherbit://docs/reference/conditions", "featherbit://docs/plugins/set-vars"]
+        },
+        "vars": crate::vars::catalog::var_catalog()
+    }))
 }
 
 pub async fn get_status(state: &SharedState) -> Result<Value, ToolError> {
@@ -109,6 +143,35 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "invalid_input");
+    }
+
+    #[tokio::test]
+    async fn list_vars_explains_both_syntaxes_and_where_they_apply() {
+        let s = state("{}", ECHO_GATEWAY);
+        let v = call(&s, "list_vars", obj(serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(v["vars"].as_array().is_some_and(|a| !a.is_empty()));
+        let syntax = &v["syntax"];
+        assert!(syntax["summary"]
+            .as_str()
+            .unwrap()
+            .contains("{{namespace.path}}"));
+        assert_eq!(syntax["legacy"]["form"], "$name  or  ${name}");
+        for ns in [
+            "request.path",
+            "request.headers.<name>",
+            "message.<key>",
+            "env.<NAME>",
+        ] {
+            assert!(syntax["templates"]["namespaces"][ns].is_string(), "{ns}");
+        }
+        assert!(syntax["derive"].as_str().unwrap().contains("set-vars"));
+        assert!(syntax["docs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d == "featherbit://docs/reference/templates"));
     }
 
     #[tokio::test]
