@@ -1019,7 +1019,6 @@ export default function App() {
           onOpenPalette={() => setPaletteOpen(true)}
           onCreateSupernodeDef={handleCreateSupernodeDef}
           storeOptions={storeOptions}
-          onReviewWithAgent={() => agentPrompt('review_policy')}
           onAskAgentReview={() => agentPrompt('review_policy', 'ask')}
         />
       )}
