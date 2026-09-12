@@ -1,45 +1,113 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
-import type { ChatMessage, ToolCall } from '../../chat/store';
+import type { ToolGroup } from '../../chat/attempts';
 import { isWriteTool, needsConfirmation } from '../../chat/loop';
 
-type ToolMessage = Extract<ChatMessage, { role: 'tool' }>;
-
 interface ToolCallCardProps {
-  call: ToolCall;
-  /** The stored result, once the call finished (done/declined/error). */
-  result: ToolMessage | undefined;
-  /** True while this exact call awaits Run/Skip. */
+  /** All attempts of one tool (retries folded); the last one is current. */
+  group: ToolGroup;
+  /** True while the current attempt awaits Run/Skip. */
   awaitingConfirm: boolean;
   onRun: () => void;
   onSkip: () => void;
 }
 
-function prettyArgs(raw: string): string {
+/** Pretty JSON when the text parses as JSON, else the text itself. */
+function prettyJson(raw: string): { text: string; isJson: boolean } {
   try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
+    return { text: JSON.stringify(JSON.parse(raw), null, 2), isJson: true };
   } catch {
-    return raw;
+    return { text: raw, isJson: false };
   }
 }
 
-const statusColor: Record<ToolMessage['status'], string> = {
+/** True for `{}`, `[]`, `null`, blank — nothing worth showing. */
+function isEmptyPayload(raw: string): boolean {
+  const t = raw.trim();
+  if (t === '' || t === '{}' || t === '[]' || t === 'null') return true;
+  try {
+    const v: unknown = JSON.parse(t);
+    return v === null || (typeof v === 'object' && Object.keys(v as object).length === 0);
+  } catch {
+    return false;
+  }
+}
+
+/** First line of an error payload, for the folded attempt list. */
+function errorSummary(content: string): string {
+  try {
+    const v = JSON.parse(content) as { message?: string; code?: string };
+    if (v && typeof v === 'object' && (v.message || v.code)) return [v.code, v.message].filter(Boolean).join(': ');
+  } catch {
+    // plain text
+  }
+  const line = content.split('\n')[0];
+  return line.length > 160 ? `${line.slice(0, 160)}…` : line;
+}
+
+/** A code block styled like the Markdown renderer's fenced blocks. */
+function CodeBlock({ text, lang, maxHeight }: { text: string; lang: 'json' | 'text'; maxHeight?: number }) {
+  return (
+    <pre
+      style={{
+        margin: 0,
+        padding: 8,
+        borderRadius: 'var(--radius-sm)',
+        background: 'var(--surface)',
+        border: '1px solid var(--border)',
+        overflow: 'auto',
+        maxHeight,
+        fontFamily: 'var(--font-mono)',
+        fontSize: 'var(--text-2xs)',
+        whiteSpace: 'pre',
+        color: 'var(--text-primary)',
+      }}
+    >
+      <code className={`language-${lang}`}>{text}</code>
+    </pre>
+  );
+}
+
+const statusColor: Record<'done' | 'declined' | 'error', string> = {
   done: 'var(--success)',
   declined: 'var(--warning)',
   error: 'var(--error)',
 };
 
-export function ToolCallCard({ call, result, awaitingConfirm, onRun, onSkip }: ToolCallCardProps) {
-  const [open, setOpen] = useState(false);
-  const write = isWriteTool(call.name);
+const toggleStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  color: 'var(--text-muted)',
+  padding: 0,
+  alignSelf: 'flex-start',
+};
+
+export function ToolCallCard({ group, awaitingConfirm, onRun, onSkip }: ToolCallCardProps) {
+  const [showArgs, setShowArgs] = useState(false);
+  const [showResult, setShowResult] = useState(false);
+  const [showPrevious, setShowPrevious] = useState(false);
+
+  const attempts = group.attempts;
+  const current = attempts[attempts.length - 1];
+  const previous = attempts.slice(0, -1);
+  const { call, result } = current;
+  const write = isWriteTool(group.name);
   // `run_sandbox` reads nothing back into the config but executes nodes for
   // real, so it is gated like a write without being labelled as one.
-  const confirms = !write && needsConfirmation(call.name);
+  const confirms = !write && needsConfirmation(group.name);
+  const running = !result && !awaitingConfirm;
+  const hasArgs = !isEmptyPayload(call.arguments);
+  const args = prettyJson(call.arguments);
+  const resultText = result ? prettyJson(result.content) : null;
+  // Arguments are worth a glance while the call is pending (that is what the
+  // Run/Skip decision is about); afterwards they fold away behind a toggle.
+  const argsOpen = hasArgs && (awaitingConfirm || running || showArgs);
+
   return (
     <div
-      data-testid={`tool-call-${call.name}`}
+      data-testid={`tool-call-${group.name}`}
       style={{
-        border: '1px solid var(--border)',
+        border: `1px solid ${running || awaitingConfirm ? 'var(--accent)' : 'var(--border)'}`,
         borderRadius: 'var(--radius-sm)',
         background: 'var(--surface-input)',
         padding: '6px 8px',
@@ -50,23 +118,57 @@ export function ToolCallCard({ call, result, awaitingConfirm, onRun, onSkip }: T
       }}
     >
       <div className="flex items-center justify-between" style={{ gap: 8 }}>
-        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
-          {write ? 'write · ' : confirms ? 'confirm · ' : ''}
-          {call.name}
+        <span className="flex items-center gap-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+          {running && <Loader2 size={12} className="animate-spin" style={{ color: 'var(--accent)' }} aria-label="running" />}
+          <span>
+            {write ? 'write · ' : confirms ? 'confirm · ' : ''}
+            {group.name}
+          </span>
+          {attempts.length > 1 && (
+            <span style={{ color: 'var(--text-muted)', fontFamily: 'inherit' }} data-testid="tool-attempt">
+              attempt {attempts.length}
+            </span>
+          )}
         </span>
         {result ? (
           <span style={{ color: statusColor[result.status] }}>{result.status}</span>
         ) : awaitingConfirm ? (
           <span style={{ color: 'var(--warning)' }}>awaiting confirmation</span>
         ) : (
-          <span className="flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
-            <Loader2 size={11} className="animate-spin" /> running
-          </span>
+          <span style={{ color: 'var(--accent)' }}>running…</span>
         )}
       </div>
-      <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
-        {prettyArgs(call.arguments)}
-      </pre>
+
+      {previous.length > 0 && (
+        <>
+          <button onClick={() => setShowPrevious((o) => !o)} className="flex items-center gap-1" style={toggleStyle}>
+            {showPrevious ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+            {previous.length} failed {previous.length === 1 ? 'attempt' : 'attempts'}
+          </button>
+          {showPrevious && (
+            <ol style={{ margin: 0, paddingLeft: 18, color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {previous.map((a, i) => (
+                <li key={a.call.id}>
+                  <span style={{ color: 'var(--error)' }}>#{i + 1}</span> {a.result ? errorSummary(a.result.content) : 'no result'}
+                </li>
+              ))}
+            </ol>
+          )}
+        </>
+      )}
+
+      {hasArgs && result && (
+        <button onClick={() => setShowArgs((o) => !o)} className="flex items-center gap-1" style={toggleStyle}>
+          {showArgs ? <ChevronDown size={11} /> : <ChevronRight size={11} />} arguments
+        </button>
+      )}
+      {argsOpen && (
+        <>
+          {!result && <span style={{ color: 'var(--text-muted)' }}>arguments</span>}
+          <CodeBlock text={args.text} lang={args.isJson ? 'json' : 'text'} maxHeight={200} />
+        </>
+      )}
+
       {awaitingConfirm && (
         <div className="flex gap-2">
           <button onClick={onRun} style={{ padding: '3px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--accent)', color: 'var(--text-on-accent)', border: 'none' }}>
@@ -77,21 +179,14 @@ export function ToolCallCard({ call, result, awaitingConfirm, onRun, onSkip }: T
           </button>
         </div>
       )}
-      {result && (
+
+      {result && resultText && (
         <>
-          <button
-            onClick={() => setOpen((o) => !o)}
-            className="flex items-center gap-1"
-            style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', padding: 0, alignSelf: 'flex-start' }}
-          >
-            {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />} result
+          <button onClick={() => setShowResult((o) => !o)} className="flex items-center gap-1" style={toggleStyle}>
+            {showResult ? <ChevronDown size={11} /> : <ChevronRight size={11} />} result
           </button>
-          {open && (
-            <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 240, overflowY: 'auto', fontFamily: 'var(--font-mono)' }}>
-              {result.content}
-            </pre>
-          )}
-          {result.status === 'declined' && !open && <span style={{ color: 'var(--text-muted)' }}>{result.content}</span>}
+          {showResult && <CodeBlock text={resultText.text} lang={resultText.isJson ? 'json' : 'text'} maxHeight={280} />}
+          {result.status === 'declined' && !showResult && <span style={{ color: 'var(--text-muted)' }}>{result.content}</span>}
         </>
       )}
     </div>

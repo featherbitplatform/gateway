@@ -39,7 +39,14 @@ async function installFakeProvider(page: Page, seen: {bodies: Array<Record<strin
     if (last.role === 'tool') {
       reply = last.content === 'Declined by the user.' ? text('Understood, skipped the write.') : text('The node exited on that port because the request matched.');
     } else if (/please write a policy/i.test(last.content)) {
-      reply = toolCall('call_w', 'put_policy', {name: 'e2e-chat-tmp', definition: {nodes: [], edges: []}});
+      // A minimal valid policy, so an approved run really creates it.
+      reply = toolCall('call_w', 'put_policy', {
+        name: 'e2e-chat-tmp',
+        definition: {
+          nodes: [{id: 'listener', type: 'listener'}, {id: 'client', type: 'client'}],
+          edges: [{from: 'listener.out', to: 'client.in'}],
+        },
+      });
     } else {
       reply = toolCall('call_r', 'list_policies', {});
     }
@@ -120,6 +127,21 @@ test.describe('Chat', () => {
     // Nothing was written.
     const api = await adminApi();
     expect((await api.get('/api/policies/e2e-chat-tmp')).status()).toBe(404);
+
+    // Auto-run writes: the same request now executes without a card prompt.
+    await chat.getByLabel('Auto-run writes', {exact: true}).check();
+    await expect(chat.getByTestId('chat-connection-line')).toContainText('auto-run writes ON');
+    await chat.getByLabel('Message').fill('please write a policy for me, again');
+    await chat.getByRole('button', {name: 'Send'}).click();
+    const cards = chat.getByTestId('tool-call-put_policy');
+    await expect(cards.nth(1)).toContainText(/done|error/);
+    await expect(cards.nth(1).getByRole('button', {name: 'Run'})).toHaveCount(0);
+    // The write really happened this time.
+    await expect
+      .poll(async () => (await api.get('/api/policies/e2e-chat-tmp')).status(), {timeout: 5000})
+      .toBe(200);
+    await api.delete('/api/policies/e2e-chat-tmp');
+    await chat.getByLabel('Auto-run writes', {exact: true}).uncheck();
     await api.dispose();
   });
 
