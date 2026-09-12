@@ -199,31 +199,86 @@ fn normalize_context(v: serde_json::Value) -> serde_json::Value {
     if let Some(Value::Object(req)) = obj.remove("request") {
         for (k, val) in req {
             if k == "body" {
+                let is_snapshot = val.as_object().is_some_and(|o| o.contains_key("len"));
                 if let Some(text) = body_text(&val) {
                     obj.insert("body".to_string(), Value::String(text));
+                } else if !is_snapshot {
+                    // A plain JSON body written as an object: keep it for the
+                    // coercion below. (A binary or uncaptured snapshot body has
+                    // no faithful text to replay and is dropped.)
+                    obj.insert("body".to_string(), val);
                 }
-                // A binary or uncaptured body has no faithful text to replay.
             } else {
                 obj.insert(k, val);
             }
         }
     }
-    // Response body object -> string (or drop it when there is no text).
+    // Response body in the snapshot shape (`{len, text, …}`) -> string, or
+    // dropped when the snapshot has no replayable text. A plain JSON object
+    // body (no `len`) is left for the coercion below.
     if let Some(resp) = obj.get_mut("response").and_then(Value::as_object_mut) {
         if let Some(body) = resp.get("body").cloned() {
+            let is_snapshot = body.as_object().is_some_and(|o| o.contains_key("len"));
             match body_text(&body) {
                 Some(text) => {
                     resp.insert("body".to_string(), Value::String(text));
                 }
-                None => {
+                None if is_snapshot => {
                     resp.remove("body");
                 }
+                None => {}
             }
         }
     }
     // Display-only fields the sandbox does not model.
     obj.remove("errors");
+
+    // Forgiving aliases and coercions for the shapes agents and humans most
+    // often produce. Strict `deny_unknown_fields` still catches real typos.
+    for (alias, canonical) in [("query", "query_params"), ("uri", "path")] {
+        if let Some(v) = obj.remove(alias) {
+            obj.entry(canonical.to_string()).or_insert(v);
+        }
+    }
+    // A JSON body given as an object/array (or a number/bool) → its text.
+    if let Some(body) = obj.get("body") {
+        if let Some(text) = scalar_or_json_text(body) {
+            obj.insert("body".to_string(), Value::String(text));
+        }
+    }
+    // Header / query values: numbers and bools become strings; lists stay lists.
+    for map_key in ["headers", "query_params"] {
+        if let Some(Value::Object(map)) = obj.get_mut(map_key) {
+            for v in map.values_mut() {
+                if matches!(v, Value::Number(_) | Value::Bool(_)) {
+                    *v = Value::String(v.to_string());
+                }
+            }
+        }
+    }
+    if let Some(resp) = obj.get_mut("response").and_then(Value::as_object_mut) {
+        if let Some(v) = resp.remove("status") {
+            resp.entry("status_code".to_string()).or_insert(v);
+        }
+        if let Some(body) = resp.get("body") {
+            if let Some(text) = scalar_or_json_text(body) {
+                resp.insert("body".to_string(), Value::String(text));
+            }
+        }
+    }
     Value::Object(obj)
+}
+
+/// Text for a non-string scalar (`42` → `"42"`, `true` → `"true"`) or a
+/// JSON object/array (serialized compactly). `None` leaves strings, nulls
+/// and anything else untouched.
+fn scalar_or_json_text(v: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    match v {
+        Value::Number(_) | Value::Bool(_) => Some(v.to_string()),
+        Value::Object(_) | Value::Array(_) => Some(v.to_string()),
+        _ => None,
+    }
 }
 
 /// Extracts replayable body text: a plain string, or a snapshot body object's
@@ -585,6 +640,44 @@ mod tests {
         });
         let ctx = materialize_context(snapshot).unwrap();
         assert_eq!(ctx.request.path, "/x");
+        assert!(ctx.request.body.is_empty());
+    }
+
+    #[test]
+    fn test_agent_friendly_aliases_and_coercions() {
+        // `query` and `uri` aliases; a JSON body given as an object; numeric
+        // header/query values; `response.status`.
+        let ctx = materialize_context(serde_json::json!({
+            "method": "POST",
+            "uri": "/orders",
+            "query": {"page": 2, "tags": ["a", "b"]},
+            "headers": {"x-retry": 3, "accept": ["text/plain", "application/json"]},
+            "body": {"order": {"id": 42}},
+            "response": {"status": 201, "body": {"ok": true}}
+        }))
+        .unwrap();
+        assert_eq!(ctx.request.path, "/orders");
+        assert_eq!(ctx.request.query_params["page"], vec!["2"]);
+        assert_eq!(ctx.request.query_params["tags"], vec!["a", "b"]);
+        assert_eq!(ctx.request.headers["x-retry"], vec!["3"]);
+        assert_eq!(ctx.request.headers["accept"].len(), 2);
+        assert_eq!(ctx.request.body.as_ref(), br#"{"order":{"id":42}}"#);
+        assert_eq!(ctx.response.status_code, 201);
+        assert_eq!(ctx.response.body.as_ref(), br#"{"ok":true}"#);
+    }
+
+    #[test]
+    fn test_nested_request_with_plain_object_body_is_kept() {
+        let ctx = materialize_context(serde_json::json!({
+            "request": {"path": "/x", "body": {"a": 1}}
+        }))
+        .unwrap();
+        assert_eq!(ctx.request.body.as_ref(), br#"{"a":1}"#);
+        // A real snapshot body without text is still dropped.
+        let ctx = materialize_context(serde_json::json!({
+            "request": {"path": "/x", "body": {"len": 5, "binary": true}}
+        }))
+        .unwrap();
         assert!(ctx.request.body.is_empty());
     }
 

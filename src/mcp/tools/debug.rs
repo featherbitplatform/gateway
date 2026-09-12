@@ -129,10 +129,12 @@ pub async fn get_trace_step(state: &SharedState, a: GetTraceStepArgs) -> Result<
     }))
 }
 
-/// `run_sandbox` takes the same body as `POST /api/debug/sandbox`.
+/// `run_sandbox` takes the same body as `POST /api/debug/sandbox`. Shape
+/// errors come back with a hint showing the accepted payload, because a model
+/// that guessed wrong needs the correct shape, not just the field name.
 pub async fn run_sandbox_tool(state: &SharedState, a: Value) -> Result<Value, ToolError> {
     let req: SandboxRequest = serde_json::from_value(a)
-        .map_err(|e| ToolError::invalid_input(format!("invalid sandbox request: {e}")))?;
+        .map_err(|e| ToolError::sandbox_bad_request(format!("invalid sandbox request: {e}")))?;
     match run_sandbox(state, req).await {
         Ok(r) => Ok(serde_json::json!({
             "mode": r.mode,
@@ -143,7 +145,7 @@ pub async fn run_sandbox_tool(state: &SharedState, a: Value) -> Result<Value, To
         })),
         Err(SandboxError::Disabled) => Err(ToolError::debug_disabled()),
         Err(SandboxError::SandboxDisabled) => Err(ToolError::sandbox_disabled()),
-        Err(SandboxError::BadRequest(m)) => Err(ToolError::invalid_input(m)),
+        Err(SandboxError::BadRequest(m)) => Err(ToolError::sandbox_bad_request(m)),
         Err(SandboxError::UnknownPolicy(n)) => Err(ToolError::not_found("policy", &n)),
         Err(SandboxError::Timeout(s)) => Err(ToolError::internal(format!(
             "run exceeded debug.sandbox_timeout_seconds ({s}s)"
@@ -151,21 +153,102 @@ pub async fn run_sandbox_tool(state: &SharedState, a: Value) -> Result<Value, To
     }
 }
 
-/// Schema for `run_sandbox`: a permissive object (the body is documented by
-/// the sandbox docs; nodes/policy are mutually exclusive).
-// Only ever used through `schema_of::<SandboxArgs>()`: the tool hands the raw
-// JSON to the sandbox runner, which does its own field-level validation.
+/// Schema for `run_sandbox`. Typed and documented field by field so an agent
+/// sees the exact payload shape; the tool still hands the raw JSON to the
+/// sandbox runner, which validates (and forgives a few common variants:
+/// `query`/`uri` aliases, JSON bodies written as objects, numeric header
+/// values, `response.status`).
+// Only ever used through `schema_of::<SandboxArgs>()`.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxArgs {
-    /// Ad-hoc node list to run in order (exclusive with `policy`).
-    pub nodes: Option<Vec<Value>>,
-    /// Name of a stored policy to run (exclusive with `nodes`).
+    /// Ad-hoc nodes to run in order, chained through their success ports; a
+    /// `listener` and `client` are added for you. Exclusive with `policy`.
+    pub nodes: Option<Vec<SandboxNodeArgs>>,
+    /// Name of a stored policy to run. Exclusive with `nodes`.
     pub policy: Option<String>,
-    /// `stop` (default) or `client`: what an error port does in nodes mode.
-    pub on_error: Option<String>,
-    /// Synthetic request: {method, path, host, headers, query_params, body, message, response}.
-    pub context: Option<Value>,
+    /// Nodes mode only: `stop` (default) leaves error ports unwired so a
+    /// failing node shows `edge: "unhandled"`; `client` wires them to `client`.
+    pub on_error: Option<SandboxOnError>,
+    /// The synthetic request. Every field is optional; `{}` is `GET /`.
+    /// Flat shape — do NOT nest under `request` (a trace snapshot's nested
+    /// `{request, response, message}` object is also accepted).
+    pub context: Option<SandboxContextArgs>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxOnError {
+    Stop,
+    Client,
+}
+
+/// One ad-hoc node: `{ "id": "rw", "type": "proxy-rewrite", "config": {...} }`.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SandboxNodeArgs {
+    /// Node id; defaults to `<type>-<index>` when omitted.
+    pub id: Option<String>,
+    /// Node type as in YAML `type:` (see list_node_types / get_node_type).
+    #[serde(rename = "type")]
+    pub node_type: String,
+    /// The node's config object; keys per get_node_type(<type>).
+    pub config: Option<Value>,
+}
+
+/// Header / query-parameter values: a string, or a list of strings for
+/// repeated values. Numbers and booleans are accepted and stringified.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum SandboxValue {
+    One(String),
+    Many(Vec<String>),
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SandboxContextArgs {
+    /// HTTP method. Default `GET`.
+    pub method: Option<String>,
+    /// Request path without the query string, e.g. `/hello/frenk`. Default `/`.
+    pub path: Option<String>,
+    /// Host header value. Default `sandbox.local`.
+    pub host: Option<String>,
+    /// `http` (default) or `https`.
+    pub scheme: Option<String>,
+    /// Request headers as an object: `{"authorization": "Bearer x", "accept": ["a", "b"]}`.
+    pub headers: Option<std::collections::HashMap<String, SandboxValue>>,
+    /// Query parameters as an object (not a query string): `{"page": "2"}`.
+    pub query_params: Option<std::collections::HashMap<String, SandboxValue>>,
+    /// Request body as text. A JSON body may be passed as a JSON string
+    /// (`"{\"a\":1}"`) or directly as an object — it is serialized for you.
+    /// Add a `content-type` header yourself when a plugin needs it.
+    pub body: Option<Value>,
+    /// Base64 body for binary payloads. Exclusive with `body`.
+    pub body_base64: Option<String>,
+    /// Client address `ip:port`. Default `127.0.0.1:0`.
+    pub remote_addr: Option<String>,
+    /// `http1` (default) or `http2`.
+    pub protocol: Option<String>,
+    /// Pre-seeded `context.message` entries (e.g. what an earlier node would
+    /// have set), keyed by name.
+    pub message: Option<std::collections::HashMap<String, Value>>,
+    /// Seed the response to exercise response-phase plugins (response-rewrite,
+    /// loggers): `{"status_code": 200, "headers": {...}, "body": "..."}`.
+    pub response: Option<SandboxResponseArgs>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SandboxResponseArgs {
+    /// Response status, e.g. 200.
+    pub status_code: Option<u16>,
+    /// Response headers, same shape as request headers.
+    pub headers: Option<std::collections::HashMap<String, SandboxValue>>,
+    /// Response body as text (a JSON object is serialized for you).
+    pub body: Option<Value>,
 }
 
 #[cfg(test)]
@@ -271,5 +354,63 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "invalid_input");
+        // Shape errors carry the accepted payload so an agent can self-correct.
+        assert!(
+            err.hint
+                .as_deref()
+                .unwrap_or("")
+                .contains("FLAT \"context\""),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_sandbox_forgives_common_agent_shapes_and_explains_typos() {
+        let s = state("debug:\n  enabled: true\n", ECHO_GATEWAY);
+        // `uri`/`query` aliases, an object body and a numeric header value.
+        let v = call(
+            &s,
+            "run_sandbox",
+            obj(serde_json::json!({
+                "policy": "echo-policy",
+                "context": {"uri": "/hello", "query": {"page": 2}, "headers": {"x-n": 1}, "body": {"a": 1}}
+            })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["trace"]["path"], "/hello");
+        assert_eq!(
+            v["trace"]["initial"]["request"]["query_params"]["page"][0],
+            "2"
+        );
+
+        // A genuine typo is still rejected, with the shape hint attached.
+        let err = call(
+            &s,
+            "run_sandbox",
+            obj(serde_json::json!({"policy": "echo-policy", "context": {"paths": "/x"}})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "invalid_input");
+        assert!(err.message.contains("paths"), "{err:?}");
+        assert!(err.hint.is_some());
+
+        // The tool schema documents the context fields for the model.
+        let schema = serde_json::to_value(super::super::schema_of::<super::SandboxArgs>()).unwrap();
+        let ctx_ref = schema["properties"]["context"].to_string();
+        assert!(
+            ctx_ref.contains("SandboxContextArgs") || ctx_ref.contains("query_params"),
+            "{ctx_ref}"
+        );
+        let defs = schema
+            .get("$defs")
+            .or_else(|| schema.get("definitions"))
+            .cloned()
+            .unwrap_or_default();
+        let all = format!("{schema}{defs}");
+        for key in ["query_params", "status_code", "body_base64", "on_error"] {
+            assert!(all.contains(key), "schema should mention {key}");
+        }
     }
 }
