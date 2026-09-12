@@ -71,6 +71,18 @@ impl ToolError {
             have.as_str()
         ))
     }
+    /// `reload_config` would revert live edits that were never written to
+    /// gateway.yaml; `errors` lists them.
+    pub fn unsaved_changes(pending: Vec<String>) -> Self {
+        let mut e = Self::new(
+            "unsaved_changes",
+            "the live config has edits that are not in gateway.yaml; reloading would discard them",
+        );
+        e.errors = pending;
+        e.with_hint(
+            "put_*/delete_* changes are already live — no reload is needed. To really revert to the file, call reload_config with discard_unsaved=true; to keep the edits, ask the operator to write them to gateway.yaml (export_config gives the YAML).",
+        )
+    }
     pub fn store_error(msg: impl Into<String>) -> Self {
         Self::new("store_error", msg)
     }
@@ -184,7 +196,7 @@ pub async fn call(state: &SharedState, name: &str, a: JsonObject) -> Result<Valu
         "delete_plugin_config" => writes::delete_plugin_config(state, args(a)?).await,
         "put_store" => writes::put_store(state, args(a)?).await,
         "delete_store" => writes::delete_store(state, args(a)?).await,
-        "reload_config" => writes::reload_config(state).await,
+        "reload_config" => writes::reload_config(state, args(a)?).await,
         _ => Err(ToolError::unknown_tool(name)),
     }
 }
@@ -226,7 +238,7 @@ static TOOLS: [ToolDef; 33] = [
     ToolDef { name: "delete_plugin_config", scope: Write, description: "Delete a plugin config profile by name; fails while referenced (dry_run supported).", input_schema: schema_of::<writes::DeleteArgs> },
     ToolDef { name: "put_store", scope: Write, description: "Create or replace a redis/valkey store {type, url, password?, key_prefix?, tls?}. Keep secrets as ${ENV_VAR} placeholders.", input_schema: schema_of::<writes::PutArgs> },
     ToolDef { name: "delete_store", scope: Write, description: "Delete a store by name; fails with the list of referrers while in use (dry_run supported).", input_schema: schema_of::<writes::DeleteArgs> },
-    ToolDef { name: "reload_config", scope: Write, description: "Re-read gateway.yaml from disk and apply it (file config source only).", input_schema: schema_of::<catalog::NoArgs> },
+    ToolDef { name: "reload_config", scope: Write, description: "Re-read gateway.yaml from disk and apply it (file config source only). NOT needed after put_*/delete_* — those are live immediately. Use it only when the file was edited by hand: it DISCARDS every API/MCP edit that was never written to the file, so it refuses with `unsaved_changes` (listing what would be lost) unless discard_unsaved=true.", input_schema: schema_of::<writes::ReloadArgs> },
 ];
 
 #[cfg(test)]

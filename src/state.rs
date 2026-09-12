@@ -207,12 +207,19 @@ impl SharedState {
     /// Invoked by the hot-reload file watcher. Fails without side effects if
     /// `config_path` is unset, the file cannot be parsed, or compilation fails.
     pub async fn reload_from_disk(&self) -> Result<(), String> {
+        let new_gw = self.load_gateway_from_disk()?;
+        self.apply_gateway(new_gw).await
+    }
+
+    /// Parses `gateway.yaml` from `config_path` without applying it (raw,
+    /// `${VAR}` placeholders kept). Lets callers compare the file against the
+    /// live config before a reload discards in-memory edits.
+    pub fn load_gateway_from_disk(&self) -> Result<GatewayConfig, String> {
         let path = self
             .config_path
             .as_ref()
             .ok_or("No config path set for hot-reload")?;
-        let new_gw: GatewayConfig = crate::config::load_yaml(path).map_err(|e| e.to_string())?;
-        self.apply_gateway(new_gw).await
+        crate::config::load_yaml(path).map_err(|e| e.to_string())
     }
 
     /// Validates and compiles every policy, then binds each route to its

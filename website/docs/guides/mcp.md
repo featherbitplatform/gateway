@@ -105,5 +105,6 @@ Trace and sandbox tools need [debug mode](./debugging.md); they say so when it i
 - Constant-time token comparison; disabled MCP is indistinguishable from a missing route.
 - A request carrying an `Origin` header is refused unless it is same-origin (its authority equals the request's `Host`) or listed in `allowed_origins` (DNS-rebinding defence — and either way the bearer token is still required). Non-browser agents send none.
 - Writes go through the same validate → compile → commit path as the Admin API and are logged (`mcp tool call token=… scope=… tool=… outcome=…`). With the file config source, edits are live but not written back to `gateway.yaml` — the same as Admin API edits; with etcd they persist cluster-wide.
+- `reload_config` re-reads `gateway.yaml` from disk. It is never needed after a `put_*`/`delete_*` (those are live at once), and because it would revert every unsaved API/MCP edit it refuses with `unsaved_changes` — listing the routes, policies, stores… that differ — unless called with `discard_unsaved: true`. Use `export_config` to get the YAML to persist.
 - `${ENV}` placeholders are served raw, never resolved. Consumer credentials are masked on read.
 - Put TLS on the admin listener (`admin.tls`) when the agent is remote.
