@@ -17,8 +17,13 @@ pub struct NameArgs {
 /// `{ "policy": <object | YAML string> }`
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ValidatePolicyArgs {
-    /// The policy definition, as a JSON object or a YAML document string.
-    pub policy: Value,
+    /// The policy definition `{nodes: [...], edges: [...], error_handler?}`, as a
+    /// JSON object or a YAML document string. `name` inside it is optional.
+    #[serde(default, alias = "definition")]
+    pub policy: Option<Value>,
+    /// Optional policy name (only used in messages; the definition is not saved).
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// `{ "definition": <object | YAML string> }`
@@ -141,7 +146,26 @@ pub async fn validate_policy(
     state: &SharedState,
     a: ValidatePolicyArgs,
 ) -> Result<Value, ToolError> {
-    let policy: PolicyConfig = parse_payload(a.policy, "policy")?;
+    // Accept the definition under `policy` or `definition`, as an object or a
+    // YAML string, with or without a `name` — validation does not save it, so
+    // forcing a name only made agents trip on "missing field `name`".
+    let mut raw = a.policy.ok_or_else(|| {
+        ToolError::invalid_payload("validate_policy needs `policy` (or `definition`): the policy as a JSON object or YAML string")
+    })?;
+    if let Value::String(yaml) = &raw {
+        raw = serde_yaml::from_str(yaml)
+            .map_err(|e| ToolError::invalid_payload(format!("policy: YAML did not parse: {e}")))?;
+    }
+    if let Some(obj) = raw.as_object_mut() {
+        if !obj.contains_key("name") {
+            let name = a
+                .name
+                .clone()
+                .unwrap_or_else(|| "unsaved-policy".to_string());
+            obj.insert("name".to_string(), Value::String(name));
+        }
+    }
+    let policy: PolicyConfig = parse_payload(raw, "policy")?;
     let (supernodes, plugin_configs) = {
         let gw = state.gateway.read().await;
         (gw.supernodes.clone(), gw.plugin_configs.clone())
@@ -169,6 +193,43 @@ pub async fn validate_supernode(a: ValidateSupernodeArgs) -> Result<Value, ToolE
 mod tests {
     use crate::mcp::tools::call;
     use crate::mcp::tools::test_support::{obj, state, ECHO_GATEWAY};
+
+    #[tokio::test]
+    async fn validate_policy_accepts_agent_shapes() {
+        let s = state("{}", ECHO_GATEWAY);
+        let nameless = serde_json::json!({
+            "nodes": [{"id": "l", "type": "listener"}, {"id": "e", "type": "echo", "config": {"body": "hi"}}, {"id": "c", "type": "client"}],
+            "edges": [{"from": "l.out", "to": "e.in"}, {"from": "e.out", "to": "c.in"}]
+        });
+        // No `name` inside the definition.
+        let v = call(
+            &s,
+            "validate_policy",
+            obj(serde_json::json!({"policy": nameless})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["valid"], true, "{v}");
+        // `definition` as the argument key, YAML string payload.
+        let yaml = serde_yaml::to_string(&nameless).unwrap();
+        let v = call(
+            &s,
+            "validate_policy",
+            obj(serde_json::json!({"definition": yaml})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["valid"], true, "{v}");
+        // Neither key: an invalid_input with the shape hint.
+        let err = call(&s, "validate_policy", obj(serde_json::json!({"nodes": []})))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "invalid_input");
+        assert!(
+            err.hint.as_deref().unwrap_or("").contains("definition"),
+            "{err:?}"
+        );
+    }
 
     #[tokio::test]
     async fn reads_mirror_config_and_report_not_found() {
