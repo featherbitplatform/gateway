@@ -72,8 +72,27 @@ export function ChatPanel({ open, onClose, chat, mcpStatus }: ChatPanelProps) {
               {chat.settings.model || 'no model'} · {connectionLabel(chat.connection)}
               {mcpStatus && !mcpStatus.compiled && ' (built without MCP)'}
               {!chat.settings.redact && ' · secret redaction off'}
+              {chat.settings.autoApprove && ' · auto-run writes ON'}
               {chat.storageBlocked && ' · storage blocked: chats will not survive a reload'}
             </span>
+            <label
+              className="flex items-center gap-1"
+              title={
+                chat.connection.kind === 'ready' && chat.connection.scope === 'read'
+                  ? 'Your MCP token is read-only: there are no writes to approve'
+                  : 'Run write tools and run_sandbox without asking for Run/Skip'
+              }
+              style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}
+            >
+              <input
+                type="checkbox"
+                checked={chat.settings.autoApprove}
+                disabled={chat.connection.kind === 'ready' && chat.connection.scope === 'read'}
+                onChange={(e) => chat.saveSettings({ ...chat.settings, autoApprove: e.target.checked })}
+                aria-label="Auto-run writes"
+              />
+              Auto-run writes
+            </label>
             <button
               aria-label="Chat settings"
               onClick={() => setSettingsToggle(!showSettings)}
@@ -94,7 +113,12 @@ export function ChatPanel({ open, onClose, chat, mcpStatus }: ChatPanelProps) {
             <>
               <div style={{ flex: 1, overflowY: 'auto', maxHeight: '52vh' }}>
                 {active ? (
-                  <MessageList thread={active} pendingConfirm={chat.pendingConfirm} onResolveConfirm={chat.resolveConfirm} />
+                  <MessageList
+                    thread={active}
+                    pendingConfirm={chat.pendingConfirm}
+                    onResolveConfirm={chat.resolveConfirm}
+                    busy={chat.busyThreadId === active.id}
+                  />
                 ) : (
                   <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
                     Start a new chat, or use "Ask agent" from a trace or the policy editor.

@@ -283,6 +283,12 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
             onThread: updateThread,
             confirm: (call) =>
               new Promise<boolean>((resolve) => {
+                // "Auto-run writes" (settings.autoApprove): approve on the
+                // spot, no card, no pause.
+                if (settings.autoApprove) {
+                  resolve(true);
+                  return;
+                }
                 confirmRef.current = (ok) => {
                   confirmRef.current = null;
                   setPendingConfirm(null);

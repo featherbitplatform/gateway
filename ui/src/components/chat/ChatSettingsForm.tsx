@@ -204,6 +204,15 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
         />
         Redact secrets before sending (tokens, cookies, passwords, keys, and your own API key / MCP token)
       </label>
+      <label className="flex items-center gap-2" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
+        <input
+          type="checkbox"
+          checked={draft.autoApprove}
+          onChange={(e) => setDraft((d) => ({ ...d, autoApprove: e.target.checked }))}
+          aria-label="Auto-run writes (settings)"
+        />
+        Auto-run writes: execute put_*/delete_*/reload_config and run_sandbox without the Run/Skip card
+      </label>
       <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }} data-testid="chat-connection">{connectionLabel(connection)}</div>
       <div className="flex justify-between">
         <DialogButton
