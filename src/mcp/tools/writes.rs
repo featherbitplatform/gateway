@@ -23,7 +23,7 @@ fn parse_named<T: serde::de::DeserializeOwned>(
 ) -> Result<T, ToolError> {
     let mut value: Value = match definition {
         Value::String(yaml) => serde_yaml::from_str(&yaml)
-            .map_err(|e| ToolError::invalid_input(format!("{what}: YAML did not parse: {e}")))?,
+            .map_err(|e| ToolError::invalid_payload(format!("{what}: YAML did not parse: {e}")))?,
         other => other,
     };
     match value.as_object_mut() {
@@ -31,24 +31,67 @@ fn parse_named<T: serde::de::DeserializeOwned>(
             obj.insert("name".to_string(), Value::String(name.to_string()));
         }
         None => {
-            return Err(ToolError::invalid_input(format!(
+            return Err(ToolError::invalid_payload(format!(
                 "{what}: definition must be a JSON/YAML object"
             )))
         }
     }
     serde_json::from_value(value)
-        .map_err(|e| ToolError::invalid_input(format!("{what}: JSON did not deserialize: {e}")))
+        .map_err(|e| ToolError::invalid_payload(format!("{what}: JSON did not deserialize: {e}")))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PutArgs {
-    /// Resource name; overrides any `name` inside the payload.
-    pub name: String,
-    /// The definition, as a JSON object or a YAML document string.
+    /// Resource name. Optional when the definition itself carries `name`;
+    /// when both are given this one wins.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The definition, as a JSON object or a YAML document string. Also
+    /// accepted under the resource's own key (`policy`, `route`, `supernode`,
+    /// `plugin_config`, `store`) or `body`.
+    #[serde(
+        alias = "policy",
+        alias = "route",
+        alias = "supernode",
+        alias = "plugin_config",
+        alias = "store",
+        alias = "body"
+    )]
     pub definition: Value,
     /// Validate the whole resulting config without applying it. Default false.
     #[serde(default)]
     pub dry_run: bool,
+}
+
+impl PutArgs {
+    /// The resource name: the `name` argument, else `name` inside the
+    /// definition (object or YAML string).
+    fn resolve_name(&self, what: &str) -> Result<String, ToolError> {
+        if let Some(n) = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
+            return Ok(n.to_string());
+        }
+        let inner = match &self.definition {
+            Value::String(yaml) => serde_yaml::from_str::<Value>(yaml).ok(),
+            other => Some(other.clone()),
+        };
+        inner
+            .as_ref()
+            .and_then(|v| v.get("name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                ToolError::invalid_payload(format!(
+                    "{what}: give `name` as an argument or inside the definition"
+                ))
+            })
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -118,9 +161,10 @@ fn remove<T>(
 }
 
 pub async fn put_route(state: &SharedState, a: PutArgs) -> Result<Value, ToolError> {
-    let route: RouteConfig = parse_named(a.definition, &a.name, "route")?;
-    commit_candidate(state, a.dry_run, vec![format!("route:{}", a.name)], |gw| {
-        upsert(&mut gw.routes, route, |r| r.name == a.name);
+    let name = a.resolve_name("route")?;
+    let route: RouteConfig = parse_named(a.definition, &name, "route")?;
+    commit_candidate(state, a.dry_run, vec![format!("route:{name}")], |gw| {
+        upsert(&mut gw.routes, route, |r| r.name == name);
         Ok(())
     })
     .await
@@ -134,9 +178,10 @@ pub async fn delete_route(state: &SharedState, a: DeleteArgs) -> Result<Value, T
 }
 
 pub async fn put_policy(state: &SharedState, a: PutArgs) -> Result<Value, ToolError> {
-    let policy: PolicyConfig = parse_named(a.definition, &a.name, "policy")?;
-    commit_candidate(state, a.dry_run, vec![format!("policy:{}", a.name)], |gw| {
-        upsert(&mut gw.policies, policy, |p| p.name == a.name);
+    let name = a.resolve_name("policy")?;
+    let policy: PolicyConfig = parse_named(a.definition, &name, "policy")?;
+    commit_candidate(state, a.dry_run, vec![format!("policy:{name}")], |gw| {
+        upsert(&mut gw.policies, policy, |p| p.name == name);
         Ok(())
     })
     .await
@@ -150,16 +195,12 @@ pub async fn delete_policy(state: &SharedState, a: DeleteArgs) -> Result<Value, 
 }
 
 pub async fn put_supernode(state: &SharedState, a: PutArgs) -> Result<Value, ToolError> {
-    let sn: SupernodeConfig = parse_named(a.definition, &a.name, "supernode")?;
-    commit_candidate(
-        state,
-        a.dry_run,
-        vec![format!("supernode:{}", a.name)],
-        |gw| {
-            upsert(&mut gw.supernodes, sn, |s| s.name == a.name);
-            Ok(())
-        },
-    )
+    let name = a.resolve_name("supernode")?;
+    let sn: SupernodeConfig = parse_named(a.definition, &name, "supernode")?;
+    commit_candidate(state, a.dry_run, vec![format!("supernode:{name}")], |gw| {
+        upsert(&mut gw.supernodes, sn, |s| s.name == name);
+        Ok(())
+    })
     .await
 }
 
@@ -178,13 +219,14 @@ pub async fn delete_supernode(state: &SharedState, a: DeleteArgs) -> Result<Valu
 }
 
 pub async fn put_plugin_config(state: &SharedState, a: PutArgs) -> Result<Value, ToolError> {
-    let pc: PluginConfigDef = parse_named(a.definition, &a.name, "plugin config")?;
+    let name = a.resolve_name("plugin config")?;
+    let pc: PluginConfigDef = parse_named(a.definition, &name, "plugin config")?;
     commit_candidate(
         state,
         a.dry_run,
-        vec![format!("plugin_config:{}", a.name)],
+        vec![format!("plugin_config:{name}")],
         |gw| {
-            upsert(&mut gw.plugin_configs, pc, |p| p.name == a.name);
+            upsert(&mut gw.plugin_configs, pc, |p| p.name == name);
             Ok(())
         },
     )
@@ -206,9 +248,10 @@ pub async fn delete_plugin_config(state: &SharedState, a: DeleteArgs) -> Result<
 }
 
 pub async fn put_store(state: &SharedState, a: PutArgs) -> Result<Value, ToolError> {
-    let store: StoreConfig = parse_named(a.definition, &a.name, "store")?;
-    commit_candidate(state, a.dry_run, vec![format!("store:{}", a.name)], |gw| {
-        upsert(&mut gw.stores, store, |s| s.name == a.name);
+    let name = a.resolve_name("store")?;
+    let store: StoreConfig = parse_named(a.definition, &name, "store")?;
+    commit_candidate(state, a.dry_run, vec![format!("store:{name}")], |gw| {
+        upsert(&mut gw.stores, store, |s| s.name == name);
         Ok(())
     })
     .await
@@ -420,6 +463,40 @@ mod tests {
             .unwrap();
         assert_eq!(v["discarded"], serde_json::json!([]));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn put_accepts_resource_key_alias_and_name_inside_definition() {
+        let s = state("{}", ECHO_GATEWAY);
+        // `policy` instead of `definition`, and the name carried inside it.
+        let mut def: serde_json::Value = serde_yaml::from_str(NEW_POLICY).unwrap();
+        def["name"] = serde_json::json!("p-alias");
+        let v = call(&s, "put_policy", obj(serde_json::json!({"policy": def})))
+            .await
+            .unwrap();
+        assert_eq!(v["changed"][0], "policy:p-alias");
+        assert!(s
+            .gateway
+            .read()
+            .await
+            .policies
+            .iter()
+            .any(|p| p.name == "p-alias"));
+
+        // No name anywhere: invalid_input with the shape hint.
+        let err = call(
+            &s,
+            "put_policy",
+            obj(serde_json::json!({"definition": NEW_POLICY})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "invalid_input");
+        assert!(err.message.contains("name"), "{err:?}");
+        assert!(
+            err.hint.as_deref().unwrap_or("").contains("\"definition\""),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]
