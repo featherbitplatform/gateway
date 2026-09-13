@@ -50,3 +50,7 @@ When `context.errors` is non-empty, builds the shared access-log entry (which in
 - Only the **tcp** sink (`host`/`port`) is implemented; the `skywalking`, `clickhouse`, and `kafka` sinks are out of scope for this socket-focused node.
 - `level` is accepted but not enforced as a severity threshold.
 - `tls` is **not yet supported**; `tls: true` is rejected at config load.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

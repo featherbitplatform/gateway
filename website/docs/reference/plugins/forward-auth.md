@@ -66,3 +66,11 @@ edges:
   - from: forward-auth.denied
     to: client.in
 ```
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `FORWARD_AUTH_ERROR` | `status_on_error` (default 403) | The callout to the auth service failed (timeout or transport error) and `allow_degradation` is false. With it true the request continues through `success` instead. |

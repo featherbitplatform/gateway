@@ -14,7 +14,7 @@ Steers matching requests to a weighted set of upstream targets, or lets them fal
 | `rules` | array | — (**required**, non-empty) | Evaluated in order; the first rule whose `match` passes is used. |
 | `rules[].match` | array | absent = match all | A triple-array condition (rules AND-ed). Omit to match every request. |
 | `rules[].weighted_upstreams` | array | — (**required**, non-empty) | The weighted slots; one is chosen by weighted round-robin. |
-| `rules[].weighted_upstreams[].upstream` | object | absent = default slot | `{targets: [{host, port}], ...}`. When present, the slot proxies to one of the targets (round-robin within the set). When absent, the slot is the "default" — requests fall through to the route's normal upstream. |
+| `rules[].weighted_upstreams[].upstream` | object | absent = default slot | `{targets: [{host, port}], ...}` (`nodes` is accepted as an alias of `targets`, matching APISIX). When present, the slot proxies to one of the targets (round-robin within the set). When absent, the slot is the "default" — requests fall through to the route's normal upstream. |
 | `rules[].weighted_upstreams[].weight` | integer >= 0 | `1` | Selection weight. Every rule needs at least one slot with weight > 0. |
 | `timeout_ms` | integer | `60000` | Whole-call deadline for requests the plugin proxies itself. |
 
@@ -78,3 +78,11 @@ edges:
 - There is no shared upstream registry at this node: a target slot is **proxied by the plugin itself** and short-circuited through the `routed` port; a default slot falls through to the route's `upstream` node.
 - Upstream references are inline target lists (`upstream.targets: [{host, port}]`) only — `upstream_id` references to a shared upstream store are not supported.
 - Selection is a deterministic weighted round-robin (a per-rule cursor); the long-run distribution matches the configured weights.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `TRAFFIC_SPLIT_UPSTREAM_ERROR` | 502 | The chosen split target timed out, was unreachable, or the request to it could not be built. |

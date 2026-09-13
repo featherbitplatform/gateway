@@ -16,6 +16,7 @@
 //! sandbox run can never diverge from what the gateway really does.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -24,6 +25,10 @@ use serde::Deserialize;
 
 use crate::config::{EdgeConfig, NodeConfig, PolicyConfig};
 use crate::context::{Context, GatewayRequest, GatewayResponse, Protocol};
+use crate::debug::render::render_trace;
+use crate::debug::{new_trace_id, TraceRecorder, TraceSource};
+use crate::graph::{compile_policy, prepare_policy};
+use crate::state::SharedState;
 
 /// A header/query value given as either a bare string or a list.
 ///
@@ -194,31 +199,86 @@ fn normalize_context(v: serde_json::Value) -> serde_json::Value {
     if let Some(Value::Object(req)) = obj.remove("request") {
         for (k, val) in req {
             if k == "body" {
+                let is_snapshot = val.as_object().is_some_and(|o| o.contains_key("len"));
                 if let Some(text) = body_text(&val) {
                     obj.insert("body".to_string(), Value::String(text));
+                } else if !is_snapshot {
+                    // A plain JSON body written as an object: keep it for the
+                    // coercion below. (A binary or uncaptured snapshot body has
+                    // no faithful text to replay and is dropped.)
+                    obj.insert("body".to_string(), val);
                 }
-                // A binary or uncaptured body has no faithful text to replay.
             } else {
                 obj.insert(k, val);
             }
         }
     }
-    // Response body object -> string (or drop it when there is no text).
+    // Response body in the snapshot shape (`{len, text, …}`) -> string, or
+    // dropped when the snapshot has no replayable text. A plain JSON object
+    // body (no `len`) is left for the coercion below.
     if let Some(resp) = obj.get_mut("response").and_then(Value::as_object_mut) {
         if let Some(body) = resp.get("body").cloned() {
+            let is_snapshot = body.as_object().is_some_and(|o| o.contains_key("len"));
             match body_text(&body) {
                 Some(text) => {
                     resp.insert("body".to_string(), Value::String(text));
                 }
-                None => {
+                None if is_snapshot => {
                     resp.remove("body");
                 }
+                None => {}
             }
         }
     }
     // Display-only fields the sandbox does not model.
     obj.remove("errors");
+
+    // Forgiving aliases and coercions for the shapes agents and humans most
+    // often produce. Strict `deny_unknown_fields` still catches real typos.
+    for (alias, canonical) in [("query", "query_params"), ("uri", "path")] {
+        if let Some(v) = obj.remove(alias) {
+            obj.entry(canonical.to_string()).or_insert(v);
+        }
+    }
+    // A JSON body given as an object/array (or a number/bool) → its text.
+    if let Some(body) = obj.get("body") {
+        if let Some(text) = scalar_or_json_text(body) {
+            obj.insert("body".to_string(), Value::String(text));
+        }
+    }
+    // Header / query values: numbers and bools become strings; lists stay lists.
+    for map_key in ["headers", "query_params"] {
+        if let Some(Value::Object(map)) = obj.get_mut(map_key) {
+            for v in map.values_mut() {
+                if matches!(v, Value::Number(_) | Value::Bool(_)) {
+                    *v = Value::String(v.to_string());
+                }
+            }
+        }
+    }
+    if let Some(resp) = obj.get_mut("response").and_then(Value::as_object_mut) {
+        if let Some(v) = resp.remove("status") {
+            resp.entry("status_code".to_string()).or_insert(v);
+        }
+        if let Some(body) = resp.get("body") {
+            if let Some(text) = scalar_or_json_text(body) {
+                resp.insert("body".to_string(), Value::String(text));
+            }
+        }
+    }
     Value::Object(obj)
+}
+
+/// Text for a non-string scalar (`42` → `"42"`, `true` → `"true"`) or a
+/// JSON object/array (serialized compactly). `None` leaves strings, nulls
+/// and anything else untouched.
+fn scalar_or_json_text(v: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    match v {
+        Value::Number(_) | Value::Bool(_) => Some(v.to_string()),
+        Value::Object(_) | Value::Array(_) => Some(v.to_string()),
+        _ => None,
+    }
 }
 
 /// Extracts replayable body text: a plain string, or a snapshot body object's
@@ -330,6 +390,123 @@ pub fn synthesize_policy(
         error_handler: None,
         nodes: all,
         edges,
+    })
+}
+
+/// Why a sandbox run did not happen. The Admin handler maps these to HTTP;
+/// the MCP tool maps them to tool-error codes.
+#[derive(Debug)]
+pub enum SandboxError {
+    /// `debug.enabled` is false.
+    Disabled,
+    /// `debug.sandbox` is false.
+    SandboxDisabled,
+    /// Malformed request (both/neither of `nodes`/`policy`, bad node list,
+    /// invalid policy, unmaterializable context) — message is user-facing.
+    BadRequest(String),
+    /// `policy` names no stored policy.
+    UnknownPolicy(String),
+    /// The run exceeded `debug.sandbox_timeout_seconds` (the value carried).
+    Timeout(u64),
+}
+
+/// A completed sandbox run.
+pub struct SandboxRun {
+    /// `"nodes"` or `"policy"`.
+    pub mode: &'static str,
+    /// The policy name executed (`__sandbox` for ad-hoc node lists).
+    pub policy: String,
+    /// Id of the trace stored in the debug ring buffer.
+    pub stored_trace_id: String,
+    /// The rendered trace (`render_trace` shape).
+    pub trace: serde_json::Value,
+}
+
+/// Runs plugins or a stored policy against a synthetic request, for real,
+/// recording a trace. Shared by `POST /api/debug/sandbox` and the MCP
+/// `run_sandbox` tool.
+pub async fn run_sandbox(
+    state: &SharedState,
+    req: SandboxRequest,
+) -> Result<SandboxRun, SandboxError> {
+    if !state.debug.enabled {
+        return Err(SandboxError::Disabled);
+    }
+    if !state.debug.sandbox_enabled {
+        return Err(SandboxError::SandboxDisabled);
+    }
+
+    let (mode, policy_name, policy) = match (req.nodes, req.policy) {
+        (Some(_), Some(_)) | (None, None) => {
+            return Err(SandboxError::BadRequest(
+                "provide exactly one of 'nodes' or 'policy'".into(),
+            ))
+        }
+        (Some(nodes), None) => match synthesize_policy(nodes, req.on_error) {
+            Ok(p) => ("nodes", "__sandbox".to_string(), p),
+            Err(e) => return Err(SandboxError::BadRequest(e)),
+        },
+        (None, Some(name)) => {
+            let gw = state.gateway.read().await;
+            match gw.policies.iter().find(|p| p.name == name) {
+                // Recompile rather than reusing a route's graph: a policy with
+                // no route attached is exactly the one being iterated on.
+                Some(p) => ("policy", name.clone(), p.clone()),
+                None => return Err(SandboxError::UnknownPolicy(name)),
+            }
+        }
+    };
+
+    // Resolve shared plugin configs and inline supernode references the same
+    // way compile_routes does — the sandbox must never diverge from what the
+    // data plane executes. Resolution runs on a synthetic single-policy
+    // gateway so ad-hoc nodes and stored policies behave identically.
+    let (supernodes, plugin_configs) = {
+        let gw = state.gateway.read().await;
+        (gw.supernodes.clone(), gw.plugin_configs.clone())
+    };
+    let policy =
+        prepare_policy(policy, &supernodes, &plugin_configs).map_err(SandboxError::BadRequest)?;
+
+    let graph =
+        compile_policy(&policy, state.resources.clone()).map_err(SandboxError::BadRequest)?;
+
+    let ctx = materialize_context(req.context).map_err(SandboxError::BadRequest)?;
+
+    tracing::warn!(
+        "sandbox run ({}): plugins execute for real against live resources",
+        mode
+    );
+
+    let recorder = TraceRecorder::new(&ctx, state.debug.capture_options(), state.debug.max_steps);
+    let started = Instant::now();
+    let timeout = Duration::from_secs(state.debug.sandbox_timeout_seconds.max(1));
+
+    let run = graph.execute_traced(ctx, recorder);
+    let (out_ctx, recorder) = tokio::time::timeout(timeout, run)
+        .await
+        .map_err(|_| SandboxError::Timeout(state.debug.sandbox_timeout_seconds))?;
+
+    let id = new_trace_id();
+    let trace = recorder.finish(
+        id.clone(),
+        state.debug.next_seq(),
+        TraceSource::Sandbox,
+        None,
+        policy_name.clone(),
+        &out_ctx,
+        started.elapsed(),
+    );
+    let rendered = render_trace(&trace);
+    // Stored alongside live traces so a sandbox run and a real request can be
+    // compared side by side in the UI.
+    state.debug.record(trace);
+
+    Ok(SandboxRun {
+        mode,
+        policy: policy_name,
+        stored_trace_id: id,
+        trace: rendered,
     })
 }
 
@@ -467,6 +644,44 @@ mod tests {
     }
 
     #[test]
+    fn test_agent_friendly_aliases_and_coercions() {
+        // `query` and `uri` aliases; a JSON body given as an object; numeric
+        // header/query values; `response.status`.
+        let ctx = materialize_context(serde_json::json!({
+            "method": "POST",
+            "uri": "/orders",
+            "query": {"page": 2, "tags": ["a", "b"]},
+            "headers": {"x-retry": 3, "accept": ["text/plain", "application/json"]},
+            "body": {"order": {"id": 42}},
+            "response": {"status": 201, "body": {"ok": true}}
+        }))
+        .unwrap();
+        assert_eq!(ctx.request.path, "/orders");
+        assert_eq!(ctx.request.query_params["page"], vec!["2"]);
+        assert_eq!(ctx.request.query_params["tags"], vec!["a", "b"]);
+        assert_eq!(ctx.request.headers["x-retry"], vec!["3"]);
+        assert_eq!(ctx.request.headers["accept"].len(), 2);
+        assert_eq!(ctx.request.body.as_ref(), br#"{"order":{"id":42}}"#);
+        assert_eq!(ctx.response.status_code, 201);
+        assert_eq!(ctx.response.body.as_ref(), br#"{"ok":true}"#);
+    }
+
+    #[test]
+    fn test_nested_request_with_plain_object_body_is_kept() {
+        let ctx = materialize_context(serde_json::json!({
+            "request": {"path": "/x", "body": {"a": 1}}
+        }))
+        .unwrap();
+        assert_eq!(ctx.request.body.as_ref(), br#"{"a":1}"#);
+        // A real snapshot body without text is still dropped.
+        let ctx = materialize_context(serde_json::json!({
+            "request": {"path": "/x", "body": {"len": 5, "binary": true}}
+        }))
+        .unwrap();
+        assert!(ctx.request.body.is_empty());
+    }
+
+    #[test]
     fn test_synthesized_policy_chains_nodes() {
         let p = synthesize_policy(
             vec![node("a", "cors"), node("b", "proxy-rewrite")],
@@ -540,5 +755,69 @@ mod tests {
     fn test_on_error_defaults_to_stop() {
         let req = parse(serde_json::json!({ "policy": "p" })).unwrap();
         assert_eq!(req.on_error, OnError::Stop);
+    }
+
+    #[tokio::test]
+    async fn run_sandbox_reports_disabled_and_unknown_policy() {
+        use crate::config::{GatewayConfig, SystemConfig};
+        use crate::config_store::FileConfigStore;
+        use std::sync::Arc;
+
+        let off: SystemConfig = serde_yaml::from_str("{}").unwrap();
+        let gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let store = Arc::new(FileConfigStore::new(std::path::PathBuf::from(
+            "gateway.yaml",
+        )));
+        let state = crate::state::SharedState::new(off, gw.clone(), None, store.clone()).unwrap();
+        let req = SandboxRequest {
+            policy: Some("p".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            run_sandbox(&state, req).await,
+            Err(SandboxError::Disabled)
+        ));
+
+        let on: SystemConfig = serde_yaml::from_str("debug:\n  enabled: true\n").unwrap();
+        let state = crate::state::SharedState::new(on, gw, None, store).unwrap();
+        let req = SandboxRequest {
+            policy: Some("missing".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            run_sandbox(&state, req).await,
+            Err(SandboxError::UnknownPolicy(_))
+        ));
+        let req = SandboxRequest::default();
+        assert!(matches!(
+            run_sandbox(&state, req).await,
+            Err(SandboxError::BadRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_sandbox_executes_nodes_mode() {
+        use crate::config::{GatewayConfig, SystemConfig};
+        use crate::config_store::FileConfigStore;
+        use std::sync::Arc;
+        let on: SystemConfig = serde_yaml::from_str("debug:\n  enabled: true\n").unwrap();
+        let gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let store = Arc::new(FileConfigStore::new(std::path::PathBuf::from(
+            "gateway.yaml",
+        )));
+        let state = crate::state::SharedState::new(on, gw, None, store).unwrap();
+        // `echo` requires at least one of body/before_body/after_body — an
+        // empty config is rejected by EchoPlugin::from_config, so the
+        // smallest accepted config (`body`) is used here instead of `{}`.
+        let req: SandboxRequest = serde_json::from_value(serde_json::json!({
+            "nodes": [{"id": "e", "type": "echo", "config": {"body": "hi"}}],
+            "context": {"method": "GET", "path": "/x"}
+        }))
+        .unwrap();
+        let run = run_sandbox(&state, req).await.unwrap();
+        assert_eq!(run.mode, "nodes");
+        assert_eq!(run.policy, "__sandbox");
+        assert!(state.debug.get(&run.stored_trace_id).is_some());
+        assert!(!run.trace["steps"].as_array().unwrap().is_empty());
     }
 }

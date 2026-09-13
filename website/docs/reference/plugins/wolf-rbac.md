@@ -59,3 +59,11 @@ edges:
 - **Config-driven server.** `server` / `ssl_verify` / `header_prefix` are read from the node config, not from a consumer's auth configuration; the token's appid is still used verbatim as the `appID` request argument. No consumer is required or attached.
 - **No retry loop.** `access_check` is issued as a single call bounded by `timeout_ms`; a `5xx` response is not retried.
 - **Identity headers are set on the upstream request only.** They are injected onto the proxied request (lowercased, per the gateway's header convention), not mirrored onto the client response.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `WOLF_RBAC_UPSTREAM_ERROR` | 500 | The callout to the wolf server failed, or it returned an unexpected status. |

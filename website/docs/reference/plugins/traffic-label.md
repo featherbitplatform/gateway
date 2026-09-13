@@ -52,3 +52,7 @@ This node is always pass-through: it returns `Ok` in every case, the Context flo
 
 - `set_labels` has no wire effect — use it when you want tags visible to the pipeline but not on the wire.
 - Weighted selection uses a deterministic round-robin cursor; the steady-state distribution matches the configured weights.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

@@ -52,3 +52,7 @@ featherbit's shared logging infrastructure is HTTP-only — there is no raw TLS/
 - Requests are signed with the SLS HMAC-SHA1 `Authorization: LOG <id>:<signature>` scheme (with a self-contained MD5 for `Content-MD5`).
 
 The signing helper and its primitives (MD5, HMAC-SHA1) are unit-tested against fixed vectors.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

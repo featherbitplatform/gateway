@@ -34,12 +34,16 @@ Config load fails if `function_uri` is missing or empty.
 
 The plugin forwards the client's method, headers, query string, and body to `function_uri`, overriding `Host` with the endpoint's authority. Unless the client already supplied `x-functions-key`/`x-functions-clientid`, the configured `apikey`/`clientid` are added as those headers. On success it populates `context.response` with the function's status, headers, and body and exits through the `success` port — which should be wired to `client.in`, since this node stands in for the upstream. The function's status is passed through as-is.
 
-A callout failure returns the Context along with an error so the graph engine routes through the `error` port; the error is appended to `context.errors`:
+A callout failure returns the Context along with an error so the graph engine routes through the `error` port; the error is appended to `context.errors` — see [Errors](#errors).
+
+The plugin does not read or write `context.message`.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
 
 | Code | Status | When |
 |---|---|---|
-| `AZURE_FUNCTIONS_CALLOUT_ERROR` | 504 | The callout exceeded `timeout`. |
+| `AZURE_FUNCTIONS_CALLOUT_ERROR` | 504 | The function callout exceeded `timeout`. |
 | `AZURE_FUNCTIONS_CALLOUT_ERROR` | 503 | Connecting to or exchanging with the endpoint failed. |
-| `AZURE_FUNCTIONS_CALLOUT_ERROR` | 502 | The request could not be built (e.g. invalid `function_uri`). |
-
-The plugin does not read or write `context.message`.
+| `AZURE_FUNCTIONS_CALLOUT_ERROR` | 502 | The request could not be built (e.g. an invalid endpoint URI). |

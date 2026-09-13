@@ -48,3 +48,7 @@ Each flush POSTs the endpoint URL with `Content-Type: application/json` and the 
 ## Behavior notes
 
 - Multiple encoded entries in a batch are joined with a newline, which ClickHouse's `JSONEachRow` format accepts as a row separator.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

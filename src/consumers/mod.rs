@@ -219,12 +219,62 @@ pub fn attach_consumer(ctx: &mut Context, consumer: &Consumer, auth_type: &str) 
     }
 }
 
+/// Returns a copy of `c` with credential secrets replaced by `"<masked>"`.
+///
+/// Every scalar leaf under `credentials` is masked except the identifying
+/// halves of a credential pair (`username`, `access_key`), so a read-only
+/// viewer can still tell *which* credential exists without learning it.
+pub fn mask_credentials(c: &ConsumerConfig) -> ConsumerConfig {
+    fn mask(v: &serde_json::Value, key: Option<&str>) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), mask(v, Some(k))))
+                    .collect(),
+            ),
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(|v| mask(v, key)).collect())
+            }
+            serde_json::Value::Null => serde_json::Value::Null,
+            _ if matches!(key, Some("username") | Some("access_key")) => v.clone(),
+            _ => serde_json::Value::String("<masked>".into()),
+        }
+    }
+    let mut out = c.clone();
+    out.credentials = c
+        .credentials
+        .iter()
+        .map(|(plugin, v)| (plugin.clone(), mask(v, None)))
+        .collect();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn config(json: serde_json::Value) -> Vec<ConsumerConfig> {
         serde_json::from_value(json).expect("valid consumer config")
+    }
+
+    #[test]
+    fn mask_credentials_keeps_identifiers_only() {
+        let c: ConsumerConfig = serde_yaml::from_str(
+            "name: alice\ncredentials:\n  key-auth:\n    key: s3cret\n  basic-auth:\n    username: alice\n    password: pw\n  hmac-auth:\n    access_key: ak\n    secret_key: sk\n    nested: {inner: x}\n    tags: [tag1, tag2]\n",
+        )
+        .unwrap();
+        let m = mask_credentials(&c);
+        assert_eq!(m.name, "alice");
+        assert_eq!(m.credentials["key-auth"]["key"], "<masked>");
+        assert_eq!(m.credentials["basic-auth"]["username"], "alice");
+        assert_eq!(m.credentials["basic-auth"]["password"], "<masked>");
+        assert_eq!(m.credentials["hmac-auth"]["access_key"], "ak");
+        assert_eq!(m.credentials["hmac-auth"]["secret_key"], "<masked>");
+        assert_eq!(m.credentials["hmac-auth"]["nested"]["inner"], "<masked>");
+        assert_eq!(m.credentials["hmac-auth"]["tags"][0], "<masked>");
+        assert_eq!(m.credentials["hmac-auth"]["tags"][1], "<masked>");
+        // The original is untouched.
+        assert_eq!(c.credentials["key-auth"]["key"], "s3cret");
     }
 
     #[test]
