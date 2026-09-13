@@ -72,3 +72,7 @@ Routing `abort` through an `error-handler` instead will *replace* the injected b
 - Abort exits through the dedicated `abort` output port with the response already prepared, rather than ending the request directly (graph-wiring mechanics; the injected response reaches the client when wired as above).
 - `vars` additionally accepts the flat single-expression shape as a convenience.
 - `vars` supports the full [condition expression](../conditions.md) dialect — JSONPath body subjects, `NOT` groups, `present`/`absent`/`is_null`/`contains`, and all other operators — not just the operators shown in the example above.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

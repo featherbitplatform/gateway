@@ -46,3 +46,7 @@ Builds the shared access-log entry (default structured object, or the flat `log_
 
 - Entries are always sent as **newline-delimited JSON** (one object per line). The wire format is stable regardless of batching.
 - `tls` / `tls_options` are **not yet supported**; `tls: true` is rejected. Plain TCP only.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

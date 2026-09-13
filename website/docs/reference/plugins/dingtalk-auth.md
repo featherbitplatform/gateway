@@ -116,3 +116,12 @@ edges:
   - from: dingtalk-auth.redirect
     to: client.in
 ```
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `DINGTALK_UPSTREAM_ERROR` | 502 | The code or token exchange with DingTalk failed (transport error or an unusable reply). An `errcode` rejection from DingTalk is a `denied`, not this. |
+| `SESSION_STORE_ERROR` | 503 | The redis session store could not be read or written (`session.storage: redis`). A store failure is never a silent 401: it always surfaces here. |

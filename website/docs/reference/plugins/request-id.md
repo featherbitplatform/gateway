@@ -37,3 +37,7 @@ On each request:
 **Placement note:** the `upstream` node replaces `context.response.headers` wholesale with the upstream's response headers, so a response echo written *before* `upstream` is lost unless the upstream itself echoes the header. To guarantee the id on the response, add a second `request-id` node after `upstream`: it finds the request header already set, reuses the same id, and stamps it on the response.
 
 **Limitations:** only the `uuid` algorithm is implemented — `nanoid`, `range_id`, `ksuid`, and `uuidv7` are rejected at config load with an error naming the supported set.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

@@ -56,3 +56,7 @@ Typical follow-ups: a `mocking` node answering `hello $msg_user`, a `proxy-rewri
 - A regex without capture groups selects the whole match by default.
 - Absent variables render as the empty string, so `from: $arg_plan` with no `plan` parameter yields `default`.
 - Values are strings; a JSON number `42` is stored as `"42"`.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

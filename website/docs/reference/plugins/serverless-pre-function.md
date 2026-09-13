@@ -48,3 +48,17 @@ At request time the functions run in declaration order in fresh Lua VMs, threadi
 - **Function contract.** featherbit reuses the `script` plugin's Lua runtime: each function defines a global `function execute(ctx) ... return ctx end` and receives/returns the marshalled Context table — the same contract as the [`script`](./script.md) node. There is no `conf` argument.
 - **Phase by graph position.** featherbit expresses phase through *placement in the policy graph*: a `serverless-pre-function` node sits before the `upstream` node, a `serverless-post-function` node after it. The `phase` key is accepted for config compatibility but inert.
 - `timeout_ms` is stored but not yet enforced by the VM (same caveat as the `script` node).
+
+## Errors
+
+The functions run on the shared Lua runtime, so a failure in any of them propagates immediately — later functions do not run. The node returns the Context with the error, so the graph engine routes through the `error` port and appends the error to `context.errors`; it prepares no response of its own, so what the caller sees is decided by the policy's `error` wiring, an [`error-handler`](error-handler.md), or the gateway's default 500.
+
+| Code | Status | When |
+|---|---|---|
+| `LUA_EXECUTION_ERROR` | — | A function raised a runtime error. |
+| `LUA_LOAD_ERROR` | — | A function failed to load into the VM. |
+| `LUA_MARSHAL_ERROR` | — | The Context could not be converted to a Lua table. |
+| `LUA_MISSING_EXECUTE` | — | A function defined no global `execute`. |
+| `LUA_UNMARSHAL_ERROR` | — | A returned table did not fit the `ctx` shape; the message names the field. |
+
+Load, missing-`execute` and syntax failures are normally caught at policy-compile time — they reach a live request only if the source changed underneath a compiled policy. The `ctx` table shape is documented on [`script`](script.md).

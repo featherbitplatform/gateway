@@ -70,3 +70,11 @@ edges:
 - **No consumer resolution.** The plugin performs pure bind authentication: on a successful bind the request continues and the username is written to `context.message["user"]`; no consumer identity is attached and no consumer is required.
 - **Empty passwords are rejected up front.** A blank password would otherwise trigger an *unauthenticated* (anonymous) bind that many directories accept, silently authenticating anyone. featherbit rejects empty username/password before contacting the server.
 - **`use_tls` negotiates StartTLS** on the given URI. For implicit TLS, use an `ldaps://` URI directly.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `LDAP_AUTH_PROVIDER_ERROR` | 502 | The LDAP connection failed, or the bind timed out. Wrong credentials are a `denied`, not this. |

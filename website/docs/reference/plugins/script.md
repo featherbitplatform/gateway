@@ -74,12 +74,18 @@ Scripts are loaded and validated once at policy-compile time, not per request: s
 
 `require` is sandboxed to `modules_path`: module names containing `..`, `/`, or `\` are rejected, and modules resolve as `<modules_path>/<name>.lua`. Modules are re-evaluated on every `require` (no caching). With no `modules_path` (e.g. `inline` without an explicit setting), `require` is unavailable.
 
-On success the context rebuilt from the script's return value flows through the **success** port. `context.errors` and the wire protocol are not exposed to scripts and are carried over unchanged. Any failure routes the *original* context through the **error** port with one of these codes appended to `context.errors`:
+On success the context rebuilt from the script's return value flows through the **success** port. `context.errors` and the wire protocol are not exposed to scripts and are carried over unchanged. Any failure routes the *original* context through the **error** port with one of these codes appended to `context.errors` — see [Errors](#errors).
 
-| Code | Meaning |
-|---|---|
-| `LUA_LOAD_ERROR` | The script failed to load into the VM. |
-| `LUA_MARSHAL_ERROR` | The Context could not be converted to a Lua table. |
-| `LUA_MISSING_EXECUTE` | No global `execute` function was found. |
-| `LUA_EXECUTION_ERROR` | The script raised a runtime error. |
-| `LUA_UNMARSHAL_ERROR` | The returned table could not be converted back to a Context. |
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. It prepares no response of its own: what the caller sees is decided by the policy's `error` wiring, an [`error-handler`](error-handler.md), or the gateway's default 500.
+
+| Code | Status | When |
+|---|---|---|
+| `LUA_LOAD_ERROR` | — | The script failed to load into the VM. |
+| `LUA_MARSHAL_ERROR` | — | The Context could not be converted to a Lua table. |
+| `LUA_MISSING_EXECUTE` | — | No global `execute` function was found. |
+| `LUA_EXECUTION_ERROR` | — | The script raised a runtime error. |
+| `LUA_UNMARSHAL_ERROR` | — | The returned table did not fit the `ctx` shape; the message names the field. |
+
+Syntax errors, a failing top level and a missing `execute` are caught at policy-compile time, not per request.

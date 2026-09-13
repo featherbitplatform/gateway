@@ -36,3 +36,7 @@ On each request:
 3. **Rewrite** — the extracted value may be `ip`, `ip:port`, or `[v6]:port`. When the source carries no port, the original peer port is kept. The new value is written back to `context.request.remote_addr`.
 
 **Behavior notes:** featherbit rewrites `context.request.remote_addr` directly, so there is no runtime dependency and no error path. Variables resolve through featherbit's resolver (see the `vars` reference).
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.
