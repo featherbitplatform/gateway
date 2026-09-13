@@ -20,6 +20,9 @@ paths = [
     '''node_modules/''',
     '''ui/dist/''',
     '''website/build/''',
+    # rustdoc/TypeDoc output synced into the docs site by `npm run build` —
+    # the same inline test fixtures as the sources above, rendered as HTML.
+    '''website/static/api/''',
     '''website/\.docusaurus/''',
     '''graphify-out/''',
     '''sast-out/''',
@@ -41,6 +44,19 @@ paths = [
     '''src/plugins/native/jwe_decrypt\.rs''',
     # Fake consumer credentials in the consumer-store unit tests.
     '''src/consumers/mod\.rs''',
+]
+
+[[allowlists]]
+description = "Fake credential vectors for the chat redaction tests, and the design notes that quote them verbatim"
+paths = [
+    # The redaction unit tests must contain things that *look* like secrets, or
+    # they would not exercise the matcher: jwt.io's sample token, a placeholder
+    # AWS key id, and a two-line PEM stub.
+    '''ui/src/chat/redact\.test\.ts''',
+    # Specs and plans quote the tests they specify, so the same vectors appear
+    # here. Design notes are prose about this repo — never a place a live
+    # credential belongs, same reasoning as website/docs below.
+    '''docs/superpowers/''',
 ]
 
 [[allowlists]]
