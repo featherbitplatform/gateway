@@ -14,6 +14,8 @@ import { Dialog, DialogButton, DialogField } from './components/Dialog';
 import { DebugPanel } from './components/DebugPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import { CertificatesPanel } from './components/CertificatesPanel';
+import { AgentPanel } from './components/AgentPanel';
+import { ChatPanel } from './components/ChatPanel';
 import { Toast, type ToastData } from './components/Toast';
 import { NotificationsPanel } from './components/NotificationsPanel';
 import { CommandPalette } from './components/CommandPalette';
@@ -25,6 +27,8 @@ import { usePortNames } from './usePortNames';
 import { toggleTheme } from './theme';
 import { api } from './api/client';
 import { parseApiError } from './apiError';
+import { withMcpHint, mcpEndpoint } from './agentPrompts';
+import { useChat } from './chat/useChat';
 import type {
   Route,
   Policy,
@@ -34,6 +38,8 @@ import type {
   ScriptFile,
   DebugConfig,
   StoreConfig,
+  McpStatus,
+  PromptArgDef,
 } from './types';
 
 /**
@@ -60,6 +66,22 @@ import type {
  * The Admin API served from src/admin/ persists these changes into the
  * gateway's shared state (src/state.rs) used by the data plane.
  */
+
+/**
+ * Arguments for the `design_*` agent prompts (`review_policy` never reaches
+ * the dialog — see `agentPrompt` below). Mirrors `src/mcp/prompts.rs`; kept
+ * hardcoded here (rather than fetched) because these three are wired to
+ * fixed toolbar/palette actions, unlike the Agent panel's per-prompt Copy
+ * button, which fetches `PromptDef.arguments` live for any prompt.
+ */
+const DESIGN_PROMPT_ARGS: Record<'design_policy' | 'design_supernode' | 'design_route', PromptArgDef[]> = {
+  design_policy: [{ name: 'goal', description: 'What the policy must do, in plain words', required: true }],
+  design_supernode: [{ name: 'goal', description: 'What the supernode must do', required: true }],
+  design_route: [
+    { name: 'goal', description: 'Which requests should match and which policy should handle them', required: true },
+  ],
+};
+
 export default function App() {
   const [routes, setRoutes] = useState<Route[]>([]);
   const [policies, setPolicies] = useState<Policy[]>([]);
@@ -156,6 +178,23 @@ export default function App() {
   // Certificates panel state.
   const [certsOpen, setCertsOpen] = useState(false);
 
+  // Agent (MCP) panel state.
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
+  const chat = useChat({
+    mcpUrl: mcpEndpoint(window.location.origin, mcpStatus?.path ?? '/mcp'),
+    mcpEnabled: mcpStatus?.enabled ?? false,
+  });
+
+  // Generalized argument dialog for agent prompts that need input beyond what
+  // can be auto-filled (the `design_*` prompts' `goal`, and any prompt copied
+  // via the Agent panel's per-prompt Copy button). `review_policy` never
+  // opens this — it auto-fills `policy_name` from the open policy and copies
+  // immediately.
+  const [promptDialog, setPromptDialog] = useState<null | { name: string; args: PromptArgDef[]; mode: 'copy' | 'ask' }>(null);
+  const [promptValues, setPromptValues] = useState<Record<string, string>>({});
+
   // Port-name visibility (P) and the command palette (Ctrl+K). Owned here —
   // a single usePortNames() call — so the palette's toggle and the canvas
   // it re-renders can never see two different copies of the preference.
@@ -191,6 +230,13 @@ export default function App() {
       setDebugConfig(await api.debugConfig());
     } catch {
       setDebugConfig(null);
+    }
+    // MCP status is likewise advisory: the Agent panel explains an
+    // unreachable/disabled server rather than the editor failing to load.
+    try {
+      setMcpStatus(await api.mcpStatus());
+    } catch {
+      setMcpStatus(null);
     }
   }, []);
 
@@ -622,6 +668,116 @@ export default function App() {
     [notify],
   );
 
+  /**
+   * Clipboard+toast helper shared by the Agent panel's snippet "Copy"
+   * buttons (and, per Task 3, the "Copy as agent prompt" actions). Memoized
+   * for the same reason as `handlePanelError` above.
+   */
+  const copyText = useCallback(
+    async (label: string, text: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        notify({ tone: 'success', title: 'Copied to clipboard', message: label });
+      } catch (e) {
+        notify({ tone: 'error', title: 'Copy failed', message: `${e}` });
+      }
+    },
+    [notify],
+  );
+
+  /**
+   * Renders a named agent prompt (GET /api/mcp/prompts/{name}) and copies it,
+   * MCP-hinted, to the clipboard. Shared by the trace viewer's "Copy as agent
+   * prompt"/"Why …?" buttons, the policy toolbar's "Review with agent", and
+   * the command palette's `agent-*` commands.
+   */
+  const copyPrompt = useCallback(
+    async (name: string, args: Record<string, string>) => {
+      try {
+        const r = await api.renderPrompt(name, args);
+        await copyText(r.description, withMcpHint(r.text));
+      } catch (e) {
+        const p = parseApiError(e);
+        handlePanelError('Could not build the agent prompt', p.error || p.raw);
+      }
+    },
+    [copyText, handlePanelError],
+  );
+
+  /**
+   * Renders a named agent prompt and starts a chat thread with it (the
+   * "Ask agent" counterpart of {@link copyPrompt}). No MCP hint line: the
+   * chat has the tools itself when a token is set.
+   */
+  // Pulled out of `chat` (a useMemo that changes on every thread update, hence
+  // on every streamed token): depending on `chat` here would ripple through
+  // `agentPrompt` into the memoized `commandCtx` and resubscribe the global
+  // keydown listener. `seedThread`'s own identity is stable across a turn.
+  const seedThread = chat.seedThread;
+  const askAgent = useCallback(
+    async (name: string, args: Record<string, string>) => {
+      try {
+        const r = await api.renderPrompt(name, args);
+        setChatOpen(true);
+        // null = refused: a turn is already running, and nothing was created.
+        if ((await seedThread({ prompt: name, args }, r.text)) === null) {
+          notify({
+            tone: 'warning',
+            title: 'A chat turn is already running',
+            message: 'Stop it or wait for it to finish, then ask again.',
+          });
+        }
+      } catch (e) {
+        const p = parseApiError(e);
+        handlePanelError('Could not build the agent prompt', p.error || p.raw);
+      }
+    },
+    [seedThread, handlePanelError, notify],
+  );
+
+  /**
+   * `review_policy` copies immediately against the open policy; the
+   * `design_*` prompts need a goal, so they open {@link promptDialog}
+   * instead, seeded from {@link DESIGN_PROMPT_ARGS}. `mode` picks between
+   * copying to the clipboard and asking {@link askAgent} in chat.
+   */
+  const agentPrompt = useCallback(
+    (name: 'review_policy' | 'design_policy' | 'design_supernode' | 'design_route', mode: 'copy' | 'ask' = 'copy') => {
+      const go = mode === 'ask' ? askAgent : copyPrompt;
+      if (name === 'review_policy') {
+        if (!selectedPolicy) {
+          notify({ tone: 'warning', title: 'Open a policy first' });
+          return;
+        }
+        void go('review_policy', { policy_name: selectedPolicy.name });
+        return;
+      }
+      setPromptValues({});
+      setPromptDialog({ name, args: DESIGN_PROMPT_ARGS[name], mode });
+    },
+    [selectedPolicy, copyPrompt, askAgent, notify],
+  );
+
+  /**
+   * The Agent panel's per-prompt "Copy"/"Ask" (Finding 1): copies or asks
+   * immediately when every argument is optional (nothing to ask for),
+   * otherwise opens the generalized {@link promptDialog} for the user to
+   * fill in.
+   */
+  const promptWithArgs = useCallback(
+    (mode: 'copy' | 'ask') => (name: string, args: PromptArgDef[]) => {
+      if (args.every((a) => !a.required)) {
+        void (mode === 'ask' ? askAgent : copyPrompt)(name, {});
+        return;
+      }
+      setPromptValues({});
+      setPromptDialog({ name, args, mode });
+    },
+    [copyPrompt, askAgent],
+  );
+  const copyPromptWithArgs = useMemo(() => promptWithArgs('copy'), [promptWithArgs]);
+  const askPromptWithArgs = useMemo(() => promptWithArgs('ask'), [promptWithArgs]);
+
   // Selection across routes/supernodes/plugin configs/stores is mutually
   // exclusive (see handleSelect* above), so any one of them being set means
   // "something is selected" for the view-yaml command's `when`.
@@ -655,6 +811,9 @@ export default function App() {
       // pairs `hasEditorAction` with `editorOpen` (see commands.ts).
       invokeEditorAction: editorActions.invoke,
       hasEditorAction: editorActions.has,
+      agentPrompt,
+      openAgentPanel: () => setAgentOpen(true),
+      openChat: () => setChatOpen(true),
     }),
     [
       editorOpen,
@@ -667,6 +826,7 @@ export default function App() {
       handleReload,
       openNotifications,
       editorActions,
+      agentPrompt,
     ]
   );
 
@@ -821,6 +981,9 @@ export default function App() {
         onOpenCertificates={() => setCertsOpen(true)}
         onOpenNotifications={() => openNotifications()}
         unreadNotifications={notifications.unread}
+        onOpenAgent={() => setAgentOpen(true)}
+        mcpEnabled={mcpStatus?.enabled ?? false}
+        onOpenChat={() => setChatOpen(true)}
       />
       {selectedStoreDef ? (
         <StoresPanel
@@ -856,6 +1019,7 @@ export default function App() {
           onOpenPalette={() => setPaletteOpen(true)}
           onCreateSupernodeDef={handleCreateSupernodeDef}
           storeOptions={storeOptions}
+          onAskAgentReview={() => agentPrompt('review_policy', 'ask')}
         />
       )}
 
@@ -1149,6 +1313,46 @@ export default function App() {
         </pre>
       </Dialog>
 
+      <Dialog
+        open={promptDialog !== null}
+        title="Copy agent prompt"
+        onClose={() => setPromptDialog(null)}
+        footer={
+          <>
+            <DialogButton variant="ghost" onClick={() => setPromptDialog(null)}>Cancel</DialogButton>
+            <DialogButton
+              disabled={
+                !promptDialog ||
+                promptDialog.args.some((a) => a.required && !(promptValues[a.name] ?? '').trim())
+              }
+              onClick={() => {
+                const { name, args, mode } = promptDialog!;
+                setPromptDialog(null);
+                const values: Record<string, string> = {};
+                for (const a of args) {
+                  const v = (promptValues[a.name] ?? '').trim();
+                  if (v !== '') values[a.name] = v;
+                }
+                void (mode === 'ask' ? askAgent : copyPrompt)(name, values);
+              }}
+            >
+              {promptDialog?.mode === 'ask' ? 'Ask agent' : 'Copy prompt'}
+            </DialogButton>
+          </>
+        }
+      >
+        {promptDialog?.args.map((a, i) => (
+          <DialogField
+            key={a.name}
+            label={a.name}
+            value={promptValues[a.name] ?? ''}
+            onChange={(v) => setPromptValues((s) => ({ ...s, [a.name]: v }))}
+            placeholder={a.description}
+            autoFocus={i === 0}
+          />
+        ))}
+      </Dialog>
+
       <DebugPanel
         open={debugOpen}
         onClose={() => setDebugOpen(false)}
@@ -1156,6 +1360,8 @@ export default function App() {
         policies={policies}
         selectedPolicy={selectedPolicy?.name ?? null}
         onError={handlePanelError}
+        onCopyPrompt={copyPrompt}
+        onAskAgent={askAgent}
       />
 
       <SessionsPanel
@@ -1166,6 +1372,20 @@ export default function App() {
       />
 
       <CertificatesPanel open={certsOpen} onClose={() => setCertsOpen(false)} onError={handlePanelError} />
+      <AgentPanel
+        open={agentOpen}
+        onClose={() => setAgentOpen(false)}
+        status={mcpStatus}
+        onCopy={copyText}
+        onCopyPromptWithArgs={copyPromptWithArgs}
+        onAskPromptWithArgs={askPromptWithArgs}
+        onError={handlePanelError}
+        onOpenChat={() => {
+          setAgentOpen(false);
+          setChatOpen(true);
+        }}
+      />
+      <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} chat={chat} mcpStatus={mcpStatus} />
 
       <NotificationsPanel
         key={notificationsSession}

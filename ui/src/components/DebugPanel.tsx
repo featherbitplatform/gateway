@@ -28,6 +28,10 @@ interface DebugPanelProps {
   selectedPolicy: string | null;
   /** Surfaces errors through the app's toast. */
   onError: (title: string, message: string) => void;
+  /** Renders the named prompt and copies it, MCP-hinted, to the clipboard. */
+  onCopyPrompt: (name: string, args: Record<string, string>) => void;
+  /** Starts a chat thread seeded with the named prompt (the "Ask agent" counterpart of onCopyPrompt). */
+  onAskAgent: (name: string, args: Record<string, string>) => void;
 }
 
 type Tab = 'traces' | 'sandbox';
@@ -105,6 +109,8 @@ export function DebugPanel({
   policies,
   selectedPolicy,
   onError,
+  onCopyPrompt,
+  onAskAgent,
 }: DebugPanelProps) {
   const [tab, setTab] = useState<Tab>('traces');
 
@@ -341,9 +347,18 @@ export function DebugPanel({
               <div style={{ flex: 1, minWidth: 0 }}>
                 {detail ? (
                   <>
-                    <TraceHeader trace={detail} onCopyToSandbox={() => copyTraceToSandbox(detail)} />
+                    <TraceHeader
+                      trace={detail}
+                      onCopyToSandbox={() => copyTraceToSandbox(detail)}
+                      onCopyPrompt={() => onCopyPrompt('troubleshoot_trace', { trace_id: detail.id })}
+                      onAskAgent={() => onAskAgent('troubleshoot_trace', { trace_id: detail.id })}
+                    />
                     {/* Keyed by id: a different trace remounts the viewer with fresh step state. */}
-                    <TraceViewer key={detail.id} trace={detail} />
+                    <TraceViewer
+                      key={detail.id}
+                      trace={detail}
+                      onAskAgent={(nodeId) => onAskAgent('why_this_port', { trace_id: detail.id, node_id: nodeId })}
+                    />
                   </>
                 ) : (
                   <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
@@ -475,9 +490,17 @@ export function DebugPanel({
                 <div style={{ flex: 1, minWidth: 0 }}>
                   {result ? (
                     <>
-                      <TraceHeader trace={result} />
+                      <TraceHeader
+                        trace={result}
+                        onCopyPrompt={() => onCopyPrompt('troubleshoot_trace', { trace_id: result.id })}
+                        onAskAgent={() => onAskAgent('troubleshoot_trace', { trace_id: result.id })}
+                      />
                       {/* Keyed by id: each sandbox run remounts the viewer with fresh step state. */}
-                      <TraceViewer key={result.id} trace={result} />
+                      <TraceViewer
+                        key={result.id}
+                        trace={result}
+                        onAskAgent={(nodeId) => onAskAgent('why_this_port', { trace_id: result.id, node_id: nodeId })}
+                      />
                     </>
                   ) : (
                     <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>

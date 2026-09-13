@@ -44,3 +44,7 @@ Builds a JSON access-log entry for each request/response and ships accumulated b
 ## Behavior
 
 The node is a pure passthrough: it never modifies the context and never fails, so only its **success** port is ever taken. `push` is fire-and-forget and never blocks the request path — when the queue is full (a slow or retrying endpoint) entries are dropped with a `tracing::warn!`, which is the operator's signal to raise `max_pending_entries` or fix the downstream. Delivery, batching, timing, and retries all happen on a background task. On config reload the old sink is drained and flushed before a new one is spawned.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

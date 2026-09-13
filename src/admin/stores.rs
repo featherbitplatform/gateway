@@ -226,7 +226,7 @@ async fn ping_store(
 /// wired in a later plan, scanned now so the guard never lags the feature),
 /// and `workflow`'s per-rule action params (`config.rules[].actions[][1].store`
 /// — actions are `[name, params]` pairs; see `plugins/native/workflow.rs`).
-fn store_referrers(gw: &GatewayConfig, name: &str) -> Vec<String> {
+pub(crate) fn store_referrers(gw: &GatewayConfig, name: &str) -> Vec<String> {
     fn config_references(
         config: &std::collections::HashMap<String, serde_json::Value>,
         name: &str,

@@ -48,12 +48,17 @@ OpenWhisk returns a JSON envelope. An action may return just a body, or set `sta
 
 A non-JSON, non-empty envelope fails the node with `503`.
 
-A callout failure or an unparseable envelope returns the Context along with an error routed through the `error` port; the error is appended to `context.errors`:
+A callout failure or an unparseable envelope returns the Context along with an error routed through the `error` port; the error is appended to `context.errors` — see [Errors](#errors).
+
+The plugin does not read or write `context.message`.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
 
 | Code | Status | When |
 |---|---|---|
-| `OPENWHISK_CALLOUT_ERROR` | 504 | The callout exceeded `timeout`. |
-| `OPENWHISK_CALLOUT_ERROR` | 503 | Connecting/exchanging failed, or the envelope was not valid JSON. |
-| `OPENWHISK_CALLOUT_ERROR` | 502 | The request could not be built. |
-
-The plugin does not read or write `context.message`.
+| `OPENWHISK_CALLOUT_ERROR` | 504 | The action callout exceeded `timeout`. |
+| `OPENWHISK_CALLOUT_ERROR` | 503 | Connecting to or exchanging with the endpoint failed. |
+| `OPENWHISK_CALLOUT_ERROR` | 502 | The request could not be built (e.g. an invalid endpoint URI). |
+| `OPENWHISK_CALLOUT_ERROR` | 503 | The activation response could not be read. |

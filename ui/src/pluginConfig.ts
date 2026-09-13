@@ -782,6 +782,17 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
   'traffic-label': [
     { key: 'rules', label: 'Rules', type: 'textarea', rows: 10, placeholder: '[{"match": [["arg_channel", "==", "beta"]], "actions": [{"set_headers": {"x-server-id": "beta"}, "set_labels": {"tier": "beta"}}]}]', hint: 'JSON array; set_headers → request headers, set_labels → message label.<key>', template: 'full', legacyDollar: true },
   ],
+  'set-vars': [
+    { key: 'vars', label: 'Variables', type: 'objects', addLabel: 'Variable', itemLabel: 'Variable',
+      fields: [
+        { key: 'name', label: 'Name', type: 'text', hint: 'stored as message.<name> → $msg_<name> / {{message.<name>}}' },
+        { key: 'from', label: 'From', type: 'text', placeholder: '$uri', hint: 'source: $uri, $http_<h>, $arg_<q>, $cookie_<c>, $msg_<k> or {{request.path}}; defaults to the request body when a JSONPath is set', template: 'full', legacyDollar: true },
+        { key: 'json_path', label: 'JSONPath', type: 'text', placeholder: '$.order.id', hint: 'optional; applied to the source parsed as JSON' },
+        { key: 'regex', label: 'Regex', type: 'text', placeholder: '^/hello/([^/]+)', hint: 'optional; applied after the JSONPath' },
+        { key: 'group', label: 'Capture group', type: 'text', placeholder: '1', hint: 'index (0 = whole match) or a named group; default 1' },
+        { key: 'default', label: 'Default', type: 'text', hint: 'used when nothing matches; otherwise the value is empty' },
+      ] },
+  ],
   mocking: [
     { key: 'response_status', label: 'Status', type: 'number', default: 200 },
     { key: 'content_type', label: 'Content type', type: 'select', options: ['application/json;charset=utf8', 'application/json', 'text/plain', 'text/html', 'application/xml', 'text/xml'], default: 'application/json;charset=utf8', template: 'full' },

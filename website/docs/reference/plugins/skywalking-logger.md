@@ -50,3 +50,7 @@ Items are buffered and the batch is POSTed as a JSON array to `<endpoint_addr>/v
 
 - featherbit does not thread trace propagation into the log entry, so no `traceContext` is attached to items.
 - A millisecond `timestamp` (SkyWalking's `LogData.timestamp`) is stamped at build time. The entry is embedded under `body.json.json`.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

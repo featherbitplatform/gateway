@@ -135,3 +135,12 @@ The session cookie is set with `Path=<session.cookie.path>` (default `/`), `Http
 - **No server-side session revocation before expiry — in `session.storage: cookie` mode (the default).** Because those sessions live entirely in the client cookie, there is no way to invalidate an individual one before its `lifetime` elapses (short of rotating the secret, which invalidates *all* sessions). Use short lifetimes, or switch to `session.storage: redis` for revocation via the [Admin API](../../guides/admin-api.md) (`/api/sessions`).
 - **No CAS single-logout (SLO) callback.** The IdP-initiated back-channel logout POST is not handled; `logout_path` performs a simple local cookie clear + redirect only (plus a store `delete` in redis mode).
 - **No ticket/proxy-ticket refresh.** There is no renewal handling in v1, in either storage mode; when the session expires the user is redirected through CAS login again.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `CAS_AUTH_PROVIDER_ERROR` | 502 | Ticket validation against the CAS server failed (transport error or an unusable reply). |
+| `SESSION_STORE_ERROR` | 503 | The redis session store could not be read or written (`session.storage: redis`). A store failure is never a silent 401: it always surfaces here. |

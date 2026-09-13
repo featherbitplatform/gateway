@@ -58,3 +58,7 @@ The plugin only touches `context.request`; it never writes `context.message` or 
 - **Dotted paths, not JSONPath** — body field names are exact dotted paths only; there is no JSONPath engine, no recursive descent, no wildcards, and each rule addresses one location.
 - **`body_format: urlencoded` is not supported** and is rejected at config load; only JSON bodies can be masked.
 - **Phase** — masking applies at the node's position in the graph, so it also masks what the upstream receives if placed before `upstream`, not only what downstream loggers see.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

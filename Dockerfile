@@ -14,6 +14,9 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
 COPY src/ src/
 COPY ui/dist/ ui/dist/
+# Docs pages embedded into the binary by src/mcp/docs.rs (rust-embed): served
+# to agents as MCP resources in every build variant, headless included.
+COPY website/docs/ website/docs/
 
 # Headless variant: CARGO_FLAGS=--no-default-features compiles the UI out
 # (word-splitting of the flags is intentional).

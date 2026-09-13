@@ -70,3 +70,11 @@ edges:
   - from: authz-keycloak.denied
     to: client.in
 ```
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `AUTHZ_KEYCLOAK_ERROR` | 502 | The UMA permission callout to Keycloak failed, or returned an unexpected status. |

@@ -35,3 +35,7 @@ Logs one JSON object at `info` level under the `access_log` target with these fi
 - `errors` — the accumulated `context.errors` array, only when non-empty
 
 The node is a pure passthrough: it never modifies the context and never fails, so only its **success** port is ever taken. It reads `context.request`, `context.response`, and `context.errors`; it writes nothing.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.
