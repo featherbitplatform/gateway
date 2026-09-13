@@ -71,3 +71,7 @@ Full SkyWalking correlation (segment references, multi-span segments, the entry/
 - Export is per-request and immediate (a detached task); there is no buffered report timer.
 - The segment is POSTed as a single JSON object to `/v3/segments`; the real OAP endpoint also accepts a batch array — the single-object form is the documented subset here.
 - `componentId` is reported as `49` (generic HTTP).
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

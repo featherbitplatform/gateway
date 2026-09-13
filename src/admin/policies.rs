@@ -171,7 +171,7 @@ async fn list_plugin_types() -> impl IntoResponse {
 }
 
 /// The palette catalog: `(type, description)` for every registered node type.
-fn plugin_catalog() -> Vec<serde_json::Value> {
+pub(crate) fn plugin_catalog() -> Vec<serde_json::Value> {
     const CATALOG: &[(&str, &str)] = &[
         // Structural & core proxy
         ("listener", "Route entry point — receives incoming request"),
@@ -189,6 +189,10 @@ fn plugin_catalog() -> Vec<serde_json::Value> {
         (
             "body-transformer",
             "Rewrite request/response JSON bodies via templates",
+        ),
+        (
+            "set-vars",
+            "Derive variables from the context (templates, JSONPath, regex captures)",
         ),
         (
             "degraphql",
@@ -478,6 +482,89 @@ mod tests {
         assert!(
             missing.is_empty(),
             "plugins with no icon in ui/src/pluginMeta.tsx (they fall back to the generic cube): {missing:?}"
+        );
+    }
+
+    /// The node types the UI's palette groups into categories: every
+    /// plugin-shaped single-quoted token in `pluginCategories.ts`, so both
+    /// one-per-line and inline `types: ['a', 'b']` arrays are seen.
+    fn types_in_a_palette_category() -> Vec<String> {
+        include_str!("../../ui/src/pluginCategories.ts")
+            .split('\'')
+            // Odd-indexed pieces are the quoted tokens.
+            .skip(1)
+            .step_by(2)
+            .filter(|t| {
+                !t.is_empty()
+                    && t.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A plugin missing from `pluginCategories.ts` lands in the drawer's
+    /// synthesized "Other" group instead of its section: it still works, but
+    /// the palette taxonomy and the docs sidebar have silently diverged.
+    #[test]
+    fn test_every_catalog_plugin_is_in_a_palette_category() {
+        let categorised = types_in_a_palette_category();
+        let missing: Vec<_> = plugin_catalog()
+            .iter()
+            .map(|p| p["type"].as_str().unwrap().to_string())
+            // Fixed graph endpoints are drawn, never picked from the palette;
+            // `script` has its own drawer section fed by the script files.
+            .filter(|t| !matches!(t.as_str(), "listener" | "client" | "script"))
+            .filter(|t| !categorised.contains(t))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "plugins missing from ui/src/pluginCategories.ts (they fall into the palette's 'Other' group): {missing:?}"
+        );
+    }
+
+    /// Every plugin needs its reference page: it is what `get_node_type`
+    /// returns to an agent over MCP (embedded by `src/mcp/docs.rs`) and what
+    /// the docs site links. A type with no page leaves the agent guessing at
+    /// config keys.
+    #[test]
+    fn test_every_catalog_plugin_has_a_docs_page() {
+        let pages: std::collections::HashSet<String> = std::fs::read_dir(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/website/docs/reference/plugins"
+        ))
+        .expect("plugin docs directory")
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_string_lossy().to_string();
+            name.strip_suffix(".md").map(str::to_string)
+        })
+        .collect();
+        let missing: Vec<_> = plugin_catalog()
+            .iter()
+            .map(|p| p["type"].as_str().unwrap().to_string())
+            // listener/client share one page; index.md is the catalog itself.
+            .filter(|t| t != "listener" && t != "client")
+            .filter(|t| !pages.contains(t))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "plugins with no website/docs/reference/plugins/<type>.md page (get_node_type returns no docs): {missing:?}"
+        );
+    }
+
+    /// A docs page that no sidebar lists is unreachable on the docs site.
+    #[test]
+    fn test_every_plugin_docs_page_is_in_the_sidebar() {
+        let sidebar = include_str!("../../website/sidebars.ts");
+        let missing: Vec<_> = plugin_catalog()
+            .iter()
+            .map(|p| p["type"].as_str().unwrap().to_string())
+            .filter(|t| t != "listener" && t != "client")
+            .filter(|t| !sidebar.contains(&format!("reference/plugins/{t}'")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "plugin docs pages missing from website/sidebars.ts: {missing:?}"
         );
     }
 

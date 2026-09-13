@@ -28,8 +28,9 @@ pub use gateway::{
 pub use resolve::resolve_plugin_configs;
 #[allow(unused_imports)]
 pub use system::{
-    AdminConfig, ConfigSourceKind, DebugConfig, EtcdConfig, LoggingConfig, SniCert, SniRoute,
-    StreamListenerConfig, StreamProtocol, StreamUpstreamConfig, SystemConfig, TimeoutConfig,
-    TlsConfig,
+    normalize_domain, parse_duration, AcmeConfig, AcmeEabConfig, AcmeSlot, AcmeStorageConfig,
+    AdminConfig, ConfigSourceKind, DebugConfig, EtcdConfig, LoggingConfig, McpConfig, McpScope,
+    McpTokenConfig, SniCert, SniRoute, StreamListenerConfig, StreamProtocol, StreamUpstreamConfig,
+    SystemConfig, TimeoutConfig, TlsConfig, MCP_MIN_TOKEN_LEN,
 };
 pub use warnings::collect_template_warnings;

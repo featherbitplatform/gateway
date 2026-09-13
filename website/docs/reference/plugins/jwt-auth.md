@@ -65,3 +65,7 @@ edges:
   - from: jwt-auth.denied
     to: client.in
 ```
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

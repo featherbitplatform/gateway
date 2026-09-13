@@ -51,3 +51,7 @@ In the **response** phase, only steps 3 and 4 run, against `context.response.hea
 Header names are lowercased before being applied, for both adding and removing. The plugin does not read or write `context.message` or `context.errors`.
 
 **UI editor note:** the node inspector form covers `phase`, `strip_path_prefix`, `add_headers`, and `remove_headers`, but omits `add_path_prefix` — set that key in YAML directly.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

@@ -84,3 +84,7 @@ Breaker state lives in process memory and is per gateway instance.
 ## Ports
 
 `api-breaker` declares three output ports: `success`, `broken` (the break response is prepared), and `error` (declared for contract symmetry — this plugin has no remaining failure path in either role). `success` and `broken` are mandatory on both the check and observe nodes — the policy compiler rejects any policy that leaves either unwired, even on the observe node where `broken` is never actually emitted. See [Wiring](#wiring) above.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

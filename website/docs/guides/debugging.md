@@ -184,8 +184,8 @@ Every field is optional; `{}` yields a valid `GET /` run.
 | Field | Default |
 |---|---|
 | `method` / `path` / `host` / `scheme` | `GET` / `/` / `sandbox.local` / `http` |
-| `headers` / `query_params` | empty. A bare string is accepted: `{"apikey": "abc"}` |
-| `body` / `body_base64` | empty. Supply at most one. |
+| `headers` / `query_params` | empty. A bare string is accepted: `{"apikey": "abc"}`; numbers and booleans are stringified. `query` is accepted as an alias of `query_params`, `uri` of `path`. |
+| `body` / `body_base64` | empty. Supply at most one. `body` is text; a JSON object or array is serialized for you (add your own `content-type` header). |
 | `remote_addr` / `protocol` | `127.0.0.1:0` / `http1` |
 | `message` | empty |
 | `response` | unset — seed `status_code`/`headers`/`body` to exercise response-phase plugins like [`response-rewrite`](../reference/plugins/response-rewrite.md) and the loggers |

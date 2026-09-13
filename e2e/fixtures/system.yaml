@@ -22,6 +22,16 @@ admin:
   port: 19091
   username: admin
   password: admin
+  # MCP is on for the whole e2e run (static config, like debug above). The
+  # disabled path is covered by unit tests in src/admin/mod.rs and src/mcp.
+  mcp:
+    enabled: true
+    tokens:
+      - token: e2e-read-token-0123456789
+        scope: read
+        name: e2e-reader
+      - token: e2e-write-token-0123456789
+        scope: write
 
 # Debug mode is on for the whole e2e run because `enabled` is static. That is
 # deliberate: every other spec then doubles as proof that tracing stays inert

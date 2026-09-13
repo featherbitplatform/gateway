@@ -43,3 +43,7 @@ Unlike the HTTP loggers, `datadog` does **not** ship JSON logs to an HTTP endpoi
 ## Behavior
 
 The node is a pure passthrough: it never modifies the context and never fails, so only its **success** port is ever taken. `push` is fire-and-forget and never blocks the request path — when the queue is full, entries are dropped with a `tracing::warn!`. Each entry yields metric lines of the form `namespace.metric:value|type|#tags`; the entry's metrics are coalesced into one datagram (or split when they exceed the 8192-byte DogStatsD buffer). Sending runs on a background task; a mid-batch send failure retries only the undelivered tail.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

@@ -53,3 +53,7 @@ edges:
   - from: tier-check.false
     to: standard-upstream.in
 ```
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

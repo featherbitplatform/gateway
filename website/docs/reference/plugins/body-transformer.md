@@ -49,3 +49,11 @@ Placeholder resolution: strings from the body are inserted **raw** (unquoted —
 - **Response transform** — a `content-encoding`d upstream body (gzip, deflate, br) is decoded first; unsupported encodings, undecodable data, or a non-JSON body fail with a **502**. After rendering, the body is replaced *decoded* and `content-length` / `content-encoding` are removed.
 
 Failures exit through the `error` port with error code `BODY_DECODE_FAILED` and a JSON response body `{"error": "body_decode_failed", "message": ...}`. The plugin does not write to `context.message`.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `BODY_DECODE_FAILED` | 400 / 502 | The body could not be decoded — invalid JSON, or an unsupported/corrupt content encoding. 400 in the request phase (the client sent it), 502 in the response phase (the upstream did). |

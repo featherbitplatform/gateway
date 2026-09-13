@@ -17,6 +17,7 @@ Ships a structured access-log entry for each request to [Google Cloud Logging](h
 | `log_id` | string | `featherbit%2Flogs` | Log id; the entry's `logName` becomes `projects/<project_id>/logs/<log_id>`. |
 | `ssl_verify` | bool | `true` | Verify Google's TLS certificate. |
 | `timeout` | int (seconds) | `10` | Per-call HTTP timeout (token fetch and write). |
+| `entries_uri` | string | `https://logging.googleapis.com/v2/entries:write` | Write endpoint, for a regional endpoint or a test double. |
 | `log_format` | object | — | Custom `name -> "$var template"` map. When set, its interpolated result is the `jsonPayload` instead of the default entry. |
 | `include_req_body` / `include_resp_body` | bool | `false` | Include the (lossy UTF-8) request/response body in the default entry. |
 
@@ -51,3 +52,7 @@ The node is a pure passthrough: it never modifies the context and only its **suc
 - The shared log entry is used as the `jsonPayload`; per-entry `httpRequest`/`insertId` fields are not derived and a `log_format_extra` map is not supported — shape the payload with `log_format`.
 - `log_id` defaults to `featherbit%2Flogs`; `resource` defaults to `{"type":"global"}`.
 - The OAuth token flow is implemented natively (jsonwebtoken RS256 + the JWT-bearer grant) with an in-process token cache.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

@@ -64,3 +64,7 @@ With `always: true` the node transforms **every** response that reaches it, clea
 The node does not modify response headers beyond the body-mutation convention — combine with `response-rewrite` or `proxy-rewrite` (response phase) for header changes, or use a `script` node for fully dynamic transformations.
 
 The plugin reads `context.errors` but never writes it, and does not touch `context.message`.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.
