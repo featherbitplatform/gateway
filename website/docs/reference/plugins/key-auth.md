@@ -11,9 +11,12 @@ Authenticates requests by matching an API key against a configured list of valid
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `keys` | array of strings | — (required) | Exact-match list of accepted API keys. Must contain at least one entry, otherwise policy compilation fails. |
+| `keys` | array of strings | — | Exact-match list of accepted API keys, checked first. Required unless `use_consumers` is on: with neither, policy compilation fails. |
 | `header_name` | string | `x-api-key` | Header the key is read from (compared case-insensitively). |
 | `query_param` | string | unset | Query parameter checked as a fallback when the header is absent. No fallback if unset. |
+| `use_consumers` | bool | `false` | Also accept keys declared on [consumers](../../concepts/policies-and-graphs.md) (`consumers[].credentials`), setting `consumer_name`/`consumer_group_id` on a match. With it on, `keys` may be empty; with it off, an empty `keys` list fails policy compilation. |
+| `anonymous_consumer` | string | unset | Name of a declared consumer to fall back to when no key matches: the request continues tagged as that consumer instead of taking the `denied` port. A name that matches no consumer is ignored, and the request is denied as usual. |
+| `hide_credentials` | bool | `false` | Strip the key from the request (header and query parameter) before it reaches the upstream. |
 
 ```yaml
 - id: auth
