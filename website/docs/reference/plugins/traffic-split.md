@@ -14,7 +14,7 @@ Steers matching requests to a weighted set of upstream targets, or lets them fal
 | `rules` | array | — (**required**, non-empty) | Evaluated in order; the first rule whose `match` passes is used. |
 | `rules[].match` | array | absent = match all | A triple-array condition (rules AND-ed). Omit to match every request. |
 | `rules[].weighted_upstreams` | array | — (**required**, non-empty) | The weighted slots; one is chosen by weighted round-robin. |
-| `rules[].weighted_upstreams[].upstream` | object | absent = default slot | `{targets: [{host, port}], ...}`. When present, the slot proxies to one of the targets (round-robin within the set). When absent, the slot is the "default" — requests fall through to the route's normal upstream. |
+| `rules[].weighted_upstreams[].upstream` | object | absent = default slot | `{targets: [{host, port}], ...}` (`nodes` is accepted as an alias of `targets`, matching APISIX). When present, the slot proxies to one of the targets (round-robin within the set). When absent, the slot is the "default" — requests fall through to the route's normal upstream. |
 | `rules[].weighted_upstreams[].weight` | integer >= 0 | `1` | Selection weight. Every rule needs at least one slot with weight > 0. |
 | `timeout_ms` | integer | `60000` | Whole-call deadline for requests the plugin proxies itself. |
 

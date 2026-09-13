@@ -315,6 +315,80 @@ mod tests {
         }
     }
 
+    /// Every config key a plugin reads from its own `config` map must appear
+    /// on its page. `get_node_type` hands an agent that page and nothing
+    /// else, so an undocumented key is one it can never set — `key-auth`'s
+    /// `use_consumers` was invisible this way, and without it the plugin
+    /// cannot authenticate against consumers at all.
+    ///
+    /// Deliberately narrow: only `config.get("…")`/`cfg.get("…")` counts, so
+    /// `.get()` on headers, JSON responses or nested objects (documented with
+    /// dotted names) does not produce false alarms.
+    #[test]
+    fn every_config_key_a_plugin_reads_is_documented() {
+        let factory = include_str!("../plugins/mod.rs");
+        let arm = Regex::new(r#""([a-z0-9-]+)"\s*=>"#).unwrap();
+        let module = Regex::new(r"(?:native|script)::([a-z0-9_]+)::").unwrap();
+        let key = Regex::new(r#"\b(?:config|cfg)\s*\.\s*get\(\s*"([a-z0-9_]+)""#).unwrap();
+        let ws = Regex::new(r"\s*\n\s*").unwrap();
+
+        let arms: Vec<(String, usize)> = arm
+            .captures_iter(factory)
+            .map(|c| (c[1].to_string(), c.get(0).unwrap().end()))
+            .collect();
+        let plugin_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/plugins");
+        let mut findings: Vec<String> = Vec::new();
+        let mut scanned = 0usize;
+
+        for (i, (node_type, pos)) in arms.iter().enumerate() {
+            let end = arms.get(i + 1).map_or(factory.len(), |(_, p)| *p);
+            let Some(m) = module.captures(&factory[*pos..end]) else {
+                continue;
+            };
+            let file = walkdir(std::path::Path::new(plugin_dir), &format!("{}.rs", &m[1]));
+            let Some(file) = file else { continue };
+            let Ok(source) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            // Config is read in `from_config`; tests set keys too, and their
+            // literals would otherwise count as read keys.
+            let body = source.split("#[cfg(test)]").next().unwrap_or("");
+            let flat = ws.replace_all(body, " ");
+            let Some(page) = plugin_page(node_type) else {
+                continue;
+            };
+            for k in key.captures_iter(&flat) {
+                scanned += 1;
+                let name = &k[1];
+                let word = Regex::new(&format!(r"\b{}\b", regex::escape(name))).unwrap();
+                if !word.is_match(&page) {
+                    findings.push(format!("{node_type}: '{name}'"));
+                }
+            }
+        }
+
+        assert!(scanned > 300, "sanity: only {scanned} config keys scanned");
+        assert!(
+            findings.is_empty(),
+            "config keys a plugin reads but its docs page never mentions (get_node_type would leave an agent unable to set them): {findings:?}"
+        );
+    }
+
+    /// First file named `name` anywhere under `dir`.
+    fn walkdir(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()? {
+            let path = entry.ok()?.path();
+            if path.is_dir() {
+                if let Some(found) = walkdir(&path, name) {
+                    return Some(found);
+                }
+            } else if path.file_name().is_some_and(|f| f == name) {
+                return Some(path);
+            }
+        }
+        None
+    }
+
     /// The how-to guides are resources too: a plugin page that points at the
     /// Lua guide is only useful if the agent can open it.
     #[test]
