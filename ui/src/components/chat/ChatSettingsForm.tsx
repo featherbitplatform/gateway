@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DialogButton, DialogField } from '../Dialog';
-import { ProviderError, listModels } from '../../chat/openai';
+import { ProviderError, autoLoadKey, listModels } from '../../chat/openai';
 import { rankModels } from '../../chat/modelMatch';
 import type { ChatSettings } from '../../chat/store';
 import type { ConnectionState } from '../../chat/useChat';
@@ -37,30 +37,65 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
   const [highlight, setHighlight] = useState(0);
   const set = (k: keyof ChatSettings) => (v: string) => setDraft((d) => ({ ...d, [k]: v }));
 
-  // Closest matches to what is typed, from the loaded ids (empty until "Load models").
-  const suggestions = rankModels(draft.model, models);
+  // Closest matches to what is typed, from the loaded ids (empty until the
+  // list is loaded). Providers return dozens of models, so the list is long
+  // enough to be worth scrolling rather than cut to the top few.
+  const suggestions = rankModels(draft.model, models, 50);
   const pickModel = (m: string | undefined) => {
     if (m === undefined) return;
     setDraft((d) => ({ ...d, model: m }));
     setSuggestionsOpen(false);
   };
 
+  // Keeps the arrow-key selection visible once the list is long enough to
+  // scroll (providers return dozens of models).
+  const listRef = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (!suggestionsOpen) return;
+    listRef.current?.querySelector(`#chat-model-option-${highlight}`)?.scrollIntoView({ block: 'nearest' });
+  }, [highlight, suggestionsOpen]);
+
+  // Bumped per request so a slow reply cannot overwrite a newer one.
+  const requestSeq = useRef(0);
+  // The endpoint+key pair already auto-loaded, so typing does not re-fetch.
+  const autoLoaded = useRef<string | null>(null);
+
   // Loads the provider's own GET /models into the combobox. The field stays
   // free text: servers without that endpoint (or with a different auth
-  // model) still work by typing the name.
-  const loadModels = async () => {
-    setModelsNote('Loading…');
+  // model) still work by typing the name. An automatic load stays quiet —
+  // it fills the list without opening the dropdown over what is being typed.
+  const loadModels = useCallback(async (settings: ChatSettings, auto: boolean) => {
+    const seq = ++requestSeq.current;
+    setModelsNote('Loading models…');
     try {
-      const ids = await listModels(draft);
+      const ids = await listModels(settings);
+      if (seq !== requestSeq.current) return;
       setModels(ids);
-      setSuggestionsOpen(true);
-      setHighlight(0);
+      if (!auto) {
+        setSuggestionsOpen(true);
+        setHighlight(0);
+      }
       setModelsNote(ids.length === 0 ? 'The provider returned no models.' : `${ids.length} models — type to see the closest matches.`);
     } catch (e) {
+      if (seq !== requestSeq.current) return;
       setModels([]);
       setModelsNote(e instanceof ProviderError ? `Could not load models: ${e.status} ${e.body}` : `Could not load models: ${String(e)}`);
     }
-  };
+  }, []);
+
+  // With a base URL and a key set, fetch the list on their own — once per
+  // pair, and only after typing settles. Without a key nothing is fetched
+  // automatically: the endpoint may or may not need auth, so that stays a
+  // deliberate click.
+  useEffect(() => {
+    const key = autoLoadKey(draft);
+    if (key === null || key === autoLoaded.current) return;
+    const timer = setTimeout(() => {
+      autoLoaded.current = key;
+      void loadModels(draft, true);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [draft, loadModels]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} data-testid="chat-settings">
@@ -73,10 +108,22 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
           Model
           <button
             type="button"
-            onClick={() => void loadModels()}
-            disabled={draft.apiKey === ''}
-            title={draft.apiKey === '' ? 'Enter an API key first' : 'Fetch the model list from the provider (GET /models)'}
-            style={{ background: 'transparent', border: 'none', color: draft.apiKey === '' ? 'var(--text-muted)' : 'var(--accent)', fontSize: 'var(--text-2xs)', padding: 0 }}
+            onClick={() => void loadModels(draft, false)}
+            disabled={draft.baseUrl.trim() === ''}
+            title={
+              draft.baseUrl.trim() === ''
+                ? 'Set the base URL first'
+                : draft.apiKey.trim() === ''
+                  ? 'Fetch the model list from the provider (GET /models). With no API key set it is sent unauthenticated, which only some endpoints allow.'
+                  : 'Fetch the model list from the provider (GET /models). Loaded automatically when the base URL and key are set.'
+            }
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: draft.baseUrl.trim() === '' ? 'var(--text-muted)' : 'var(--accent)',
+              fontSize: 'var(--text-2xs)',
+              padding: 0,
+            }}
           >
             Load models
           </button>
@@ -123,6 +170,7 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
           />
           {suggestionsOpen && suggestions.length > 0 && (
             <ul
+              ref={listRef}
               id="chat-model-options"
               role="listbox"
               data-testid="chat-model-options"
@@ -135,8 +183,9 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
                 margin: '2px 0 0',
                 padding: 2,
                 listStyle: 'none',
-                maxHeight: 200,
+                maxHeight: 260,
                 overflowY: 'auto',
+                overscrollBehavior: 'contain',
                 background: 'var(--surface)',
                 border: '1px solid var(--border)',
                 borderRadius: 'var(--radius-sm)',

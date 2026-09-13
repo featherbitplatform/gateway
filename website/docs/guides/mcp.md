@@ -75,7 +75,7 @@ Settings (gear icon in the panel) are stored in this browser's local storage und
 | Field | Meaning |
 |---|---|
 | Base URL | `https://api.openai.com/v1` by default; any compatible server works (Azure, OpenRouter, a local Ollama, …) |
-| Model | Free text; **Load models** fetches the provider's `GET /models` list into a suggestion dropdown, so nothing is hardcoded |
+| Model | Free text with a searchable dropdown of the provider's own `GET /models` list (closest matches first). The list loads on its own once the base URL and API key are both set; with no key, **Load models** fetches it on click, unauthenticated, for endpoints that allow that |
 | API key | Sent only to the base URL above |
 | MCP token | One of `admin.mcp.tokens`; sent only to this gateway's MCP endpoint. Leave empty for a toolless chat |
 
