@@ -72,13 +72,17 @@ The token is read from the `Authorization` header (a `Bearer ` prefix is strippe
 
 - HTTP `200` **and** `active: true` → **success** port, request continues.
 - An inactive token, a non-`200` status, or a missing token → deliberate rejection, exits on the **`denied`** port with `context.response.status_code = 403`, body `{"error":"access_denied"}`.
-- A genuine introspection-callout failure (unreachable, timed out, or otherwise untransportable) → the node could not do its job, so it exits on the ordinary **error** port instead (same response shape, error code `AUTHZ_CASDOOR_ERROR`).
+- A genuine introspection-callout failure (unreachable, timed out, or otherwise untransportable) → the node could not do its job, so it exits on the ordinary **error** port instead (a `502` `{"error": "provider_error", "message": "<reason>"}` response — not the `403` `denied` shape — error code `AUTHZ_CASDOOR_ERROR`).
+
+:::caution Breaking change
+Before v0.8 this provider-failure response reused the `denied` shape (`403` `{"error": "access_denied"}`), so an unreachable Casdoor was indistinguishable from a denied token. It is now the shared `502 {"error": "provider_error", "message": "<reason>"}` response with no challenge header, the same shape every provider-backed auth plugin prepares (`openid-connect`, `cas-auth`, `ldap-auth`, `authz-keycloak`, `authz-casdoor`). Match on the `error` port / the error code, or on the `502`, instead of the old status.
+:::
 
 ### Interactive mode (session secret set)
 
 Each request is resolved through three branches:
 
-1. **Callback.** When the request path matches the `callback_url` path **and** carries `code` + `state`, the plugin opens the short-lived flow cookie, checks the `state` matches, then exchanges the `code` at `{endpoint_addr}/api/login/oauth/access_token` (`grant_type=authorization_code`, with `client_id`/`client_secret`). The returned access token is sealed into a session cookie (its JWT claims, if any, are decoded and stored for identity), the flow cookie is deleted, and the browser is **302-redirected to the original URI** recovered from the flow cookie. A missing/invalid flow cookie or a `state` mismatch is a deliberate rejection and exits on `denied` with `403`. A failed code exchange (the token endpoint unreachable, timed out, returning non-`200`, or handing back unparseable data) is a genuine callout failure and exits on the ordinary **error** port instead (error code `AUTHZ_CASDOOR_ERROR`).
+1. **Callback.** When the request path matches the `callback_url` path **and** carries `code` + `state`, the plugin opens the short-lived flow cookie, checks the `state` matches, then exchanges the `code` at `{endpoint_addr}/api/login/oauth/access_token` (`grant_type=authorization_code`, with `client_id`/`client_secret`). The returned access token is sealed into a session cookie (its JWT claims, if any, are decoded and stored for identity), the flow cookie is deleted, and the browser is **302-redirected to the original URI** recovered from the flow cookie. A missing/invalid flow cookie or a `state` mismatch is a deliberate rejection and exits on `denied` with `403`. A failed code exchange (the token endpoint unreachable, timed out, returning non-`200`, or handing back unparseable data) is a genuine callout failure and exits on the ordinary **error** port instead (`502` `provider_error`, error code `AUTHZ_CASDOOR_ERROR`).
 2. **Valid session cookie.** If the `<session.cookie.name>` cookie opens and its `client_id` matches, the access token is placed back on the upstream request as `Authorization: Bearer <token>`, the decoded claims are exposed as `context.message["user_id"]` (from `sub`) and `context.message["jwt_claims"]`, and the request continues through the **success** port.
 3. **No session, not a callback.** A random `state` is generated and, together with the original request URI, sealed into a short-lived (300s) **flow cookie**; the browser is **302-redirected to Casdoor's authorize URL** (`{endpoint_addr}/login/oauth/authorize?response_type=code&client_id=…&redirect_uri=<callback_url>&state=…&scope=<scope>`) with the flow cookie set.
 
@@ -116,3 +120,12 @@ edges:
 - **No server-side session revocation before expiry — in `session.storage: cookie` mode (the default).** Because those sessions live entirely in the client cookie, there is no way to invalidate an individual one before its `lifetime` elapses (short of rotating the secret, which invalidates *all* sessions). Use short lifetimes, or switch to `session.storage: redis` for revocation via the [Admin API](../../guides/admin-api.md) (`/api/sessions`).
 - **No refresh-token handling in v1, in either storage mode.** The access token is stored as issued; when the session cookie expires the user is redirected through Casdoor login again. Refresh-token exchange is out of scope for this version.
 - **Access-token signature is not re-verified.** The token comes directly from Casdoor's token endpoint over TLS and is trusted; its claims are decoded (not signature-checked) purely to surface identity to the upstream.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `AUTHZ_CASDOOR_ERROR` | 502 | The introspection or token callout to Casdoor failed, or returned an unusable response. |
+| `SESSION_STORE_ERROR` | 503 | The redis session store could not be read or written (`session.storage: redis`). A store failure is never a silent 401: it always surfaces here. |

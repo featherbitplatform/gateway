@@ -70,3 +70,7 @@ For a **continued** trace, the incoming sampled flag is honored. For a **new** t
 
 - Spans are exported one-per-request (fire-and-forget) rather than through a batch span processor; `batch_span_processor` config is not supported.
 - Sampler strategies are `always_on`, `always_off`, and `trace_id_ratio`; `parent_base` is not supported.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

@@ -9,9 +9,11 @@
 
 mod engine;
 mod expand;
+mod prepare;
 mod validation;
 
 pub use engine::{compile_policy, CompiledGraph};
 pub use expand::expand_policy;
+pub use prepare::prepare_policy;
 pub use validation::validate_policy;
 pub use validation::validate_supernode;

@@ -46,7 +46,11 @@ On a missing header, malformed credentials, empty username/password, or a bind r
 - `WWW-Authenticate: Basic realm="<realm>"` challenge header
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
 
-A connection error or a connect+bind timeout is a genuine **infrastructure failure**, not a credential decision — it stays on the **error** port instead, with error code `LDAP_AUTH_FAILED`. The prepared response mirrors the `denied` shape exactly (same `401`, same `WWW-Authenticate` challenge, same JSON body and `content-type`), so what the client sees is unchanged if the error edge leads to `client`.
+A connection error or a connect+bind timeout is a genuine **infrastructure failure**, not a credential decision — it stays on the **error** port instead, with error code `LDAP_AUTH_PROVIDER_ERROR`. The prepared response is a `502` `{"error": "provider_error", "message": "<reason>"}` with **no** `WWW-Authenticate` challenge — an LDAP outage must not make the browser re-prompt for a password that was never checked.
+
+:::caution Breaking change
+Before v0.8 this provider-failure response reused the `denied` shape (`401` + `WWW-Authenticate: Basic`, `{"error": "unauthorized"}`, error code `LDAP_AUTH_FAILED`), so an unreachable LDAP server was indistinguishable from a rejected credential (and a browser would re-prompt for the password). It is now the shared `502 {"error": "provider_error", "message": "<reason>"}` response with no challenge header, the same shape every provider-backed auth plugin prepares (`openid-connect`, `cas-auth`, `ldap-auth`, `authz-keycloak`, `authz-casdoor`). The error code was renamed from `LDAP_AUTH_FAILED` to `LDAP_AUTH_PROVIDER_ERROR` — "failed" is the denial word. Match on the `error` port / the error code, or on the `502`, instead of the old status.
+:::
 
 ## Ports
 
@@ -66,3 +70,11 @@ edges:
 - **No consumer resolution.** The plugin performs pure bind authentication: on a successful bind the request continues and the username is written to `context.message["user"]`; no consumer identity is attached and no consumer is required.
 - **Empty passwords are rejected up front.** A blank password would otherwise trigger an *unauthenticated* (anonymous) bind that many directories accept, silently authenticating anyone. featherbit rejects empty username/password before contacting the server.
 - **`use_tls` negotiates StartTLS** on the given URI. For implicit TLS, use an `ldaps://` URI directly.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `LDAP_AUTH_PROVIDER_ERROR` | 502 | The LDAP connection failed, or the bind timed out. Wrong credentials are a `denied`, not this. |

@@ -23,6 +23,20 @@ admin:
   # Serve the embedded web UI (node-graph editor). Set false for API-only
   # deployments; the -headless image never serves it regardless.
   ui_enabled: ${ADMIN_UI_ENABLED:-true}
+  # Model Context Protocol server for AI agents (Claude Code, Cursor, …).
+  # Off by default. Tokens are scoped: `read` = inspect config, traces and the
+  # sandbox; `write` = also create/replace/delete routes, policies, supernodes,
+  # plugin configs and stores. Generate tokens with `openssl rand -base64 32`.
+  # mcp:
+  #   enabled: ${FEATHERBIT_MCP_ENABLED:-false}
+  #   path: /mcp
+  #   tokens:
+  #     - token: ${FEATHERBIT_MCP_READ_TOKEN}
+  #       scope: read
+  #       name: local-agent
+  #     - token: ${FEATHERBIT_MCP_WRITE_TOKEN}
+  #       scope: write
+  #   allowed_origins: []
 
 # Policy-execution tracing + the plugin sandbox. Off by default; toggling
 # requires a restart (system.yaml is not hot-reloaded).
@@ -41,3 +55,20 @@ debug:
   trace_all: ${FEATHERBIT_DEBUG_TRACE_ALL:-false}
   capture_bodies: ${FEATHERBIT_DEBUG_BODIES:-false}
   max_traces: ${FEATHERBIT_DEBUG_MAX_TRACES:-50}
+
+# Automatic TLS certificates via ACME (TLS-ALPN-01). Uncomment `acme:` and
+# replace `tls.cert_path/key_path` with `tls.acme.domains`. Restart-gated.
+# Experiment against Let's Encrypt STAGING first — production has strict
+# duplicate-certificate rate limits.
+# acme:
+#   directory_url: https://acme-staging-v02.api.letsencrypt.org/directory
+#   contact: ["mailto:ops@example.com"]
+#   terms_of_service_agreed: true
+#   key_type: ecdsa-p256
+#   renew_before: 30d
+#   storage:
+#     type: filesystem
+#     dir: /var/lib/featherbit/acme
+# tls:
+#   acme:
+#     domains: [api.example.com]

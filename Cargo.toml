@@ -1,6 +1,6 @@
 [package]
 name = "featherbit"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 # Not published to crates.io; also lets cargo-deny's license check skip the
 # workspace crate (deny.toml: private = { ignore = true }).
@@ -9,11 +9,15 @@ publish = false
 [features]
 # The embedded admin web UI. Headless build (no UI assets, no serving code):
 # `cargo build --release --no-default-features`.
-default = ["ui", "redis-store"]
-ui = ["dep:rust-embed", "dep:mime_guess"]
+default = ["ui", "redis-store", "mcp"]
+ui = ["dep:mime_guess"]
 # Redis/Valkey client for the `stores:` resource (sessions, distributed rate
 # limiting). Off = declaring a store fails config load with a clear error.
 redis-store = ["dep:redis"]
+# Model Context Protocol server on the admin listener (`admin.mcp`). Off = the
+# tool/prompt layer still compiles (the UI's "copy as agent prompt" uses it)
+# but no MCP transport is mounted and `admin.mcp.enabled` is ignored.
+mcp = ["dep:rmcp"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -51,9 +55,19 @@ notify = "8"
 # encoder + core collector types are used, which are unchanged.
 prometheus = "0.14"
 
-# Embedded UI (the `ui` feature; disabled for headless builds)
-rust-embed = { version = "8", optional = true }
+# Embedded assets: the admin UI bundle (`ui` feature) and the documentation
+# pages served to agents as MCP resources (every build).
+rust-embed = { version = "8", features = ["include-exclude"] }
 mime_guess = { version = "2", optional = true }
+
+# MCP server (the `mcp` feature). Pure Rust, no TLS of its own — the ring-only
+# rule is unaffected. `server` + `macros` are rmcp's defaults; the transport is
+# the tower service mounted on the admin router.
+rmcp = { version = "3.1", optional = true, default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
+# JSON Schema for MCP tool inputs (same major as rmcp's re-export, so one copy).
+schemars = "1"
+# Constant-time token comparison for MCP bearer auth (already in the tree via rustls).
+subtle = "2"
 
 # Lua scripting
 mlua = { version = "0.10", features = ["luau", "serialize"] }
@@ -73,6 +87,15 @@ rustls-pki-types = "1.12"
 rustls-native-certs = "0.8"
 # X.509 parsing for mTLS client identity (CN/SAN); already in the tree via ldap3.
 x509-parser = "0.18"
+# ACME (RFC 8555) client for automatic certificates (src/acme). Ring-only like
+# the rest of the tree: default features would pull aws-lc-rs.
+instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls", "time", "x509-parser"] }
+# CSRs, TLS-ALPN-01 challenge certs and placeholder certs (runtime), plus the
+# self-signed certs the TLS tests use. `x509-parser` lets the test-only mock CA
+# sign a CSR. Ring-only.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+# ARI (renewal-info) windows from instant-acme are `time::OffsetDateTime`s.
+time = "0.3"
 arc-swap = "1.9.2"
 flate2 = "1.1.9"
 brotli = "8.0.4"
@@ -94,9 +117,9 @@ ldap3 = { version = "0.12.1", default-features = false, features = ["tls-rustls-
 reqwest = { version = "0.12", features = ["json", "http2", "rustls-tls"] }
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
-# Self-signed certs for TLS listener tests (ring-based, emits PEM).
-rcgen = "0.13"
 # WebSocket echo upstream + client for the in-process WS proxy test
 # (versions already in the tree via axum, so they unify — no second copy).
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
+# MCP client for in-process server tests (plain http, no TLS feature needed).
+rmcp = { version = "3.1", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }

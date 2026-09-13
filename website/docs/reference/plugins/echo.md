@@ -39,3 +39,7 @@ On each response, in order:
 2. `before_body` and `after_body` are concatenated around the result.
 3. Per the body-mutation convention, `content-length` is removed (the server recomputes it from the final body) and `content-encoding` is removed (the body is left decoded).
 4. `headers` are set on `context.response.headers`, replacing any existing values.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

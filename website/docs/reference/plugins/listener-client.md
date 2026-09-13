@@ -36,3 +36,7 @@ Policy validation (run at config load and on Admin API writes) enforces both nod
 - Every policy **must** contain a `listener` node and a `client` node; a policy missing either is rejected.
 - Input ports accept any number of incoming edges (fan-in); output ports carry exactly one (fan-out and cycles are compile errors).
 - Like all nodes, they must not be orphans — each needs at least one connected edge.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

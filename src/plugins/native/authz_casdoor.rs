@@ -305,24 +305,14 @@ impl AuthzCasdoorPlugin {
     /// or introspection callout that transport-failed, timed out, or returned
     /// an unparseable response) — exits through the `error` port because the
     /// node could not do its job, unlike `deny`/`redirect` which are
-    /// deliberate, client-facing outcomes.
+    /// deliberate, client-facing outcomes. The prepared response is the shared
+    /// `502 provider_error` shape, not a `403 access_denied`.
     fn callout_error(ctx: Context, message: String) -> PluginResult {
-        let mut ctx = ctx;
-        ctx.response.status_code = 403;
-        ctx.response.body = Bytes::from(r#"{"error":"access_denied"}"#);
-        ctx.response.headers.insert(
-            "content-type".to_string(),
-            vec!["application/json".to_string()],
-        );
-        Err(PluginExecutionError {
-            context: ctx,
-            error: GatewayError {
-                node_id: String::new(),
-                code: "AUTHZ_CASDOOR_ERROR".to_string(),
-                message,
-                metadata: HashMap::new(),
-            },
-        })
+        Err(crate::plugins::util::provider_error::provider_error(
+            ctx,
+            "AUTHZ_CASDOOR_ERROR",
+            message,
+        ))
     }
 
     /// Session-store outage: 503 through the error port. Deliberately NOT
@@ -1007,8 +997,10 @@ mod tests {
             .execute(ctx_with_auth(Some("Bearer tok")))
             .await
             .unwrap_err();
-        assert_eq!(err.error.code, "AUTHZ_CASDOOR_ERROR");
-        assert_eq!(err.context.response.status_code, 403);
+        crate::plugins::util::provider_error::testing::assert_provider_error(
+            &err,
+            "AUTHZ_CASDOOR_ERROR",
+        );
     }
 
     /// Minimal one-shot HTTP server that answers any request with a fixed
@@ -1050,8 +1042,10 @@ mod tests {
             .execute(ctx_with_auth(Some("Bearer tok")))
             .await
             .unwrap_err();
-        assert_eq!(err.error.code, "AUTHZ_CASDOOR_ERROR");
-        assert_eq!(err.context.response.status_code, 403);
+        crate::plugins::util::provider_error::testing::assert_provider_error(
+            &err,
+            "AUTHZ_CASDOOR_ERROR",
+        );
     }
 
     #[test]
@@ -1302,7 +1296,10 @@ mod tests {
         );
 
         let err = p.execute(c).await.unwrap_err();
-        assert_eq!(err.error.code, "AUTHZ_CASDOOR_ERROR");
+        crate::plugins::util::provider_error::testing::assert_provider_error(
+            &err,
+            "AUTHZ_CASDOOR_ERROR",
+        );
     }
 
     #[test]

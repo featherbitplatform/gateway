@@ -22,6 +22,7 @@ featherbit expresses the classic proxy phase model (rewrite/access/header_filter
 | [`proxy-rewrite`](proxy-rewrite.md) | Rewrite request path and headers |
 | [`response-rewrite`](response-rewrite.md) | Rewrite response status, headers, and body (regex filters, encoding-aware) |
 | [`body-transformer`](body-transformer.md) | Rewrite request/response JSON bodies via templates |
+| [`set-vars`](set-vars.md) | Derive variables from the context (templates, JSONPath, regex captures) for downstream nodes |
 | [`degraphql`](degraphql.md) | Expose a REST endpoint backed by a GraphQL upstream |
 | [`redirect`](redirect.md) | HTTP redirect, or force HTTP→HTTPS |
 | [`echo`](echo.md) | Wrap or replace the response body (demo/testing) |

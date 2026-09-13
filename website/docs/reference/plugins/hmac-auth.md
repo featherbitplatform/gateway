@@ -100,3 +100,7 @@ edges:
 - `@request-target`'s request URI is reconstructed from the parsed path plus a **sorted** `key=value` query string (original query byte order is not retained), so a client signing `@request-target` must canonicalise its query the same way.
 - Only the RFC 1123 (`Sun, 06 Nov 1994 08:49:37 GMT`) `Date` format is parsed for clock-skew checks.
 - Request-body digest validation (`validate_request_body`) is not implemented.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

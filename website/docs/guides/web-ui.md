@@ -73,6 +73,12 @@ A selection that fails any of these shows an error toast naming the problem inst
 
 One dialog asks for the new definition's name. On confirm, the definition is created immediately through the Admin API and the selected nodes on the canvas are replaced by a single wired instance — the policy itself is not saved automatically, same as any other canvas edit, so **Save Policy** is still required to deploy it. If creating the definition fails, nothing on the canvas changes.
 
+## Agent panel and agent prompts
+
+The footer's **Agent** button opens the MCP connection panel: the endpoint URL, copy-paste client configs (Claude Code, `mcpServers` JSON, curl) with a `<TOKEN>` placeholder you fill from your `system.yaml` tokens, a read/write scope explainer, and the library of precompiled prompts, each with its own **Copy** button that prompts for any required arguments first (e.g. `diagnose_route`'s method/path). With MCP disabled it shows the config to set instead.
+
+The prompts also drive the built-in **Chat**: in the Debug panel a trace has **Troubleshoot with AI** (opens the chat with the trace and works out why the client got that status) and a selected step has **Ask AI about this step**; the policy editor's toolbar has **Review with AI**, and the Ctrl+K palette has *AI: design a policy/supernode/route…* (asks for the goal). To use an external agent instead, the trace header's **Copy prompt** and the Agent panel's prompt library copy the same prompts with the relevant data inlined plus a line telling a connected agent to prefer the live MCP tools. See [MCP server for agents](./mcp.md).
+
 ## Headless mode
 
 The UI is optional. It is only a client of the admin API, and it edits exactly the same data that lives in `gateway.yaml` — a policy saved from the canvas and a policy written by hand in YAML are interchangeable. Everything the UI does can be done with the YAML files plus hot-reload, or with the [Admin API](./admin-api.md) directly.

@@ -56,3 +56,7 @@ Events are buffered and the batch is POSTed as `{ "events": [...] }` to `<endpoi
 - This node **meters** requests (one billing event per request) rather than logging them.
 - A single `endpoint` is accepted, not an array of addresses.
 - The event `properties` come from the shared log-entry builder, so they are the standard request/response entry (or a `log_format` custom entry) — configure `log_format` to shape them. An `event_properties` map is not supported.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

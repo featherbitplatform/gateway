@@ -14,6 +14,9 @@ use crate::graph::{
 use crate::metrics::GatewayMetrics;
 use crate::plugins::resources::PluginResources;
 
+/// The compiled route table: each route paired with its compiled policy graph.
+type CompiledRoutes = Vec<(RouteConfig, Arc<CompiledGraph>)>;
+
 /// Shared gateway state, accessible from both the data-plane server and the Admin API.
 ///
 /// Wrapped in an [`Arc`] and cloned into every server task. The data plane
@@ -47,6 +50,17 @@ pub struct SharedState {
     /// plane when a request opts into tracing, read by the Admin API. Fixed at
     /// startup — `system.yaml` is not hot-reloaded.
     pub debug: Arc<DebugState>,
+    /// The running ACME runtime (managed certs, solver, renewal manager), set
+    /// once at startup when `system.tls.acme`/`sni_certs[].acme` is configured.
+    /// `None` when ACME is not in use. Drives `/readyz`'s placeholder gate.
+    pub acme: arc_swap::ArcSwapOption<crate::acme::AcmeRuntime>,
+    /// Whether `system.yaml` asks for ACME-managed certificates at all
+    /// (`acme:` present **and** at least one managed TLS slot). The runtime in
+    /// `acme` is only populated once `server::start_server` has seeded it,
+    /// which happens after the admin listener is already serving — so
+    /// `/readyz` uses this to answer "not ready" instead of "ready" during
+    /// that window.
+    pub acme_expected: bool,
 }
 
 impl SharedState {
@@ -61,6 +75,11 @@ impl SharedState {
         config_store: Arc<dyn ConfigStore>,
     ) -> Result<Self, String> {
         let metrics = Arc::new(GatewayMetrics::new());
+        let acme_expected = system.acme.is_some()
+            && system
+                .tls
+                .as_ref()
+                .is_some_and(|t| !t.managed_domains().is_empty());
         let resources = PluginResources::new(Some(metrics.clone()));
         resources
             .consumers
@@ -98,6 +117,8 @@ impl SharedState {
             resources,
             config_store,
             debug: debug_state,
+            acme: arc_swap::ArcSwapOption::empty(),
+            acme_expected,
         })
     }
 
@@ -109,8 +130,16 @@ impl SharedState {
     /// and policy compilation — happens **before** any swap, so a failure
     /// leaves the running config untouched (the last-good guarantee).
     pub async fn apply_gateway(&self, new_gw: GatewayConfig) -> Result<(), String> {
-        let consumers = crate::consumers::ConsumerStore::from_config(&new_gw.consumers)?;
-        let routes = Self::compile_routes(&new_gw, &self.resources)?;
+        let (consumers, routes) = match Self::build_candidate(&new_gw, &self.resources) {
+            Ok(built) => built,
+            Err(e) => {
+                // A rejected candidate leaves the running config untouched, so
+                // this line is the only server-side trace that a save (from
+                // the UI, the Admin API, the file watcher or etcd) was refused.
+                tracing::warn!("Rejected config: {}", e);
+                return Err(e);
+            }
+        };
         tracing::info!(
             "Applied config: {} routes from {} policies",
             routes.len(),
@@ -122,6 +151,17 @@ impl SharedState {
         let mut r = self.routes.write().await;
         *r = routes;
         Ok(())
+    }
+
+    /// Builds everything a swap needs — consumer store and compiled route
+    /// table — failing before anything is touched.
+    fn build_candidate(
+        gw: &GatewayConfig,
+        resources: &Arc<PluginResources>,
+    ) -> Result<(crate::consumers::ConsumerStore, CompiledRoutes), String> {
+        let consumers = crate::consumers::ConsumerStore::from_config(&gw.consumers)?;
+        let routes = Self::compile_routes(gw, resources)?;
+        Ok((consumers, routes))
     }
 
     /// Validates and compiles `gw` **without** swapping anything.
@@ -139,6 +179,27 @@ impl SharedState {
         Ok(())
     }
 
+    /// `validate_gateway`, but guaranteed to leave `resources.stores` exactly
+    /// as it found it, on both success and failure.
+    ///
+    /// `compile_routes` only restores the pre-compile store registry when it
+    /// *fails* — on success the candidate registry is left live, because
+    /// every other caller (`apply_gateway`, config-store commits) follows a
+    /// successful validate with an apply that installs that same candidate
+    /// for real. A true dry-run has no such follow-up: without this, a
+    /// `dry_run: true` MCP write (e.g. `delete_store`) would durably swap in
+    /// the candidate registry — tearing down a live store's client (breaking
+    /// `/api/sessions`/ACME redis storage until the next apply) or standing
+    /// up a client for a store that was never committed — even though
+    /// nothing was meant to change. Use this wherever validation must not
+    /// have that side effect.
+    pub fn validate_gateway_dry(&self, gw: &GatewayConfig) -> Result<(), String> {
+        let prev = self.resources.stores.load_full();
+        let result = self.validate_gateway(gw);
+        self.resources.stores.store(prev);
+        result
+    }
+
     /// Reloads from disk (re-reads `gateway.yaml` raw, keeping `${VAR}`
     /// placeholders — resolution happens at compile/build time), recompiles,
     /// and swaps in the new config.
@@ -146,12 +207,19 @@ impl SharedState {
     /// Invoked by the hot-reload file watcher. Fails without side effects if
     /// `config_path` is unset, the file cannot be parsed, or compilation fails.
     pub async fn reload_from_disk(&self) -> Result<(), String> {
+        let new_gw = self.load_gateway_from_disk()?;
+        self.apply_gateway(new_gw).await
+    }
+
+    /// Parses `gateway.yaml` from `config_path` without applying it (raw,
+    /// `${VAR}` placeholders kept). Lets callers compare the file against the
+    /// live config before a reload discards in-memory edits.
+    pub fn load_gateway_from_disk(&self) -> Result<GatewayConfig, String> {
         let path = self
             .config_path
             .as_ref()
             .ok_or("No config path set for hot-reload")?;
-        let new_gw: GatewayConfig = crate::config::load_yaml(path).map_err(|e| e.to_string())?;
-        self.apply_gateway(new_gw).await
+        crate::config::load_yaml(path).map_err(|e| e.to_string())
     }
 
     /// Validates and compiles every policy, then binds each route to its
@@ -160,7 +228,7 @@ impl SharedState {
     fn compile_routes(
         gateway: &GatewayConfig,
         resources: &Arc<PluginResources>,
-    ) -> Result<Vec<(RouteConfig, Arc<CompiledGraph>)>, String> {
+    ) -> Result<CompiledRoutes, String> {
         crate::stores::validate_stores(&gateway.stores)?;
         // Swap the candidate store registry in for the duration of the
         // compile (plugins resolve `store:` names at construction). The
@@ -302,6 +370,50 @@ policies:
       - { from: listener.out, to: sec.in }
       - { from: sec.success, to: client.in }
 "#;
+
+    /// A candidate the compiler rejects must leave an operational trace: a
+    /// WARN line carrying the reason, whichever driver (file watcher, etcd,
+    /// Admin API) submitted it. Without it a rejected UI save is invisible
+    /// server-side.
+    #[tokio::test]
+    async fn test_rejected_apply_is_logged_at_warn() {
+        let system: crate::config::SystemConfig = serde_yaml::from_str("{}").unwrap();
+        let state = SharedState::new(
+            system,
+            serde_yaml::from_str("{}").unwrap(),
+            None,
+            std::sync::Arc::new(crate::config_store::FileConfigStore::new(
+                std::path::PathBuf::from("gateway.yaml"),
+            )),
+        )
+        .unwrap();
+        // `client` is never reached: listener.out is unwired.
+        let candidate: crate::config::GatewayConfig = serde_yaml::from_str(
+            r#"
+routes:
+  - name: r
+    match: { path: "/*" }
+    policy: p
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: client, type: client }
+    edges: []
+"#,
+        )
+        .unwrap();
+
+        let (_guard, logs) = crate::test_log::capture_warnings();
+        let err = state.apply_gateway(candidate).await.unwrap_err();
+
+        let out = logs.contents();
+        assert!(out.contains("WARN"), "expected a WARN line, got: {out:?}");
+        assert!(
+            out.contains("Rejected config") && out.contains(&err),
+            "expected the rejection reason {err:?} in the log, got: {out:?}"
+        );
+    }
 
     #[test]
     fn test_policy_with_supernode_compiles() {
