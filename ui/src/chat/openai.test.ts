@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ToolCallAccumulator,
+  autoLoadKey,
   listModels,
   splitSseEvents,
   streamChat,
@@ -198,5 +199,37 @@ describe('listModels', () => {
   it('throws ProviderError on non-2xx', async () => {
     const f = (async () => new Response('nope', { status: 403 })) as typeof fetch;
     await expect(listModels(settings, f)).rejects.toMatchObject({ status: 403, body: 'nope' });
+  });
+
+  it('omits the bearer header when no key is set, for an open endpoint', async () => {
+    const cap: { init?: RequestInit } = {};
+    const f = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      cap.init = init;
+      return new Response(JSON.stringify({ data: [{ id: 'local-model' }] }), { status: 200 });
+    }) as typeof fetch;
+    expect(await listModels({ ...settings, apiKey: '   ' }, f)).toEqual(['local-model']);
+    expect(cap.init!.headers).toEqual({});
+  });
+});
+
+describe('autoLoadKey', () => {
+  const base = { baseUrl: 'https://api.example/v1', apiKey: 'sk-test' };
+
+  it('identifies the endpoint+key pair when both are usable', () => {
+    const key = autoLoadKey(base);
+    expect(key).not.toBeNull();
+    expect(autoLoadKey({ ...base })).toBe(key);
+    expect(autoLoadKey({ ...base, apiKey: 'sk-other' })).not.toBe(key);
+    expect(autoLoadKey({ ...base, baseUrl: 'https://api.example/v2' })).not.toBe(key);
+    // Surrounding whitespace is not a different endpoint.
+    expect(autoLoadKey({ baseUrl: ` ${base.baseUrl} `, apiKey: ` ${base.apiKey} ` })).toBe(key);
+  });
+
+  it('refuses to fetch on its own without a key, without a URL, or mid-typing', () => {
+    expect(autoLoadKey({ ...base, apiKey: '' })).toBeNull();
+    expect(autoLoadKey({ ...base, apiKey: '  ' })).toBeNull();
+    expect(autoLoadKey({ ...base, baseUrl: '' })).toBeNull();
+    expect(autoLoadKey({ ...base, baseUrl: 'https:/' })).toBeNull();
+    expect(autoLoadKey({ ...base, baseUrl: 'api.example/v1' })).toBeNull();
   });
 });
