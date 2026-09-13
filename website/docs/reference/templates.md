@@ -135,6 +135,7 @@ call plain `render`, which never touches `$`.
 | [`proxy-cache`](./plugins/proxy-cache.md) | each `cache_key` component |
 | [`fault-injection`](./plugins/fault-injection.md) | `abort.body`, each `abort.headers` value |
 | [`traffic-label`](./plugins/traffic-label.md) | each `set_headers`/`set_labels` value |
+| [`set-vars`](./plugins/set-vars.md) | each `vars[].from` source |
 | [`forward-auth`](./plugins/forward-auth.md) | each `extra_headers` value |
 | [`response-rewrite`](./plugins/response-rewrite.md) | each `add_headers`/`set_headers` value |
 | All 17 loggers (shared `log_format`) | each string `log_format` value |

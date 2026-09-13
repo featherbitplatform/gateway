@@ -3,7 +3,7 @@
 //! never hot-reloaded; every top-level field has a serde default, so any
 //! section may be omitted.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Root of `system.yaml`.
 ///
@@ -615,6 +615,9 @@ impl SystemConfig {
                 }
                 tls.validate(false, "admin.tls")?;
             }
+            if let Some(mcp) = &admin.mcp {
+                mcp.validate()?;
+            }
         }
         Ok(())
     }
@@ -712,6 +715,118 @@ pub struct AdminConfig {
     /// plain HTTP. Reuses the same [`TlsConfig`] as the data plane.
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+    /// Model Context Protocol server for AI agents, served on this listener
+    /// at `mcp.path` behind its own bearer tokens (never Basic Auth). `None`
+    /// (the default) means no MCP. Parsed in every build; only honored when
+    /// the binary is compiled with the `mcp` feature.
+    #[serde(default)]
+    pub mcp: Option<McpConfig>,
+}
+
+/// Minimum accepted length of an MCP bearer token, in characters.
+pub const MCP_MIN_TOKEN_LEN: usize = 16;
+
+/// `admin.mcp` — the MCP server exposed to agents.
+#[derive(Debug, Deserialize, Clone)]
+pub struct McpConfig {
+    /// Master switch; off by default. Typically `${FEATHERBIT_MCP_ENABLED:-false}`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Mount path on the admin listener; defaults to `/mcp`. Must be absolute
+    /// and outside `/api`, `/healthz`, `/readyz`, `/metrics`.
+    #[serde(default = "default_mcp_path")]
+    pub path: String,
+    /// Bearer tokens and their scopes. Required (non-empty) when `enabled`.
+    #[serde(default)]
+    pub tokens: Vec<McpTokenConfig>,
+    /// Browser origins allowed to call the endpoint, in addition to the
+    /// request's own origin (an `Origin` whose `host[:port]` equals the
+    /// request's `Host` is always accepted, so the embedded web UI's chat
+    /// works with the empty default). Any other `Origin` is refused
+    /// (DNS-rebinding defence); non-browser agents send none. List the Vite
+    /// dev server here (`http://localhost:5173`) when developing the UI.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+}
+
+/// One MCP bearer token.
+#[derive(Debug, Deserialize, Clone)]
+pub struct McpTokenConfig {
+    /// The secret; usually `${FEATHERBIT_MCP_READ_TOKEN}`. At least 16 chars.
+    pub token: String,
+    /// `read` (list/get/validate/traces/sandbox) or `write` (also mutations).
+    pub scope: McpScope,
+    /// Optional label used in logs only; never returned by any endpoint.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// What an MCP token may do. `write` implies `read`.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum McpScope {
+    Read,
+    Write,
+}
+
+impl McpScope {
+    /// Whether a token with this scope may use a tool requiring `required`.
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))] // scope-gates tools in src/mcp/server.rs
+    pub fn allows(self, required: McpScope) -> bool {
+        self == McpScope::Write || required == McpScope::Read
+    }
+
+    /// The wire/log spelling. Consumed in every build by
+    /// `src/admin/mcp.rs`'s `status()` handler (and, with the `mcp`
+    /// feature, logged by `src/mcp/server.rs`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            McpScope::Read => "read",
+            McpScope::Write => "write",
+        }
+    }
+}
+
+fn default_mcp_path() -> String {
+    "/mcp".to_string()
+}
+
+impl McpConfig {
+    /// Fail-fast validation, run from [`SystemConfig::validate`].
+    pub fn validate(&self) -> Result<(), String> {
+        let reserved = ["/", "/api", "/healthz", "/readyz", "/metrics"];
+        if !self.path.starts_with('/')
+            || reserved.contains(&self.path.as_str())
+            || self.path.starts_with("/api/")
+        {
+            return Err(format!(
+                "admin.mcp.path '{}' must be an absolute path outside /api (and not /healthz, /readyz, /metrics)",
+                self.path
+            ));
+        }
+        if self.enabled && self.tokens.is_empty() {
+            return Err(
+                "admin.mcp.tokens must declare at least one token when admin.mcp.enabled is true"
+                    .into(),
+            );
+        }
+        for (i, t) in self.tokens.iter().enumerate() {
+            if t.token.is_empty() {
+                return Err(format!(
+                    "admin.mcp.tokens[{i}].token is empty (is the environment variable set?)"
+                ));
+            }
+            if t.token.chars().count() < MCP_MIN_TOKEN_LEN {
+                return Err(format!(
+                    "admin.mcp.tokens[{i}].token must be at least {MCP_MIN_TOKEN_LEN} characters"
+                ));
+            }
+            if let Some(j) = self.tokens[..i].iter().position(|o| o.token == t.token) {
+                return Err(format!("admin.mcp.tokens[{i}] duplicates tokens[{j}]"));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn default_listener() -> ListenerConfig {
@@ -843,6 +958,113 @@ mod tests {
         let cfg: AdminConfig =
             serde_yaml::from_str("username: u\npassword: p\nui_enabled: false\n").unwrap();
         assert!(!cfg.ui_enabled);
+    }
+
+    fn admin_with_mcp(mcp_yaml: &str) -> AdminConfig {
+        let yaml = format!("username: u\npassword: p\nmcp:\n{}", mcp_yaml);
+        serde_yaml::from_str(&yaml).unwrap()
+    }
+
+    #[test]
+    fn test_admin_mcp_absent_by_default() {
+        let cfg: AdminConfig = serde_yaml::from_str("username: u\npassword: p\n").unwrap();
+        assert!(cfg.mcp.is_none());
+    }
+
+    #[test]
+    fn test_mcp_defaults() {
+        let cfg = admin_with_mcp("  enabled: false\n");
+        let mcp = cfg.mcp.unwrap();
+        assert!(!mcp.enabled);
+        assert_eq!(mcp.path, "/mcp");
+        assert!(mcp.tokens.is_empty());
+        assert!(mcp.allowed_origins.is_empty());
+        assert!(mcp.validate().is_ok());
+    }
+
+    #[test]
+    fn test_mcp_enabled_requires_tokens() {
+        let mcp = admin_with_mcp("  enabled: true\n").mcp.unwrap();
+        let err = mcp.validate().unwrap_err();
+        assert!(
+            err.contains("admin.mcp.tokens must declare at least one token"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_mcp_empty_token_rejected() {
+        let mcp =
+            admin_with_mcp("  enabled: true\n  tokens:\n    - token: \"\"\n      scope: read\n")
+                .mcp
+                .unwrap();
+        let err = mcp.validate().unwrap_err();
+        assert!(err.contains("admin.mcp.tokens[0].token is empty"), "{err}");
+    }
+
+    #[test]
+    fn test_mcp_short_token_rejected() {
+        let mcp =
+            admin_with_mcp("  enabled: true\n  tokens:\n    - token: short\n      scope: read\n")
+                .mcp
+                .unwrap();
+        let err = mcp.validate().unwrap_err();
+        assert!(
+            err.contains("admin.mcp.tokens[0].token must be at least 16 characters"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_mcp_duplicate_token_rejected() {
+        let mcp = admin_with_mcp(
+            "  enabled: true\n  tokens:\n    - token: aaaaaaaaaaaaaaaaaaaa\n      scope: read\n    - token: aaaaaaaaaaaaaaaaaaaa\n      scope: write\n",
+        )
+        .mcp
+        .unwrap();
+        let err = mcp.validate().unwrap_err();
+        assert!(
+            err.contains("admin.mcp.tokens[1] duplicates tokens[0]"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_mcp_bad_paths_rejected() {
+        for bad in [
+            "mcp", "/", "/api", "/api/mcp", "/healthz", "/readyz", "/metrics",
+        ] {
+            let mcp = admin_with_mcp(&format!("  path: \"{bad}\"\n")).mcp.unwrap();
+            let err = mcp.validate().unwrap_err();
+            assert!(err.contains("admin.mcp.path"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn test_mcp_valid_config_and_scope_semantics() {
+        let mcp = admin_with_mcp(
+            "  enabled: true\n  path: /agent\n  tokens:\n    - token: rrrrrrrrrrrrrrrrrrrr\n      scope: read\n      name: local\n    - token: wwwwwwwwwwwwwwwwwwww\n      scope: write\n  allowed_origins: [\"http://localhost:5173\"]\n",
+        )
+        .mcp
+        .unwrap();
+        assert!(mcp.validate().is_ok());
+        assert_eq!(mcp.tokens[0].name.as_deref(), Some("local"));
+        assert_eq!(mcp.tokens[1].name, None);
+        assert!(McpScope::Write.allows(McpScope::Read));
+        assert!(McpScope::Write.allows(McpScope::Write));
+        assert!(McpScope::Read.allows(McpScope::Read));
+        assert!(!McpScope::Read.allows(McpScope::Write));
+        assert_eq!(McpScope::Read.as_str(), "read");
+        assert_eq!(McpScope::Write.as_str(), "write");
+    }
+
+    #[test]
+    fn test_system_validate_runs_mcp_validate() {
+        let s: SystemConfig = serde_yaml::from_str(
+            "admin:\n  username: u\n  password: p\n  mcp:\n    enabled: true\n",
+        )
+        .unwrap();
+        assert!(s.validate().unwrap_err().contains("admin.mcp.tokens"));
     }
 }
 

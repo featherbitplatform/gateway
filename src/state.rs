@@ -179,6 +179,27 @@ impl SharedState {
         Ok(())
     }
 
+    /// `validate_gateway`, but guaranteed to leave `resources.stores` exactly
+    /// as it found it, on both success and failure.
+    ///
+    /// `compile_routes` only restores the pre-compile store registry when it
+    /// *fails* — on success the candidate registry is left live, because
+    /// every other caller (`apply_gateway`, config-store commits) follows a
+    /// successful validate with an apply that installs that same candidate
+    /// for real. A true dry-run has no such follow-up: without this, a
+    /// `dry_run: true` MCP write (e.g. `delete_store`) would durably swap in
+    /// the candidate registry — tearing down a live store's client (breaking
+    /// `/api/sessions`/ACME redis storage until the next apply) or standing
+    /// up a client for a store that was never committed — even though
+    /// nothing was meant to change. Use this wherever validation must not
+    /// have that side effect.
+    pub fn validate_gateway_dry(&self, gw: &GatewayConfig) -> Result<(), String> {
+        let prev = self.resources.stores.load_full();
+        let result = self.validate_gateway(gw);
+        self.resources.stores.store(prev);
+        result
+    }
+
     /// Reloads from disk (re-reads `gateway.yaml` raw, keeping `${VAR}`
     /// placeholders — resolution happens at compile/build time), recompiles,
     /// and swaps in the new config.
@@ -186,12 +207,19 @@ impl SharedState {
     /// Invoked by the hot-reload file watcher. Fails without side effects if
     /// `config_path` is unset, the file cannot be parsed, or compilation fails.
     pub async fn reload_from_disk(&self) -> Result<(), String> {
+        let new_gw = self.load_gateway_from_disk()?;
+        self.apply_gateway(new_gw).await
+    }
+
+    /// Parses `gateway.yaml` from `config_path` without applying it (raw,
+    /// `${VAR}` placeholders kept). Lets callers compare the file against the
+    /// live config before a reload discards in-memory edits.
+    pub fn load_gateway_from_disk(&self) -> Result<GatewayConfig, String> {
         let path = self
             .config_path
             .as_ref()
             .ok_or("No config path set for hot-reload")?;
-        let new_gw: GatewayConfig = crate::config::load_yaml(path).map_err(|e| e.to_string())?;
-        self.apply_gateway(new_gw).await
+        crate::config::load_yaml(path).map_err(|e| e.to_string())
     }
 
     /// Validates and compiles every policy, then binds each route to its

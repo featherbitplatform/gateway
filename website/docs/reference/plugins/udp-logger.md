@@ -41,3 +41,7 @@ Builds the shared access-log entry, pushes it to the batch sink, and passes the 
 ## Behavior notes
 
 - Each entry is sent as its **own datagram** (one JSON object per packet), regardless of the batch size.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

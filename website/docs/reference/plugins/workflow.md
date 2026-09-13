@@ -85,3 +85,11 @@ Counters are isolated per workflow node instance and per rule. With the `local` 
 ## Ports
 
 `workflow` declares four output ports: `success`, `denied` (a `return` rule rejected the request), `limited` (a `limit-count` rule's quota was exceeded), and `error` (a genuine counter-backend failure). `success`, `denied`, and `limited` are mandatory — the policy compiler rejects any policy that leaves one unwired. See [Wiring the early exits](#wiring-the-early-exits) above.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `RATE_LIMIT_ERROR` | 500 | A `limit-count` action's counter backend failed — the rule rejects rather than failing open. |

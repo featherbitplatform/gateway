@@ -62,3 +62,7 @@ All keys are optional; this node's configuration never fails to parse.
 
 - The core metrics are **built-in and always on**, so this node is only a thin add-on that records the per-consumer counter.
 - featherbit has no route object on the context here, so the `route` label uses the request `Host` (low-cardinality). `prefer_name` is accepted for config compatibility but is otherwise inert.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

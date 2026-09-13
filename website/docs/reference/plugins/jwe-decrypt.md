@@ -74,3 +74,7 @@ The plugin implements the `dir` (direct) key-management algorithm with `A256GCM`
 - The `encrypted_key` segment of the compact serialization must be empty (as it always is for `dir`). A non-empty segment is rejected.
 - The consumer `secret` must be a 32-byte AES-256 key — either 32 raw bytes (`is_base64_encoded: false`) or base64url that decodes to 32 bytes (`is_base64_encoded: true`).
 - **All rejections return `401` on the `denied` port**, consistent with featherbit's other credential-auth plugins.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

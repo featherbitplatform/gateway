@@ -23,6 +23,20 @@ admin:
   # Serve the embedded web UI (node-graph editor). Set false for API-only
   # deployments; the -headless image never serves it regardless.
   ui_enabled: ${ADMIN_UI_ENABLED:-true}
+  # Model Context Protocol server for AI agents (Claude Code, Cursor, …).
+  # Off by default. Tokens are scoped: `read` = inspect config, traces and the
+  # sandbox; `write` = also create/replace/delete routes, policies, supernodes,
+  # plugin configs and stores. Generate tokens with `openssl rand -base64 32`.
+  # mcp:
+  #   enabled: ${FEATHERBIT_MCP_ENABLED:-false}
+  #   path: /mcp
+  #   tokens:
+  #     - token: ${FEATHERBIT_MCP_READ_TOKEN}
+  #       scope: read
+  #       name: local-agent
+  #     - token: ${FEATHERBIT_MCP_WRITE_TOKEN}
+  #       scope: write
+  #   allowed_origins: []
 
 # Policy-execution tracing + the plugin sandbox. Off by default; toggling
 # requires a restart (system.yaml is not hot-reloaded).

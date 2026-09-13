@@ -7,8 +7,8 @@
  *
  * @module components/TraceViewer
  */
-import { useState } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
+import { useState, type CSSProperties } from 'react';
+import { AlertTriangle, Bot, ChevronDown, ChevronRight, MessageSquare } from 'lucide-react';
 import type { Change, EdgeKind, NodeStep, TraceDetail } from '../types';
 import { getPluginMeta } from '../pluginMeta';
 import { formatDuration } from '../format';
@@ -17,7 +17,22 @@ import { formatDuration } from '../format';
 interface TraceViewerProps {
   /** The trace to render, from GET /api/debug/traces/{id} or a sandbox run. */
   trace: TraceDetail;
+  /** When set, shows an "Ask AI about this step" button beside the selected step's Changes eyebrow (opens the chat). */
+  onAskAgent?: (nodeId: string) => void;
 }
+
+/** Shared small-button style for the trace header/detail-pane actions
+ *  ("Copy to sandbox", "Copy as agent prompt", "Why this port?", …). */
+const headerButton: CSSProperties = {
+  flexShrink: 0,
+  padding: '3px 10px',
+  borderRadius: 'var(--radius-sm)',
+  fontSize: 'var(--text-2xs)',
+  fontWeight: 500,
+  background: 'var(--surface-input)',
+  color: 'var(--text-primary)',
+  border: '1px solid var(--border)',
+};
 
 /** Human wording for each edge the engine can follow after a node. */
 const EDGE_LABEL: Record<EdgeKind, string> = {
@@ -121,7 +136,7 @@ function ChangeRow({ change }: { change: Change }) {
  * policy author actually has; the full context snapshot is one collapse away
  * for when the answer is not enough.
  */
-export function TraceViewer({ trace }: TraceViewerProps) {
+export function TraceViewer({ trace, onAskAgent }: TraceViewerProps) {
   // Callers key this component by trace id, so a different trace remounts it
   // and both start fresh — the rail can never point past the end.
   const [selected, setSelected] = useState(0);
@@ -275,8 +290,24 @@ export function TraceViewer({ trace }: TraceViewerProps) {
               </div>
             </div>
 
-            <div className="eyebrow" style={{ marginBottom: 6 }}>
-              Changes
+            <div
+              className="flex items-center justify-between"
+              style={{ marginBottom: 6 }}
+            >
+              <div className="eyebrow">Changes</div>
+              {onAskAgent && (
+                <button
+                  onClick={() => onAskAgent(step.node_id)}
+                  title={`Open the chat and ask why ${step.node_id} exited on port ${step.port ?? 'error'}`}
+                  style={headerButton}
+                  className="flex items-center gap-1"
+                  onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+                >
+                  <MessageSquare size={11} />
+                  Ask AI about this step
+                </button>
+              )}
             </div>
             {step.changes.length === 0 ? (
               <p
@@ -340,10 +371,16 @@ export function TraceViewer({ trace }: TraceViewerProps) {
 export function TraceHeader({
   trace,
   onCopyToSandbox,
+  onCopyPrompt,
+  onAskAgent,
 }: {
   trace: TraceDetail;
   /** When set, shows a button that replays this trace's request in the sandbox. */
   onCopyToSandbox?: () => void;
+  /** When set, shows a secondary "Copy prompt" button (the troubleshooting prompt, for an external agent). */
+  onCopyPrompt?: () => void;
+  /** When set, shows the primary "Troubleshoot with AI" button that opens the chat seeded with this trace. */
+  onAskAgent?: () => void;
 }) {
   return (
     <div style={{ marginBottom: 10 }}>
@@ -357,26 +394,43 @@ export function TraceHeader({
         >
           {trace.method} {trace.path} · {trace.status}
         </div>
-        {onCopyToSandbox && (
-          <button
-            onClick={onCopyToSandbox}
-            title="Load this request's context into the Sandbox tab to replay or tweak it"
-            style={{
-              flexShrink: 0,
-              padding: '3px 10px',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-2xs)',
-              fontWeight: 500,
-              background: 'var(--surface-input)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border)',
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
-          >
-            Copy to sandbox
-          </button>
-        )}
+        <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
+          {onCopyToSandbox && (
+            <button
+              onClick={onCopyToSandbox}
+              title="Load this request's context into the Sandbox tab to replay or tweak it"
+              style={headerButton}
+              onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+              onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+            >
+              Copy to sandbox
+            </button>
+          )}
+          {onAskAgent && (
+            <button
+              onClick={onAskAgent}
+              title={`Open the chat with this trace and work out why the client got ${trace.status}`}
+              className="flex items-center gap-1"
+              style={{ ...headerButton, background: 'var(--accent)', color: 'var(--text-on-accent)', border: 'none' }}
+              onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+              onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+            >
+              <Bot size={11} />
+              Troubleshoot with AI
+            </button>
+          )}
+          {onCopyPrompt && (
+            <button
+              onClick={onCopyPrompt}
+              title="Copy the same troubleshooting prompt, trace inlined, for an external agent"
+              style={headerButton}
+              onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+              onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+            >
+              Copy prompt
+            </button>
+          )}
+        </div>
       </div>
       <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)', marginTop: 2 }}>
         policy {trace.policy}

@@ -5,10 +5,31 @@
  *
  * @module components/Sidebar
  */
-import { useEffect, useState } from 'react';
-import { Plus, RotateCw, X, FileCode, Bug, KeyRound, ShieldCheck, Bell } from 'lucide-react';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { Plus, RotateCw, X, FileCode, Bug, KeyRound, ShieldCheck, Bell, Bot, MessageSquare } from 'lucide-react';
 import type { Route, Supernode, PluginConfigDef, StoreConfig, GatewayStatus } from '../types';
 import { api } from '../api/client';
+
+/**
+ * Shared style of the eight two-column footer buttons. The last four
+ * properties keep a long label ("Notifications" plus its unread badge,
+ * "Certificates", "Reload Config") on one line inside a half-width grid cell
+ * instead of wrapping and growing the footer; the text and aria-label are
+ * unchanged, only what an overflow does.
+ */
+const footerButtonStyle: CSSProperties = {
+  padding: '7px 0',
+  borderRadius: 'var(--radius-sm)',
+  fontSize: 'var(--text-xs)',
+  fontWeight: 'var(--weight-medium)' as never,
+  background: 'var(--surface-input)',
+  color: 'var(--text-primary)',
+  border: '1px solid var(--border)',
+  minWidth: 0,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
 
 /** Props for Sidebar. Route data and mutations are owned by the parent (App). */
 interface SidebarProps {
@@ -72,6 +93,12 @@ interface SidebarProps {
   onOpenNotifications: () => void;
   /** Error notifications raised since the panel was last opened; shown as the bell's badge when > 0. */
   unreadNotifications: number;
+  /** Opens the Agent (MCP) panel. */
+  onOpenAgent: () => void;
+  /** Whether the MCP server is on (dims the button when off, like Debug). */
+  mcpEnabled: boolean;
+  /** Opens the in-UI agent chat. */
+  onOpenChat: () => void;
 }
 
 /**
@@ -115,6 +142,9 @@ export function Sidebar({
   onOpenCertificates,
   onOpenNotifications,
   unreadNotifications,
+  onOpenAgent,
+  mcpEnabled,
+  onOpenChat,
 }: SidebarProps) {
   const [status, setStatus] = useState<GatewayStatus | null>(null);
 
@@ -174,7 +204,7 @@ export function Sidebar({
       </div>
 
       {/* Routes */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto min-h-40">
         <div className="p-3 flex items-center justify-between">
           <span className="eyebrow">Routes</span>
           <button
@@ -502,159 +532,145 @@ export function Sidebar({
       </div>
 
       {/* Footer */}
-      <div style={{ padding: 12, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {/* Persistent log of every toast: a rejected save that flashed by
-            during a busy moment stays inspectable here, server reason included. */}
-        <button
-          onClick={onOpenNotifications}
-          aria-label="Notifications"
-          title={
-            unreadNotifications > 0
-              ? `${unreadNotifications} unread error${unreadNotifications === 1 ? '' : 's'} — open the notification log`
-              : 'Notification log — every save outcome, inspectable afterwards'
-          }
-          className="w-full flex items-center justify-center gap-1.5 transition-colors"
-          style={{
-            padding: '7px 0',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 'var(--text-xs)',
-            fontWeight: 'var(--weight-medium)' as never,
-            background: 'var(--surface-input)',
-            color: 'var(--text-primary)',
-            border: `1px solid ${unreadNotifications > 0 ? 'var(--error)' : 'var(--border)'}`,
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-          onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
-        >
-          <Bell size={12} />
-          Notifications
-          {unreadNotifications > 0 && (
-            <span
-              data-testid="notifications-badge"
-              style={{
-                minWidth: 16,
-                padding: '0 5px',
-                borderRadius: 999,
-                fontFamily: 'var(--font-mono)',
-                fontSize: 10,
-                lineHeight: '16px',
-                fontWeight: 700,
-                background: 'var(--error)',
-                color: '#fff',
-              }}
-            >
-              {unreadNotifications}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={onOpenCertificates}
-          aria-label="Certificates"
-          title="ACME-managed TLS certificates"
-          className="w-full flex items-center justify-center gap-1.5 transition-colors"
-          style={{
-            padding: '7px 0',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 'var(--text-xs)',
-            fontWeight: 'var(--weight-medium)' as never,
-            background: 'var(--surface-input)',
-            color: 'var(--text-primary)',
-            border: '1px solid var(--border)',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-          onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
-        >
-          <ShieldCheck size={12} />
-          Certificates
-        </button>
-        {/* Always rendered, even with no stores declared: a developer who
-            cannot find the button files a bug, one who sees it greyed out
-            fixes their config (declares a redis/valkey store). */}
-        <button
-          onClick={onOpenSessions}
-          title={
-            stores.length === 0
-              ? 'Server-side sessions — requires a declared redis/valkey store'
-              : 'List and revoke server-side sessions'
-          }
-          aria-label="Sessions"
-          className="w-full flex items-center justify-center gap-1.5 transition-colors"
-          style={{
-            padding: '7px 0',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 'var(--text-xs)',
-            fontWeight: 'var(--weight-medium)' as never,
-            background: 'var(--surface-input)',
-            color: stores.length === 0 ? 'var(--text-muted)' : 'var(--text-primary)',
-            border: '1px solid var(--border)',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-          onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
-        >
-          <KeyRound size={12} />
-          Sessions
-        </button>
-        {/* Always rendered, even when debug is off: a developer who cannot find
-            the button files a bug, one who sees it greyed out fixes their config. */}
-        <button
-          onClick={onOpenDebug}
-          title={
-            debugEnabled
-              ? 'Browse policy traces and run the plugin sandbox'
-              : 'Debug mode is off — set debug.enabled in system.yaml and restart'
-          }
-          className="w-full flex items-center justify-center gap-1.5 transition-colors"
-          style={{
-            padding: '7px 0',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 'var(--text-xs)',
-            fontWeight: 'var(--weight-medium)' as never,
-            background: 'var(--surface-input)',
-            color: debugEnabled ? 'var(--text-primary)' : 'var(--text-muted)',
-            border: '1px solid var(--border)',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-          onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
-        >
-          <Bug size={12} />
-          Debug
-        </button>
-        <button
-          onClick={onViewYaml}
-          className="w-full flex items-center justify-center gap-1.5 transition-colors"
-          style={{
-            padding: '7px 0',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 'var(--text-xs)',
-            fontWeight: 'var(--weight-medium)' as never,
-            background: 'var(--surface-input)',
-            color: 'var(--text-primary)',
-            border: '1px solid var(--border)',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-          onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
-        >
-          <FileCode size={12} />
-          View YAML
-        </button>
-        <button
-          onClick={onReload}
-          className="w-full flex items-center justify-center gap-1.5 transition-colors"
-          style={{
-            padding: '7px 0',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 'var(--text-xs)',
-            fontWeight: 'var(--weight-medium)' as never,
-            background: 'var(--surface-input)',
-            color: 'var(--text-primary)',
-            border: '1px solid var(--border)',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-          onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
-        >
-          <RotateCw size={12} />
-          Reload Config
-        </button>
+      <div style={{ padding: 12, borderTop: '1px solid var(--border)' }}>
+        {/* Two columns: with eight buttons here (Notifications through Reload
+            Config), one-per-row would starve the route list of height above
+            (it's the only flex-1 section — see the min-h-40 on it) at
+            Playwright's default viewport. Grouping into a grid keeps every
+            button's text/aria-label/title unchanged; only the layout moves. */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+          {/* Persistent log of every toast: a rejected save that flashed by
+              during a busy moment stays inspectable here, server reason included. */}
+          <button
+            onClick={onOpenNotifications}
+            aria-label="Notifications"
+            title={
+              unreadNotifications > 0
+                ? `${unreadNotifications} unread error${unreadNotifications === 1 ? '' : 's'} — open the notification log`
+                : 'Notification log — every save outcome, inspectable afterwards'
+            }
+            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            style={{
+              ...footerButtonStyle,
+              border: `1px solid ${unreadNotifications > 0 ? 'var(--error)' : 'var(--border)'}`,
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+          >
+            <Bell size={12} />
+            Notifications
+            {unreadNotifications > 0 && (
+              <span
+                data-testid="notifications-badge"
+                style={{
+                  minWidth: 16,
+                  padding: '0 5px',
+                  borderRadius: 999,
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  lineHeight: '16px',
+                  fontWeight: 700,
+                  background: 'var(--error)',
+                  color: '#fff',
+                }}
+              >
+                {unreadNotifications}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={onOpenAgent}
+            aria-label="Agent"
+            title={mcpEnabled ? 'Connect an AI agent over MCP; copy prompts' : 'MCP is off — set admin.mcp.enabled in system.yaml and restart'}
+            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            style={{ ...footerButtonStyle, color: mcpEnabled ? 'var(--text-primary)' : 'var(--text-muted)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+          >
+            <Bot size={12} />
+            Agent
+          </button>
+          <button
+            onClick={onOpenChat}
+            aria-label="Chat"
+            title="Chat with an AI agent about this gateway (your own OpenAI-compatible API key, stored in this browser)"
+            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            style={footerButtonStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+          >
+            <MessageSquare size={12} />
+            Chat
+          </button>
+          <button
+            onClick={onOpenCertificates}
+            aria-label="Certificates"
+            title="ACME-managed TLS certificates"
+            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            style={footerButtonStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+          >
+            <ShieldCheck size={12} />
+            Certificates
+          </button>
+          {/* Always rendered, even with no stores declared: a developer who
+              cannot find the button files a bug, one who sees it greyed out
+              fixes their config (declares a redis/valkey store). */}
+          <button
+            onClick={onOpenSessions}
+            title={
+              stores.length === 0
+                ? 'Server-side sessions — requires a declared redis/valkey store'
+                : 'List and revoke server-side sessions'
+            }
+            aria-label="Sessions"
+            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            style={{ ...footerButtonStyle, color: stores.length === 0 ? 'var(--text-muted)' : 'var(--text-primary)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+          >
+            <KeyRound size={12} />
+            Sessions
+          </button>
+          {/* Always rendered, even when debug is off: a developer who cannot find
+              the button files a bug, one who sees it greyed out fixes their config. */}
+          <button
+            onClick={onOpenDebug}
+            title={
+              debugEnabled
+                ? 'Browse policy traces and run the plugin sandbox'
+                : 'Debug mode is off — set debug.enabled in system.yaml and restart'
+            }
+            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            style={{ ...footerButtonStyle, color: debugEnabled ? 'var(--text-primary)' : 'var(--text-muted)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+          >
+            <Bug size={12} />
+            Debug
+          </button>
+          <button
+            onClick={onViewYaml}
+            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            style={footerButtonStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+          >
+            <FileCode size={12} />
+            View YAML
+          </button>
+          <button
+            onClick={onReload}
+            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            style={footerButtonStyle}
+            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
+            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+          >
+            <RotateCw size={12} />
+            Reload Config
+          </button>
+        </div>
       </div>
     </div>
   );
