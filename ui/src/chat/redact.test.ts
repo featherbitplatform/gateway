@@ -20,11 +20,9 @@ describe('redactSecrets', () => {
   it('redacts auth schemes, JWTs, PEM blocks and well-known key prefixes', () => {
     // jwt.io's sample token and a placeholder AWS key id below: fake by
     // construction, and the matcher cannot be tested without strings shaped
-    // like real secrets.
-    // nosemgrep: generic.secrets.security.detected-jwt-token.detected-jwt-token
+    // like real secrets, so the whole file sits in .semgrepignore.
     const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
     const r = redactSecrets(
-      // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
       `use Bearer abcdefgh12345678 or ${jwt}\nkey sk-abcdefghijklmnopqrstuvwxyz and AKIAABCDEFGHIJKLMNOP\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----`,
     );
     expect(r.text).toBe(`use Bearer ${REDACTED} or ${REDACTED}\nkey ${REDACTED} and ${REDACTED}\n${REDACTED}`);
