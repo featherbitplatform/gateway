@@ -99,6 +99,17 @@ Core features:
 
 ## Available Plugin Types
 
+**Adding a node type** means updating every registration point, not just the factory — a plugin that works in YAML but is missing from the catalog is invisible to the MCP tools (`list_node_types`/`get_node_type`) and to the UI palette:
+
+1. `src/plugins/native/<name>.rs` + `pub mod` in `src/plugins/native/mod.rs`
+2. `KNOWN_PLUGIN_TYPES` and the `create_plugin` match arm in `src/plugins/mod.rs`
+3. `CATALOG` in `src/admin/policies.rs` (type + description) — this is what `/api/plugins` and the MCP catalog serve
+4. `ui/src/pluginCategories.ts` (palette group), `ui/src/pluginMeta.tsx` (color + icon), optionally `ui/src/pluginConfig.ts` (config form)
+5. `website/docs/reference/plugins/<type>.md` + `website/sidebars.ts` + the table in `website/docs/reference/plugins/index.md` — the page is what `get_node_type` hands an agent
+6. A non-default port spec in `src/plugins/ports.rs`; a row in `docs/apisix-parity.md`
+
+The `admin::policies` tests enforce 2–5 (`test_catalog_covers_factory`, `..._has_an_icon`, `..._is_in_a_palette_category`, `..._has_a_docs_page`, `..._is_in_the_sidebar`), so run the **full** `cargo test` — a filtered run will not catch the drift.
+
 80+ node types registered in the `create_plugin` factory (`src/plugins/mod.rs`). Core: `listener`, `client`, `proxy-rewrite`, `upstream`, `error-handler`, `script`. The rest are ported from Apache APISIX 3.17 across transformation, security, auth/authz, traffic control, logging, tracing, metrics, and serverless — see `docs/apisix-parity.md` (repo-internal, not published on the docs site) for the full catalog and the parity status of all 118 APISIX plugins. Shared plugin infrastructure lives in `src/plugins/util/` (content codec, cookie sessions, log entries, trace propagation), `src/vars/` (var resolver + expression engine), `src/outbound/`, `src/consumers/`, `src/ratelimit/`, `src/batch/`, and `src/traffic/`.
 
 ## Not Yet Implemented
