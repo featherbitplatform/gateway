@@ -41,7 +41,11 @@ Only a status Keycloak uses to express an access verdict is treated as a verdict
 - `401` or `403` (Keycloak evaluated the request and refused it), a missing bearer token, or an empty `permissions` list under `ENFORCING` → deliberate rejection, exits on the **`denied`** port:
   - `context.response.status_code` = `403`
   - Body: `{"error":"access_denied","error_description":"not_authorized"}`
-- **Any other status** — `5xx`, or a `4xx` that means the request *to Keycloak* was wrong (`400 invalid_grant`, a `404` from a misconfigured `token_endpoint` path) — and any genuine callout failure (endpoint unreachable, timed out, untransportable) → the node never obtained a decision, so it exits on the ordinary **error** port instead (same response shape, error code `AUTHZ_KEYCLOAK_ERROR` appended to `context.errors`). Reporting a broken deployment as a `403` would hide it behind a plausible-looking denial.
+- **Any other status** — `5xx`, or a `4xx` that means the request *to Keycloak* was wrong (`400 invalid_grant`, a `404` from a misconfigured `token_endpoint` path) — and any genuine callout failure (endpoint unreachable, timed out, untransportable) → the node never obtained a decision, so it exits on the ordinary **error** port instead (a `502` `{"error": "provider_error", "message": "<reason>"}` response — not the `403` `denied` shape — with error code `AUTHZ_KEYCLOAK_ERROR` appended to `context.errors`). Reporting a broken deployment as a `403` would hide it behind a plausible-looking denial.
+
+:::caution Breaking change
+Before v0.8 this provider-failure response reused the `denied` shape (`403` `{"error": "access_denied"}`), so an unreachable Keycloak was indistinguishable from a denied permission. It is now the shared `502 {"error": "provider_error", "message": "<reason>"}` response with no challenge header, the same shape every provider-backed auth plugin prepares (`openid-connect`, `cas-auth`, `ldap-auth`, `authz-keycloak`, `authz-casdoor`). Match on the `error` port / the error code, or on the `502`, instead of the old status.
+:::
 
 With an empty `permissions` list, `ENFORCING` denies and `PERMISSIVE` allows (no callout).
 
@@ -66,3 +70,11 @@ edges:
   - from: authz-keycloak.denied
     to: client.in
 ```
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `AUTHZ_KEYCLOAK_ERROR` | 502 | The UMA permission callout to Keycloak failed, or returned an unexpected status. |

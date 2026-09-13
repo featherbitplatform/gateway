@@ -52,3 +52,7 @@ Each flush POSTs `<endpoint>/_bulk` with `Content-Type: application/x-ndjson`. T
 
 - **No Elasticsearch version probe.** featherbit targets ES 7+ and never emits `_type` in the action line, so it performs no version-probe callout; `field.type` is accepted but ignored.
 - **Static index name.** Because entries are flushed in batches without a request context, `field.index` is used as a literal string — `{time}` strftime tokens and `$var` references are not resolved.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

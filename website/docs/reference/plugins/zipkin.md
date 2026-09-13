@@ -66,3 +66,7 @@ For a **continued** trace, the incoming `x-b3-sampled` flag is honored. For a **
 
 - Spans are exported one-per-request (fire-and-forget) rather than through a batched reporter.
 - Only the Zipkin v2 span format is emitted, and only a single `SERVER` span per hop — no child spans.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

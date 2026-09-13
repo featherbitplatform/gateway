@@ -79,3 +79,7 @@ The cache is in-memory and per gateway instance; entries expire lazily on read.
 ## Ports
 
 `proxy-cache` declares three output ports: `success` (a cache miss, or a non-cacheable method — the request continues), `hit` (the response was served from cache; wire straight to `client`), and `error` (never actually used — cache reads/writes are infallible in-process calls). `success` and `hit` are mandatory on both the lookup and store nodes — the policy compiler rejects any policy that leaves either unwired, even on the store node where `hit` is never actually emitted. See [Wiring](#wiring) above.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

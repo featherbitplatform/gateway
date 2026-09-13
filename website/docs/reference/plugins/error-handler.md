@@ -46,3 +46,7 @@ Wire outcome ports **straight to `client`**. Routing one through `error-handler`
 It always succeeds and exits through the `success` port — the `error` port is never taken, and no error codes are emitted. It reads `context.errors` but never appends to it, and does not touch `context.request` or `context.message`.
 
 **UI editor note:** the node inspector form offers a `content_type` field, but the plugin does not read that key — the response content type is always `application/json`.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

@@ -144,6 +144,34 @@ impl StoreRegistry {
         }
     }
 
+    /// True when `name` has a live client in this registry. Used by tests
+    /// (and anything else that needs a lookup without a client-typed error)
+    /// to assert what a dry-run compile did or did not durably swap in.
+    #[cfg(feature = "redis-store")]
+    #[allow(dead_code)] // exercised by mcp::tools::writes dry-run tests
+    pub fn contains(&self, name: &str) -> bool {
+        self.clients.contains_key(name)
+    }
+
+    /// The raw client for `name` (ACME storage borrows it; sessions/counters have
+    /// their own typed accessors).
+    #[cfg(feature = "redis-store")]
+    pub fn client(&self, name: &str) -> Result<Arc<redis_store::RedisStoreClient>, String> {
+        self.clients.get(name).cloned().ok_or_else(|| {
+            let mut names: Vec<&str> = self.clients.keys().map(String::as_str).collect();
+            names.sort_unstable();
+            format!(
+                "unknown store '{}' — declared stores: {}",
+                name,
+                if names.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    names.join(", ")
+                }
+            )
+        })
+    }
+
     /// Resolves the counter backend for a named store; the error carries the
     /// declared-store list so a typo is self-explanatory.
     #[cfg(feature = "redis-store")]

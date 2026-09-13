@@ -6,16 +6,18 @@
 //! (node-graph editor) as an unauthenticated fallback
 //! (compile-time `ui` feature + runtime `admin.ui_enabled`).
 
+mod acme;
 mod auth;
 mod consumers;
 mod debug;
 mod env_vars;
+mod mcp;
 mod plugin_configs;
-mod policies;
+pub(crate) mod policies;
 mod routes;
 mod sessions;
 mod status;
-mod stores;
+pub(crate) mod stores;
 mod supernodes;
 #[cfg(feature = "ui")]
 mod ui;
@@ -71,8 +73,8 @@ pub async fn start_admin_server(
     let tls_config: Option<tls::SharedTlsConfig> = match &admin_config.tls {
         // HTTP/2 is fine for the admin API; the auto builder still serves h1.
         Some(tls_cfg) => {
-            let shared = tls::build_reloadable(tls_cfg, true)?;
-            tls::spawn_cert_watcher(tls_cfg.clone(), true, shared.clone(), "admin");
+            let shared = tls::build_reloadable(tls_cfg, true, None)?;
+            tls::spawn_cert_watcher(tls_cfg.clone(), true, shared.clone(), "admin", None);
             Some(shared)
         }
         None => None,
@@ -138,14 +140,16 @@ pub async fn start_admin_server(
 /// Builds the admin router: authed API routes, plus — only when compiled with
 /// the `ui` feature AND `admin.ui_enabled` is true — the unauthenticated SPA
 /// fallback. Without it, non-API paths get axum's default 404.
-fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
-    let app = Router::new()
+pub(crate) fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
+    let api = Router::new()
         // API routes (with auth)
         .merge(routes::router())
+        .merge(acme::router())
         .merge(policies::router())
         .merge(plugin_configs::router())
         .merge(supernodes::router())
         .merge(consumers::router())
+        .merge(mcp::router())
         .merge(sessions::router())
         .merge(status::router())
         .merge(stores::router())
@@ -159,7 +163,35 @@ fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
             }),
             auth::basic_auth_middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
+
+    // MCP lives OUTSIDE the Basic Auth layer: it has its own bearer tokens,
+    // and its own explicit 404-when-disabled route, so `ui_enabled` cannot
+    // turn the path into the SPA index.
+    let mcp_path = admin_config
+        .mcp
+        .as_ref()
+        .map(|m| m.path.clone())
+        .unwrap_or_else(|| "/mcp".to_string());
+    #[cfg(feature = "mcp")]
+    let mcp_router = match &admin_config.mcp {
+        Some(cfg) if cfg.enabled => crate::mcp::router(cfg, state),
+        _ => {
+            info!("MCP server disabled (admin.mcp.enabled = false)");
+            crate::mcp::disabled_router(&mcp_path)
+        }
+    };
+    #[cfg(not(feature = "mcp"))]
+    let mcp_router = {
+        if admin_config.mcp.as_ref().is_some_and(|m| m.enabled) {
+            warn!(
+                "MCP server not compiled in (built without the \"mcp\" feature); admin.mcp ignored"
+            );
+        }
+        let _ = &state;
+        crate::mcp::disabled_router(&mcp_path)
+    };
+    let app = api.merge(mcp_router);
 
     // UI static files (no auth — the API calls from the UI will authenticate).
     //
@@ -244,6 +276,61 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_path_is_404_when_disabled_even_with_ui() {
+        let app = build_router(&admin_config(true), test_state());
+        let resp = app
+            .oneshot(Request::post("/mcp").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], br#"{"error":"not_found"}"#);
+    }
+
+    /// Restructuring `build_router` to mount `mcp::router()` alongside the
+    /// other `.merge()`d API routers is easy to get subtly wrong (e.g.
+    /// merging it inside vs. outside the Basic Auth `.layer()`, or before vs.
+    /// after `.with_state()`). The other tests here only assert `/api/*` is
+    /// *not 404*, or that `/mcp` behaves correctly — none of them positively
+    /// prove Basic Auth still gates `/api/*`. This closes that gap: a real
+    /// 401 without credentials, a real 200 with correct ones, and `/healthz`
+    /// staying exempt either way.
+    #[tokio::test]
+    async fn test_api_path_still_behind_basic_auth_after_mcp_restructure() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+
+        let app = build_router(&admin_config(true), test_state());
+        let resp = app
+            .oneshot(Request::get("/api/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let creds = STANDARD.encode("u:p");
+        let app = build_router(&admin_config(true), test_state());
+        let resp = app
+            .oneshot(
+                Request::get("/api/status")
+                    .header("Authorization", format!("Basic {creds}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let app = build_router(&admin_config(true), test_state());
+        let resp = app
+            .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

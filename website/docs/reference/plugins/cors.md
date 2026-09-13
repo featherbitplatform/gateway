@@ -56,3 +56,7 @@ This plugin never errors: it never exits through the `error` port, emits no erro
 :::note Legacy configs
 Older UI builds saved the keys `allow_origins`, `allow_methods`, and `max_age_s`, which the plugin ignores - nodes saved with them run with the defaults above. Re-save the node (the editor now uses the plugin's keys, including `allowed_headers`) or update the YAML to the keys in the table.
 :::
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

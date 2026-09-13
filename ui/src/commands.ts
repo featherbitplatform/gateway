@@ -19,10 +19,18 @@ export interface CommandContext {
   viewYaml: () => void;
   reloadConfig: () => void;
   toggleTheme: () => void;
+  /** Opens the notification log (every toast, inspectable afterwards). */
+  openNotifications: () => void;
   /** Runs an action owned by the canvas (see editorActions.tsx). */
   invokeEditorAction: (id: string) => void;
   /** True when the canvas has registered that action. */
   hasEditorAction: (id: string) => boolean;
+  /** Copies (default) or asks in chat a policy-authoring prompt; design_* open a goal dialog first. */
+  agentPrompt: (name: 'review_policy' | 'design_policy' | 'design_supernode' | 'design_route', mode?: 'copy' | 'ask') => void;
+  /** Opens the Agent (MCP) panel. */
+  openAgentPanel: () => void;
+  /** Opens the in-UI agent chat. */
+  openChat: () => void;
 }
 
 /** One palette entry. */
@@ -76,7 +84,16 @@ export function buildCommands(): Command[] {
     },
     { id: 'view-yaml', title: 'View YAML', shortcut: 'Y', when: (c) => c.hasSelection, run: (c) => c.viewYaml() },
     { id: 'reload-config', title: 'Reload gateway config', run: (c) => c.reloadConfig() },
+    { id: 'show-notifications', title: 'Show notifications', shortcut: 'N', run: (c) => c.openNotifications() },
     { id: 'toggle-theme', title: 'Toggle theme', run: (c) => c.toggleTheme() },
+    { id: 'open-agent-panel', title: 'Open Agent panel (MCP)', run: (c) => c.openAgentPanel() },
+    { id: 'open-chat', title: 'Open Chat (AI agent)', run: (c) => c.openChat() },
+    // Clipboard variants live only in the Agent panel's prompt library now;
+    // the palette opens the chat directly.
+    { id: 'agent-ask-review-policy', title: 'AI: review this policy', when: (c) => c.editorOpen, run: (c) => c.agentPrompt('review_policy', 'ask') },
+    { id: 'agent-ask-design-policy', title: 'AI: design a policy…', run: (c) => c.agentPrompt('design_policy', 'ask') },
+    { id: 'agent-ask-design-supernode', title: 'AI: design a supernode…', run: (c) => c.agentPrompt('design_supernode', 'ask') },
+    { id: 'agent-ask-design-route', title: 'AI: design a route…', run: (c) => c.agentPrompt('design_route', 'ask') },
   ];
 }
 

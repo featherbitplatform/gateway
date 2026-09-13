@@ -262,72 +262,169 @@ fn context_to_lua(lua: &Lua, ctx: &Context) -> LuaResult<LuaTable> {
 /// required and fail unmarshalling if malformed; `query_params` and
 /// `message` are optional. `protocol` and `errors` are not exposed to Lua,
 /// so the caller passes the original context's values through unchanged.
+/// Lua text for a scalar. Numbers and booleans are accepted because a script
+/// that writes `ctx.response.status_code = 200` or a numeric header value
+/// means the obvious thing.
+fn scalar_text(value: &LuaValue) -> Option<String> {
+    match value {
+        LuaValue::String(s) => Some(String::from_utf8_lossy(&s.as_bytes()).into_owned()),
+        LuaValue::Integer(i) => Some(i.to_string()),
+        LuaValue::Number(n) => Some(n.to_string()),
+        LuaValue::Boolean(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// A required string field, named in the error so the script author knows
+/// which one to fix.
+fn field_string(table: &LuaTable, field: &str, at: &str) -> Result<String, String> {
+    let value: LuaValue = table
+        .get(field)
+        .map_err(|e| format!("{at}.{field} could not be read: {e}"))?;
+    scalar_text(&value).ok_or_else(|| {
+        format!(
+            "{at}.{field} must be a string, got {} — keep the field the script received",
+            value.type_name()
+        )
+    })
+}
+
+/// A header or query-parameter map. The canonical shape is a list of strings
+/// per key (that is what the script is handed), but `headers["x-user"] =
+/// "alice"` is the natural thing to write, so a bare scalar is accepted as a
+/// one-element list. Anything else names the offending key.
+fn field_string_lists(
+    table: &LuaTable,
+    field: &str,
+    at: &str,
+) -> Result<HashMap<String, Vec<String>>, String> {
+    let value: LuaValue = table
+        .get(field)
+        .map_err(|e| format!("{at}.{field} could not be read: {e}"))?;
+    let map = match value {
+        LuaValue::Nil => return Ok(HashMap::new()),
+        LuaValue::Table(t) => t,
+        other => {
+            return Err(format!(
+                "{at}.{field} must be a table of name -> value, got {}",
+                other.type_name()
+            ))
+        }
+    };
+
+    let mut out = HashMap::new();
+    for pair in map.pairs::<LuaValue, LuaValue>() {
+        let (k, v) = pair.map_err(|e| format!("{at}.{field}: {e}"))?;
+        let key = scalar_text(&k)
+            .ok_or_else(|| format!("{at}.{field} has a non-string key ({})", k.type_name()))?;
+        let values = match v {
+            LuaValue::Table(list) => {
+                let mut vals = Vec::new();
+                for (i, item) in list.sequence_values::<LuaValue>().enumerate() {
+                    let item = item.map_err(|e| format!("{at}.{field}['{key}'][{}]: {e}", i + 1))?;
+                    vals.push(scalar_text(&item).ok_or_else(|| {
+                        format!(
+                            "{at}.{field}['{key}'][{}] must be a string, got {}",
+                            i + 1,
+                            item.type_name()
+                        )
+                    })?);
+                }
+                vals
+            }
+            // `headers["x-user"] = "alice"` — accept it as {"alice"}.
+            scalar => vec![scalar_text(&scalar).ok_or_else(|| {
+                format!(
+                    "{at}.{field}['{key}'] must be a string or a table of strings (e.g. {{\"a\", \"b\"}}), got {}",
+                    scalar.type_name()
+                )
+            })?],
+        };
+        out.insert(key, values);
+    }
+    Ok(out)
+}
+
+/// A body field: a string, a scalar, or nil for "no body".
+fn field_body(table: &LuaTable, at: &str) -> Result<bytes::Bytes, String> {
+    let value: LuaValue = table
+        .get("body")
+        .map_err(|e| format!("{at}.body could not be read: {e}"))?;
+    match value {
+        LuaValue::Nil => Ok(bytes::Bytes::new()),
+        LuaValue::String(s) => Ok(bytes::Bytes::from(s.as_bytes().to_vec())),
+        other => scalar_text(&other).map(bytes::Bytes::from).ok_or_else(|| {
+            format!(
+                "{at}.body must be a string, got {} — encode tables yourself (e.g. with a JSON string)",
+                other.type_name()
+            )
+        }),
+    }
+}
+
+/// The context table a script returned, field by field. Every failure names
+/// the field: an opaque "error converting Lua string to table" left script
+/// authors (and agents) guessing at the shape.
 fn lua_to_context(
     table: &LuaTable,
     protocol: Protocol,
     errors: Vec<GatewayError>,
-) -> LuaResult<Context> {
-    let req_table: LuaTable = table.get("request")?;
-    let resp_table: LuaTable = table.get("response")?;
-
-    let mut request_headers = HashMap::new();
-    let headers_table: LuaTable = req_table.get("headers")?;
-    for pair in headers_table.pairs::<String, LuaTable>() {
-        let (k, v) = pair?;
-        let mut vals = Vec::new();
-        for val in v.sequence_values::<String>() {
-            vals.push(val?);
+) -> Result<Context, String> {
+    let sub_table = |field: &str| -> Result<LuaTable, String> {
+        let value: LuaValue = table
+            .get(field)
+            .map_err(|e| format!("ctx.{field} could not be read: {e}"))?;
+        match value {
+            LuaValue::Table(t) => Ok(t),
+            other => Err(format!(
+                "ctx.{field} must be a table, got {} — return the context you were given (`return ctx`), with your changes applied",
+                other.type_name()
+            )),
         }
-        request_headers.insert(k, vals);
-    }
+    };
+    let req_table = sub_table("request")?;
+    let resp_table = sub_table("response")?;
 
-    let mut query_params = HashMap::new();
-    if let Ok(qp_table) = req_table.get::<LuaTable>("query_params") {
-        for pair in qp_table.pairs::<String, LuaTable>() {
-            let (k, v) = pair?;
-            let mut vals = Vec::new();
-            for val in v.sequence_values::<String>() {
-                vals.push(val?);
-            }
-            query_params.insert(k, vals);
-        }
-    }
-
-    let body_str: mlua::String = req_table.get("body")?;
     let request = GatewayRequest {
-        method: req_table.get("method")?,
-        path: req_table.get("path")?,
-        host: req_table.get("host")?,
-        scheme: req_table.get("scheme")?,
-        headers: request_headers,
-        query_params,
-        body: bytes::Bytes::from(body_str.as_bytes().to_vec()),
-        remote_addr: req_table.get("remote_addr")?,
+        method: field_string(&req_table, "method", "ctx.request")?,
+        path: field_string(&req_table, "path", "ctx.request")?,
+        host: field_string(&req_table, "host", "ctx.request")?,
+        scheme: field_string(&req_table, "scheme", "ctx.request")?,
+        headers: field_string_lists(&req_table, "headers", "ctx.request")?,
+        query_params: field_string_lists(&req_table, "query_params", "ctx.request")?,
+        body: field_body(&req_table, "ctx.request")?,
+        remote_addr: field_string(&req_table, "remote_addr", "ctx.request")?,
         protocol,
     };
 
-    let mut response_headers = HashMap::new();
-    let resp_headers_table: LuaTable = resp_table.get("headers")?;
-    for pair in resp_headers_table.pairs::<String, LuaTable>() {
-        let (k, v) = pair?;
-        let mut vals = Vec::new();
-        for val in v.sequence_values::<String>() {
-            vals.push(val?);
-        }
-        response_headers.insert(k, vals);
+    let status_value: LuaValue = resp_table
+        .get("status_code")
+        .map_err(|e| format!("ctx.response.status_code could not be read: {e}"))?;
+    let status_code = match &status_value {
+        LuaValue::Integer(i) => u16::try_from(*i).ok(),
+        LuaValue::Number(n) => (n.fract() == 0.0)
+            .then_some(*n as i64)
+            .and_then(|i| u16::try_from(i).ok()),
+        LuaValue::String(s) => String::from_utf8_lossy(&s.as_bytes()).parse().ok(),
+        _ => None,
     }
+    .ok_or_else(|| {
+        format!(
+            "ctx.response.status_code must be an HTTP status number (e.g. 200), got {}",
+            status_value.type_name()
+        )
+    })?;
 
-    let resp_body_str: mlua::String = resp_table.get("body")?;
     let response = GatewayResponse {
-        status_code: resp_table.get("status_code")?,
-        headers: response_headers,
-        body: bytes::Bytes::from(resp_body_str.as_bytes().to_vec()),
+        status_code,
+        headers: field_string_lists(&resp_table, "headers", "ctx.response")?,
+        body: field_body(&resp_table, "ctx.response")?,
     };
 
     let mut message = HashMap::new();
-    if let Ok(msg_table) = table.get::<LuaTable>("message") {
+    if let Ok(LuaValue::Table(msg_table)) = table.get::<LuaValue>("message") {
         for pair in msg_table.pairs::<String, LuaValue>() {
-            let (k, v) = pair?;
+            let (k, v) = pair.map_err(|e| format!("ctx.message: {e}"))?;
             message.insert(k, lua_to_json(&v));
         }
     }
@@ -531,6 +628,132 @@ mod tests {
         assert_eq!(result.request.protocol, Protocol::Http2);
         assert_eq!(result.errors.len(), 1);
         assert_eq!(result.errors[0].code, "UPSTREAM_CONNECTION_ERROR");
+    }
+
+    /// Runs `body` as the whole of `execute`, returning the result.
+    fn run(body: &str) -> Result<Context, PluginExecutionError> {
+        let rt =
+            LuaRuntime::new(&format!("function execute(ctx)\n{body}\nend"), 5000, None).unwrap();
+        rt.execute(test_context())
+    }
+
+    /// The shape a script author naturally writes — a bare string header
+    /// value — used to fail with an opaque conversion error.
+    #[test]
+    fn test_lua_scalar_header_and_query_values_are_accepted() {
+        let ctx = run(r#"
+            ctx.request.headers["x-user"] = "alice"
+            ctx.request.headers["x-retry"] = 3
+            ctx.request.query_params["page"] = "2"
+            ctx.response.headers["x-served"] = "yes"
+            return ctx
+        "#)
+        .unwrap();
+        assert_eq!(ctx.request.headers["x-user"], vec!["alice"]);
+        assert_eq!(ctx.request.headers["x-retry"], vec!["3"]);
+        assert_eq!(ctx.request.query_params["page"], vec!["2"]);
+        assert_eq!(ctx.response.headers["x-served"], vec!["yes"]);
+    }
+
+    #[test]
+    fn test_lua_list_header_values_still_work() {
+        let ctx = run(r#"
+            ctx.request.headers["accept"] = {"text/plain", "application/json"}
+            return ctx
+        "#)
+        .unwrap();
+        assert_eq!(
+            ctx.request.headers["accept"],
+            vec!["text/plain", "application/json"]
+        );
+    }
+
+    #[test]
+    fn test_lua_nil_body_and_numeric_status_are_accepted() {
+        let ctx = run(r#"
+            ctx.request.body = nil
+            ctx.response.status_code = 201
+            ctx.response.body = "ok"
+            return ctx
+        "#)
+        .unwrap();
+        assert!(ctx.request.body.is_empty());
+        assert_eq!(ctx.response.status_code, 201);
+        assert_eq!(ctx.response.body.as_ref(), b"ok");
+    }
+
+    #[test]
+    fn test_lua_unmarshal_errors_name_the_offending_field() {
+        // A table where a string belongs.
+        let err = run(r#"
+            ctx.request.path = {"/oops"}
+            return ctx
+        "#)
+        .unwrap_err();
+        assert_eq!(err.error.code, "LUA_UNMARSHAL_ERROR");
+        assert!(
+            err.error
+                .message
+                .contains("ctx.request.path must be a string"),
+            "{}",
+            err.error.message
+        );
+
+        // A table where a body belongs: the message says to encode it.
+        let err = run(r#"
+            ctx.response.body = { ok = true }
+            return ctx
+        "#)
+        .unwrap_err();
+        assert!(
+            err.error
+                .message
+                .contains("ctx.response.body must be a string"),
+            "{}",
+            err.error.message
+        );
+
+        // A nested table inside a header list.
+        let err = run(r#"
+            ctx.request.headers["x"] = {{"nested"}}
+            return ctx
+        "#)
+        .unwrap_err();
+        assert!(
+            err.error.message.contains("ctx.request.headers['x'][1]"),
+            "{}",
+            err.error.message
+        );
+
+        // A fresh table instead of the context that was handed in.
+        let err = run(r#"
+            return { message = { a = 1 } }
+        "#)
+        .unwrap_err();
+        assert!(
+            err.error.message.contains("ctx.request must be a table"),
+            "{}",
+            err.error.message
+        );
+        assert!(
+            err.error.message.contains("return ctx"),
+            "{}",
+            err.error.message
+        );
+
+        // A status code that is not a status code.
+        let err = run(r#"
+            ctx.response.status_code = "fine"
+            return ctx
+        "#)
+        .unwrap_err();
+        assert!(
+            err.error
+                .message
+                .contains("status_code must be an HTTP status number"),
+            "{}",
+            err.error.message
+        );
     }
 
     #[test]

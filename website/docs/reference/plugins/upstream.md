@@ -74,14 +74,19 @@ Both HTTPS proxying and `wss` WebSocket relays present the certificate.
 
 The plugin builds an HTTP request to `http://<host>:<port><path>`, forwarding the request method, all request headers (the `Host` header is overridden with the upstream target's `host:port`), and the buffered request body. On success it populates `context.response` with the upstream's status code, headers, and body, and exits through the `success` port. The upstream's status is passed through as-is — a backend 500 is still a `success`-port outcome.
 
-Failures return the Context along with an error so the graph engine routes through the `error` port; the error is appended to `context.errors`:
-
-| Code | When |
-|---|---|
-| `UPSTREAM_REQUEST_BUILD_ERROR` | The outbound request could not be constructed (e.g. invalid header values). |
-| `UPSTREAM_CONNECTION_ERROR` | Connecting to or exchanging with the target failed. |
-| `UPSTREAM_BODY_READ_ERROR` | Reading the upstream response body failed. |
+Failures return the Context along with an error so the graph engine routes through the `error` port; the error is appended to `context.errors` — see [Errors](#errors).
 
 The plugin does not read or write `context.message`.
 
 Each proxied call runs under the `timeout_ms` deadline; exceeding it fails the node with error code `UPSTREAM_TIMEOUT` through the error port.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. It prepares no response of its own: what the caller sees is decided by the policy's `error` wiring, an [`error-handler`](error-handler.md), or the gateway's default 500.
+
+| Code | Status | When |
+|---|---|---|
+| `UPSTREAM_REQUEST_BUILD_ERROR` | — | The outbound request could not be constructed (e.g. invalid header values). |
+| `UPSTREAM_CONNECTION_ERROR` | — | Connecting to or exchanging with the target failed. |
+| `UPSTREAM_BODY_READ_ERROR` | — | Reading the upstream response body failed. |
+| `UPSTREAM_TIMEOUT` | — | The call exceeded the `timeout_ms` deadline (connect + request + response body). |

@@ -52,3 +52,7 @@ Builds the shared access-log entry, JSON-encodes it, wraps it in an RFC 5424 fra
 
 - `tls` is **not yet supported**; `tls: true` is rejected at config load.
 - `flush_limit`, `drop_limit`, and `pool_size` are accepted but not honored; batching is governed by the shared batch keys instead.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

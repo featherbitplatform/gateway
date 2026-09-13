@@ -42,3 +42,12 @@ Rejections write a JSON `{"error": ..., "message": ...}` response and exit throu
 - **`query` is checked structurally only** (non-blank, balanced braces, a selection set present) — it is not parsed with a full GraphQL parser, and a multi-operation document missing `operation_name` is not caught at config load; the GraphQL server will reject such documents itself.
 - **GETs become POSTs.** featherbit always sends the canonical JSON POST, even for `GET` requests.
 - **Variables merge both sources.** For every request, query parameters are checked first, falling back to JSON body fields — regardless of the request method.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `METHOD_NOT_ALLOWED` | 405 | The request used a method other than `GET` or `POST`. |
+| `INVALID_REQUEST_BODY` | 400 | The request body could not be decoded as JSON. |

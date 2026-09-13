@@ -83,3 +83,7 @@ and are per gateway instance.
 ## Ports
 
 The **acquire** node declares three output ports: `success`, `limited` (an over-limit rejection is prepared), and `error` (never actually used — the plugin never fails). Like `success`, `limited` is a mandatory port: the policy compiler rejects any policy that leaves it unwired. Wire `limited` straight to `client` as shown in [Wiring](#wiring) above. The **release** node's `limited` port is unused (it never rejects) but still requires wiring — routing it to `client.in` alongside `success` is the simplest choice.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

@@ -70,3 +70,7 @@ Filters are skipped with a warning — leaving body **and** headers untouched �
 Filter `options` only accepts `"i"` — the PCRE `j`/`o` flags are JIT/compile-cache hints with no meaning here and are rejected at config load.
 
 The plugin does not read or write `context.message` or `context.errors`.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

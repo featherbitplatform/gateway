@@ -7,6 +7,7 @@
 //! - [`trace`] — the [`Trace`]/[`NodeStep`] records and redacted snapshots.
 //! - [`diff`] — derives "what this plugin changed" from two snapshots.
 //! - [`store`] — resolved settings plus the bounded ring buffer.
+//! - [`render`] — trace list filtering and the rendered (`changes`-attached) shape.
 //! - [`sandbox`] — runs plugins or a named policy against a synthetic context.
 //!
 //! Tracing is opt-in per request (a trigger header) and entirely off unless
@@ -14,6 +15,7 @@
 //! request path is one `Option` check per node in the engine loop.
 
 pub mod diff;
+pub mod render;
 pub mod sandbox;
 pub mod store;
 pub mod trace;

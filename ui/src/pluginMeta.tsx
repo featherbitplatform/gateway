@@ -8,6 +8,7 @@
  */
 import type { LucideIcon } from 'lucide-react';
 import {
+  Variable,
   Archive,
   ArrowLeftRight,
   BadgeCheck,
@@ -116,6 +117,7 @@ export const pluginMeta: Record<string, PluginMeta> = {
   workflow:             { color: '#8b5cf6', icon: Workflow },
   condition:            { color: '#f59e0b', icon: GitBranch },
   'traffic-label':      { color: '#14b8a6', icon: Tags },
+  'set-vars':           { color: '#0ea5e9', icon: Variable },
   mocking:              { color: '#f59e0b', icon: FlaskConical },
   'data-mask':          { color: '#64748b', icon: EyeOff },
   'request-validation': { color: '#eab308', icon: FileCheck },

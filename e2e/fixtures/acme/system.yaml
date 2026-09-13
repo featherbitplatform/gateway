@@ -1,0 +1,28 @@
+# Second gateway for the Pebble-gated ACME scenario: HTTPS on the port Pebble's
+# validator dials (tlsPort in dev/pebble/pebble-config.json), admin on 19092.
+listener:
+  bind: "127.0.0.1"
+  port: ${FEATHERBIT_TEST_ACME_PORT:-18443}
+
+tls:
+  acme:
+    domains: ["${FEATHERBIT_TEST_ACME_DOMAIN:-localhost}"]
+
+acme:
+  directory_url: ${FEATHERBIT_TEST_PEBBLE_URL}
+  directory_ca_path: ${FEATHERBIT_TEST_PEBBLE_CA}
+  terms_of_service_agreed: true
+  contact: ["mailto:e2e@example.com"]
+  storage:
+    type: filesystem
+    dir: ${FEATHERBIT_TEST_ACME_DIR:-e2e/.tmp/acme}
+
+logging:
+  level: ${LOG_LEVEL:-warn}
+  format: text
+
+admin:
+  bind: "127.0.0.1"
+  port: 19092
+  username: admin
+  password: admin
