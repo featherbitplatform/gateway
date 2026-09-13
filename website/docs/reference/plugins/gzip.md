@@ -43,3 +43,7 @@ Otherwise the body is gzip-compressed at `comp_level`, `content-encoding: gzip` 
 Behavior notes: `http_version` and `buffers` are not supported (featherbit responses are fully buffered), and `min_length` is compared against the actual buffered body length rather than the upstream `Content-Length` header. Unlike the `brotli` node, the gzip node does not weaken `ETag` headers.
 
 The plugin does not read or write `context.message` or `context.errors`.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

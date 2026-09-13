@@ -50,3 +50,7 @@ Each flush POSTs `<scheme>://<cls_host>/structuredlog?topic_id=<cls_topic>`. The
 - **`source` omitted.** The SDK sets each `LogGroup.source` to the host IP; featherbit does not resolve its own IP and leaves it empty.
 
 The signing helper and its primitives (SHA-1, HMAC-SHA1) are unit-tested against fixed vectors.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

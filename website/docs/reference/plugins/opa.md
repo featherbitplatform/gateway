@@ -70,3 +70,12 @@ edges:
   - from: opa.denied
     to: client.in
 ```
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `OPA_ERROR` | 403 | The callout to OPA failed: the decision is unavailable, so the request is blocked by default. |
+| `OPA_ERROR` | 503 | The OPA input could not be encoded, or the response was not valid JSON / carried no `result`. |

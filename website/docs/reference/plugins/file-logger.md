@@ -40,3 +40,7 @@ Builds the shared access-log entry, pushes it to the batch sink, and passes the 
 
 - Writes are routed through the shared batch sink for consistency with the other loggers. Set `batch_max_size: 1` to write every entry as it arrives.
 - The parent directory is **not** created: if it is missing the flush fails. The file itself is created if absent.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

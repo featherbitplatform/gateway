@@ -38,3 +38,17 @@ See [`serverless-pre-function` → Behavior](./serverless-pre-function.md#behavi
 ## Behavior notes
 
 See [`serverless-pre-function` → Behavior notes](./serverless-pre-function.md#behavior-notes). Each function defines a global `execute(ctx)` and returns the Context, and phase is expressed by the node's position in the graph (this node after `upstream`).
+
+## Errors
+
+The functions run on the shared Lua runtime, so a failure in any of them propagates immediately — later functions do not run. The node returns the Context with the error, so the graph engine routes through the `error` port and appends the error to `context.errors`; it prepares no response of its own, so what the caller sees is decided by the policy's `error` wiring, an [`error-handler`](error-handler.md), or the gateway's default 500.
+
+| Code | Status | When |
+|---|---|---|
+| `LUA_EXECUTION_ERROR` | — | A function raised a runtime error. |
+| `LUA_LOAD_ERROR` | — | A function failed to load into the VM. |
+| `LUA_MARSHAL_ERROR` | — | The Context could not be converted to a Lua table. |
+| `LUA_MISSING_EXECUTE` | — | A function defined no global `execute`. |
+| `LUA_UNMARSHAL_ERROR` | — | A returned table did not fit the `ctx` shape; the message names the field. |
+
+Load, missing-`execute` and syntax failures are normally caught at policy-compile time — they reach a live request only if the source changed underneath a compiled policy. The `ctx` table shape is documented on [`script`](script.md).

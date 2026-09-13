@@ -52,3 +52,7 @@ The node is a pure passthrough: it never modifies the context and only its **suc
 - The shared log entry is used as the `jsonPayload`; per-entry `httpRequest`/`insertId` fields are not derived and a `log_format_extra` map is not supported — shape the payload with `log_format`.
 - `log_id` defaults to `featherbit%2Flogs`; `resource` defaults to `{"type":"global"}`.
 - The OAuth token flow is implemented natively (jsonwebtoken RS256 + the JWT-bearer grant) with an in-process token cache.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.
