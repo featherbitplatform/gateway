@@ -55,3 +55,7 @@ To mock only some requests, put a conditional node (e.g. `workflow` or `fault-in
 - `response_schema` (random body generation from a JSON schema) is not implemented; configs that set it are rejected at load, making `response_example` required.
 - The mock header value is `featherbit-mocking`.
 - `delay` accepts fractional seconds.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

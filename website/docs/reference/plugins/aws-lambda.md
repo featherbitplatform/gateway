@@ -44,16 +44,20 @@ Config load fails if `function_uri` is missing/empty, or if an `iam` block is pr
 
 The plugin forwards the client's method, headers, query string, and body to `function_uri`, overriding `Host` with the endpoint's authority. For `iam` auth it computes an AWS SigV4 signature and adds the `x-amz-date`, optional `x-amz-security-token`, and `Authorization` headers. On success it populates `context.response` with the function's status, headers, and body and exits through the `success` port — which should be wired to `client.in`, since this node stands in for the upstream. The function's status is passed through as-is.
 
-A callout failure returns the Context along with an error so the graph engine routes through the `error` port; the error is appended to `context.errors`:
-
-| Code | Status | When |
-|---|---|---|
-| `AWS_LAMBDA_CALLOUT_ERROR` | 504 | The callout exceeded `timeout`. |
-| `AWS_LAMBDA_CALLOUT_ERROR` | 503 | Connecting to or exchanging with the endpoint failed. |
-| `AWS_LAMBDA_CALLOUT_ERROR` | 502 | The request could not be built (e.g. invalid `function_uri`). |
+A callout failure returns the Context along with an error so the graph engine routes through the `error` port; the error is appended to `context.errors` — see [Errors](#errors).
 
 ## SigV4 signing
 
 The signature covers a minimal, gateway-controlled header set: `host`, `x-amz-date`, and `x-amz-security-token` (when a session token is set). AWS permits signing a subset of headers, so the remaining forwarded headers are sent unsigned. The signing routine is verified against the published AWS SigV4 `get-vanilla` test vector.
 
 The plugin does not read or write `context.message`.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `AWS_LAMBDA_CALLOUT_ERROR` | 504 | The Lambda callout exceeded `timeout`. |
+| `AWS_LAMBDA_CALLOUT_ERROR` | 503 | Connecting to or exchanging with the endpoint failed. |
+| `AWS_LAMBDA_CALLOUT_ERROR` | 502 | The request could not be built (e.g. an invalid endpoint URI). |

@@ -45,3 +45,7 @@ Otherwise the body is brotli-compressed at `comp_level`, `content-encoding: br` 
 Limitations: `mode`, `lgwin`, `lgblock`, and `http_version` are not supported — featherbit's codec uses generic mode with its own window size, and responses are fully buffered. `min_length` is compared against the actual buffered body length rather than the upstream `Content-Length` header.
 
 The plugin does not read or write `context.message` or `context.errors`.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

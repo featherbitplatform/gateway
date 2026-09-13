@@ -33,3 +33,7 @@ When a request is sampled, the plugin builds a mirror request (method, headers, 
 - The mirror's response and any transport/timeout error are dropped (best-effort). A failed or unreachable shadow host has no effect on the client's response.
 
 The mirrored call uses a 60-second whole-call deadline; since it runs on a detached task it does not hold up request handling.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

@@ -389,6 +389,87 @@ mod tests {
         None
     }
 
+    /// Every page answers "what can go wrong here?" in the same place. An
+    /// agent wiring an `error` port has no other way to learn whether a node
+    /// can take it, or with which code.
+    #[test]
+    fn every_plugin_page_has_an_errors_section() {
+        let missing: Vec<String> = crate::admin::policies::plugin_catalog()
+            .iter()
+            .map(|p| p["type"].as_str().unwrap().to_string())
+            .filter(|t| {
+                plugin_page(t).is_some_and(|md| !md.lines().any(|l| l.trim() == "## Errors"))
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "plugin pages with no '## Errors' section: {missing:?}"
+        );
+    }
+
+    /// Two ways an Errors section can lie, both caught here: a code the
+    /// plugin emits that the page never names, and a page claiming the node
+    /// never fails when its source can produce a `PluginExecutionError`. The
+    /// second is how `serverless-pre-function` slipped through — it emits no
+    /// code of its own but propagates the Lua runtime's.
+    #[test]
+    fn error_sections_match_what_plugins_can_emit() {
+        let factory = include_str!("../plugins/mod.rs");
+        let arm = Regex::new(r#""([a-z0-9-]+)"\s*=>"#).unwrap();
+        let module = Regex::new(r"(?:native|script)::([a-z0-9_]+)::").unwrap();
+        // An error code literal: SCREAMING_SNAKE with at least two segments.
+        let code = Regex::new(r#""([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)""#).unwrap();
+        let arms: Vec<(String, usize)> = arm
+            .captures_iter(factory)
+            .map(|c| (c[1].to_string(), c.get(0).unwrap().end()))
+            .collect();
+        let plugin_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/plugins");
+        let mut findings: Vec<String> = Vec::new();
+
+        for (i, (node_type, pos)) in arms.iter().enumerate() {
+            let end = arms.get(i + 1).map_or(factory.len(), |(_, p)| *p);
+            let Some(m) = module.captures(&factory[*pos..end]) else {
+                continue;
+            };
+            let Some(file) = walkdir(std::path::Path::new(plugin_dir), &format!("{}.rs", &m[1]))
+            else {
+                continue;
+            };
+            let Ok(source) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let body = source.split("#[cfg(test)]").next().unwrap_or("");
+            let Some(page) = plugin_page(node_type) else {
+                continue;
+            };
+
+            for c in code.captures_iter(body) {
+                let name = &c[1];
+                // Not error codes: header names, content types, env vars.
+                if name.starts_with("HTTP_")
+                    || name.starts_with("CONTENT_")
+                    || name.starts_with("X_")
+                {
+                    continue;
+                }
+                if !page.contains(name) {
+                    findings.push(format!("{node_type}: emits '{name}', page never names it"));
+                }
+            }
+
+            let claims_never = page.contains("never fails at execution time");
+            let can_fail = body
+                .lines()
+                .any(|l| !l.trim_start().starts_with("//") && l.contains("PluginExecutionError"));
+            if claims_never && can_fail {
+                findings.push(format!(
+                    "{node_type}: page says it never fails, but its source produces a PluginExecutionError"
+                ));
+            }
+        }
+        assert!(findings.is_empty(), "{findings:#?}");
+    }
+
     /// The how-to guides are resources too: a plugin page that points at the
     /// Lua guide is only useful if the agent can open it.
     #[test]

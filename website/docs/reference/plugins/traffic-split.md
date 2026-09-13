@@ -78,3 +78,11 @@ edges:
 - There is no shared upstream registry at this node: a target slot is **proxied by the plugin itself** and short-circuited through the `routed` port; a default slot falls through to the route's `upstream` node.
 - Upstream references are inline target lists (`upstream.targets: [{host, port}]`) only — `upstream_id` references to a shared upstream store are not supported.
 - Selection is a deterministic weighted round-robin (a per-rule cursor); the long-run distribution matches the configured weights.
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `TRAFFIC_SPLIT_UPSTREAM_ERROR` | 502 | The chosen split target timed out, was unreachable, or the request to it could not be built. |

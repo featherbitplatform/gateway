@@ -49,3 +49,7 @@ The rewrite sets the body and `content-type`, and removes `content-length` and `
 Behavior notes: the pages live directly in the node config — there is no separate metadata tier or `enable` flag; placing the node in the graph is the enable switch. Whether a response is gateway-generated is decided by the `context.errors` heuristic described above, which is narrower than APISIX's "source is not the upstream": deliberate rejections written by a plugin are outcomes here, not errors.
 
 The plugin reads `context.errors` but never writes it, and does not touch `context.message`.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

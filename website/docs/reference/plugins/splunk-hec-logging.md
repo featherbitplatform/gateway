@@ -41,3 +41,7 @@ Builds a JSON access-log entry for each request/response, wraps it in a Splunk H
 ## Behavior
 
 The node is a pure passthrough: it never modifies the context and never fails, so only its **success** port is ever taken. `push` is fire-and-forget and never blocks the request path — when the queue is full, entries are dropped with a `tracing::warn!`. Each entry becomes a HEC event `{time, source, sourcetype: "_json", event}`; a batch is sent as the events concatenated with no separator (the format HEC expects). Delivery, batching, timing, and retries all run on a background task.
+
+## Errors
+
+This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.

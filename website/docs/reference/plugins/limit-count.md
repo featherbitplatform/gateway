@@ -61,3 +61,11 @@ edges:
   - from: limit-count.error
     to: client.in
 ```
+
+## Errors
+
+The node returns the Context with an error, so the graph engine routes through the `error` port and appends the error to `context.errors`. The status below is the one prepared on `context.response`; wire `error` to `client` (or an [`error-handler`](error-handler.md)) for the caller to see it.
+
+| Code | Status | When |
+|---|---|---|
+| `RATE_LIMIT_UNAVAILABLE` | 500 | The counter backend failed (`policy: redis`) — the node rejects rather than failing open. |
