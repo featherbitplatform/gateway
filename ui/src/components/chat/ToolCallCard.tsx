@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 import type { ToolGroup } from '../../chat/attempts';
 import { isWriteTool, needsConfirmation } from '../../chat/loop';
+import { formatPayload, isEmptyPayload, type PayloadBlock } from '../../chat/payload';
 
 interface ToolCallCardProps {
   /** All attempts of one tool (retries folded); the last one is current. */
@@ -10,27 +11,6 @@ interface ToolCallCardProps {
   awaitingConfirm: boolean;
   onRun: () => void;
   onSkip: () => void;
-}
-
-/** Pretty JSON when the text parses as JSON, else the text itself. */
-function prettyJson(raw: string): { text: string; isJson: boolean } {
-  try {
-    return { text: JSON.stringify(JSON.parse(raw), null, 2), isJson: true };
-  } catch {
-    return { text: raw, isJson: false };
-  }
-}
-
-/** True for `{}`, `[]`, `null`, blank — nothing worth showing. */
-function isEmptyPayload(raw: string): boolean {
-  const t = raw.trim();
-  if (t === '' || t === '{}' || t === '[]' || t === 'null') return true;
-  try {
-    const v: unknown = JSON.parse(t);
-    return v === null || (typeof v === 'object' && Object.keys(v as object).length === 0);
-  } catch {
-    return false;
-  }
 }
 
 /** First line of an error payload, for the folded attempt list. */
@@ -45,26 +25,33 @@ function errorSummary(content: string): string {
   return line.length > 160 ? `${line.slice(0, 160)}…` : line;
 }
 
-/** A code block styled like the Markdown renderer's fenced blocks. */
-function CodeBlock({ text, lang, maxHeight }: { text: string; lang: 'json' | 'text'; maxHeight?: number }) {
+/** The formatted blocks of one payload, each a fenced-style code block. */
+function Payload({ blocks, maxHeight }: { blocks: PayloadBlock[]; maxHeight?: number }) {
   return (
-    <pre
-      style={{
-        margin: 0,
-        padding: 8,
-        borderRadius: 'var(--radius-sm)',
-        background: 'var(--surface)',
-        border: '1px solid var(--border)',
-        overflow: 'auto',
-        maxHeight,
-        fontFamily: 'var(--font-mono)',
-        fontSize: 'var(--text-2xs)',
-        whiteSpace: 'pre',
-        color: 'var(--text-primary)',
-      }}
-    >
-      <code className={`language-${lang}`}>{text}</code>
-    </pre>
+    <>
+      {blocks.map((b, i) => (
+        <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {b.label && <span style={{ color: 'var(--text-muted)' }}>{b.label}</span>}
+          <pre
+            style={{
+              margin: 0,
+              padding: 8,
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              overflow: 'auto',
+              maxHeight,
+              fontFamily: 'var(--font-mono)',
+              fontSize: 'var(--text-2xs)',
+              whiteSpace: 'pre',
+              color: 'var(--text-primary)',
+            }}
+          >
+            <code className={`language-${b.lang}`}>{b.text}</code>
+          </pre>
+        </div>
+      ))}
+    </>
   );
 }
 
@@ -97,8 +84,8 @@ export function ToolCallCard({ group, awaitingConfirm, onRun, onSkip }: ToolCall
   const confirms = !write && needsConfirmation(group.name);
   const running = !result && !awaitingConfirm;
   const hasArgs = !isEmptyPayload(call.arguments);
-  const args = prettyJson(call.arguments);
-  const resultText = result ? prettyJson(result.content) : null;
+  const args = formatPayload(call.arguments);
+  const resultBlocks = result ? formatPayload(result.content) : [];
   // Arguments are worth a glance while the call is pending (that is what the
   // Run/Skip decision is about); afterwards they fold away behind a toggle.
   const argsOpen = hasArgs && (awaitingConfirm || running || showArgs);
@@ -165,7 +152,7 @@ export function ToolCallCard({ group, awaitingConfirm, onRun, onSkip }: ToolCall
       {argsOpen && (
         <>
           {!result && <span style={{ color: 'var(--text-muted)' }}>arguments</span>}
-          <CodeBlock text={args.text} lang={args.isJson ? 'json' : 'text'} maxHeight={200} />
+          <Payload blocks={args} maxHeight={200} />
         </>
       )}
 
@@ -180,12 +167,12 @@ export function ToolCallCard({ group, awaitingConfirm, onRun, onSkip }: ToolCall
         </div>
       )}
 
-      {result && resultText && (
+      {result && resultBlocks.length > 0 && (
         <>
           <button onClick={() => setShowResult((o) => !o)} className="flex items-center gap-1" style={toggleStyle}>
             {showResult ? <ChevronDown size={11} /> : <ChevronRight size={11} />} result
           </button>
-          {showResult && <CodeBlock text={resultText.text} lang={resultText.isJson ? 'json' : 'text'} maxHeight={280} />}
+          {showResult && <Payload blocks={resultBlocks} maxHeight={280} />}
           {result.status === 'declined' && !showResult && <span style={{ color: 'var(--text-muted)' }}>{result.content}</span>}
         </>
       )}

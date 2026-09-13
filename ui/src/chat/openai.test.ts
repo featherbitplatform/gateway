@@ -107,7 +107,11 @@ describe('streamChat', () => {
     const events = await collect(
       streamChat(settings, [{ role: 'user', content: 'x' }], [], new AbortController().signal, fakeFetch(chunks, 200, cap)),
     );
-    expect(events).toEqual([{ type: 'text', delta: 'Hel' }, { type: 'text', delta: 'lo' }, { type: 'done' }]);
+    expect(events).toEqual([
+      { type: 'text', delta: 'Hel' },
+      { type: 'text', delta: 'lo' },
+      { type: 'done', finishReason: 'stop' },
+    ]);
     expect(cap.url).toBe('https://api.example/v1/chat/completions');
     const headers = cap.init!.headers as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer sk-test');
@@ -130,9 +134,35 @@ describe('streamChat', () => {
     );
     expect(events).toEqual([
       { type: 'tool_calls', calls: [{ id: 'c1', name: 'list_routes', arguments: '{}' }] },
-      { type: 'done' },
+      { type: 'done', finishReason: 'tool_calls' },
     ]);
     expect(JSON.parse(cap.init!.body as string).tools).toEqual(tools);
+  });
+
+  it('reports the finish reason, including a truncated reply', async () => {
+    const chunks = [
+      data({ choices: [{ delta: { content: 'half a sen' } }] }),
+      data({ choices: [{ delta: {}, finish_reason: 'length' }] }),
+      'data: [DONE]\n\n',
+    ];
+    const events = await collect(streamChat(settings, [], [], new AbortController().signal, fakeFetch(chunks)));
+    expect(events.at(-1)).toEqual({ type: 'done', finishReason: 'length' });
+  });
+
+  it('yields done with a null reason when the stream just ends', async () => {
+    const events = await collect(
+      streamChat(settings, [], [], new AbortController().signal, fakeFetch([data({ choices: [{ delta: { content: 'x' } }] })])),
+    );
+    expect(events.at(-1)).toEqual({ type: 'done', finishReason: null });
+  });
+
+  it('raises a mid-stream error event instead of ending silently', async () => {
+    const chunks = [
+      data({ choices: [{ delta: { content: 'start' } }] }),
+      data({ error: { message: 'upstream timeout', type: 'server_error' } }),
+    ];
+    const gen = streamChat(settings, [], [], new AbortController().signal, fakeFetch(chunks));
+    await expect(collect(gen)).rejects.toMatchObject({ name: 'ProviderError', body: expect.stringContaining('upstream timeout') });
   });
 
   it('throws ProviderError with status and body on non-2xx', async () => {

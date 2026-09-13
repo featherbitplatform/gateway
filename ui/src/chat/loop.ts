@@ -77,6 +77,27 @@ function closeDanglingCalls(thread: Thread, calls: ToolCall[], now: number): Thr
   return t;
 }
 
+/**
+ * What to tell the operator when a reply ends without tool calls. `null` means
+ * a normal finish with text — nothing to say. Everything else would otherwise
+ * look like the chat stopping on its own: the model hit its output-token
+ * limit (long reasoning eats it), the provider filtered the reply, or the
+ * stream ended with nothing in it.
+ */
+export function finishNotice(reason: string | null, hasText: boolean): string | null {
+  switch (reason) {
+    case 'length':
+      return hasText
+        ? 'The reply was cut off: the model reached its output-token limit. Ask it to continue, or for a shorter answer.'
+        : 'The model stopped before writing anything: it reached its output-token limit (long reasoning can use it all up). Ask a narrower question, or raise the output limit for this model.';
+    case 'content_filter':
+      return 'The provider stopped this reply (content filter).';
+    default:
+      if (hasText) return null;
+      return `The model returned an empty reply${reason ? ` (finish reason: ${reason})` : ''}. Send another message to try again.`;
+  }
+}
+
 function describeError(e: unknown): string {
   if (e instanceof ProviderError) return `Provider returned ${e.status}: ${e.body}`;
   if (e instanceof Error) return e.message;
@@ -97,6 +118,7 @@ export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
   for (let round = 0; ; round++) {
     let content = '';
     let calls: ToolCall[] = [];
+    let finishReason: string | null = null;
     try {
       for await (const ev of deps.provider.stream(toWire(system, t.messages), toolDefs, deps.signal)) {
         if (ev.type === 'text') {
@@ -104,6 +126,8 @@ export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
           emit(replaceLastAssistant(t, { role: 'assistant', content }, now()));
         } else if (ev.type === 'tool_calls') {
           calls = ev.calls;
+        } else if (ev.type === 'done') {
+          finishReason = ev.finishReason ?? null;
         }
       }
     } catch (e) {
@@ -116,12 +140,17 @@ export async function runTurn(thread: Thread, deps: TurnDeps): Promise<Thread> {
     }
 
     if (calls.length === 0) {
-      // Streaming already emitted the final text; only emit when the thread
-      // does not yet end with exactly this assistant message.
-      const last = t.messages.at(-1);
-      if (!(last?.role === 'assistant' && last.content === content && !last.toolCalls && !last.error)) {
-        emit(replaceLastAssistant(t, { role: 'assistant', content }, now()));
+      if (content !== '') {
+        // Streaming already emitted the final text; only emit when the thread
+        // does not yet end with exactly this assistant message.
+        const last = t.messages.at(-1);
+        if (!(last?.role === 'assistant' && last.content === content && !last.toolCalls && !last.error)) {
+          emit(replaceLastAssistant(t, { role: 'assistant', content }, now()));
+        }
       }
+      // A truncated or empty reply used to end the turn in silence: say why.
+      const notice = finishNotice(finishReason, content !== '');
+      if (notice) emit(appendMessage(t, { role: 'assistant', content: '', error: notice }, now()));
       return t;
     }
 

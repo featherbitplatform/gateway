@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_ROUNDS, isWriteTool, needsConfirmation, runTurn, type Provider, type ToolRunner, type TurnHooks } from './loop';
+import {
+  MAX_ROUNDS,
+  finishNotice,
+  isWriteTool,
+  needsConfirmation,
+  runTurn,
+  type Provider,
+  type ToolRunner,
+  type TurnHooks,
+} from './loop';
 import type { StreamEvent, WireMessage } from './openai';
 import { ProviderError, toWire } from './openai';
 import { appendMessage, newThread, type Thread, type ToolCall } from './store';
@@ -279,5 +288,43 @@ describe('runTurn', () => {
     const tool = out.messages.find((m) => m.role === 'tool') as { content: string };
     expect(tool.content).toBe('authorization: Bearer [REDACTED]');
     expect(p.requests[1].at(-1)).toMatchObject({ role: 'tool', content: 'authorization: Bearer [REDACTED]' });
+  });
+
+  it('explains a truncated reply instead of ending the turn silently', async () => {
+    const p = provider(() => [{ type: 'text', delta: 'half a sen' }, { type: 'done', finishReason: 'length' }]);
+    const out = await runTurn(start(), { provider: p, tools: null, hooks: hooks(), signal: signal() });
+    expect(out.messages.at(-2)).toEqual({ role: 'assistant', content: 'half a sen' });
+    expect(out.messages.at(-1)).toMatchObject({ role: 'assistant', content: '', error: expect.stringContaining('cut off') });
+  });
+
+  it('explains an empty reply and stores no blank assistant message', async () => {
+    const p = provider(() => [{ type: 'done', finishReason: 'stop' }]);
+    const out = await runTurn(start(), { provider: p, tools: null, hooks: hooks(), signal: signal() });
+    expect(out.messages).toHaveLength(2);
+    expect(out.messages.at(-1)).toMatchObject({ role: 'assistant', content: '', error: expect.stringContaining('empty reply') });
+    // The notice never goes back to the provider on the next turn.
+    expect(toWire('s', out.messages).filter((m) => m.role === 'assistant')).toEqual([]);
+  });
+
+  it('says nothing extra after a normal reply', async () => {
+    const p = provider(() => [{ type: 'text', delta: 'done' }, { type: 'done', finishReason: 'stop' }]);
+    const out = await runTurn(start(), { provider: p, tools: null, hooks: hooks(), signal: signal() });
+    expect(out.messages).toEqual([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'done' },
+    ]);
+  });
+});
+
+describe('finishNotice', () => {
+  it('covers truncation, filtering, empty replies and normal finishes', () => {
+    expect(finishNotice('length', true)).toContain('cut off');
+    expect(finishNotice('length', false)).toContain('output-token limit');
+    expect(finishNotice('content_filter', true)).toContain('content filter');
+    expect(finishNotice('stop', true)).toBeNull();
+    expect(finishNotice(null, true)).toBeNull();
+    expect(finishNotice('stop', false)).toContain('empty reply');
+    expect(finishNotice(null, false)).toContain('empty reply');
+    expect(finishNotice('tool_calls', false)).toContain('finish reason: tool_calls');
   });
 });
