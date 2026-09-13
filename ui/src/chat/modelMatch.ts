@@ -21,12 +21,16 @@ export function scoreModel(query: string, id: string): number {
   return 0;
 }
 
-/** Best matches first (score desc, id asc), non-matches dropped, at most `limit`. */
-export function rankModels(query: string, ids: string[], limit = 8): string[] {
+/**
+ * Best matches first (score desc, id asc), non-matches dropped.
+ *
+ * Uncapped on purpose: typing already narrows the list, and a cap would hide
+ * a matching model with nothing on screen to say so. The combobox scrolls.
+ */
+export function rankModels(query: string, ids: string[]): string[] {
   return ids
     .map((id) => ({ id, score: scoreModel(query, id) }))
     .filter((m) => m.score > 0)
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
-    .slice(0, limit)
     .map((m) => m.id);
 }
