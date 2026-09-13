@@ -28,7 +28,16 @@ export type WireMessage =
     }
   | { role: 'tool'; tool_call_id: string; content: string };
 
-export type StreamEvent = { type: 'text'; delta: string } | { type: 'tool_calls'; calls: ToolCall[] } | { type: 'done' };
+export type StreamEvent =
+  | { type: 'text'; delta: string }
+  | { type: 'tool_calls'; calls: ToolCall[] }
+  /**
+   * End of the reply. `finishReason` is the provider's `finish_reason`
+   * (`stop`, `tool_calls`, `length`, `content_filter`, …) or null when the
+   * stream ended without one — the loop turns anything but a normal finish
+   * into a visible notice instead of stopping silently.
+   */
+  | { type: 'done'; finishReason?: string | null };
 
 /** A non-2xx reply from the provider; `body` is the raw response text. */
 export class ProviderError extends Error {
@@ -130,6 +139,7 @@ export async function* streamChat(
   const acc = new ToolCallAccumulator();
   let buffer = '';
   let sawToolCalls = false;
+  let finishReason: string | null = null;
 
   const handle = function* (payload: string): Generator<StreamEvent> {
     if (payload === '[DONE]') return;
@@ -139,8 +149,20 @@ export async function* streamChat(
     } catch {
       return;
     }
-    const choice = (json as { choices?: Array<{ delta?: { content?: unknown; tool_calls?: unknown } }> }).choices?.[0];
-    if (!choice?.delta) return;
+    // Providers report mid-stream failures as a `data: {"error": …}` event on
+    // an otherwise-200 response. Swallowing it ended the turn in silence.
+    const err = (json as { error?: unknown }).error;
+    if (err !== undefined && err !== null) {
+      throw new ProviderError(res.status, typeof err === 'string' ? err : JSON.stringify(err));
+    }
+    const choice = (
+      json as {
+        choices?: Array<{ delta?: { content?: unknown; tool_calls?: unknown }; finish_reason?: unknown }>;
+      }
+    ).choices?.[0];
+    if (!choice) return;
+    if (typeof choice.finish_reason === 'string') finishReason = choice.finish_reason;
+    if (!choice.delta) return;
     if (typeof choice.delta.content === 'string' && choice.delta.content !== '') {
       yield { type: 'text', delta: choice.delta.content };
     }
@@ -167,7 +189,7 @@ export async function* streamChat(
     const calls = acc.finish().filter((c) => c.name !== '');
     if (calls.length > 0) yield { type: 'tool_calls', calls };
   }
-  yield { type: 'done' };
+  yield { type: 'done', finishReason };
 }
 
 /** `GET {baseUrl}/models` → sorted model ids. Feeds the settings form's suggestion list. */
