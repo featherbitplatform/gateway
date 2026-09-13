@@ -18,12 +18,21 @@ describe('scoreModel', () => {
 });
 
 describe('rankModels', () => {
-  it('orders by score then id, drops non-matches, and caps the list', () => {
+  it('orders by score then id and drops non-matches', () => {
     expect(rankModels('gpt-4', IDS)).toEqual(['gpt-4.1', 'gpt-4.1-mini']);
     expect(rankModels('mini', IDS)).toEqual(['gpt-4.1-mini', 'gpt-5-mini', 'o4-mini']);
     expect(rankModels('gpt-5', IDS)).toEqual(['gpt-5', 'gpt-5-mini']);
     expect(rankModels('zzz', IDS)).toEqual([]);
-    expect(rankModels('', IDS, 3)).toEqual(['gpt-4.1', 'gpt-4.1-mini', 'gpt-5']);
+    // A blank query keeps every id, so the list is never silently cut short.
+    expect(rankModels('', IDS)).toEqual([
+      'gpt-4.1',
+      'gpt-4.1-mini',
+      'gpt-5',
+      'gpt-5-mini',
+      'o3',
+      'o4-mini',
+      'text-embedding-3-small',
+    ]);
   });
   it('lets subsequence matches through when nothing closer exists', () => {
     expect(rankModels('tem3', IDS)).toEqual(['text-embedding-3-small']);

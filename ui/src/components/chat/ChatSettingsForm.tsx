@@ -38,9 +38,10 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
   const set = (k: keyof ChatSettings) => (v: string) => setDraft((d) => ({ ...d, [k]: v }));
 
   // Closest matches to what is typed, from the loaded ids (empty until the
-  // list is loaded). Providers return dozens of models, so the list is long
-  // enough to be worth scrolling rather than cut to the top few.
-  const suggestions = rankModels(draft.model, models, 50);
+  // list is loaded). Every match is listed — a provider's few hundred ids
+  // cost nothing to render, and a cap would drop a model you could not see
+  // was missing. The list scrolls.
+  const suggestions = rankModels(draft.model, models);
   const pickModel = (m: string | undefined) => {
     if (m === undefined) return;
     setDraft((d) => ({ ...d, model: m }));
