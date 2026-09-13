@@ -4,6 +4,9 @@
 *.md
 # Self-signed test certificates/keys for the TLS integration tests.
 tests/security/
+# The chat redaction matcher can only be tested against strings shaped like
+# real secrets: jwt.io's sample token, a placeholder AWS key id, a PEM stub.
+ui/src/chat/redact.test.ts
 # Local planning notes (gitignored), incl. the vendored APISIX reference copy.
 plan/
 target/
