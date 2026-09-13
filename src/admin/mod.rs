@@ -342,4 +342,59 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
+
+    /// The Admin API guide's endpoint table is the reference operators work
+    /// from, and it has silently missed endpoints before (`/api/vars`,
+    /// `/api/env-vars`, and the ACME and MCP companions all shipped
+    /// undocumented). Every path the admin router registers must appear in it.
+    ///
+    /// The table writes path parameters Express-style (`:name`) while axum
+    /// registers them as `{name}`, so compare on the normalized form.
+    #[test]
+    fn every_admin_endpoint_is_in_the_admin_api_reference() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/admin");
+        let doc = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/website/docs/guides/admin-api.md"
+        ))
+        .expect("admin-api.md");
+
+        let mut sources = String::new();
+        let mut stack = vec![std::path::PathBuf::from(dir)];
+        while let Some(path) = stack.pop() {
+            for entry in std::fs::read_dir(&path).expect("read src/admin").flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|e| e == "rs") {
+                    sources.push_str(&std::fs::read_to_string(&p).expect("read source"));
+                }
+            }
+        }
+        // `.route(` and its path literal are often split across lines.
+        let flat = regex::Regex::new(r"\s+")
+            .unwrap()
+            .replace_all(&sources, " ")
+            .into_owned();
+
+        let route = regex::Regex::new(r#"\.route\(\s*"([^"]+)""#).unwrap();
+        let param = regex::Regex::new(r"\{([a-z_]+)\}").unwrap();
+        let mut undocumented: Vec<String> = route
+            .captures_iter(&flat)
+            .map(|c| c[1].to_string())
+            // Test modules build throwaway routers over the same paths, so a
+            // duplicate here is harmless; only absence from the doc matters.
+            .filter(|path| {
+                let normalized = param.replace_all(path, ":$1").into_owned();
+                !doc.contains(&normalized) && !doc.contains(path.as_str())
+            })
+            .collect();
+        undocumented.sort();
+        undocumented.dedup();
+
+        assert!(
+            undocumented.is_empty(),
+            "admin endpoints missing from website/docs/guides/admin-api.md: {undocumented:#?}"
+        );
+    }
 }
