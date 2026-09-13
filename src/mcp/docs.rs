@@ -15,6 +15,9 @@ use std::sync::OnceLock;
 #[include = "reference/context-vars.md"]
 #[include = "reference/conditions.md"]
 #[include = "reference/templates.md"]
+// The how-to guides: a plugin page that says "see the Lua scripting guide"
+// is useless to an agent that cannot open it.
+#[include = "guides/*.md"]
 struct DocsAssets;
 
 /// URI prefix of every documentation resource.
@@ -26,6 +29,7 @@ pub enum DocSection {
     Plugins,
     Concepts,
     Reference,
+    Guides,
 }
 
 impl DocSection {
@@ -34,6 +38,7 @@ impl DocSection {
             DocSection::Plugins => "plugins",
             DocSection::Concepts => "concepts",
             DocSection::Reference => "reference",
+            DocSection::Guides => "guides",
         }
     }
     fn dir(self) -> &'static str {
@@ -41,6 +46,7 @@ impl DocSection {
             DocSection::Plugins => "reference/plugins/",
             DocSection::Concepts => "concepts/",
             DocSection::Reference => "reference/",
+            DocSection::Guides => "guides/",
         }
     }
     // Only reached via `read_uri`, which is `mcp`-only (below).
@@ -50,6 +56,7 @@ impl DocSection {
             "plugins" => Some(DocSection::Plugins),
             "concepts" => Some(DocSection::Concepts),
             "reference" => Some(DocSection::Reference),
+            "guides" => Some(DocSection::Guides),
             _ => None,
         }
     }
@@ -118,16 +125,11 @@ fn link_re() -> &'static Regex {
 /// mistaken for an unterminated JSX block, silently swallowing everything
 /// after it for the rest of the page.
 ///
-/// Deviation from the literal brief: a captured link directory hint that
-/// contains `guides/` is left as plain text instead of being rewritten. The
-/// docs site's `guides/` pages are not embedded, and the brief's
-/// directory-hint heuristic (`concepts/`/`plugins/`/`reference/`, else the
-/// current section) has no way to represent "not embedded" — falling
-/// through to "current section" would silently produce a broken
-/// `featherbit://docs/<section>/...` URI for text like
-/// `[stores](../../guides/admin-api.md#endpoint-reference)`, which appears
-/// throughout the plugin pages. Leaving it as the original Markdown link
-/// (dead outside the docs site, but not actively misleading) is preferable.
+/// The directory hint picks the target section (`guides/`, `concepts/`,
+/// `plugins/`, `reference/`, else the page's own section). `guides/` links
+/// used to be left as raw Markdown because the guides were not embedded —
+/// which left an agent reading "see the Lua scripting guide" with no way to
+/// open it. The guides are resources now, so those links resolve too.
 pub fn clean(md: &str, section: DocSection) -> String {
     let (title, _) = frontmatter(md);
     let body = if let Some(rest) = md.strip_prefix("---\n") {
@@ -180,10 +182,9 @@ pub fn clean(md: &str, section: DocSection) -> String {
         let rewritten = link_re().replace_all(line, |c: &regex::Captures| {
             let dirs = &c[2];
             let name = &c[3];
-            if dirs.contains("guides/") {
-                return c[0].to_string();
-            }
-            let target = if dirs.contains("concepts/") {
+            let target = if dirs.contains("guides/") {
+                DocSection::Guides
+            } else if dirs.contains("concepts/") {
                 DocSection::Concepts
             } else if dirs.contains("plugins/") {
                 DocSection::Plugins
@@ -237,6 +238,13 @@ pub fn reference_page(name: &str) -> Option<String> {
     page(DocSection::Reference, name)
 }
 
+/// A how-to guide (`lua-scripting`, `debugging`, `routing`, …). Only reached
+/// via `read_uri`.
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
+pub fn guide_page(name: &str) -> Option<String> {
+    page(DocSection::Guides, name)
+}
+
 /// Resolves a `featherbit://docs/{section}/{name}` URI. Only used by the MCP
 /// `resources/read` handler in `src/mcp/server.rs`.
 #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
@@ -248,6 +256,7 @@ pub fn read_uri(uri: &str) -> Option<String> {
         DocSection::Plugins => plugin_page(name),
         DocSection::Concepts => concept_page(name),
         DocSection::Reference => reference_page(name),
+        DocSection::Guides => guide_page(name),
     }
 }
 
@@ -264,6 +273,8 @@ pub fn list_pages() -> Vec<DocPage> {
             (DocSection::Concepts, s)
         } else if let Some(s) = path.strip_prefix("reference/") {
             (DocSection::Reference, s)
+        } else if let Some(s) = path.strip_prefix("guides/") {
+            (DocSection::Guides, s)
         } else {
             continue;
         };
@@ -301,6 +312,41 @@ mod tests {
         for entry in crate::admin::policies::plugin_catalog() {
             let t = entry["type"].as_str().unwrap();
             assert!(plugin_page(t).is_some(), "no docs page for node type '{t}'");
+        }
+    }
+
+    /// The how-to guides are resources too: a plugin page that points at the
+    /// Lua guide is only useful if the agent can open it.
+    #[test]
+    fn guides_are_readable_and_listed() {
+        let md = guide_page("lua-scripting").expect("lua-scripting guide");
+        assert!(md.contains("execute(ctx)"));
+        assert!(!md.contains("---\ntitle:"), "frontmatter stripped");
+        assert_eq!(
+            read_uri("featherbit://docs/guides/lua-scripting").as_deref(),
+            Some(md.as_str())
+        );
+        let uris: Vec<String> = list_pages().into_iter().map(|p| p.uri).collect();
+        for guide in ["lua-scripting", "debugging", "routing"] {
+            let uri = format!("featherbit://docs/guides/{guide}");
+            assert!(uris.contains(&uri), "{uri} not listed");
+        }
+        assert!(guide_page("nope").is_none());
+    }
+
+    /// The `script` reference page must carry the ctx shape itself: an agent
+    /// calling get_node_type("script") gets that page and nothing else.
+    #[test]
+    fn script_page_documents_the_context_table() {
+        let md = plugin_page("script").unwrap();
+        for needle in [
+            "ctx.request.headers",
+            "ctx.response.status_code",
+            "return the same table",
+            "LUA_UNMARSHAL_ERROR",
+            "featherbit://docs/guides/lua-scripting",
+        ] {
+            assert!(md.contains(needle), "script page is missing '{needle}'");
         }
     }
 
@@ -359,16 +405,18 @@ mod tests {
         assert_eq!(out, "# T\n\nBody [link](featherbit://docs/plugins/other) and [c](featherbit://docs/concepts/stores).\n\nEnd\n");
     }
 
-    /// Guards against a mismap the directory-hint heuristic in `clean` can't
-    /// resolve correctly: a `guides/` link (guides aren't embedded) must be
-    /// left untouched rather than rewritten into a nonexistent
-    /// `featherbit://docs/<current-section>/...` URI.
+    /// Guide links point at real resources now that the guides are embedded:
+    /// a `guides/` link must map to its own section, never to the page's.
     #[test]
-    fn guides_links_are_left_unchanged() {
+    fn guides_links_become_guide_uris() {
         let raw = "---\ntitle: T\ndescription: D\n---\n\nSee the [Admin API](../../guides/admin-api.md#endpoint-reference) guide.\n";
         let out = clean(raw, DocSection::Plugins);
-        assert!(out.contains("(../../guides/admin-api.md#endpoint-reference)"));
+        assert!(
+            out.contains("(featherbit://docs/guides/admin-api)"),
+            "{out}"
+        );
         assert!(!out.contains("featherbit://docs/plugins/admin-api"));
+        assert!(read_uri("featherbit://docs/guides/admin-api").is_some());
     }
 
     /// `clean` must never panic on any page actually embedded in the binary.

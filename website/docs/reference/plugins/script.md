@@ -5,7 +5,33 @@ description: Runs a user-provided Lua script as a graph node, with full read/wri
 
 <span className="plugin-chip" style={{'--chip-color': '#a855f7'}}>script</span>
 
-Runs a user-provided script as a graph node behind the same plugin contract as native plugins. The script receives the full Context (`request`, `response`, `message`) and returns a possibly modified copy; anything it writes into `ctx.message` is visible to downstream nodes. It can sit anywhere in the request or response pipeline. Only the Lua (Luau) runtime is currently supported. See the [Lua scripting guide](../../guides/lua-scripting.md) for the full Context table shape and examples.
+Runs a user-provided script as a graph node behind the same plugin contract as native plugins. The script receives the full Context (`request`, `response`, `message`) and returns a possibly modified copy; anything it writes into `ctx.message` is visible to downstream nodes. It can sit anywhere in the request or response pipeline. Only the Lua (Luau) runtime is currently supported. The [Lua scripting guide](../../guides/lua-scripting.md) has the worked examples, `require` sandboxing and hot-reload rules (agents: `featherbit://docs/guides/lua-scripting`).
+
+## The `ctx` table
+
+Define a global `execute(ctx)`, mutate what you need, and **return the same table** — a fresh table of your own will not have the fields the gateway expects.
+
+| Field | Type |
+|---|---|
+| `ctx.request.method` / `.path` / `.host` / `.scheme` / `.remote_addr` | string |
+| `ctx.request.headers` / `.query_params` | table of `name → array of strings` (`{"alice"}`); assigning a bare string or number is accepted and wrapped |
+| `ctx.request.body` / `ctx.response.body` | string (`nil` means empty); encode tables yourself, e.g. as JSON text |
+| `ctx.response.status_code` | number, e.g. `200` |
+| `ctx.response.headers` | same map-of-arrays shape as request headers |
+| `ctx.message` | free-form map shared with every other node; values convert to/from JSON (arrays are 1-indexed tables) |
+
+`protocol` and `errors` are not exposed and pass through untouched. Header and query names are lowercase as the gateway hands them over.
+
+```lua
+function execute(ctx)
+  local name = string.match(ctx.request.path or "", "^/hello/([^/]+)")
+  ctx.message.user = name or "stranger"          -- readable downstream as $msg_user
+  ctx.request.headers["x-user"] = ctx.message.user  -- a bare string is fine
+  return ctx
+end
+```
+
+A returned table that does not fit this shape fails with `LUA_UNMARSHAL_ERROR`, and the message names the field (for example `ctx.response.body must be a string, got table`). For extracting a value without a script — a path segment, a header, a JSON body field — [`set-vars`](set-vars.md) does it declaratively.
 
 ## Configuration
 
