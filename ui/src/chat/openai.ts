@@ -192,10 +192,38 @@ export async function* streamChat(
   yield { type: 'done', finishReason };
 }
 
-/** `GET {baseUrl}/models` → sorted model ids. Feeds the settings form's suggestion list. */
+/**
+ * The identity of the endpoint a model list would come from, or `null` when
+ * the list must not be fetched on its own.
+ *
+ * Auto-loading needs a key: an endpoint that requires auth would answer 401,
+ * and one that does not is the operator's call — the settings form keeps the
+ * button available for that. The value doubles as a "already tried this
+ * pair" marker, so a re-render does not re-fetch.
+ */
+export function autoLoadKey(settings: Pick<ProviderSettings, 'baseUrl' | 'apiKey'>): string | null {
+  const baseUrl = settings.baseUrl.trim();
+  const apiKey = settings.apiKey.trim();
+  if (baseUrl === '' || apiKey === '') return null;
+  try {
+    // Half-typed URLs would fire a doomed request on every keystroke.
+    new URL(baseUrl);
+  } catch {
+    return null;
+  }
+  return `${baseUrl} ${apiKey}`;
+}
+
+/**
+ * `GET {baseUrl}/models` → sorted model ids. Feeds the settings form's
+ * suggestion list. The bearer header is sent only when a key is set, so an
+ * endpoint that serves the list unauthenticated works too.
+ */
 export async function listModels(settings: ProviderSettings, fetchImpl: typeof fetch = fetch): Promise<string[]> {
   const url = `${settings.baseUrl.replace(/\/+$/, '')}/models`;
-  const res = await fetchImpl(url, { method: 'GET', headers: { Authorization: `Bearer ${settings.apiKey}` } });
+  const headers: Record<string, string> = {};
+  if (settings.apiKey.trim() !== '') headers.Authorization = `Bearer ${settings.apiKey}`;
+  const res = await fetchImpl(url, { method: 'GET', headers });
   if (!res.ok) throw new ProviderError(res.status, await res.text());
   const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
   return (body.data ?? [])
