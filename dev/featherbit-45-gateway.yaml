@@ -1,0 +1,625 @@
+routes:
+- name: login
+  match:
+    path: /login
+    methods: []
+    headers: {}
+    host: null
+  policy: login-redirect
+- name: public
+  match:
+    path: /public/*
+    methods: []
+    headers: {}
+    host: null
+  policy: esra-public
+- name: service-worker
+  match:
+    path: /service-worker.js
+    methods: []
+    headers: {}
+    host: null
+  policy: esra-public
+- name: manifest
+  match:
+    path: /manifest.webmanifest
+    methods: []
+    headers: {}
+    host: null
+  policy: esra-public
+- name: images
+  match:
+    path: /images/*
+    methods: []
+    headers: {}
+    host: null
+  policy: esra-public
+- name: assets
+  match:
+    path: /assets/*
+    methods: []
+    headers: {}
+    host: null
+  policy: esra-public
+- name: favicon
+  match:
+    path: /favicon.ico
+    methods: []
+    headers: {}
+    host: null
+  policy: esra-public
+- name: risk-status-stream
+  match:
+    path: /api/v2/risk/status-stream
+    methods: []
+    headers: {}
+    host: null
+  policy: epg-stream
+- name: builder-status-stream
+  match:
+    path: /api/v2/builder/status-stream
+    methods: []
+    headers: {}
+    host: null
+  policy: epg-stream
+- name: api
+  match:
+    path: /api/*
+    methods: []
+    headers: {}
+    host: null
+  policy: epg-auth
+- name: auth-users
+  match:
+    path: /auth/users
+    methods: []
+    headers: {}
+    host: null
+  policy: keycloak-admin
+- name: auth-users-sub
+  match:
+    path: /auth/users/*
+    methods: []
+    headers: {}
+    host: null
+  policy: keycloak-admin
+- name: auth-groups
+  match:
+    path: /auth/groups
+    methods:
+    - GET
+    headers: {}
+    host: null
+  policy: keycloak-admin
+- name: auth-groups-sub
+  match:
+    path: /auth/groups/*
+    methods:
+    - GET
+    headers: {}
+    host: null
+  policy: keycloak-admin
+- name: auth-resources
+  match:
+    path: /auth/resources/*
+    methods: []
+    headers: {}
+    host: null
+  policy: keycloak-public
+- name: auth-public
+  match:
+    path: /auth/*
+    methods: []
+    headers: {}
+    host: null
+  policy: keycloak-public
+- name: esra-api
+  match:
+    path: /_api/*
+    methods: []
+    headers: {}
+    host: null
+  policy: esra-auth
+- name: swagger
+  match:
+    path: /swagger/*
+    methods: []
+    headers: {}
+    host: null
+  policy: epg-auth
+- name: thot-api
+  match:
+    path: /thot/api/*
+    methods: []
+    headers: {}
+    host: null
+  policy: thot-auth
+- name: thot-swagger
+  match:
+    path: /thot/swagger/*
+    methods: []
+    headers: {}
+    host: null
+  policy: thot-auth
+- name: catch-all
+  match:
+    path: /*
+    methods: []
+    headers: {}
+    host: null
+  policy: esra-auth
+policies:
+- name: login-redirect
+  error_handler: errors
+  nodes:
+  - id: listener
+    type: listener
+    config: {}
+  - id: go
+    type: redirect
+    config:
+      uri: /
+      ret_code: 302
+  - id: headers
+    type: response-rewrite
+    config: {}
+    config_ref: security-headers
+  - id: errors
+    type: error-handler
+    config: {}
+    config_ref: gateway-error
+  - id: client
+    type: client
+    config: {}
+  edges:
+  - from: listener.out
+    to: go.in
+  - from: go.redirect
+    to: headers.in
+  - from: go.success
+    to: headers.in
+  - from: go.error
+    to: errors.in
+  - from: errors.success
+    to: headers.in
+  - from: headers.success
+    to: client.in
+- name: esra-public
+  error_handler: errors
+  nodes:
+  - id: listener
+    type: listener
+    config: {}
+  - id: esra
+    type: upstream
+    config:
+      timeout_ms: ${TIMEOUT_MS:-60000}
+      targets:
+      - host: ${ESRA_HOST:-esra}
+        port: ${ESRA_PORT:-55555}
+  - id: headers
+    type: response-rewrite
+    config: {}
+    config_ref: security-headers
+  - id: landing-csd
+    type: response-rewrite
+    config:
+      headers:
+        set:
+          Clear-Site-Data: '"cache","cookies","storage"'
+      vars:
+      - - uri
+        - ==
+        - /public/landing
+  - id: errors
+    type: error-handler
+    config: {}
+    config_ref: gateway-error
+  - id: client
+    type: client
+    config: {}
+  edges:
+  - from: listener.out
+    to: esra.in
+  - from: esra.success
+    to: headers.in
+  - from: esra.error
+    to: errors.in
+  - from: errors.success
+    to: headers.in
+  - from: headers.success
+    to: landing-csd.in
+  - from: landing-csd.success
+    to: client.in
+- name: esra-auth
+  error_handler: errors
+  nodes:
+  - id: listener
+    type: listener
+    config: {}
+  - id: gate
+    type: supernode
+    config:
+      name: auth-gate
+  - id: esra
+    type: upstream
+    config:
+      timeout_ms: ${TIMEOUT_MS:-60000}
+      targets:
+      - host: ${ESRA_HOST:-esra}
+        port: ${ESRA_PORT:-55555}
+  - id: headers
+    type: response-rewrite
+    config: {}
+    config_ref: security-headers
+  - id: errors
+    type: error-handler
+    config: {}
+    config_ref: gateway-error
+  - id: client
+    type: client
+    config: {}
+  edges:
+  - from: listener.out
+    to: gate.in
+  - from: gate.success
+    to: esra.in
+  - from: gate.exit
+    to: headers.in
+  - from: gate.error
+    to: errors.in
+  - from: esra.success
+    to: headers.in
+  - from: esra.error
+    to: errors.in
+  - from: errors.success
+    to: headers.in
+  - from: headers.success
+    to: client.in
+- name: epg-auth
+  error_handler: errors
+  nodes:
+  - id: listener
+    type: listener
+    config: {}
+  - id: gate
+    type: supernode
+    config:
+      name: auth-gate
+  - id: epg
+    type: upstream
+    config:
+      timeout_ms: ${TIMEOUT_MS:-60000}
+      targets:
+      - host: ${EPG_HOST:-epg}
+        port: ${EPG_PORT:-8080}
+  - id: headers
+    type: response-rewrite
+    config: {}
+    config_ref: security-headers
+  - id: errors
+    type: error-handler
+    config: {}
+    config_ref: gateway-error
+  - id: client
+    type: client
+    config: {}
+  edges:
+  - from: listener.out
+    to: gate.in
+  - from: gate.success
+    to: epg.in
+  - from: gate.exit
+    to: headers.in
+  - from: gate.error
+    to: errors.in
+  - from: epg.success
+    to: headers.in
+  - from: epg.error
+    to: errors.in
+  - from: errors.success
+    to: headers.in
+  - from: headers.success
+    to: client.in
+- name: thot-auth
+  error_handler: errors
+  nodes:
+  - id: listener
+    type: listener
+    config: {}
+  - id: gate
+    type: supernode
+    config:
+      name: auth-gate
+  - id: thot
+    type: upstream
+    config:
+      targets:
+      - host: ${THOT_HOST:-thot}
+        port: ${THOT_PORT:-8080}
+      timeout_ms: ${TIMEOUT_MS:-60000}
+  - id: headers
+    type: response-rewrite
+    config: {}
+    config_ref: security-headers
+  - id: errors
+    type: error-handler
+    config: {}
+    config_ref: gateway-error
+  - id: client
+    type: client
+    config: {}
+  edges:
+  - from: listener.out
+    to: gate.in
+  - from: gate.success
+    to: thot.in
+  - from: gate.exit
+    to: headers.in
+  - from: gate.error
+    to: errors.in
+  - from: thot.success
+    to: headers.in
+  - from: thot.error
+    to: errors.in
+  - from: errors.success
+    to: headers.in
+  - from: headers.success
+    to: client.in
+- name: epg-stream
+  error_handler: errors
+  nodes:
+  - id: listener
+    type: listener
+    config: {}
+  - id: gate
+    type: supernode
+    config:
+      name: auth-gate
+  - id: accel-req
+    type: proxy-rewrite
+    config:
+      phase: request
+      add_headers:
+        X-Accel-Buffering: no
+  - id: epg
+    type: upstream
+    config:
+      timeout_ms: 3600000
+      targets:
+      - host: ${EPG_HOST:-epg}
+        port: ${EPG_PORT:-8080}
+  - id: headers
+    type: response-rewrite
+    config: {}
+    config_ref: security-headers
+  - id: accel-resp
+    type: response-rewrite
+    config:
+      headers:
+        set:
+          X-Accel-Buffering: no
+  - id: errors
+    type: error-handler
+    config: {}
+    config_ref: gateway-error
+  - id: client
+    type: client
+    config: {}
+  edges:
+  - from: listener.out
+    to: gate.in
+  - from: gate.success
+    to: accel-req.in
+  - from: gate.exit
+    to: headers.in
+  - from: gate.error
+    to: errors.in
+  - from: accel-req.success
+    to: epg.in
+  - from: epg.success
+    to: headers.in
+  - from: epg.error
+    to: errors.in
+  - from: errors.success
+    to: headers.in
+  - from: headers.success
+    to: accel-resp.in
+  - from: accel-resp.success
+    to: client.in
+- name: keycloak-admin
+  error_handler: errors
+  nodes:
+  - id: listener
+    type: listener
+    config: {}
+  - id: gate
+    type: supernode
+    config:
+      name: auth-gate
+  - id: admin-rewrite
+    type: proxy-rewrite
+    config:
+      phase: request
+      strip_path_prefix: /auth
+      add_path_prefix: /admin/realms/${REALM_NAME}
+  - id: keycloak
+    type: upstream
+    config:
+      targets:
+      - host: ${KEYCLOAK_HOST}
+        port: ${KEYCLOAK_PORT}
+      ssl_verify: false
+      tls: true
+  - id: headers
+    type: response-rewrite
+    config: {}
+    config_ref: security-headers
+  - id: errors
+    type: error-handler
+    config: {}
+    config_ref: gateway-error
+  - id: client
+    type: client
+    config: {}
+  edges:
+  - from: listener.out
+    to: gate.in
+  - from: gate.success
+    to: admin-rewrite.in
+  - from: gate.exit
+    to: headers.in
+  - from: gate.error
+    to: errors.in
+  - from: admin-rewrite.success
+    to: keycloak.in
+  - from: keycloak.success
+    to: headers.in
+  - from: keycloak.error
+    to: errors.in
+  - from: errors.success
+    to: headers.in
+  - from: headers.success
+    to: client.in
+- name: keycloak-public
+  error_handler: errors
+  nodes:
+  - id: listener
+    type: listener
+    config: {}
+  - id: blocker
+    type: uri-blocker
+    config:
+      rejected_code: 404
+      block_rules:
+      - admin/
+  - id: public-rewrite
+    type: proxy-rewrite
+    config:
+      strip_path_prefix: /auth
+      phase: request
+  - id: keycloak
+    type: upstream
+    config:
+      ssl_verify: false
+      targets:
+      - host: ${KEYCLOAK_HOST}
+        port: ${KEYCLOAK_PORT}
+      tls: true
+  - id: headers
+    type: response-rewrite
+    config: {}
+    config_ref: security-headers
+  - id: errors
+    type: error-handler
+    config: {}
+    config_ref: gateway-error
+  - id: client
+    type: client
+    config: {}
+  edges:
+  - from: listener.out
+    to: blocker.in
+  - from: blocker.success
+    to: public-rewrite.in
+  - from: blocker.denied
+    to: headers.in
+  - from: public-rewrite.success
+    to: keycloak.in
+  - from: keycloak.success
+    to: headers.in
+  - from: keycloak.error
+    to: errors.in
+  - from: errors.success
+    to: headers.in
+  - from: headers.success
+    to: client.in
+consumers: []
+supernodes:
+- name: auth-gate
+  description: Permissive CORS + Keycloak interactive OIDC login (APISIX plugin_config 1)
+  nodes:
+  - id: input
+    type: input
+    config: {}
+  - id: output
+    type: output
+    config: {}
+  - id: exit
+    type: output
+    config: {}
+  - id: error
+    type: error
+    config: {}
+  - id: cors
+    type: cors
+    config:
+      allowed_methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+      - PATCH
+      - HEAD
+      - OPTIONS
+      allowed_headers:
+      - '*'
+      allowed_origins:
+      - '*'
+  - id: oidc
+    type: openid-connect
+    config:
+      bearer_only: false
+      logout_path: /logout
+      session:
+        cookie:
+          lifetime: 1800
+        secret: ${SESSION_SECRET}
+      post_logout_redirect_uri: ${DEPLOYMENT_BASE_URL}/public/landing
+      discovery: https://${KEYCLOAK_HOST}:${KEYCLOAK_PORT}/realms/${REALM_NAME}/.well-known/openid-configuration
+      scope: openid
+      access_token_in_authorization_header: true
+      redirect_uri: ${DEPLOYMENT_BASE_URL}${OIDC_REDIRECT_PATH:-/.featherbit/redirect}
+      client_id: ${CLIENT_ID}
+      client_secret: ${CLIENT_SECRET}
+      ssl_verify: false
+  edges:
+  - from: input.out
+    to: cors.in
+  - from: cors.success
+    to: oidc.in
+  - from: cors.preflight
+    to: exit.in
+  - from: oidc.success
+    to: output.in
+  - from: oidc.denied
+    to: exit.in
+  - from: oidc.redirect
+    to: exit.in
+plugin_configs:
+- name: security-headers
+  type: response-rewrite
+  description: Global security response headers (APISIX global_rules equivalent)
+  config:
+    headers:
+      remove:
+      - Server
+      set:
+        Cache-Control: no-store, max-age=0
+        Content-Security-Policy: connect-src *
+        Cross-Origin-Embedder-Policy: require-corp
+        Cross-Origin-Opener-Policy: same-origin
+        Cross-Origin-Resource-Policy: same-origin
+        Permissions-Policy: accelerometer=(), autoplay=(), camera=(), cross-origin-isolated=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), sync-xhr=(self), usb=(), web-share=(), xr-spatial-tracking=(), clipboard-read=(), clipboard-write=(), gamepad=(), hid=(), idle-detection=(), interest-cohort=(), serial=(), unload=()
+        Referrer-Policy: no-referrer
+        Strict-Transport-Security: max-age=31536000; includeSubDomains
+        X-Content-Type-Options: nosniff
+        X-Frame-Options: deny
+        X-Permitted-Cross-Domain-Policies: none
+- name: gateway-error
+  type: error-handler
+  description: Uniform 502 for upstream and IdP failures
+  config:
+    status_code: 502
+    body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+stores: []
