@@ -9,15 +9,18 @@ nothing outside itself — copy a directory anywhere and it runs.
 | [`minimal/`](./minimal) | One gateway, one upstream, file-based config. The baseline to copy into your own project. | `docker compose -f examples/compose/minimal/compose.yaml up` |
 | [`etcd-single/`](./etcd-single) | Config stored in etcd on a persistent volume, so Admin API and web UI edits survive a restart. | `docker compose -f examples/compose/etcd-single/compose.yaml up` |
 | [`etcd-cluster/`](./etcd-cluster) | Two gateway replicas sharing one etcd — a change on one converges to the other. | `docker compose -f examples/compose/etcd-cluster/compose.yaml up` |
+| [`tls/`](./tls) | TLS termination with a self-signed certificate generated at startup, owned by the gateway's uid. | `docker compose -f examples/compose/tls/compose.yaml up` |
 
-All three expose the data plane on `:8080` and the Admin API and web UI on
-`:9090` (`admin` / `admin`), and route `/api/*` to a
+Each exposes the Admin API and web UI on `:9090` (`admin` / `admin`) and the
+data plane on `:8080` — except `tls/`, which serves HTTPS on `:8443`. All four
+route `/api/*` to a
 [`traefik/whoami`](https://github.com/traefik/whoami) container that echoes back
 the request it received — so you can see exactly what the policy delivered
 upstream:
 
 ```bash
 curl http://localhost:8080/api/users     # upstream sees GET /users; the /api prefix is stripped
+curl -k https://localhost:8443/api/users # the tls/ stack (self-signed, hence -k)
 open http://localhost:9090               # node-graph editor
 ```
 
@@ -34,9 +37,28 @@ FEATHERBIT_TAG=0.8.0 docker compose -f examples/compose/minimal/compose.yaml up
 
 Add `-headless` to any tag for the build without the embedded web UI.
 
+## Certificates and the container uid
+
+`tls/` generates its self-signed pair at startup into a named volume — nothing
+private is committed, and `down -v` regenerates it.
+
+The `certs` service does one thing that is easy to miss and is the reason the
+stack exists: it `chown`s the key to **uid 65532**. `openssl` writes a private
+key mode `0600` regardless of your umask, and the featherbit image is
+`FROM scratch` running as uid 65532, so a key owned by anyone else fails startup:
+
+```
+failed to read TLS private key '/etc/gateway/tls/key.pem': Permission denied (os error 13)
+```
+
+Only the key is named there — the certificate is `0644` and loads fine. If you
+bring your own pair, either `chown 65532:65532 key.pem` (keeping it `0600`), or
+run the gateway as yourself with `user: "${UID}:${GID}"` — it binds only
+unprivileged ports and needs no root.
+
 ## File config vs. etcd config
 
-`minimal/` runs the default `config.source: file`: the mounted `config/` **is**
+`minimal/` and `tls/` run the default `config.source: file`: the mounted `config/` **is**
 the configuration. Editing `gateway.yaml` on the host hot-reloads the running
 gateway, but changes made through the Admin API or the web UI apply to the
 running process only and are gone on the next start.
