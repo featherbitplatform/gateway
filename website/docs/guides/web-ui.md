@@ -79,6 +79,28 @@ The footer's **Agent** button opens the MCP connection panel: the endpoint URL, 
 
 The prompts also drive the built-in **Chat**: in the Debug panel a trace has **Troubleshoot with AI** (opens the chat with the trace and works out why the client got that status) and a selected step has **Ask AI about this step**; the policy editor's toolbar has **Review with AI**, and the Ctrl+K palette has *AI: design a policy/supernode/route…* (asks for the goal). To use an external agent instead, the trace header's **Copy prompt** and the Agent panel's prompt library copy the same prompts with the relevant data inlined plus a line telling a connected agent to prefer the live MCP tools. See [MCP server for agents](./mcp.md).
 
+## Chat
+
+The footer's **Chat** button (or Ctrl+K → *Open Chat*) opens a conversation with an OpenAI-compatible model that can use this gateway's [MCP tools](./mcp.md) while it answers. It runs **entirely in your browser**: the gateway never sees your provider key, stores no conversation, and runs no model of its own.
+
+The gear icon holds the settings — base URL (any compatible server: OpenAI, Azure, OpenRouter, a local Ollama), model, API key, and an MCP token from `admin.mcp.tokens`. The model field is a searchable dropdown over the provider's own `GET /models` list; it loads by itself once the base URL and key are both set, and **Load models** fetches it on demand for an endpoint that serves the list unauthenticated. Leave the MCP token empty for a chat with no tools.
+
+Threads live in this browser's local storage, newest 50 kept. Each has **Delete**, **Clear all chats** removes them all, and **Forget credentials** drops the key and token while keeping the base URL and model.
+
+**How tools run.** Read tools run as soon as the model asks for them. Write tools (`put_*`, `delete_*`, `reload_config`) stop for a card with **Run** and **Skip** — Skip tells the model you declined so it can propose something else. `run_sandbox` asks too, even though its scope is `read`, because it executes the nodes the model just wrote. Tick **Auto-run writes** to let a session apply changes without stopping; the connection line says so while it is on, and the toggle is disabled for a read-only token. Repeated attempts at a failing tool collapse into a single card showing the current try and the earlier ones. A turn stops after 16 tool rounds, and **Stop** aborts the request in flight.
+
+**Secrets.** The gateway already keeps most secrets away from the chat — traces redact at capture, MCP masks consumer credentials, stored config keeps raw `${ENV}` placeholders. On top of that, **Redact secrets before sending** (on by default) rewrites credentials, cookies, secret-looking config values, JWTs and PEM blocks to `[REDACTED]` before anything is stored or sent to the provider. It is a heuristic, not a guarantee: keep genuinely sensitive bodies out of the traces you hand a third-party model. Because the model only ever sees `[REDACTED]`, a redacted value it reads would be written back literally if it proposes a `put_*` — check the card's arguments, and keep secrets as `${ENV}` placeholders, which are never redacted.
+
+**When a reply ends early**, the panel says why — a reply cut off at the output-token limit, one the provider filtered, an empty reply, or a mid-stream provider error all render as a notice rather than silence. Long reasoning that consumes the whole output budget is the usual cause.
+
+## Stores, sessions and certificates
+
+Three footer panels manage runtime resources that live outside a policy graph:
+
+- **Stores** — the named redis/valkey connections declared under `stores:` (see [Shared stores & sessions](../concepts/stores.md)). Create, edit and delete them, with `${ENV}` placeholders round-tripped verbatim so the UI never resolves a secret, and a **Ping** action reporting latency and server version. A store still referenced by a node or shared plugin config refuses to delete, naming each referrer.
+- **Sessions** — server-side sessions for the interactive auth plugins: filter by store, subject or plugin, revoke one row, or revoke every session for a subject. Metadata only — payloads never leave the store. A build without the `redis-store` feature says so instead of failing.
+- **Certificates** — the [ACME](./tls.md#automatic-certificates-acme)-managed certificates: state, domains, validity, next renewal and last error, with a per-certificate **Renew now**. Read-only otherwise; ACME configuration lives in `system.yaml` and is restart-gated like every TLS setting.
+
 ## Headless mode
 
 The UI is optional. It is only a client of the admin API, and it edits exactly the same data that lives in `gateway.yaml` — a policy saved from the canvas and a policy written by hand in YAML are interchangeable. Everything the UI does can be done with the YAML files plus hot-reload, or with the [Admin API](./admin-api.md) directly.
