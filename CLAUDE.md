@@ -24,7 +24,8 @@ Before starting work, branch `feature/<name>` off `develop` (create `develop` fr
 cargo build                # debug build
 cargo test                 # all tests (unit + integration, inline in src/)
 cargo test test_lua_       # run Lua-related tests
-docker compose up          # gateway + echo-backend
+docker compose up          # dev stack: gateway + echo-backend, built from source
+docker compose -f examples/compose/minimal/compose.yaml up   # published-image examples
 ```
 
 Run a single test:

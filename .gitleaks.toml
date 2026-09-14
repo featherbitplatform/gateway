@@ -63,4 +63,9 @@ paths = [
 description = "Documentation examples — `curl -u admin:admin` snippets and sample keys in prose, not live credentials"
 paths = [
     '''website/docs/''',
+    # Self-contained compose example stacks. Same reasoning as the docs above:
+    # the comments walk through driving the Admin API, so they carry the
+    # default `curl -u admin:admin` basic-auth snippet, and the stacks set
+    # throwaway local credentials for the services they boot.
+    '''examples/''',
 ]

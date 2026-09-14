@@ -8,6 +8,19 @@
 # Generate a self-signed pair for local testing:
 #   openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 #     -days 365 -subj "/CN=localhost"
+#
+# Running in a container: openssl writes key.pem mode 0600 whatever your umask,
+# and the featherbit image runs as uid 65532 (FROM scratch, no root), so a
+# bind-mounted key owned by your host user fails startup with
+# "failed to read TLS private key ...: Permission denied (os error 13)" — the
+# cert is 0644 and loads fine, which is why only the key is named. Hand the key
+# to that uid, keeping it 0600:
+#
+#   sudo chown 65532:65532 key.pem
+#
+# ...or run the container as yourself (`user: "${UID}:${GID}"`); featherbit
+# binds only unprivileged ports. See examples/compose/tls for a stack that
+# generates a correctly-owned pair.
 
 listener:
   bind: 0.0.0.0
