@@ -1,0 +1,83 @@
+# Two featherbit replicas sharing one etcd — the convergence demo.
+#
+#   docker compose -f examples/compose/etcd-cluster/compose.yaml up
+#
+# Same etcd-backed setup as ../etcd-single, with a second gateway pointed at the
+# same prefix. What it shows: a config change made on one replica's Admin API
+# reaches the other without touching it.
+#
+#   # add a route on replica A (:9090)
+#   curl -u admin:admin -X POST localhost:9090/api/routes \
+#     -H 'content-type: application/json' \
+#     -d '{"name":"demo","match":{"path":"/demo/*"},"policy":"api-policy"}'
+#
+#   # within the poll interval (~2s) replica B (:9091) serves it too
+#   curl localhost:8081/demo/anything
+#
+# Both replicas are stateless; etcd holds the config and keeps it on the
+# `etcd-data` volume across restarts. Note that this is a single etcd node —
+# durable, but not itself highly available. A production cluster wants a
+# three-node etcd quorum; the gateway side of the configuration is unchanged.
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.13
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd0
+      - --data-dir=/etcd-data
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+    volumes:
+      - etcd-data:/etcd-data
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  gateway-a:
+    image: featherbit/featherbit:${FEATHERBIT_TAG:-latest}
+    command:
+      - --system-config=/etc/gateway/system.yaml
+      - --gateway-config=/etc/gateway/gateway.yaml
+    ports:
+      - "8080:8080" # data plane
+      - "9090:9090" # admin API + web UI (admin/admin)
+    volumes:
+      - ./config:/etc/gateway:ro
+    environment: &gateway_env
+      ETCD_ENDPOINT: http://etcd:2379
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: admin
+      UPSTREAM_HOST: whoami
+      UPSTREAM_PORT: "80"
+      LOG_LEVEL: info
+    depends_on:
+      etcd:
+        condition: service_healthy
+      whoami:
+        condition: service_started
+
+  gateway-b:
+    image: featherbit/featherbit:${FEATHERBIT_TAG:-latest}
+    command:
+      - --system-config=/etc/gateway/system.yaml
+      - --gateway-config=/etc/gateway/gateway.yaml
+    ports:
+      - "8081:8080"
+      - "9091:9090"
+    volumes:
+      - ./config:/etc/gateway:ro
+    environment: *gateway_env
+    depends_on:
+      etcd:
+        condition: service_healthy
+      whoami:
+        condition: service_started
+
+  whoami:
+    image: traefik/whoami:v1.10
+
+volumes:
+  etcd-data:
