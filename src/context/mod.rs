@@ -36,7 +36,8 @@ pub struct GatewayRequest {
     pub method: String,
     /// Request path without the query string.
     pub path: String,
-    /// Value of the `Host` header (empty string when absent).
+    /// Request authority: the `Host` header, or the HTTP/2 `:authority`
+    /// pseudo-header when no `Host` is present (empty string when neither is).
     pub host: String,
     /// URI scheme, defaulting to `http` when the URI carries none.
     pub scheme: String,
@@ -132,6 +133,17 @@ impl GatewayRequest {
                 .push(value.to_str().unwrap_or("").to_string());
         }
 
+        // RFC 9113 §8.2.3: an HTTP/2 client may split one request's cookies
+        // across several `cookie` fields, and the server must concatenate them
+        // before processing. Join here, once, rather than in each reader —
+        // every cookie consumer in the gateway takes the first field only, so
+        // an unjoined second field is invisible to all of them.
+        if let Some(cookies) = headers.get_mut("cookie") {
+            if cookies.len() > 1 {
+                *cookies = vec![cookies.join("; ")];
+            }
+        }
+
         let mut query_params: HashMap<String, Vec<String>> = HashMap::new();
         if let Some(query) = req.uri.query() {
             for pair in query.split('&') {
@@ -142,12 +154,20 @@ impl GatewayRequest {
             }
         }
 
+        // HTTP/1.x carries the authority in the `Host` header. HTTP/2 carries
+        // it in the `:authority` pseudo-header instead — which hyper exposes on
+        // the URI, not as a header — and browsers send no `Host` at all over
+        // h2. Falling back to the URI authority keeps `request.host` populated
+        // on both, so `match.host` route rules, `$host` and the
+        // `http_to_https` redirect target behave the same either way.
         let host = req
             .headers
             .get("host")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
+            .filter(|h| !h.is_empty())
+            .map(|h| h.to_string())
+            .or_else(|| req.uri.authority().map(|a| a.as_str().to_string()))
+            .unwrap_or_default();
 
         let scheme = req.uri.scheme_str().unwrap_or("http").to_string();
 
@@ -194,5 +214,86 @@ mod bytes_serde {
             .decode(&s)
             .map(Bytes::from)
             .map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    fn parts_with(headers: Vec<(&str, &str)>) -> http::request::Parts {
+        let mut builder = http::Request::builder().uri("/cb").method("GET");
+        for (k, v) in headers {
+            builder = builder.header(k, v);
+        }
+        builder.body(()).unwrap().into_parts().0
+    }
+
+    /// HTTP/2 clients may split the cookies of one request across several
+    /// `cookie` header fields -- RFC 9113 sec. 8.2.3 permits it and requires the
+    /// server to join them before processing. Firefox does exactly this.
+    /// Every cookie reader in the gateway takes `.first()`, so an unjoined
+    /// second field is silently invisible: the OIDC login-flow cookie goes
+    /// missing and the callback rejects a perfectly good login.
+    #[test]
+    fn test_multiple_cookie_fields_are_joined() {
+        let parts = parts_with(vec![
+            ("cookie", "oidc_session=abc"),
+            ("cookie", "oidc_session_flow=xyz"),
+        ]);
+        let req = GatewayRequest::from_hyper(
+            &parts,
+            Bytes::new(),
+            "1.2.3.4:5".parse::<SocketAddr>().unwrap(),
+        );
+
+        let cookies = req.headers.get("cookie").expect("cookie header present");
+        assert_eq!(
+            cookies.len(),
+            1,
+            "cookie fields must be joined into one, got {cookies:?}"
+        );
+        assert_eq!(cookies[0], "oidc_session=abc; oidc_session_flow=xyz");
+    }
+
+    /// HTTP/2 carries the authority in the `:authority` pseudo-header, which
+    /// hyper exposes on the request URI rather than as a `Host` header --
+    /// browsers do not send `Host` over h2 at all. Reading only the header
+    /// leaves `request.host` empty, which silently breaks every `match.host`
+    /// route rule (the request matches no host-scoped route), `$host` /
+    /// `{{request.host}}`, and the `http_to_https` redirect target.
+    #[test]
+    fn test_http2_authority_populates_host() {
+        let parts = http::Request::builder()
+            .method("GET")
+            .version(http::Version::HTTP_2)
+            .uri("https://api.example.com/thing")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        let req = GatewayRequest::from_hyper(
+            &parts,
+            Bytes::new(),
+            "1.2.3.4:5".parse::<SocketAddr>().unwrap(),
+        );
+
+        assert_eq!(req.host, "api.example.com");
+    }
+
+    /// The `Host` header remains authoritative for HTTP/1.x, where hyper gives
+    /// the URI in origin-form and there is no authority to fall back to.
+    #[test]
+    fn test_http1_host_header_still_used() {
+        let parts = parts_with(vec![("host", "legacy.example.com")]);
+        let req = GatewayRequest::from_hyper(
+            &parts,
+            Bytes::new(),
+            "1.2.3.4:5".parse::<SocketAddr>().unwrap(),
+        );
+
+        assert_eq!(req.host, "legacy.example.com");
     }
 }
