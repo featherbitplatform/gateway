@@ -176,7 +176,10 @@ test.describe('cas-auth (stateless ticket validation)', () => {
     const res = await traffic.get('/casauth/thing?ticket=good-ticket');
 
     expect(res.status()).toBe(200);
-    expect(((await res.json()) as Echo).path).toBe('/thing');
+    // The query string reaches the upstream intact. Stateless ticket
+    // validation does not consume the ticket param (only interactive mode
+    // strips it, by redirecting to the ticket-free service URL).
+    expect(((await res.json()) as Echo).path).toBe('/thing?ticket=good-ticket');
     await traffic.dispose();
   });
 
@@ -193,7 +196,9 @@ test.describe('dingtalk-auth (code exchange)', () => {
     const res = await traffic.get('/dingtalk/thing?code=good-code');
 
     expect(res.status()).toBe(200);
-    expect(((await res.json()) as Echo).path).toBe('/thing');
+    // The query string reaches the upstream intact; the code param is not
+    // consumed by the exchange.
+    expect(((await res.json()) as Echo).path).toBe('/thing?code=good-code');
     await traffic.dispose();
   });
 
@@ -216,7 +221,9 @@ test.describe('feishu-auth (code exchange)', () => {
     const res = await traffic.get('/feishu/thing?code=good-code');
 
     expect(res.status()).toBe(200);
-    expect(((await res.json()) as Echo).path).toBe('/thing');
+    // The query string reaches the upstream intact; the code param is not
+    // consumed by the exchange.
+    expect(((await res.json()) as Echo).path).toBe('/thing?code=good-code');
     await traffic.dispose();
   });
 
