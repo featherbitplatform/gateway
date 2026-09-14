@@ -58,6 +58,8 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `DELETE` | `/api/sessions/:store/:id` | Revoke one session | `400` bad id; `404` unknown store; `502` store outage; `501` headless build |
 | `DELETE` | `/api/sessions?store=&subject=` | Revoke every session for a subject (`{"revoked": N}`) | `400` missing `store`/`subject`; `404` unknown store; `502` store outage; `501` headless build |
 | `GET` | `/api/plugins` | Static catalog of node/plugin types (id + description) | — |
+| `GET` | `/api/vars` | Static catalog of `$var` names plugins can interpolate, with kinds, sources and descriptions (see [Context variables](../reference/context-vars.md)) | — |
+| `GET` | `/api/env-vars` | Names of the environment variables visible to the process, sorted — **names only, never values**, for the config editor's `${ENV}` suggestions | — |
 | `GET` | `/api/scripts` | List scripted-plugin files (`.lua`) in the `plugins/` directory next to the config directory; missing directory yields an empty list | — |
 | `GET` | `/api/status` | Gateway version plus route and policy counts | — |
 | `GET` | `/api/config/export` | Live in-memory config (routes + policies + supernodes + plugin configs + stores) rendered as YAML (`text/yaml`) | `500` serialization failed |
@@ -66,6 +68,11 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `GET` | `/api/debug/traces/:id` | One trace with per-step context changes | `404` unknown/evicted, or debug off |
 | `DELETE` | `/api/debug/traces` | Clears the trace buffer | `404` debug mode off |
 | `POST` | `/api/debug/sandbox` | Runs plugins or a policy against a synthetic context | `400` bad request/config; `404` unknown policy or debug off; `504` timeout |
+| `GET` | `/api/acme/certs` | Every [ACME](./tls.md#automatic-certificates-acme)-managed certificate with state, domains, validity and last error; `{"enabled": false, "certs": []}` when `acme:` is not configured. Never includes key material | — |
+| `POST` | `/api/acme/certs/:id/renew` | Nudge the renewal manager for one certificate (`?force=true` to ignore the renewal window). `202 {"scheduled": true}`, or `200 {"scheduled": false, "reason": "not_due"}` | `404` unknown certificate id; `409` `{"error":"in_progress"}`; `501` ACME not configured |
+| `GET` | `/api/mcp/status` | Whether the [MCP server](./mcp.md) is compiled in and enabled, its path, token count and distinct scopes — **never token values** | — |
+| `GET` | `/api/mcp/prompts` | The precompiled agent prompts (name + description) | — |
+| `GET` | `/api/mcp/prompts/:name` | One prompt rendered with live data, behind the UI's "copy as agent prompt" actions; takes the same arguments as the MCP prompt | `404` unknown prompt; `400` invalid arguments, or debug/sandbox disabled for a prompt that needs them |
 | `POST` | `/api/config/reload` | Re-read `gateway.yaml` from disk, recompile, swap in | `500` no config path set, or parse/validate/compile failed (running config unchanged) |
 | `GET` | `/healthz` | Liveness probe (auth-exempt) | — |
 | `GET` | `/readyz` | Readiness probe (auth-exempt) | `503` while the route table is empty |
