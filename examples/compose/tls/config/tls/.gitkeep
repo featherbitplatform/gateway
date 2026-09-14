@@ -1,0 +1,4 @@
+Mountpoint for the `certs` volume. The gateway's config directory is bind-mounted
+read-only, so Docker cannot create /etc/gateway/tls itself — this empty directory
+gives the volume something to mount onto. The generated cert and key land here at
+runtime and are never committed.
