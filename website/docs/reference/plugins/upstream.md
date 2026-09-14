@@ -72,7 +72,7 @@ Both HTTPS proxying and `wss` WebSocket relays present the certificate.
 
 ## Behavior
 
-The plugin builds an HTTP request to `http://<host>:<port><path>`, forwarding the request method, all request headers (the `Host` header is overridden with the upstream target's `host:port`), and the buffered request body. On success it populates `context.response` with the upstream's status code, headers, and body, and exits through the `success` port. The upstream's status is passed through as-is — a backend 500 is still a `success`-port outcome.
+The plugin builds an HTTP request to `http://<host>:<port><path>?<query>`, forwarding the request method, all request headers (the `Host` header is overridden with the upstream target's `host:port`), and the buffered request body. The query string is rebuilt from `context.request.query_params`, whose values are stored exactly as received (the query is split on `&`/`=` without percent-decoding), so it survives the hop unchanged; parameter **order is normalized**, because the original ordering is not retained at ingress. The same request-target — path plus query — is what a WebSocket upgrade relays to a `ws://`/`wss://` upstream. On success it populates `context.response` with the upstream's status code, headers, and body, and exits through the `success` port. The upstream's status is passed through as-is — a backend 500 is still a `success`-port outcome.
 
 Failures return the Context along with an error so the graph engine routes through the `error` port; the error is appended to `context.errors` — see [Errors](#errors).
 

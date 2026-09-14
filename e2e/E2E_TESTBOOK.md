@@ -497,7 +497,7 @@ Covered by the Rust suite with real sockets, or unreachable from Playwright:
 - HTTP/2 (ALPN + h2c) and the WebSocket relay, incl. RFC 8441
 - L4 TCP/UDP stream proxying (Playwright cannot speak raw UDP)
 - Graceful-shutdown drain on SIGTERM
-- etcd cluster convergence (needs `docker-compose.etcd.yaml`) — redis/valkey
+- etcd cluster convergence (needs `examples/compose/etcd-cluster/compose.yaml`) — redis/valkey
   stores, by contrast, now have gated in-suite coverage (`E2E-SESS-*`) against
   a live backend when `FEATHERBIT_TEST_REDIS_URL` is set
 
