@@ -3,6 +3,21 @@ title: Deployment
 description: Docker Compose development setup, the scratch container image, and stateless multi-instance deployment.
 ---
 
+## Example stacks
+
+Ready-to-run Compose stacks live in [`examples/compose/`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose). Each is self-contained — its own `config/`, the published image, no repository-relative paths — so you can copy a directory into your own project and run it:
+
+| Stack | What it shows | Run it |
+|---|---|---|
+| [`minimal`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/minimal) | One gateway, one upstream, file-based config. The baseline to copy. | `docker compose -f examples/compose/minimal/compose.yaml up` |
+| [`etcd-single`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/etcd-single) | Config in etcd on a persistent volume — Admin API and UI edits survive a restart. | `docker compose -f examples/compose/etcd-single/compose.yaml up` |
+| [`etcd-cluster`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/etcd-cluster) | Two replicas sharing one etcd; a change on one converges to the other. | `docker compose -f examples/compose/etcd-cluster/compose.yaml up` |
+| [`tls`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/tls) | TLS termination with a self-signed cert generated at startup, owned by the gateway's uid. | `docker compose -f examples/compose/tls/compose.yaml up` |
+
+Each serves the Admin API and web UI on `:9090` (`admin` / `admin`) and the data plane on `:8080` — except `tls`, which serves HTTPS on `:8443`. All four pin the image with `FEATHERBIT_TAG` (default `latest`).
+
+The stack described in the rest of this section is different: it is the **development** compose file at the repository root, which builds the gateway from source.
+
 ## Docker Compose (development)
 
 The repository ships a `docker-compose.yaml` for local development and E2E testing:
@@ -130,11 +145,18 @@ config:
 
 Route precedence in etcd mode follows **key (name) order**, not file declaration order — name routes accordingly when match precedence matters.
 
-Try it locally with the overlay compose (one etcd + two gateway replicas):
+Try it locally with the [`etcd-cluster`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/etcd-cluster) example (one etcd + two gateway replicas):
 
 ```bash
-docker compose -f docker-compose.yaml -f docker-compose.etcd.yaml up
-# then: a PUT to replica A's admin API converges to replica B within ~2s
+docker compose -f examples/compose/etcd-cluster/compose.yaml up
+
+# create a route on replica A
+curl -u admin:admin -X POST localhost:9090/api/routes   -H 'content-type: application/json'   -d '{"name":"demo","match":{"path":"/demo/*"},"policy":"api-policy"}'
+
+# replica B serves it within the poll interval (~2s)
+curl localhost:8081/demo/anything
 ```
+
+For a single instance whose configuration simply has to outlive the container, [`etcd-single`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/etcd-single) is the smaller shape: one etcd node with its data directory on a named volume, one gateway. Note that a single etcd node is durable but not itself highly available — a production cluster wants a three-node etcd quorum, with the gateway-side configuration unchanged.
 
 File mode remains the default; nothing requires etcd unless you opt in.

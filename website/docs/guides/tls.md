@@ -34,6 +34,39 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
   -days 365 -subj "/CN=localhost"
 ```
 
+:::caution[In a container, the key must be readable by uid 65532]
+
+`openssl` writes the private key mode `0600` regardless of your umask, while the
+certificate gets `0644`. The featherbit image is `FROM scratch` and runs as
+**uid 65532**, so a bind-mounted key owned by your host user is unreadable to it
+and startup fails with:
+
+```
+Server error: failed to read TLS private key '/etc/gateway/tls/key.pem': Permission denied (os error 13)
+```
+
+The error names only the key — the certificate is world-readable and loads fine.
+Give the key to the gateway's uid, keeping it `0600`:
+
+```bash
+sudo chown 65532:65532 key.pem
+```
+
+Or run the container as yourself instead — featherbit binds only unprivileged
+ports and needs no root:
+
+```yaml
+services:
+  gateway:
+    user: "${UID}:${GID}"      # UID=$(id -u) GID=$(id -g) docker compose up
+```
+
+`chmod 644 key.pem` also works, but makes the private key readable by every user
+on the host — fine for a throwaway `CN=localhost` pair, not for anything else.
+The [`tls` compose example](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/tls)
+generates a correctly-owned pair for you.
+:::
+
 ### Multiple certificates by SNI
 
 To front several domains on one listener, add `sni_certs` — each maps an SNI hostname to its own certificate. `cert_path`/`key_path` is the default/fallback for hostnames that match no entry (or connections with no SNI):
