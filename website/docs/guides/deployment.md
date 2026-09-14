@@ -12,8 +12,9 @@ Ready-to-run Compose stacks live in [`examples/compose/`](https://github.com/fea
 | [`minimal`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/minimal) | One gateway, one upstream, file-based config. The baseline to copy. | `docker compose -f examples/compose/minimal/compose.yaml up` |
 | [`etcd-single`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/etcd-single) | Config in etcd on a persistent volume — Admin API and UI edits survive a restart. | `docker compose -f examples/compose/etcd-single/compose.yaml up` |
 | [`etcd-cluster`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/etcd-cluster) | Two replicas sharing one etcd; a change on one converges to the other. | `docker compose -f examples/compose/etcd-cluster/compose.yaml up` |
+| [`tls`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/tls) | TLS termination with a self-signed cert generated at startup, owned by the gateway's uid. | `docker compose -f examples/compose/tls/compose.yaml up` |
 
-All three serve the data plane on `:8080` and the Admin API and web UI on `:9090` (`admin` / `admin`), and pin the image with `FEATHERBIT_TAG` (default `latest`).
+Each serves the Admin API and web UI on `:9090` (`admin` / `admin`) and the data plane on `:8080` — except `tls`, which serves HTTPS on `:8443`. All four pin the image with `FEATHERBIT_TAG` (default `latest`).
 
 The stack described in the rest of this section is different: it is the **development** compose file at the repository root, which builds the gateway from source.
 
