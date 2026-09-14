@@ -204,6 +204,23 @@ impl UpstreamPlugin {
     }
 }
 
+/// The outbound request-target: the request path plus the rebuilt query
+/// string when the request carried one.
+///
+/// `query_params` holds values exactly as received — ingress splits the raw
+/// query on `&`/`=` without percent-decoding — so rebuilding is lossless.
+/// Parameter order is normalized (sorted) because the original order is
+/// already lost in the `HashMap` at ingress; sorting at least makes the
+/// outbound target deterministic.
+fn request_target(ctx: &Context) -> String {
+    let query = crate::vars::query_string(ctx);
+    if query.is_empty() {
+        ctx.request.path.clone()
+    } else {
+        format!("{}?{}", ctx.request.path, query)
+    }
+}
+
 #[async_trait]
 impl Plugin for UpstreamPlugin {
     fn plugin_type(&self) -> &str {
@@ -221,6 +238,8 @@ impl Plugin for UpstreamPlugin {
         // counter is intentionally skipped: a WS tunnel outlives this node, so
         // there is no round-trip lifecycle to bound it.
         if ctx.request.protocol == Protocol::WebSocket {
+            // Computed before the first `ctx.message` mutable borrow below.
+            let ws_target = request_target(&ctx);
             ctx.message.insert(
                 "__ws_upstream_host".to_string(),
                 serde_json::json!(target.host),
@@ -231,7 +250,7 @@ impl Plugin for UpstreamPlugin {
             );
             ctx.message.insert(
                 "__ws_upstream_path".to_string(),
-                serde_json::json!(ctx.request.path),
+                serde_json::json!(ws_target),
             );
             ctx.message
                 .insert("__ws_upstream_tls".to_string(), serde_json::json!(self.tls));
@@ -253,7 +272,10 @@ impl Plugin for UpstreamPlugin {
         let scheme = if self.tls { "https" } else { "http" };
         let uri = format!(
             "{}://{}:{}{}",
-            scheme, target.host, target.port, ctx.request.path
+            scheme,
+            target.host,
+            target.port,
+            request_target(&ctx)
         );
 
         let method: http::Method = ctx.request.method.parse().unwrap_or(http::Method::GET);
@@ -566,5 +588,123 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Minimal one-shot HTTP server that records the request line (method and
+    /// request-target) of the first request it receives and answers `200`.
+    /// Returns its port and a receiver for the captured line.
+    async fn spawn_request_line_capture() -> (u16, tokio::sync::oneshot::Receiver<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                let line = text.lines().next().unwrap_or("").to_string();
+                let _ = tx.send(line);
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK
+content-length: 0
+
+",
+                    )
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        (port, rx)
+    }
+
+    fn ctx_with_query(path: &str, query: Vec<(&str, Vec<&str>)>) -> Context {
+        use crate::context::GatewayRequest;
+        let query_params: HashMap<String, Vec<String>> = query
+            .into_iter()
+            .map(|(k, vs)| {
+                (
+                    k.to_string(),
+                    vs.into_iter().map(|v| v.to_string()).collect(),
+                )
+            })
+            .collect();
+        Context::new(GatewayRequest {
+            method: "GET".into(),
+            path: path.into(),
+            host: "h".into(),
+            scheme: "http".into(),
+            headers: HashMap::new(),
+            query_params,
+            body: bytes::Bytes::new(),
+            remote_addr: "1.2.3.4:5".into(),
+            protocol: Protocol::Http1,
+        })
+    }
+
+    fn plugin_at(port: u16) -> UpstreamPlugin {
+        let mut config = HashMap::new();
+        config.insert(
+            "targets".to_string(),
+            serde_json::json!([{ "host": "127.0.0.1", "port": port }]),
+        );
+        UpstreamPlugin::from_config(&config, &PluginResources::empty()).unwrap()
+    }
+
+    /// Regression: the outbound request-target must carry the query string.
+    /// Building the URL from `ctx.request.path` alone silently dropped it on
+    /// every proxied call — an OIDC authorize hop reached the IdP with no
+    /// `client_id`, which the IdP reports as "parameter not present".
+    #[tokio::test]
+    async fn test_query_string_is_forwarded_to_upstream() {
+        let (port, rx) = spawn_request_line_capture().await;
+        let ctx = ctx_with_query(
+            "/realms/esra/protocol/openid-connect/auth",
+            vec![("client_id", vec!["apisix"])],
+        );
+
+        plugin_at(port).execute(ctx).await.unwrap();
+
+        let request_line = rx.await.unwrap();
+        assert!(
+            request_line.contains("client_id=apisix"),
+            "query string dropped from outbound request-target: {request_line}"
+        );
+    }
+
+    /// Regression: the WebSocket relay target must keep the query string too.
+    /// `__ws_upstream_path` is consumed verbatim by the relay in
+    /// `server::listener`, so dropping the query there breaks token-in-query
+    /// upgrades (`wss://host/ws?token=...`) exactly as it broke plain HTTP.
+    #[tokio::test]
+    async fn test_websocket_upstream_path_keeps_query_string() {
+        use crate::context::GatewayRequest;
+
+        let mut req_headers = HashMap::new();
+        req_headers.insert("upgrade".to_string(), vec!["websocket".to_string()]);
+        let mut query_params = HashMap::new();
+        query_params.insert("token".to_string(), vec!["abc123".to_string()]);
+        let ctx = Context::new(GatewayRequest {
+            method: "GET".into(),
+            path: "/ws/chat".into(),
+            host: "h".into(),
+            scheme: "http".into(),
+            headers: req_headers,
+            query_params,
+            body: bytes::Bytes::new(),
+            remote_addr: "1.2.3.4:5".into(),
+            protocol: Protocol::WebSocket,
+        });
+
+        let out = plugin_with(None, "load_balancing", 1)
+            .execute(ctx)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            out.context.message.get("__ws_upstream_path").unwrap(),
+            "/ws/chat?token=abc123"
+        );
     }
 }
