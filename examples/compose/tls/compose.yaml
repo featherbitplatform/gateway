@@ -1,0 +1,72 @@
+# TLS termination with a self-signed certificate generated at startup.
+#
+#   docker compose -f examples/compose/tls/compose.yaml up
+#   curl -k https://localhost:8443/api/users
+#
+# The `certs` service generates the pair into a named volume on first run and
+# hands it to the gateway's uid. That last step is not incidental: `openssl`
+# writes a private key mode 0600 regardless of umask, and the featherbit image
+# is FROM scratch running as uid 65532, so a key owned by anyone else fails
+# startup with
+#
+#   failed to read TLS private key '/etc/gateway/tls/key.pem': Permission denied (os error 13)
+#
+# Only the key is named in that error — the certificate is 0644 and loads fine.
+# If you bring your own cert instead of generating one, `chown 65532:65532` the
+# key (keeping it 0600), or run the gateway as yourself with `user: "${UID}:${GID}"`.
+#
+# Nothing private is committed to the repository: the pair lives in the `certs`
+# volume and is regenerated after `down -v`.
+
+services:
+  certs:
+    image: alpine/openssl:3.3.2
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        if [ -s /tls/cert.pem ] && [ -s /tls/key.pem ]; then
+          echo "certs: reusing the existing pair in the volume"
+        else
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout /tls/key.pem -out /tls/cert.pem \
+            -days 365 -subj "/CN=${TLS_CN:-localhost}" \
+            -addext "subjectAltName=DNS:${TLS_CN:-localhost},DNS:localhost,IP:127.0.0.1"
+          echo "certs: generated a self-signed certificate for ${TLS_CN:-localhost}"
+        fi
+        # The reason this service exists. Without it the gateway cannot read the key.
+        chown 65532:65532 /tls/cert.pem /tls/key.pem
+        chmod 600 /tls/key.pem
+        chmod 644 /tls/cert.pem
+        ls -l /tls
+    volumes:
+      - certs:/tls
+
+  gateway:
+    image: featherbit/featherbit:${FEATHERBIT_TAG:-latest}
+    command:
+      - --system-config=/etc/gateway/system.yaml
+      - --gateway-config=/etc/gateway/gateway.yaml
+    ports:
+      - "8443:8443" # data plane (HTTPS)
+      - "9090:9090" # admin API + web UI (plain HTTP; see config/system.yaml)
+    volumes:
+      - ./config:/etc/gateway:ro
+      - certs:/etc/gateway/tls:ro
+    environment:
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: admin
+      UPSTREAM_HOST: whoami
+      UPSTREAM_PORT: "80"
+      LOG_LEVEL: info
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      whoami:
+        condition: service_started
+
+  whoami:
+    image: traefik/whoami:v1.10
+
+volumes:
+  certs:
