@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::config::PolicyConfig;
+use crate::config::{NodeConfig, PolicyConfig};
 use crate::context::Context;
 use crate::debug::{EdgeKind, StepOutcome, TraceRecorder};
 use crate::plugins::resources::PluginResources;
@@ -466,55 +466,13 @@ pub fn compile_policy(
         .cloned()
         .unwrap_or_else(|| listener_node_id.clone());
 
-    // Compile-time streaming inference: for each `upstream` node, walk only
-    // the `success` path forward to see whether anything before `client`
-    // reads the response body. The `error` port is deliberately not walked:
-    // it is taken exactly when the upstream produced no body at all, so
-    // whatever sits there handles a body the gateway generated itself (e.g.
-    // an `error-handler`'s JSON) and says nothing about the upstream's own
-    // response.
-    let mut stream_capable = HashSet::new();
-    let mut buffering_reasons = Vec::new();
-
-    for (node_id, plugin) in &nodes {
-        if plugin.plugin_type() != "upstream" {
-            continue;
-        }
-        let mut blocked_by: Option<(&String, &str)> = None;
-        let mut seen: HashSet<&String> = HashSet::new();
-        let mut queue: Vec<&String> = edges
-            .get(node_id)
-            .and_then(|ports| ports.get("success"))
-            .into_iter()
-            .collect();
-
-        while let Some(current) = queue.pop() {
-            if !seen.insert(current) {
-                continue;
-            }
-            let Some(p) = nodes.get(current) else {
-                continue;
-            };
-            if p.reads_response_body() {
-                blocked_by = Some((current, p.plugin_type()));
-                break;
-            }
-            if let Some(ports) = edges.get(current) {
-                queue.extend(ports.values());
-            }
-        }
-
-        match blocked_by {
-            None => {
-                stream_capable.insert(node_id.clone());
-            }
-            Some((blocker, node_type)) => buffering_reasons.push(BufferingReason {
-                upstream_node_id: node_id.clone(),
-                blocked_by_node_id: blocker.clone(),
-                node_type: node_type.to_string(),
-            }),
-        }
-    }
+    // Compile-time streaming inference: see `infer_stream_capability` for the
+    // walk itself; it is a free function (rather than inlined here) so tests
+    // can drive it directly with hand-built node/edge maps, the same way
+    // `failing_graph`/`outcome_graph` below already do for other engine
+    // behaviour.
+    let (stream_capable, buffering_reasons) =
+        infer_stream_capability(&policy.nodes, &nodes, &edges);
 
     for reason in &buffering_reasons {
         tracing::info!(
@@ -537,6 +495,88 @@ pub fn compile_policy(
         stream_capable,
         buffering_reasons,
     })
+}
+
+/// For each `upstream` node, walks only the `success`/outcome ports forward
+/// to see whether anything before `client` reads the response body.
+///
+/// `error` ports are never walked, on the upstream itself or on any node
+/// further along the chain: an error exit runs through the node's own error
+/// edge (unwalked here for the same reason), the policy's `error_handler`
+/// catch-all, or the engine's built-in 500 fallback — none of which this
+/// walk can see — and a later task makes every one of those discard any
+/// in-flight stream before writing its own body, so nothing reachable only
+/// via `error` edges can affect whether the upstream itself may stream.
+///
+/// Iterates `policy_nodes` (a `Vec`), not the `nodes` map, and visits each
+/// node's outgoing ports in sorted-name order: the same precedent as the
+/// cycle check in [`compile_policy`], so the reported blocker for an
+/// unchanged policy is stable across compiles instead of depending on
+/// `HashMap` iteration order.
+///
+/// An edge whose target doesn't resolve to a real node in `nodes` is treated
+/// as blocking rather than assumed harmless — `to_node`s aren't validated
+/// against the node table the way `from_node`s are, so this walk cannot
+/// assume every edge target exists.
+fn infer_stream_capability(
+    policy_nodes: &[NodeConfig],
+    nodes: &HashMap<String, Box<dyn Plugin>>,
+    edges: &HashMap<String, HashMap<String, String>>,
+) -> (HashSet<String>, Vec<BufferingReason>) {
+    let mut stream_capable = HashSet::new();
+    let mut buffering_reasons = Vec::new();
+
+    for node_config in policy_nodes {
+        if node_config.node_type != "upstream" {
+            continue;
+        }
+        let node_id = &node_config.id;
+        let mut blocked_by: Option<(&String, &str)> = None;
+        let mut seen: HashSet<&String> = HashSet::new();
+        let mut queue: Vec<&String> = edges
+            .get(node_id)
+            .and_then(|ports| ports.get("success"))
+            .into_iter()
+            .collect();
+
+        while let Some(current) = queue.pop() {
+            if !seen.insert(current) {
+                continue;
+            }
+            let Some(p) = nodes.get(current) else {
+                // An edge whose target doesn't resolve to a real node must
+                // not be assumed harmless — treat it as blocking rather than
+                // silently marking the upstream stream-capable.
+                blocked_by = Some((current, "unknown"));
+                break;
+            };
+            if p.reads_response_body() {
+                blocked_by = Some((current, p.plugin_type()));
+                break;
+            }
+            if let Some(ports) = edges.get(current) {
+                let mut names: Vec<&String> = ports
+                    .keys()
+                    .filter(|name| name.as_str() != "error")
+                    .collect();
+                names.sort();
+                queue.extend(names.into_iter().filter_map(|name| ports.get(name)));
+            }
+        }
+
+        match blocked_by {
+            None => {
+                stream_capable.insert(node_id.clone());
+            }
+            Some((blocker, node_type)) => buffering_reasons.push(BufferingReason {
+                upstream_node_id: node_id.clone(),
+                blocked_by_node_id: blocker.clone(),
+                node_type: node_type.to_string(),
+            }),
+        }
+    }
+
+    (stream_capable, buffering_reasons)
 }
 
 /// Parses `"node_id.port"` into `(node_id, port)`, defaulting the port to
@@ -1544,6 +1584,7 @@ mod tests {
             graph.is_stream_capable("up"),
             "an error-handler on the error path must not block streaming"
         );
+        assert!(graph.buffering_reasons().is_empty());
     }
 
     /// A `script` node on the success path forces buffering. This is not
@@ -1576,5 +1617,190 @@ mod tests {
         assert_eq!(reasons[0].upstream_node_id, "up");
         assert_eq!(reasons[0].blocked_by_node_id, "s");
         assert_eq!(reasons[0].node_type, "script");
+    }
+
+    /// A depth-1-only walk (checks only the upstream's direct successor)
+    /// would already pass every test above, since all of them use a single
+    /// hop. This one has a three-hop, all-header-only tail: only a real
+    /// forward walk finds its way to `client` without blocking.
+    #[test]
+    fn test_multi_hop_header_only_chain_is_stream_capable() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "hdr1", "type": "response-rewrite",
+                  "config": { "headers": { "set": { "x-a": "1" } } } },
+                { "id": "hdr2", "type": "response-rewrite",
+                  "config": { "headers": { "set": { "x-b": "2" } } } },
+                { "id": "hdr3", "type": "response-rewrite",
+                  "config": { "headers": { "set": { "x-c": "3" } } } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "hdr1.in" },
+                { "from": "hdr1.success", "to": "hdr2.in" },
+                { "from": "hdr2.success", "to": "hdr3.in" },
+                { "from": "hdr3.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(graph.is_stream_capable("up"));
+        assert!(graph.buffering_reasons().is_empty());
+    }
+
+    /// The same three-hop chain, but the last node in the chain reads the
+    /// body. A depth-1 implementation would report `hdr1` (or nothing at
+    /// all) as the blocker, or miss the block entirely; a real forward walk
+    /// must reach `hdr3` and name it.
+    #[test]
+    fn test_multi_hop_chain_blocks_on_body_reader_at_end() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "hdr1", "type": "response-rewrite",
+                  "config": { "headers": { "set": { "x-a": "1" } } } },
+                { "id": "hdr2", "type": "response-rewrite",
+                  "config": { "headers": { "set": { "x-b": "2" } } } },
+                { "id": "hdr3", "type": "response-rewrite",
+                  "config": { "filters": [{ "regex": "a", "replace": "b" }] } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "hdr1.in" },
+                { "from": "hdr1.success", "to": "hdr2.in" },
+                { "from": "hdr2.success", "to": "hdr3.in" },
+                { "from": "hdr3.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(!graph.is_stream_capable("up"));
+        let reasons = graph.buffering_reasons();
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].upstream_node_id, "up");
+        assert_eq!(reasons[0].blocked_by_node_id, "hdr3");
+        assert_eq!(reasons[0].node_type, "response-rewrite");
+    }
+
+    /// Two independent policies worth of `upstream` in one graph (a
+    /// `condition` node routes to one or the other), one capable and one
+    /// blocked — proving each upstream is judged on its own success path,
+    /// not on the graph as a whole.
+    #[test]
+    fn test_two_upstreams_judged_independently() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "cond", "type": "condition",
+                  "config": { "conditions": [["uri", "==", "/x"]] } },
+                { "id": "up1", "type": "upstream",
+                  "config": { "targets": [{ "host": "h1", "port": 80 }] } },
+                { "id": "up2", "type": "upstream",
+                  "config": { "targets": [{ "host": "h2", "port": 80 }] } },
+                { "id": "s", "type": "script",
+                  "config": { "inline": "function execute(ctx) return ctx end" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "cond.in" },
+                { "from": "cond.true", "to": "up1.in" },
+                { "from": "cond.false", "to": "up2.in" },
+                { "from": "up1.success", "to": "client.in" },
+                { "from": "up2.success", "to": "s.in" },
+                { "from": "s.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(graph.is_stream_capable("up1"));
+        assert!(!graph.is_stream_capable("up2"));
+        let reasons = graph.buffering_reasons();
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].upstream_node_id, "up2");
+        assert_eq!(reasons[0].blocked_by_node_id, "s");
+    }
+
+    /// A no-op test plugin whose `reads_response_body` is set at
+    /// construction, standing in for a real plugin so the diamond test below
+    /// can shape a branching graph (two outcome ports on one node) that no
+    /// currently-registered plugin type has.
+    struct StubPlugin {
+        reads_body: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Plugin for StubPlugin {
+        fn plugin_type(&self) -> &str {
+            "stub"
+        }
+        fn reads_response_body(&self) -> bool {
+            self.reads_body
+        }
+        async fn execute(&self, ctx: Context) -> crate::plugins::PluginResult {
+            Ok(plugins::PluginOutput::success(ctx))
+        }
+    }
+
+    /// `up.success -> a`, `a` branches to `b` and `c`, both rejoin at
+    /// `client`; only `c` reads the response body. Exercises the part a
+    /// straight-line (single-path) walk can't: multiple live branches off
+    /// one node, only one of which blocks.
+    ///
+    /// Built by hand and driven through `infer_stream_capability` directly
+    /// (rather than `compile_test_policy`) because no registered plugin type
+    /// declares two non-error outcome ports without also defaulting to
+    /// `reads_response_body() == true` itself, which would block the walk at
+    /// `a` and never exercise the branch/rejoin logic this test is for.
+    #[test]
+    fn test_diamond_blocks_when_one_branch_reads_body() {
+        let mut nodes: HashMap<String, Box<dyn Plugin>> = HashMap::new();
+        nodes.insert("a".to_string(), Box::new(StubPlugin { reads_body: false }));
+        nodes.insert("b".to_string(), Box::new(StubPlugin { reads_body: false }));
+        nodes.insert("c".to_string(), Box::new(StubPlugin { reads_body: true }));
+        nodes.insert(
+            "client".to_string(),
+            plugins::create_plugin("client", &HashMap::new(), &PluginResources::empty()).unwrap(),
+        );
+
+        let mut edges: HashMap<String, HashMap<String, String>> = HashMap::new();
+        edges.insert(
+            "up".to_string(),
+            HashMap::from([("success".to_string(), "a".to_string())]),
+        );
+        edges.insert(
+            "a".to_string(),
+            HashMap::from([
+                ("true".to_string(), "b".to_string()),
+                ("false".to_string(), "c".to_string()),
+            ]),
+        );
+        edges.insert(
+            "b".to_string(),
+            HashMap::from([("success".to_string(), "client".to_string())]),
+        );
+        edges.insert(
+            "c".to_string(),
+            HashMap::from([("success".to_string(), "client".to_string())]),
+        );
+
+        let policy_nodes = vec![NodeConfig {
+            id: "up".to_string(),
+            node_type: "upstream".to_string(),
+            config: HashMap::new(),
+            config_ref: None,
+            position: None,
+        }];
+
+        let (stream_capable, reasons) = infer_stream_capability(&policy_nodes, &nodes, &edges);
+
+        assert!(!stream_capable.contains("up"));
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].upstream_node_id, "up");
+        assert_eq!(reasons[0].blocked_by_node_id, "c");
+        assert_eq!(reasons[0].node_type, "stub");
     }
 }
