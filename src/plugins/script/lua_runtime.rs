@@ -419,6 +419,7 @@ fn lua_to_context(
         status_code,
         headers: field_string_lists(&resp_table, "headers", "ctx.response")?,
         body: field_body(&resp_table, "ctx.response")?,
+        stream: None,
     };
 
     let mut message = HashMap::new();
@@ -528,6 +529,7 @@ mod tests {
                 status_code: 0,
                 headers: HashMap::new(),
                 body: bytes::Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),

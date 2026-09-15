@@ -325,6 +325,7 @@ mod tests {
                 status_code: 0,
                 headers: HashMap::new(),
                 body: bytes::Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),
