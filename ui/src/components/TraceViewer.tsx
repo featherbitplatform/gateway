@@ -290,6 +290,27 @@ export function TraceViewer({ trace, onAskAgent }: TraceViewerProps) {
               </div>
             </div>
 
+            {step.after.response.body.streamed && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 10,
+                  padding: '4px 8px',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--accent-soft)',
+                  color: 'var(--accent)',
+                  fontSize: 'var(--text-2xs)',
+                  fontWeight: 500,
+                  width: 'fit-content',
+                }}
+                title="This response streamed straight to the client, so the trace never reads the body — it isn't empty, it just wasn't captured."
+              >
+                streamed — body not captured
+              </div>
+            )}
+
             <div
               className="flex items-center justify-between"
               style={{ marginBottom: 6 }}
