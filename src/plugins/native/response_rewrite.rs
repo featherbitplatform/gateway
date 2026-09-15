@@ -468,6 +468,12 @@ impl Plugin for ResponseRewritePlugin {
         "response-rewrite"
     }
 
+    fn reads_response_body(&self) -> bool {
+        // `filters` rewrites the body; `body`/`body_base64` replaces it. Either
+        // needs the buffered body. Headers and status alone do not.
+        !self.filters.is_empty() || self.body.is_some()
+    }
+
     async fn execute(&self, mut ctx: Context) -> PluginResult {
         // `vars` gate: when configured and false, the node is a no-op.
         if let Some(expr) = &self.vars {
@@ -878,5 +884,34 @@ mod tests {
         assert_eq!(out.context.response.body.as_ref(), b"orig");
         assert!(!out.context.response.headers.contains_key("x-hit"));
         assert!(out.context.response.headers.contains_key("content-length"));
+    }
+
+    /// `response-rewrite` only reads the body when it rewrites the body:
+    /// `filters` (regex substitution) or a replacement `body`. A headers-only
+    /// or status-only instance leaves the body untouched, so it must not force
+    /// a streaming upstream to buffer.
+    #[test]
+    fn test_reads_response_body_only_when_body_is_rewritten() {
+        let headers_only = plugin(serde_json::json!({
+            "headers": { "set": { "x-frame-options": "deny" } }
+        }));
+        assert!(
+            !headers_only.reads_response_body(),
+            "headers-only rewrite must not force buffering"
+        );
+
+        let status_only = plugin(serde_json::json!({ "status_code": 204 }));
+        assert!(!status_only.reads_response_body());
+
+        let with_filters = plugin(serde_json::json!({
+            "filters": [{ "regex": "secret", "replace": "***" }]
+        }));
+        assert!(
+            with_filters.reads_response_body(),
+            "filters rewrite the body and must force buffering"
+        );
+
+        let with_body = plugin(serde_json::json!({ "body": "replaced" }));
+        assert!(with_body.reads_response_body());
     }
 }

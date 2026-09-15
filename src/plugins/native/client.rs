@@ -19,6 +19,10 @@ impl Plugin for ClientPlugin {
         "client"
     }
 
+    fn reads_response_body(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, ctx: Context) -> PluginResult {
         Ok(PluginOutput::success(ctx))
     }
