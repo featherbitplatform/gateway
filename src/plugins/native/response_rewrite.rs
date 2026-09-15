@@ -536,6 +536,7 @@ mod tests {
                 status_code: status,
                 headers: response_headers,
                 body: Bytes::copy_from_slice(body),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),

@@ -146,6 +146,7 @@ mod tests {
                 status_code: 200,
                 headers: HashMap::new(),
                 body: Bytes::new(),
+                stream: None,
             },
             message,
             errors: Vec::new(),
