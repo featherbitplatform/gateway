@@ -91,6 +91,14 @@ impl Plugin for ErrorHandlerPlugin {
 
         ctx.response.status_code = self.status_code;
         ctx.response.body = Bytes::from(body);
+        // A prior node (e.g. `upstream` relaying a streamed response) may have
+        // left `response.stream` set. This node just overwrote `response.body`
+        // with a generated error body; leaving the stream in place would give
+        // the listener both set, and the documented invariant is that the
+        // stream wins — silently discarding this error response in favor of a
+        // half-finished upstream stream. Clear it so the generated body above
+        // is unambiguously what reaches the client.
+        ctx.response.stream = None;
         ctx.response.headers.insert(
             "content-type".to_string(),
             vec!["application/json".to_string()],
@@ -255,6 +263,41 @@ mod tests {
         assert_eq!(
             out.context.response.headers.get("content-type").unwrap()[0],
             "application/json"
+        );
+    }
+
+    /// When this node overwrites `response.body` with a generated error body,
+    /// any `response.stream` set by an earlier node (e.g. `upstream` relaying
+    /// a partial streamed body) must be cleared. Otherwise `build_response`
+    /// would find both `body` and `stream` set and — per the documented
+    /// invariant that `stream` wins — silently discard the operator's error
+    /// response and send the half-finished upstream stream instead.
+    #[tokio::test]
+    async fn test_clears_stream_when_error_body_is_generated() {
+        use crate::context::stream::ResponseStream;
+        use http_body_util::{BodyExt, Full};
+
+        let mut ctx = ctx_with_error(Some(err("UPSTREAM_ERROR", "refused", "backend")));
+        let boxed = Full::new(Bytes::from_static(b"partial-stream-bytes"))
+            .map_err(|never| match never {})
+            .boxed();
+        ctx.response.stream = Some(ResponseStream::new(boxed));
+
+        let out = plugin(serde_json::json!({
+            "status_code": 502,
+            "body_template": "{\"code\":\"{{error.code}}\"}"
+        }))
+        .execute(ctx)
+        .await
+        .unwrap();
+
+        assert!(
+            out.context.response.stream.is_none(),
+            "generated error body must not coexist with a stale stream"
+        );
+        assert_eq!(
+            String::from_utf8(out.context.response.body.to_vec()).unwrap(),
+            r#"{"code":"UPSTREAM_ERROR"}"#
         );
     }
 }

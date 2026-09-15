@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
@@ -22,10 +23,20 @@ use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 use crate::config::SystemConfig;
+use crate::context::stream::ResponseStream;
 use crate::context::{Context, GatewayRequest, Protocol};
+use crate::outbound::BoxError;
 use crate::routing::matches_route;
 use crate::server::{tls, websocket};
 use crate::state::SharedState;
+
+/// Boxes a fixed `Full<Bytes>` body into the widened response body type used
+/// throughout this module, so a buffered response composes with a streamed
+/// one behind a single `Response<BoxBody<Bytes, BoxError>>` return type.
+/// `Full`'s error is `Infallible`; the conversion can never actually error.
+fn boxed_full(body: Bytes) -> BoxBody<Bytes, BoxError> {
+    Full::new(body).map_err(|never| match never {}).boxed()
+}
 
 /// Binds the data-plane listener and serves requests until the process exits.
 ///
@@ -177,7 +188,7 @@ async fn handle_request(
     remote_addr: SocketAddr,
     client_cert: Option<tls::ClientCertIdentity>,
     state: &SharedState,
-) -> Result<Response<Full<Bytes>>, hyper::Error> {
+) -> Result<Response<BoxBody<Bytes, BoxError>>, hyper::Error> {
     // Detect a WebSocket upgrade and capture the client's upgrade handle BEFORE
     // the request is consumed by `into_parts()` — afterwards it's gone. Two
     // client transports upgrade to WebSocket: HTTP/1.1 (`Connection: Upgrade`)
@@ -259,7 +270,7 @@ async fn handle_request(
                 builder = builder.header("x-featherbit-trace-id", id);
             }
             return Ok(builder
-                .body(Full::new(Bytes::from(
+                .body(boxed_full(Bytes::from(
                     r#"{"error": "not_found", "message": "No route matched"}"#,
                 )))
                 .unwrap());
@@ -433,27 +444,30 @@ async fn handle_request(
                 }
                 identity
             });
-            return Ok(
-                match websocket::proxy_upgrade(
-                    host,
-                    port as u16,
-                    path,
-                    tls,
-                    verify,
-                    tls_identity,
-                    &result_ctx.request.headers,
-                    on_upgrade,
-                    client_is_h2,
-                )
-                .await
-                {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        warn!("websocket proxy to upstream failed: {}", e);
-                        websocket::bad_gateway_502()
-                    }
-                },
-            );
+            let resp = match websocket::proxy_upgrade(
+                host,
+                port as u16,
+                path,
+                tls,
+                verify,
+                tls_identity,
+                &result_ctx.request.headers,
+                on_upgrade,
+                client_is_h2,
+            )
+            .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    warn!("websocket proxy to upstream failed: {}", e);
+                    websocket::bad_gateway_502()
+                }
+            };
+            // `proxy_upgrade`/`bad_gateway_502` return `Response<Full<Bytes>>`
+            // (a 101 switching-protocols response has no body to stream); box
+            // it into the widened body type this handler returns everywhere
+            // else.
+            return Ok(resp.map(|b| b.map_err(|never| match never {}).boxed()));
         }
     }
 
@@ -462,6 +476,7 @@ async fn handle_request(
         &result_ctx.response.headers,
         trace_id.as_deref(),
         result_ctx.response.body,
+        result_ctx.response.stream,
     ))
 }
 
@@ -484,7 +499,8 @@ fn build_response(
     headers: &HashMap<String, Vec<String>>,
     trace_id: Option<&str>,
     body: Bytes,
-) -> Response<Full<Bytes>> {
+    stream: Option<ResponseStream>,
+) -> Response<BoxBody<Bytes, BoxError>> {
     let mut response_builder = Response::builder().status(status);
 
     for (key, values) in headers {
@@ -519,11 +535,21 @@ fn build_response(
         response_builder = response_builder.header("x-featherbit-trace-id", id);
     }
 
-    response_builder.body(Full::new(body)).unwrap_or_else(|e| {
+    let out_body = match stream {
+        Some(s) => {
+            let (body, guards) = s.into_parts();
+            // Guards must outlive the body; attach them to it so they drop
+            // when the response finishes streaming or the client disconnects.
+            crate::outbound::idle::body_holding(body, guards)
+        }
+        None => boxed_full(body),
+    };
+
+    response_builder.body(out_body).unwrap_or_else(|e| {
         error!("failed to build response: {}", e);
         Response::builder()
             .status(500)
-            .body(Full::new(Bytes::from_static(b"internal server error")))
+            .body(boxed_full(Bytes::from_static(b"internal server error")))
             .expect("static 500 response must build")
     })
 }
@@ -933,7 +959,7 @@ policies:
         headers.insert("x-bad-value".to_string(), vec!["line1\nline2".to_string()]);
         headers.insert("x-good".to_string(), vec!["fine".to_string()]);
 
-        let resp = build_response(200, &headers, None, Bytes::from_static(b"ok"));
+        let resp = build_response(200, &headers, None, Bytes::from_static(b"ok"), None);
 
         assert_eq!(resp.status(), 200);
         assert!(
@@ -949,5 +975,74 @@ policies:
         // nothing to look up by key — the assertion above (only the good
         // header survives) already covers it, together with the fact this
         // call did not panic.
+    }
+
+    /// A buffered response must keep its exact `content-length` and bytes —
+    /// widening the body type must be invisible to every non-streaming route.
+    #[tokio::test]
+    async fn test_buffered_response_is_unchanged() {
+        let mut headers = HashMap::new();
+        headers.insert("content-type".to_string(), vec!["text/plain".to_string()]);
+
+        let resp = build_response(200, &headers, None, Bytes::from("hello"), None);
+
+        assert_eq!(resp.status(), 200);
+        let collected = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(collected, Bytes::from("hello"));
+    }
+
+    /// A streamed response carries the stream's bytes and sets no content-length.
+    #[tokio::test]
+    async fn test_streamed_response_carries_stream_body() {
+        let body = Full::new(Bytes::from("data: one\n\n"))
+            .map_err(|never| match never {})
+            .boxed();
+
+        let resp = build_response(
+            200,
+            &HashMap::new(),
+            None,
+            Bytes::new(),
+            Some(crate::context::stream::ResponseStream::new(body)),
+        );
+
+        assert!(resp.headers().get("content-length").is_none());
+        let collected = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(collected, Bytes::from("data: one\n\n"));
+    }
+
+    /// End-to-end confirmation that widening the body type did not change
+    /// what a real (non-streaming) client receives on the wire: hyper still
+    /// computes an exact `content-length` for a `Full`-backed body boxed into
+    /// `BoxBody`, and the bytes are exactly the configured body.
+    #[tokio::test]
+    async fn test_buffered_route_is_byte_identical_on_the_wire() {
+        let gw_yaml = r#"
+routes:
+  - name: r1
+    match: { path: /plain }
+    policy: p1
+policies:
+  - name: p1
+    nodes:
+      - { id: listener, type: listener }
+      - { id: e, type: echo, config: { body: "hello world" } }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: e.in }
+      - { from: e.success, to: client.in }
+"#;
+        let gw = start_gateway(build_state(gw_yaml), false).await;
+        let url = format!("http://127.0.0.1:{}/plain", gw.port());
+        let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+        assert_eq!(
+            resp.headers()
+                .get("content-length")
+                .map(|v| v.to_str().unwrap()),
+            Some("11"),
+            "content-length must still be computed exactly for a buffered body"
+        );
+        let body = resp.text().await.unwrap();
+        assert_eq!(body, "hello world");
     }
 }
