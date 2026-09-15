@@ -147,13 +147,22 @@ impl CompiledGraph {
             // `__route`, and `__request_start_ms` (set by the listener before
             // the graph runs; see `src/server/listener.rs`): tells a
             // stream-capable `upstream` node it may hand back a
-            // `response.stream` instead of buffering. Set fresh on every
-            // node so a node downstream of a non-capable one never
-            // misreads a stale `true` left by an earlier hop.
-            if self.is_stream_capable(&current_node_id) {
-                ctx.message
-                    .insert("__may_stream".to_string(), serde_json::json!(true));
-            }
+            // `response.stream` instead of buffering.
+            //
+            // Written unconditionally (never merely inserted when `true`) on
+            // every node, capable or not: `ctx`/`ctx.message` survives an
+            // error-port hop, so on a failover shape (a capable `upstream`'s
+            // `error` port routed to a non-capable one) a stale `true` left
+            // by the failed node would otherwise still be sitting in
+            // `ctx.message` when the non-capable node runs, telling it to
+            // stream when it must not — silently bypassing whatever reads
+            // the buffered body downstream of it (a `response-rewrite`, a
+            // logger). Always overwriting with this node's own capability
+            // closes that: a non-capable node always sees `false`.
+            ctx.message.insert(
+                "__may_stream".to_string(),
+                serde_json::json!(self.is_stream_capable(&current_node_id)),
+            );
             let started = std::time::Instant::now();
             let result = node.execute(ctx).await;
             let elapsed = started.elapsed();
@@ -1809,5 +1818,153 @@ mod tests {
         assert_eq!(reasons[0].upstream_node_id, "up");
         assert_eq!(reasons[0].blocked_by_node_id, "c");
         assert_eq!(reasons[0].node_type, "stub");
+    }
+
+    // ---- __may_stream engine signal -----------------------------------
+
+    /// CRITICAL regression: `__may_stream` must not leak across an
+    /// error-port hop. Shape: `up1` (stream-capable: its success path goes
+    /// straight to `client`) fails and routes via its `error` port to `up2`
+    /// (NOT capable: its success path is blocked by `rw`, a
+    /// `response-rewrite` filter that reads the body) — an ordinary
+    /// primary/failover-with-a-response-transform policy. `ctx`/`ctx.message`
+    /// survives the error-port hop, so if the engine only ever *inserted*
+    /// `true` for a capable node and never overwrote it for a non-capable
+    /// one, `up2` would inherit the stale `true` `up1` left behind, stream
+    /// instead of buffering, and silently bypass `rw`.
+    #[tokio::test]
+    async fn test_failover_to_non_capable_upstream_does_not_leak_may_stream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // up2's real backend: replies with a body the `rw` filter can
+        // visibly transform, so a pass proves `rw` actually ran on a
+        // buffered body — not just that `response.stream` happened to be
+        // unset for some unrelated reason.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\naaa")
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let policy = PolicyConfig {
+            name: "test".to_string(),
+            error_handler: None,
+            nodes: vec![
+                NodeConfig {
+                    id: "listener".to_string(),
+                    node_type: "listener".to_string(),
+                    config: HashMap::new(),
+                    config_ref: None,
+                    position: None,
+                },
+                NodeConfig {
+                    id: "up1".to_string(),
+                    node_type: "upstream".to_string(),
+                    config: {
+                        let mut c = HashMap::new();
+                        // Nothing listens on port 1: connect fails instantly.
+                        c.insert(
+                            "targets".to_string(),
+                            serde_json::json!([{ "host": "127.0.0.1", "port": 1 }]),
+                        );
+                        c.insert("timeout_ms".to_string(), serde_json::json!(500));
+                        c
+                    },
+                    config_ref: None,
+                    position: None,
+                },
+                NodeConfig {
+                    id: "up2".to_string(),
+                    node_type: "upstream".to_string(),
+                    config: {
+                        let mut c = HashMap::new();
+                        c.insert(
+                            "targets".to_string(),
+                            serde_json::json!([{ "host": "127.0.0.1", "port": port }]),
+                        );
+                        c
+                    },
+                    config_ref: None,
+                    position: None,
+                },
+                NodeConfig {
+                    id: "rw".to_string(),
+                    node_type: "response-rewrite".to_string(),
+                    config: {
+                        let mut c = HashMap::new();
+                        c.insert(
+                            "filters".to_string(),
+                            serde_json::json!([{ "regex": "a", "replace": "b" }]),
+                        );
+                        c
+                    },
+                    config_ref: None,
+                    position: None,
+                },
+                NodeConfig {
+                    id: "client".to_string(),
+                    node_type: "client".to_string(),
+                    config: HashMap::new(),
+                    config_ref: None,
+                    position: None,
+                },
+            ],
+            edges: vec![
+                EdgeConfig {
+                    from: "listener.out".to_string(),
+                    to: "up1.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "up1.success".to_string(),
+                    to: "client.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "up1.error".to_string(),
+                    to: "up2.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "up2.success".to_string(),
+                    to: "rw.in".to_string(),
+                },
+                EdgeConfig {
+                    from: "rw.success".to_string(),
+                    to: "client.in".to_string(),
+                },
+            ],
+        };
+
+        let graph = compile_policy(&policy, PluginResources::empty()).unwrap();
+        // Sanity-check the shape actually exercises the bug: up1 capable,
+        // up2 not (confirms the compile-time inference agrees before we
+        // even get to the runtime assertion below).
+        assert!(
+            graph.is_stream_capable("up1"),
+            "up1's direct success path to client is header-only"
+        );
+        assert!(
+            !graph.is_stream_capable("up2"),
+            "up2's success path is blocked by rw's body filter"
+        );
+
+        let result = graph.execute(test_context("/test")).await;
+
+        assert!(
+            result.response.stream.is_none(),
+            "up2 must have buffered: a stale __may_stream=true left by up1's \
+             failed attempt must not leak across the error-port hop"
+        );
+        assert_eq!(
+            result.response.body.as_ref(),
+            b"baa",
+            "rw's filter must have actually run on a real buffered body, \
+             proving up2 did not silently bypass it by streaming"
+        );
     }
 }

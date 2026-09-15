@@ -12,7 +12,7 @@ use bytes::Bytes;
 use crate::balancer::{Balancer, Strategy, Target};
 use crate::context::stream::ResponseStream;
 use crate::context::{Context, GatewayError, Protocol};
-use crate::outbound::idle::idle_timeout_body;
+use crate::outbound::idle::{body_holding, idle_timeout_body};
 use crate::outbound::{OutboundClient, OutboundError, OutboundRequest};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
@@ -393,10 +393,15 @@ impl Plugin for UpstreamPlugin {
                     // Invariant: exactly one of `body`/`stream` carries
                     // content. This node is about to populate `stream`.
                     ctx.response.body = Bytes::new();
-                    let mut stream =
-                        ResponseStream::new(idle_timeout_body(resp.body, self.stream_idle_timeout));
-                    stream.hold(Box::new(guard));
-                    ctx.response.stream = Some(stream);
+                    // The guard is bound into the body at construction, not
+                    // attached after via `stream.hold(...)`: `into_parts`
+                    // hands body and guards back as two independent values,
+                    // so keeping them together end-to-end from the moment
+                    // the stream exists removes any chance of the transport
+                    // task dropping one half and not the other.
+                    let idled = idle_timeout_body(resp.body, self.stream_idle_timeout);
+                    let held = body_holding(idled, vec![Box::new(guard)]);
+                    ctx.response.stream = Some(ResponseStream::new(held));
                     Ok(PluginOutput::success(ctx))
                 }
                 Err(e) => {
@@ -442,6 +447,11 @@ impl Plugin for UpstreamPlugin {
         ctx.response.status_code = response.status;
         ctx.response.headers = response.headers;
         ctx.response.body = response.body;
+        // Invariant, enforced locally rather than argued globally: a
+        // buffered response never carries a stream. Matters on a failover
+        // policy shape where an earlier node's context (including a stale
+        // `response.stream` from some prior hop) reaches this node.
+        ctx.response.stream = None;
 
         Ok(PluginOutput::success(ctx))
     }
@@ -688,8 +698,11 @@ mod tests {
     }
 
     /// Minimal one-shot HTTP server that records the request line (method and
-    /// request-target) of the first request it receives and answers `200`.
-    /// Returns its port and a receiver for the captured line.
+    /// request-target) of the first request it receives and answers `200`
+    /// with a non-empty body — a `content-length: 0` reply would make any
+    /// `body.is_empty()` assertion on the caller's side vacuous (it would
+    /// pass whether or not the plugin actually populated `body`/`stream`
+    /// correctly). Returns its port and a receiver for the captured line.
     async fn spawn_request_line_capture() -> (u16, tokio::sync::oneshot::Receiver<String>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -705,9 +718,9 @@ mod tests {
                 let _ = stream
                     .write_all(
                         b"HTTP/1.1 200 OK
-content-length: 0
+content-length: 2
 
-",
+ok",
                     )
                     .await;
                 let _ = stream.shutdown().await;
@@ -832,5 +845,10 @@ content-length: 0
         let out = plugin_at(port).execute(ctx).await.unwrap();
 
         assert!(out.context.response.stream.is_none());
+        assert_eq!(
+            out.context.response.body.as_ref(),
+            b"ok",
+            "buffered path must actually carry the upstream's body"
+        );
     }
 }

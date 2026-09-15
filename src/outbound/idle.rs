@@ -1,20 +1,14 @@
 //! Body wrappers for streaming upstream responses.
 //!
 //! Both operate at the `http_body::Body` frame level so they compose with any
-//! `BoxBody<Bytes, hyper::Error>` — the streaming body type used throughout
+//! `BoxBody<Bytes, BoxError>` — the streaming body type used throughout
 //! `src/outbound` and `src/context/stream.rs` — without re-buffering it.
-//!
-//! A note on the error type: `hyper::Error` cannot be constructed outside the
-//! `hyper` crate. Every constructor on it (`new`, `new_io`, `new_canceled`,
-//! ...) is `pub(super)` — verified against hyper 1.9.0's `src/error.rs` — so
-//! nothing outside `hyper` itself can mint a fresh `hyper::Error` value; code
-//! here can only forward one hyper already produced from a real connection.
-//! That forecloses a literal "the idle body errors" implementation:
-//! [`idle_timeout_body`] cannot manufacture an `Err(hyper::Error)` frame of
-//! its own, so a silently-stalled body is reaped by ending the stream
-//! (`Poll::Ready(None)`) instead. See that function's doc comment for the
-//! consequence and why this is the honest alternative rather than an
-//! `unsafe` workaround.
+//! `BoxError` (`crate::outbound::BoxError`) is a boxed `std::error::Error`,
+//! not `hyper::Error`: see that type alias's doc comment for why. In short,
+//! `hyper::Error` has no public constructor anywhere in the `hyper` crate, so
+//! a body wrapper built on it could never report its own failure. `BoxError`
+//! has no such restriction, which is what lets [`idle_timeout_body`] below
+//! actually error the stream on reap, rather than merely ending it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -26,25 +20,43 @@ use http_body::{Body, Frame, SizeHint};
 use http_body_util::combinators::BoxBody;
 use http_body_util::BodyExt;
 
-/// Wraps `body` so it is reaped after `idle` elapses with no frame arriving.
-/// The timer resets on every frame, so a steady stream survives indefinitely
-/// while a silent one is bounded.
-///
-/// Reaping ends the stream (`Poll::Ready(None)`) rather than erroring it —
-/// `hyper::Error` has no public constructor anywhere in the `hyper` crate, so
-/// this wrapper cannot produce a fresh one of its own (see the module doc).
-/// For a chunked HTTP/1.1 response this is written as a clean terminator
-/// rather than an abruptly reset connection, so on the wire a client cannot
-/// distinguish "reaped for going idle" from "upstream finished on its own".
-/// The idle-reap should be logged at the point it fires (left to the caller)
-/// so the operator still has visibility. A real upstream error — the wrapped
-/// body itself yielding `Err(hyper::Error)`, e.g. a connection reset — is
-/// forwarded unchanged; only the manufactured "no frame for `idle`" case is
-/// affected.
+use super::BoxError;
+
+/// The error [`idle_timeout_body`] reports when a stream is reaped: no frame
+/// arrived for the configured idle bound.
+#[derive(Debug)]
+pub struct IdleTimeoutError {
+    /// The idle bound that elapsed with no frame arriving.
+    pub idle: Duration,
+}
+
+impl std::fmt::Display for IdleTimeoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "idle timeout: no response body frame for {:?}",
+            self.idle
+        )
+    }
+}
+
+impl std::error::Error for IdleTimeoutError {}
+
+/// Wraps `body` so it errors when no frame arrives for `idle`. The timer
+/// resets on every frame, so a steady stream survives indefinitely while a
+/// silent one is reaped — and reaped as a real failure
+/// (`Poll::Ready(Some(Err(IdleTimeoutError)))`), not a clean end: ending
+/// cleanly would write the chunked terminator (HTTP/1.1) or `END_STREAM`
+/// (h2) exactly as a legitimately complete response would, making a
+/// truncated body indistinguishable from a complete one on the wire — on
+/// exactly the unbounded bodies (NDJSON exports, log tails, bulk proxied
+/// data) this feature targets. A real upstream error — the wrapped body
+/// itself yielding `Err`, e.g. a connection reset — is forwarded unchanged;
+/// the reap only fires when nothing else has.
 pub fn idle_timeout_body(
-    body: BoxBody<Bytes, hyper::Error>,
+    body: BoxBody<Bytes, BoxError>,
     idle: Duration,
-) -> BoxBody<Bytes, hyper::Error> {
+) -> BoxBody<Bytes, BoxError> {
     IdleTimeoutBody {
         inner: body,
         idle,
@@ -54,14 +66,14 @@ pub fn idle_timeout_body(
 }
 
 struct IdleTimeoutBody {
-    inner: BoxBody<Bytes, hyper::Error>,
+    inner: BoxBody<Bytes, BoxError>,
     idle: Duration,
     sleep: Pin<Box<tokio::time::Sleep>>,
 }
 
 impl Body for IdleTimeoutBody {
     type Data = Bytes;
-    type Error = hyper::Error;
+    type Error = BoxError;
 
     fn poll_frame(
         self: Pin<&mut Self>,
@@ -84,7 +96,18 @@ impl Body for IdleTimeoutBody {
         }
 
         match this.sleep.as_mut().poll(cx) {
-            Poll::Ready(()) => Poll::Ready(None),
+            Poll::Ready(()) => {
+                // The only place this fires: the caller (a hyper connection
+                // writing this body to the client) sees only an ordinary
+                // `Err` frame, not a log line, so this is the one place in
+                // the process a silent-upstream reap is ever recorded.
+                tracing::warn!(
+                    idle_ms = this.idle.as_millis() as u64,
+                    "streamed response body idle timeout: no frame for {:?}, reaping the stream",
+                    this.idle
+                );
+                Poll::Ready(Some(Err(Box::new(IdleTimeoutError { idle: this.idle }))))
+            }
             Poll::Pending => Poll::Pending,
         }
     }
@@ -103,15 +126,10 @@ impl Body for IdleTimeoutBody {
 /// dropped — never merely because the node that started the stream returned.
 /// This is what keeps balancer in-flight counters and `limit-conn` permits
 /// held for the stream's real lifetime.
-// Not yet called outside tests: the `upstream` node only ever attaches its
-// guard via `ResponseStream::hold` today (see `plugins/native/upstream.rs`);
-// the listener starts calling this to layer on `limit-conn`-style permits in
-// the follow-up task that relays a stream instead of buffering it.
-#[allow(dead_code)]
 pub fn body_holding(
-    body: BoxBody<Bytes, hyper::Error>,
+    body: BoxBody<Bytes, BoxError>,
     guards: Vec<Box<dyn Send + 'static>>,
-) -> BoxBody<Bytes, hyper::Error> {
+) -> BoxBody<Bytes, BoxError> {
     BodyHolding {
         inner: body,
         guards: std::sync::Mutex::new(guards),
@@ -119,9 +137,8 @@ pub fn body_holding(
     .boxed()
 }
 
-#[allow(dead_code)] // constructed only by `body_holding`, above
 struct BodyHolding {
-    inner: BoxBody<Bytes, hyper::Error>,
+    inner: BoxBody<Bytes, BoxError>,
     // `Box<dyn Send>` guards are `Send`-only, not `Sync`, so a bare `Vec`
     // here would make `BodyHolding` (and, boxed, the `BoxBody` it returns)
     // lose `Sync` — `BoxBody`'s trait object requires `Send + Sync`.
@@ -137,7 +154,7 @@ struct BodyHolding {
 
 impl Body for BodyHolding {
     type Data = Bytes;
-    type Error = hyper::Error;
+    type Error = BoxError;
 
     fn poll_frame(
         self: Pin<&mut Self>,
@@ -172,12 +189,12 @@ mod tests {
     use std::collections::VecDeque;
 
     /// A minimal hand-rolled body over a queue of scheduled data frames, each
-    /// available after its own delay. Never errors — `hyper::Error` can't be
-    /// constructed outside `hyper` (see the module doc), so a test body that
-    /// needs `Error = hyper::Error` can only ever succeed or end cleanly.
-    /// After the queue drains it either ends the stream (`stall = false`) or
-    /// stays `Pending` forever (`stall = true`), simulating an upstream that
-    /// goes silent without closing the connection.
+    /// available after its own delay. Never errors on its own — only the
+    /// wrappers under test (`idle_timeout_body`) synthesize errors; this body
+    /// exists to produce plain successful frames on a schedule. After the
+    /// queue drains it either ends the stream (`stall = false`) or stays
+    /// `Pending` forever (`stall = true`), simulating an upstream that goes
+    /// silent without closing the connection.
     struct ScriptedBody {
         items: VecDeque<Duration>,
         stall: bool,
@@ -196,7 +213,7 @@ mod tests {
 
     impl Body for ScriptedBody {
         type Data = Bytes;
-        type Error = hyper::Error;
+        type Error = BoxError;
 
         fn poll_frame(
             self: Pin<&mut Self>,
@@ -231,39 +248,61 @@ mod tests {
 
     /// A body that yields one frame and then goes silent must be reaped —
     /// not left to hang forever — once the idle bound elapses with no
-    /// further frame.
+    /// further frame, and the reap must surface as a real error, not a
+    /// clean end (see the module doc: a clean end is indistinguishable from
+    /// a legitimately complete response on the wire).
     #[tokio::test]
-    async fn test_idle_timeout_reaps_a_silent_stream() {
+    async fn test_idle_timeout_reaps_a_silent_stream_as_an_error() {
         let body = ScriptedBody::new(vec![Duration::ZERO], true);
-        let wrapped = idle_timeout_body(body.boxed(), Duration::from_millis(150));
+        let mut wrapped = idle_timeout_body(body.boxed(), Duration::from_millis(150));
 
-        let collected = tokio::time::timeout(Duration::from_millis(800), wrapped.collect())
-            .await
-            .expect("a silent stream must be reaped, not hang past the idle bound")
-            .expect("reaping ends the stream cleanly rather than erroring it");
+        // First frame arrives normally.
+        let first = tokio::time::timeout(
+            Duration::from_millis(500),
+            std::future::poll_fn(|cx| Pin::new(&mut wrapped).poll_frame(cx)),
+        )
+        .await
+        .expect("first frame must arrive promptly");
+        assert!(matches!(first, Some(Ok(_))), "expected the first frame");
 
-        assert_eq!(
-            collected.to_bytes().as_ref(),
-            b"x",
-            "only the one frame sent before the stream went silent"
-        );
+        // Then silence: the idle bound must reap the stream as an error, not
+        // hang and not end cleanly.
+        let second = tokio::time::timeout(
+            Duration::from_millis(800),
+            std::future::poll_fn(|cx| Pin::new(&mut wrapped).poll_frame(cx)),
+        )
+        .await
+        .expect("a silent stream must be reaped, not hang past the idle bound");
+        match second {
+            Some(Err(e)) => {
+                assert!(
+                    e.downcast_ref::<IdleTimeoutError>().is_some(),
+                    "expected an IdleTimeoutError, got: {e}"
+                );
+            }
+            other => panic!("expected the reap to error the stream, got: {other:?}"),
+        }
     }
 
     /// A body that keeps sending frames inside the idle bound must be left
     /// alone and allowed to finish on its own, however long that takes in
-    /// total.
+    /// total. 15 frames * 50ms = 750ms of total elapsed time against a
+    /// 500ms idle bound: a naive total-deadline implementation (arms the
+    /// timer once, never resets it) fails this around frame 10, so this is
+    /// the case that actually exercises the reset — 5 frames * 50ms = 250ms
+    /// stays under a 500ms bound even without ever resetting anything.
     #[tokio::test]
     async fn test_idle_timeout_lets_a_steady_stream_finish() {
-        let delays = vec![Duration::from_millis(50); 5];
+        let delays = vec![Duration::from_millis(50); 15];
         let body = ScriptedBody::new(delays, false);
         let wrapped = idle_timeout_body(body.boxed(), Duration::from_millis(500));
 
-        let collected = tokio::time::timeout(Duration::from_secs(2), wrapped.collect())
+        let collected = tokio::time::timeout(Duration::from_secs(3), wrapped.collect())
             .await
-            .expect("a steady stream (gaps well under the idle bound) must not be reaped")
+            .expect("a steady stream (every gap well under the idle bound) must not be reaped")
             .expect("no error expected");
 
-        assert_eq!(collected.to_bytes().as_ref(), b"xxxxx");
+        assert_eq!(collected.to_bytes().as_ref(), b"xxxxxxxxxxxxxxx");
     }
 
     struct DropGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
@@ -319,6 +358,39 @@ mod tests {
             dropped.load(Ordering::SeqCst),
             1,
             "guard not released when the body was dropped early"
+        );
+    }
+
+    /// The guard must also release when the body ends with an error (e.g.
+    /// the idle reap above), not only on a clean end — `body_holding` treats
+    /// both as "finished".
+    #[tokio::test]
+    async fn test_body_holding_drops_guards_on_body_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let body = ScriptedBody::new(vec![Duration::ZERO], true);
+        let idled = idle_timeout_body(body.boxed(), Duration::from_millis(50));
+        let mut wrapped = body_holding(idled, vec![Box::new(DropGuard(dropped.clone()))]);
+
+        // First frame.
+        let _ = std::future::poll_fn(|cx| Pin::new(&mut wrapped).poll_frame(cx)).await;
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+        // The idle timeout fires and errors the (inner) body; body_holding
+        // must treat that as "finished" and release the guard.
+        let second = tokio::time::timeout(
+            Duration::from_millis(500),
+            std::future::poll_fn(|cx| Pin::new(&mut wrapped).poll_frame(cx)),
+        )
+        .await
+        .expect("idle reap must fire");
+        assert!(matches!(second, Some(Err(_))));
+        assert_eq!(
+            dropped.load(Ordering::SeqCst),
+            1,
+            "guard not released when the body ended with an error"
         );
     }
 }
