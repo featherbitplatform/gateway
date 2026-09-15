@@ -69,10 +69,10 @@ pub struct GatewayResponse {
     /// Streaming body, when the upstream response is relayed unbuffered.
     /// Skipped by serde: `Context` must stay serializable for Lua marshalling
     /// and debug snapshots. Invariant: when this is `Some`, `body` is empty.
-    /// Set by a node starting in Task 2; read by the listener starting in
-    /// Task 6, so it is unread on any path exercised today.
+    /// Set by the `upstream` node when a policy is inferred stream-capable at
+    /// compile time; read by the listener (`build_response`), which relays it
+    /// to the client instead of the buffered `body`.
     #[serde(skip)]
-    #[allow(dead_code)]
     pub stream: Option<crate::context::stream::ResponseStream>,
 }
 
