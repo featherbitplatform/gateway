@@ -1090,8 +1090,16 @@ policies:
     /// point: it warns (so a release build at least logs the anomaly instead
     /// of silently dropping the body) and `debug_assert!`s (so a dev/test
     /// build fails loudly rather than shipping the bug).
+    ///
+    /// Split into two tests because the two halves live in different
+    /// profiles: `warn!` is unconditional and must stay covered in
+    /// `cargo test --release` too, while `debug_assert!` compiles out
+    /// entirely in release, so a single test asserting the panic would fail
+    /// `--release` for a reason that has nothing to do with a real
+    /// regression — see `test_build_response_panics_when_body_and_stream_both_set`
+    /// below, which is gated to only exist where the assert does.
     #[test]
-    fn test_build_response_flags_body_and_stream_both_set() {
+    fn test_build_response_warns_when_body_and_stream_both_set() {
         use std::panic::AssertUnwindSafe;
 
         let boxed = Full::new(Bytes::from_static(b"stream-bytes"))
@@ -1101,6 +1109,38 @@ policies:
         let leftover_body = Bytes::from_static(b"leftover body");
 
         let (_guard, logs) = crate::test_log::capture_warnings();
+        // `warn!` runs before `debug_assert!` inside `build_response`, so the
+        // log is already captured regardless of whether this call goes on to
+        // panic (debug/test builds) or return normally (release builds) —
+        // `catch_unwind` here only tolerates whichever of those happens.
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            build_response(200, &HashMap::new(), None, leftover_body, stream)
+        }));
+
+        let out = logs.contents();
+        assert!(out.contains("WARN"), "expected a WARN line, got: {out:?}");
+        assert!(
+            out.contains("13"),
+            "warning should name the discarded buffered body's length (13 bytes), got: {out:?}"
+        );
+    }
+
+    /// The `debug_assert!` half of the same guard — only compiled where the
+    /// assert itself is. Ungated, this failed `cargo test --release`
+    /// (`debug_assert!` is a no-op there, so `build_response` would simply
+    /// return instead of panicking) even though nothing was actually wrong.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn test_build_response_panics_when_body_and_stream_both_set() {
+        use std::panic::AssertUnwindSafe;
+
+        let boxed = Full::new(Bytes::from_static(b"stream-bytes"))
+            .map_err(|never| match never {})
+            .boxed();
+        let stream = Some(crate::context::stream::ResponseStream::new(boxed));
+        let leftover_body = Bytes::from_static(b"leftover body");
+
+        let (_guard, _logs) = crate::test_log::capture_warnings();
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             build_response(200, &HashMap::new(), None, leftover_body, stream)
         }));
@@ -1108,12 +1148,6 @@ policies:
         assert!(
             result.is_err(),
             "debug_assert! must fire when response.stream and a non-empty response.body are both set"
-        );
-        let out = logs.contents();
-        assert!(out.contains("WARN"), "expected a WARN line, got: {out:?}");
-        assert!(
-            out.contains("13"),
-            "warning should name the discarded buffered body's length (13 bytes), got: {out:?}"
         );
     }
 
@@ -1471,6 +1505,97 @@ policies:
         assert!(
             u64::from_str_radix(size_line.trim(), 16).is_ok(),
             "the first body line on the wire must be a valid hex chunk-size, got {size_line:?}"
+        );
+    }
+
+    /// The symmetric case to the test above: when the upstream declares a
+    /// `content-length`, that header is copied through unchanged and hyper's
+    /// H1 encoder trusts it — the response stays length-delimited, not
+    /// chunked. Streaming is decided purely by graph shape (§5 of the design
+    /// doc), not by upstream framing, so an ordinary known-length response
+    /// behind header-only nodes still streams frame-by-frame as it arrives;
+    /// it just doesn't get chunked on the wire the way an unknown-length one
+    /// does. Pinned here because the docs previously claimed, incorrectly,
+    /// that a streamed response never carries `content-length`.
+    #[tokio::test]
+    async fn test_streamed_response_with_known_content_length_is_length_delimited_on_the_wire() {
+        let payload = b"data: first\n\n";
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = upstream.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n",
+                    payload.len()
+                );
+                let _ = s.write_all(header.as_bytes()).await;
+                let _ = s.write_all(payload).await;
+                // Hold the connection open past the body: with an exact
+                // content-length, the client must stop reading at that many
+                // bytes on its own, not because the connection closed.
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+
+        let gw_port = spawn_gateway_with_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "127.0.0.1", "port": up_port }] } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "client.in" }
+            ]
+        }))
+        .await;
+
+        use tokio::io::AsyncReadExt;
+        let mut stream = raw_get(gw_port, "/stream").await;
+
+        let mut acc = Vec::new();
+        let mut buf = [0u8; 4096];
+        let header_end = loop {
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "connection closed before headers arrived");
+            acc.extend_from_slice(&buf[..n]);
+            if let Some(pos) = find_subslice(&acc, b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+
+        let header_text = String::from_utf8_lossy(&acc[..header_end]).to_lowercase();
+        assert!(
+            header_text.contains(&format!("content-length: {}", payload.len())),
+            "the upstream's content-length must be passed through unchanged; got headers:\n{header_text}"
+        );
+        assert!(
+            !header_text.contains("transfer-encoding:"),
+            "a length-delimited response must not also be chunked; got headers:\n{header_text}"
+        );
+
+        // Read exactly `payload.len()` more bytes — bounded, so this hangs
+        // (and the test times out) if the gateway is chunking after all.
+        let want = header_end + payload.len();
+        let body = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while acc.len() < want {
+                let n = stream.read(&mut buf).await.unwrap();
+                assert!(n > 0, "connection closed before the full body arrived");
+                acc.extend_from_slice(&buf[..n]);
+            }
+            acc[header_end..want].to_vec()
+        })
+        .await
+        .expect("the length-delimited body must arrive without waiting on connection close");
+
+        assert_eq!(
+            body, payload,
+            "the raw bytes on the wire must be the payload itself, with no chunk-size line \
+             or other framing wrapped around it"
         );
     }
 
