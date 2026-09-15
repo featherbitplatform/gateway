@@ -342,6 +342,10 @@ impl Plugin for OpenTelemetryPlugin {
         "opentelemetry"
     }
 
+    fn reads_response_body(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, mut ctx: Context) -> PluginResult {
         match self.phase {
             Phase::Start => self.run_start(&mut ctx),
@@ -379,6 +383,7 @@ mod tests {
                 status_code: 200,
                 headers: HashMap::new(),
                 body: Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),

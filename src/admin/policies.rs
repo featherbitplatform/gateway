@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use crate::config::PolicyConfig;
@@ -17,6 +17,7 @@ use crate::state::SharedState;
 pub fn router() -> Router<Arc<SharedState>> {
     Router::new()
         .route("/api/policies", get(list_policies))
+        .route("/api/policies/validate", post(validate_policy))
         .route(
             "/api/policies/{name}",
             get(get_policy).put(update_policy).delete(delete_policy),
@@ -114,6 +115,66 @@ async fn delete_policy(
         )
             .into_response(),
     }
+}
+
+/// `POST /api/policies/validate` — validates + compiles a policy against the
+/// live supernodes, plugin configs and stores, without persisting it. Body is
+/// the policy definition itself (`{"nodes": [...], "edges": [...], ...}`); a
+/// `name` is optional and, if absent, is not saved anywhere. Mirrors the MCP
+/// `validate_policy` tool so a human in the UI and an agent driving the
+/// gateway see the same verdict.
+///
+/// Response: `{"valid": bool, "errors": [...], "buffering": [...]}`. A
+/// policy that forces one or more upstreams to buffer instead of stream is
+/// still `valid` — `buffering` is informational, not an error. Each entry
+/// names the blocked upstream and the node responsible:
+/// `{"upstream": "up", "blocked_by": "rw", "node_type": "response-rewrite"}`.
+async fn validate_policy(
+    State(state): State<Arc<SharedState>>,
+    Json(mut raw): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(obj) = raw.as_object_mut() {
+        obj.entry("name")
+            .or_insert_with(|| serde_json::Value::String("unsaved-policy".to_string()));
+    }
+    let policy: PolicyConfig = match serde_json::from_value(raw) {
+        Ok(p) => p,
+        Err(e) => {
+            return Json(serde_json::json!({
+                "valid": false,
+                "errors": [e.to_string()],
+                "buffering": []
+            }))
+            .into_response();
+        }
+    };
+
+    let (supernodes, plugin_configs) = {
+        let gw = state.gateway.read().await;
+        (gw.supernodes.clone(), gw.plugin_configs.clone())
+    };
+
+    let compiled = crate::graph::prepare_policy(policy, &supernodes, &plugin_configs)
+        .and_then(|p| crate::graph::compile_policy(&p, state.resources.clone()));
+
+    let (errors, buffering): (Vec<String>, serde_json::Value) = match compiled {
+        Ok(graph) => (
+            Vec::new(),
+            serde_json::to_value(graph.buffering_reasons())
+                .expect("BufferingReason always serializes"),
+        ),
+        Err(e) => (
+            e.split("; ").map(str::to_string).collect(),
+            serde_json::json!([]),
+        ),
+    };
+
+    Json(serde_json::json!({
+        "valid": errors.is_empty(),
+        "errors": errors,
+        "buffering": buffering
+    }))
+    .into_response()
 }
 
 /// `GET /api/scripts` — lists scripted-plugin files found in the `plugins/`
@@ -378,6 +439,78 @@ pub(crate) fn plugin_catalog() -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{GatewayConfig, SystemConfig};
+    use crate::config_store::FileConfigStore;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn test_state(gateway_yaml: &str) -> Arc<SharedState> {
+        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = serde_yaml::from_str(gateway_yaml).unwrap();
+        Arc::new(
+            SharedState::new(
+                system,
+                gateway,
+                None,
+                Arc::new(FileConfigStore::new(std::path::PathBuf::from(
+                    "gateway.yaml",
+                ))),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn app(state: Arc<SharedState>) -> Router {
+        router().with_state(state)
+    }
+
+    /// Drives `POST /api/policies/validate` against a fresh in-memory state
+    /// (no routes/policies configured) and returns the parsed JSON body.
+    async fn validate_policy_json(body: serde_json::Value) -> serde_json::Value {
+        let state = test_state("{}");
+        let resp = app(state)
+            .oneshot(
+                Request::post("/api/policies/validate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// Validating a policy whose upstream cannot stream must say so, naming the
+    /// node responsible. An operator who wires gzip onto an SSE route learns it
+    /// here rather than from "notifications stopped working".
+    #[tokio::test]
+    async fn test_validate_reports_forced_buffering() {
+        let body = validate_policy_json(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "rw", "type": "response-rewrite",
+                  "config": { "filters": [{ "regex": "a", "replace": "b" }] } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "rw.in" },
+                { "from": "rw.success", "to": "client.in" }
+            ]
+        }))
+        .await;
+
+        assert_eq!(body["valid"], serde_json::json!(true));
+        assert_eq!(body["buffering"][0]["upstream"], serde_json::json!("up"));
+        assert_eq!(body["buffering"][0]["blocked_by"], serde_json::json!("rw"));
+    }
 
     /// Extracts the node types registered in `create_plugin`'s match arms by
     /// reading its source. The factory is a `match` on `&str`, so there is no

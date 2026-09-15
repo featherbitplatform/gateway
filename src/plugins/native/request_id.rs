@@ -98,6 +98,10 @@ impl Plugin for RequestIdPlugin {
         "request-id"
     }
 
+    fn reads_response_body(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, mut ctx: Context) -> PluginResult {
         let header_name = self.header_name.render(&ctx).to_lowercase();
 
@@ -148,6 +152,7 @@ mod tests {
                 status_code: 0,
                 headers: HashMap::new(),
                 body: Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),

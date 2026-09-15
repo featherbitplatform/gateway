@@ -80,6 +80,7 @@ mod tests {
                 status_code: 200,
                 headers: HashMap::new(),
                 body: bytes::Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),
