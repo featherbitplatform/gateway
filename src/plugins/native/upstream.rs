@@ -851,4 +851,74 @@ ok",
             "buffered path must actually carry the upstream's body"
         );
     }
+
+    /// Sends response headers plus a first chunk immediately, then blocks
+    /// until `resume` is signaled before sending the final chunk and the
+    /// chunked terminator and closing — giving a test a window to observe
+    /// the balancer's in-flight count while the stream is still open, before
+    /// deciding when the body is allowed to finish.
+    async fn spawn_pausable_stream_server() -> (u16, tokio::sync::oneshot::Sender<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n",
+                    )
+                    .await;
+                let _ = resume_rx.await;
+                let _ = stream.write_all(b"6\r\nworld!\r\n0\r\n\r\n").await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        (port, resume_tx)
+    }
+
+    /// The balancer's in-flight guard must be bound to the streaming body's
+    /// own lifetime (via `body_holding`), not to this node's `execute` call.
+    /// Swapping that binding for a bare `drop(guard)` — the exact bug this
+    /// guards against — would release the count the instant `execute`
+    /// returns, long before the client has actually received the whole
+    /// body; the whole rest of the test suite stays green either way, which
+    /// is what makes this property worth testing directly rather than
+    /// trusting it stayed wired correctly.
+    #[tokio::test]
+    async fn test_in_flight_guard_released_only_when_stream_completes() {
+        use http_body_util::BodyExt;
+
+        let (port, resume_tx) = spawn_pausable_stream_server().await;
+        let plugin = plugin_at(port);
+        let mut ctx = ctx_with_query("/stream", vec![]);
+        ctx.message
+            .insert("__may_stream".to_string(), serde_json::json!(true));
+
+        let out = plugin.execute(ctx).await.unwrap();
+        let stream = out
+            .context
+            .response
+            .stream
+            .expect("expected a stream when __may_stream is set");
+
+        assert_eq!(
+            plugin.balancer.in_flight_count(0),
+            1,
+            "in-flight count must stay held while the stream is still open"
+        );
+
+        let (body, _guards) = stream.into_parts();
+        let _ = resume_tx.send(());
+        let collected = body.collect().await.unwrap().to_bytes();
+        assert_eq!(collected.as_ref(), b"helloworld!");
+
+        assert_eq!(
+            plugin.balancer.in_flight_count(0),
+            0,
+            "in-flight count must release once the stream body completes"
+        );
+    }
 }

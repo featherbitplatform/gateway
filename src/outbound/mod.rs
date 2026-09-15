@@ -40,15 +40,21 @@ type PooledClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 /// no-op conversion, not a loss of information.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// A single outbound request. `timeout` covers the whole call: connect,
-/// request write, and response body collection.
+/// A single outbound request. `timeout`'s meaning depends on which call
+/// consumes it: [`Client::request`] applies it to the whole call — connect,
+/// request write, and response body collection. [`Client::request_streaming`]
+/// applies it only to connect, request write, and response **headers**; once
+/// headers are in, the body is unbounded here and left to the caller's own
+/// idle bound (e.g. `stream_idle_timeout_ms` on the `upstream` node).
 pub struct OutboundRequest {
     pub method: http::Method,
     pub url: String,
     /// Header name/value pairs; names may repeat for multi-value headers.
     pub headers: Vec<(String, String)>,
     pub body: Bytes,
-    /// Whole-call deadline. Callers should default to 3s for callouts.
+    /// Deadline — see the struct-level doc for what it covers, which differs
+    /// between `request` and `request_streaming`. Callers should default to
+    /// 3s for callouts.
     pub timeout: Duration,
     /// When false, TLS certificate verification is disabled (matching
     /// APISIX's `ssl_verify: false`). Ignored for plain-http URLs and when
