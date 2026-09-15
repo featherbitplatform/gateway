@@ -56,6 +56,15 @@ impl Plugin for LoggingPlugin {
         "logging"
     }
 
+    fn reads_response_body(&self) -> bool {
+        // Unlike the templated loggers (http-logger, kafka-logger, ...) this
+        // plugin has no configurable `log_format`: its emitted fields are
+        // fixed, and the only body-derived field is `response_body_bytes`
+        // (a length, from `include_body` — parsed but not yet acted on, see
+        // the field doc above). It never reads the body's content.
+        false
+    }
+
     async fn execute(&self, ctx: Context) -> PluginResult {
         let mut fields = serde_json::json!({
             "method": ctx.request.method,
