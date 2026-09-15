@@ -8,6 +8,8 @@
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 
+use crate::outbound::BoxError;
+
 /// An upstream response body being relayed to the client unbuffered, plus any
 /// guards whose lifetime must match the stream rather than the node that
 /// produced it (balancer in-flight counters, `limit-conn` permits).
@@ -18,7 +20,7 @@ pub struct ResponseStream {
     // `combinators::BoxBody`, as opposed to the `Send`-only
     // `UnsyncBoxBody`), so it needs no help to keep `ResponseStream: Sync`.
     #[allow(dead_code)]
-    body: BoxBody<Bytes, hyper::Error>,
+    body: BoxBody<Bytes, BoxError>,
     // `Box<dyn Send + 'static>` guards are `Send`-only, not `Sync`, so a bare
     // `Vec` here would make `ResponseStream` — and, nested inside
     // `GatewayResponse`, `Context` — lose `Sync`. Several existing plugins
@@ -37,7 +39,7 @@ pub struct ResponseStream {
 // legitimately unused for now rather than dead in the usual sense.
 #[allow(dead_code)]
 impl ResponseStream {
-    pub fn new(body: BoxBody<Bytes, hyper::Error>) -> Self {
+    pub fn new(body: BoxBody<Bytes, BoxError>) -> Self {
         Self {
             body,
             guards: std::sync::Mutex::new(Vec::new()),
@@ -54,7 +56,7 @@ impl ResponseStream {
     /// `Vec`, not with `self` (which is consumed here) — the caller must keep
     /// that `Vec` alive until the returned body has finished streaming to the
     /// client; dropping it early releases the guards early.
-    pub fn into_parts(self) -> (BoxBody<Bytes, hyper::Error>, Vec<Box<dyn Send + 'static>>) {
+    pub fn into_parts(self) -> (BoxBody<Bytes, BoxError>, Vec<Box<dyn Send + 'static>>) {
         // `self` is owned here, so nothing else can hold the lock; never blocks.
         (self.body, self.guards.into_inner().unwrap())
     }
@@ -75,7 +77,7 @@ mod tests {
     use bytes::Bytes;
     use http_body_util::{BodyExt, Full};
 
-    fn boxed(text: &str) -> BoxBody<Bytes, hyper::Error> {
+    fn boxed(text: &str) -> BoxBody<Bytes, BoxError> {
         Full::new(Bytes::from(text.to_owned()))
             .map_err(|never| match never {})
             .boxed()

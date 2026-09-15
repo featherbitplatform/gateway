@@ -23,6 +23,23 @@ use hyper_util::rt::TokioExecutor;
 
 type PooledClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
+/// The error type carried by every streaming response body in this crate
+/// (`ResponseStream`, `OutboundStreamingResponse::body`, the `idle` module's
+/// wrappers). Deliberately *not* `hyper::Error`: that type has no public
+/// constructor anywhere in the `hyper` crate (every one of them is
+/// `pub(super)`), so nothing built on top of it can ever report its own
+/// failure (an idle timeout, a future size cap, a shutdown-drain cutoff) —
+/// only forward an error hyper already produced from a real connection. A
+/// boxed `std::error::Error` is strictly more permissive than what hyper's
+/// own `serve_connection` requires of a response body's error type
+/// (`Into<Box<dyn StdError + Send + Sync>>`), so this costs nothing on the
+/// send side while unblocking every synthetic error this crate needs to
+/// produce. `hyper::Error` itself satisfies `Into<BoxError>` via the
+/// standard library's blanket `From<E: Error + Send + Sync> for Box<dyn
+/// Error + Send + Sync>`, so forwarding a real hyper error through is a
+/// no-op conversion, not a loss of information.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
 /// A single outbound request. `timeout` covers the whole call: connect,
 /// request write, and response body collection.
 pub struct OutboundRequest {
@@ -69,7 +86,7 @@ pub struct OutboundResponse {
 pub struct OutboundStreamingResponse {
     pub status: u16,
     pub headers: HashMap<String, Vec<String>>,
-    pub body: BoxBody<Bytes, hyper::Error>,
+    pub body: BoxBody<Bytes, BoxError>,
 }
 
 /// Outbound call failure, distinguishing timeouts from transport errors so
@@ -181,7 +198,12 @@ impl OutboundClient {
                     .or_default()
                     .push(value.to_str().unwrap_or("").to_string());
             }
-            let body = response.into_body().map_err(|e| e).boxed();
+            // `hyper::Error: Error + Send + Sync + 'static`, so this is the
+            // standard library's blanket `From` impl at work — a real
+            // transport/parse error from `Incoming` forwards unchanged, just
+            // re-wrapped as `BoxError` so this body composes with the idle
+            // timeout and other synthetic-error wrappers in `outbound::idle`.
+            let body: BoxBody<Bytes, BoxError> = response.into_body().map_err(Into::into).boxed();
 
             Ok(OutboundStreamingResponse {
                 status,
