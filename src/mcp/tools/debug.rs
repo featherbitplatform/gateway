@@ -303,6 +303,24 @@ mod tests {
         .unwrap();
         assert!(list["traces"].as_array().unwrap().is_empty());
 
+        // The positive case: filtering by the policy the trace actually ran
+        // must return it. Without this, a filter that always matched nothing
+        // would satisfy the negative assertion above and look correct.
+        let list = call(
+            &s,
+            "list_traces",
+            obj(serde_json::json!({"policy": "echo-policy"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            list["traces"].as_array().unwrap().len(),
+            1,
+            "policy filter dropped a trace that ran under that policy: {}",
+            list["traces"]
+        );
+        assert_eq!(list["traces"][0]["id"], id);
+
         let t = call(&s, "get_trace", obj(serde_json::json!({"id": id})))
             .await
             .unwrap();
