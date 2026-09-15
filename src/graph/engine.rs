@@ -123,6 +123,14 @@ impl CompiledGraph {
                         "Graph error: node '{}' not found",
                         current_node_id
                     ));
+                    // Same rule as the no-handler 500 fallback and
+                    // `ErrorHandlerPlugin::execute`: this overwrites
+                    // `response.body`, so a stream left by an earlier node
+                    // (reachable here because `compile_policy` validates only
+                    // `from_node`, never `to_node` — see
+                    // `infer_stream_capability`'s doc below) must not survive
+                    // alongside it.
+                    ctx.response.stream = None;
                     if let Some(r) = recorder.as_mut() {
                         r.record_step(
                             &current_node_id,
@@ -526,10 +534,29 @@ pub fn compile_policy(
 /// `error` ports are never walked, on the upstream itself or on any node
 /// further along the chain: an error exit runs through the node's own error
 /// edge (unwalked here for the same reason), the policy's `error_handler`
-/// catch-all, or the engine's built-in 500 fallback — none of which this
-/// walk can see — and a later task makes every one of those discard any
-/// in-flight stream before writing its own body, so nothing reachable only
-/// via `error` edges can affect whether the upstream itself may stream.
+/// catch-all, or the engine's built-in fallbacks — none of which this walk
+/// can see.
+///
+/// This is safe only because of two separate facts, not one general
+/// guarantee:
+///
+/// - Every gateway-generated error body — `ErrorHandlerPlugin::execute`, the
+///   engine's no-handler 500 fallback, and the `NODE_NOT_FOUND` fallback,
+///   all in this crate — explicitly clears `response.stream` before writing
+///   `response.body`, so none of *those* three specific sites can leave a
+///   stale stream alongside a generated body.
+/// - An error edge can in principle route to *any* node, including one that
+///   writes `response.body` itself without going through those three sites.
+///   Nothing here walks that edge to rule it out; it is safe today only
+///   because no plugin that opts out of `reads_response_body()` (the set
+///   that can run downstream of a stream-capable `upstream` without forcing
+///   it to buffer: `client`, `opentelemetry`, `prometheus`, `proxy-rewrite`,
+///   `request-id`, `response-rewrite`, `skywalking`, `traffic-label`,
+///   `zipkin`) ever returns `Err` from `execute` — every `return Err` in
+///   those nine plugins' source is in `from_config` (construction-time
+///   validation), never in `execute`. If a future change to any of them
+///   starts erroring from `execute`, this walk would not catch it, and
+///   nothing else currently enforces it either.
 ///
 /// Iterates `policy_nodes` (a `Vec`), not the `nodes` map, and visits each
 /// node's outgoing ports in sorted-name order: the same precedent as the
@@ -1166,6 +1193,45 @@ mod tests {
         // ...and the engine wrote its generic 500.
         assert_eq!(out.response.status_code, 500);
         assert_eq!(trace.steps[0].after.response.status_code, 500);
+    }
+
+    /// The `NODE_NOT_FOUND` path (an edge pointing at a node id absent from
+    /// the node table — reachable because `compile_policy` validates only
+    /// `from_node`, never `to_node`) also overwrites `response.body` with a
+    /// generated message. Same hazard as the other two gateway-generated
+    /// error bodies: a stale `response.stream` must not survive it.
+    #[tokio::test]
+    async fn test_node_not_found_clears_stale_stream() {
+        use crate::context::stream::ResponseStream;
+        use http_body_util::{BodyExt, Full};
+
+        let graph = CompiledGraph {
+            nodes: HashMap::new(),
+            edges: HashMap::new(),
+            entry_node_id: "missing".to_string(),
+            terminal_node_ids: HashSet::new(),
+            catch_all_handler: None,
+            policy_name: "p".to_string(),
+            resources: PluginResources::empty(),
+            stream_capable: HashSet::new(),
+            buffering_reasons: Vec::new(),
+        };
+        let mut ctx = test_context("/x");
+        let boxed = Full::new(Bytes::from_static(b"partial-stream-bytes"))
+            .map_err(|never| match never {})
+            .boxed();
+        ctx.response.stream = Some(ResponseStream::new(boxed));
+
+        let out = graph.execute(ctx).await;
+
+        assert_eq!(out.response.status_code, 500);
+        assert!(
+            out.response.stream.is_none(),
+            "the generated node-not-found body must not coexist with a stale stream"
+        );
+        assert!(String::from_utf8(out.response.body.to_vec())
+            .unwrap()
+            .contains("node 'missing' not found"));
     }
 
     /// The engine's no-handler 500 fallback overwrites `response.body`. If a
