@@ -182,6 +182,27 @@ impl Template {
 
     /// True when the template has no `{{...}}` references at all (render is
     /// a pure borrow with no per-request work).
+    /// Whether rendering this template reads `context.response.body`.
+    ///
+    /// Covers both spellings a config can use: the parsed `{{response.body}}`
+    /// reference, and the legacy `$resp_body`, which `render_with_legacy`
+    /// resolves at render time and so never becomes a segment -- a
+    /// segment-only scan would miss it entirely.
+    ///
+    /// The legacy check is textual, so a literal containing `$resp_body` in a
+    /// field rendered by [`Template::render`] (which never interpolates
+    /// `$var`) reports `true` as well. That over-reports in a rare case and
+    /// buffers a response that could have streamed, which is the safe
+    /// direction: streaming when a node needed the body corrupts the
+    /// response, while buffering only forgoes an optimization.
+    pub fn references_response_body(&self) -> bool {
+        self.segments.iter().any(|seg| match seg {
+            Segment::Ref(TemplateRef::ResponseBody) => true,
+            Segment::Ref(_) => false,
+            Segment::Literal(text) => text.contains("$resp_body"),
+        })
+    }
+
     pub fn is_literal(&self) -> bool {
         !self.has_refs
     }
@@ -646,5 +667,33 @@ mod tests {
             !rendered.contains("secret-token-xyz"),
             "ref output must not be re-interpolated as a $var read primitive: {rendered}"
         );
+    }
+
+    /// `{{response.body}}` parses into a `ResponseBody` ref, so a node that
+    /// renders this template genuinely reads the body and must not be treated
+    /// as stream-safe.
+    #[test]
+    fn test_template_reports_a_response_body_reference() {
+        let (tpl, _) = Template::parse("status={{response.body}}");
+        assert!(tpl.references_response_body());
+    }
+
+    /// The legacy `$resp_body` is resolved at render time and never becomes a
+    /// segment, so a segment-only scan would miss it entirely -- the exact
+    /// shape of the silent-empty-body bug this guards against.
+    #[test]
+    fn test_template_reports_a_legacy_resp_body_reference() {
+        let (tpl, _) = Template::parse("body=$resp_body");
+        assert!(tpl.references_response_body());
+    }
+
+    /// A template referencing other parts of the context must stay stream-safe;
+    /// over-reporting here would needlessly buffer most real policies.
+    #[test]
+    fn test_template_without_a_body_reference_is_stream_safe() {
+        let (tpl, _) = Template::parse("{{request.path}} {{response.status}} $http_host");
+        assert!(!tpl.references_response_body());
+        let (literal, _) = Template::parse("a plain string");
+        assert!(!literal.references_response_body());
     }
 }
