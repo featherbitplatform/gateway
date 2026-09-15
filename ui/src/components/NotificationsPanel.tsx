@@ -10,6 +10,8 @@
  * @module components/NotificationsPanel
  */
 import { useState } from 'react';
+
+import { writeToClipboard } from '../clipboard';
 import { CircleCheck, CircleX, Copy, TriangleAlert } from 'lucide-react';
 import { Dialog, DialogButton } from './Dialog';
 import type { NotificationEntry, NotificationTone } from '../notifications';
@@ -66,11 +68,12 @@ export function NotificationsPanel({ open, onClose, entries, onClear, focusId = 
 
   const copy = async (entry: NotificationEntry) => {
     try {
-      await navigator.clipboard.writeText(entry.details ?? entry.message ?? entry.title);
+      await writeToClipboard(entry.details ?? entry.message ?? entry.title);
       setCopiedId(entry.id);
       setTimeout(() => setCopiedId((id) => (id === entry.id ? null : id)), 1500);
     } catch {
-      // Clipboard blocked (insecure context / permissions): the text is on screen anyway.
+      // Both the async API and the legacy fallback failed: the text is on
+      // screen anyway, and this panel has no toast of its own to raise.
     }
   };
 
