@@ -32,6 +32,7 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `PUT` | `/api/routes/:name` | Replace an existing route | `404` unknown route (**not** upserted); `400` recompile failed |
 | `DELETE` | `/api/routes/:name` | Delete a route | `404` unknown route; `400` recompile failed |
 | `GET` | `/api/policies` | List all policies | — |
+| `POST` | `/api/policies/validate` | Validate + compile a policy body against the live supernodes, plugin configs and stores, without persisting it. Returns `{"valid": bool, "errors": [...], "buffering": [...]}` — `buffering` names every upstream node the policy forces to buffer instead of stream, and the node responsible (`{"upstream": "up", "blocked_by": "rw", "node_type": "response-rewrite"}`); a policy with a non-empty `buffering` is still `valid` | — (structural/compile failures are reported as `valid: false`, not an HTTP error) |
 | `GET` | `/api/policies/:name` | Get a policy (full node graph) | `404` unknown policy |
 | `PUT` | `/api/policies/:name` | Create **or** update a policy (upsert) | `400` validation/recompile failed |
 | `DELETE` | `/api/policies/:name` | Delete a policy | `404` unknown policy; `400` recompile failed (e.g. a route still references it) |

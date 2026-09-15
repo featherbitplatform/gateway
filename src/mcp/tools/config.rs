@@ -142,6 +142,12 @@ pub async fn get_consumer(state: &SharedState, a: NameArgs) -> Result<Value, Too
 /// Validates + compiles a policy against the live supernodes, plugin configs
 /// and stores, without persisting. Mirrors what `put_policy(dry_run)` checks
 /// for the policy itself (cross-references from routes are not included).
+///
+/// The result's `buffering` array names every upstream the policy forces to
+/// buffer instead of stream, and the node responsible for each — the same
+/// information the Admin API's `POST /api/policies/validate` reports to a
+/// human, so an agent driving the gateway sees it too. A policy that forces
+/// buffering is still `valid`; `buffering` is informational, not an error.
 pub async fn validate_policy(
     state: &SharedState,
     a: ValidatePolicyArgs,
@@ -170,14 +176,20 @@ pub async fn validate_policy(
         let gw = state.gateway.read().await;
         (gw.supernodes.clone(), gw.plugin_configs.clone())
     };
-    let errors: Vec<String> =
-        match crate::graph::prepare_policy(policy, &supernodes, &plugin_configs)
-            .and_then(|p| crate::graph::compile_policy(&p, state.resources.clone()).map(|_| ()))
-        {
-            Ok(()) => Vec::new(),
-            Err(e) => e.split("; ").map(str::to_string).collect(),
-        };
-    Ok(serde_json::json!({ "valid": errors.is_empty(), "errors": errors }))
+    let compiled = crate::graph::prepare_policy(policy, &supernodes, &plugin_configs)
+        .and_then(|p| crate::graph::compile_policy(&p, state.resources.clone()));
+    let (errors, buffering): (Vec<String>, Value) = match compiled {
+        Ok(graph) => (
+            Vec::new(),
+            serde_json::to_value(graph.buffering_reasons())
+                .expect("BufferingReason always serializes"),
+        ),
+        Err(e) => (
+            e.split("; ").map(str::to_string).collect(),
+            serde_json::json!([]),
+        ),
+    };
+    Ok(serde_json::json!({ "valid": errors.is_empty(), "errors": errors, "buffering": buffering }))
 }
 
 /// Structural validation of a supernode definition.
@@ -309,6 +321,40 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(v["valid"], true);
+    }
+
+    /// Same shape the Admin API's `POST /api/policies/validate` reports:
+    /// an agent driving the gateway must see which node forces an upstream
+    /// to buffer, not just a bare `valid: true`.
+    #[tokio::test]
+    async fn validate_policy_reports_forced_buffering() {
+        let s = state("{}", ECHO_GATEWAY);
+        let policy = serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "rw", "type": "response-rewrite",
+                  "config": { "filters": [{ "regex": "a", "replace": "b" }] } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "rw.in" },
+                { "from": "rw.success", "to": "client.in" }
+            ]
+        });
+        let v = call(
+            &s,
+            "validate_policy",
+            obj(serde_json::json!({"policy": policy})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["valid"], true, "{v}");
+        assert_eq!(v["buffering"][0]["upstream"], "up");
+        assert_eq!(v["buffering"][0]["blocked_by"], "rw");
+        assert_eq!(v["buffering"][0]["node_type"], "response-rewrite");
     }
 
     #[tokio::test]

@@ -8,6 +8,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use serde::Serialize;
+
 use crate::config::{NodeConfig, PolicyConfig};
 use crate::context::Context;
 use crate::debug::{EdgeKind, StepOutcome, TraceRecorder};
@@ -38,14 +40,19 @@ pub struct CompiledGraph {
     /// `is_stream_capable`, consulted per node in `run`.
     stream_capable: HashSet<String>,
     /// Why each non-capable upstream must buffer, for operator-visible reporting.
-    #[allow(dead_code)]
     buffering_reasons: Vec<BufferingReason>,
 }
 
 /// Records that one node on an upstream's success path forces buffering.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Serializes as `{"upstream": ..., "blocked_by": ..., "node_type": ...}` —
+/// the shape the Admin API's policy-validate endpoint and the MCP
+/// `validate_policy` tool both report to operators/agents.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BufferingReason {
+    #[serde(rename = "upstream")]
     pub upstream_node_id: String,
+    #[serde(rename = "blocked_by")]
     pub blocked_by_node_id: String,
     pub node_type: String,
 }
@@ -329,7 +336,6 @@ impl CompiledGraph {
 
     /// Why each non-stream-capable `upstream` node must buffer, one entry per
     /// blocked upstream, for operator-visible reporting.
-    #[allow(dead_code)]
     pub fn buffering_reasons(&self) -> &[BufferingReason] {
         &self.buffering_reasons
     }
