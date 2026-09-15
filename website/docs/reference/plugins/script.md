@@ -40,7 +40,7 @@ A returned table that does not fit this shape fails with `LUA_UNMARSHAL_ERROR`, 
 | `runtime` | string | `lua` | Scripting runtime. Any value other than `lua` is a config error. |
 | `source` | string | — | Path to a script file, read at policy-compile time. |
 | `inline` | string | — | Script text embedded in the config. One of `source` or `inline` is required (`source` wins if both are set). |
-| `timeout_ms` | integer | `5000` | Script execution timeout. Currently stored but **not enforced** — see the warning below. |
+| `timeout_ms` | integer | `5000` | Wall-clock budget for one execution, covering both loading the source and the `execute(ctx)` call. `0` disables enforcement. |
 | `modules_path` | string | `source`'s parent directory (none for `inline`) | Directory the sandboxed `require` resolves modules from. |
 
 ```yaml
@@ -62,8 +62,21 @@ function execute(ctx)
 end
 ```
 
-:::warning
-`timeout_ms` is parsed and stored but not yet enforced by the Lua VM. A script that loops forever will block the request indefinitely.
+:::note[What `timeout_ms` does and does not stop]
+The budget is enforced by a Luau VM interrupt, which fires at VM instruction
+boundaries. A runaway loop is stopped and the node fails on its `error` port
+with code `LUA_TIMEOUT`, distinct from the `LUA_EXECUTION_ERROR` an ordinary
+script fault produces.
+
+Time spent *outside* the VM is not interrupted — inside a Rust callback, or
+in the file IO a `require` performs. This is tight-loop protection, not a
+universal watchdog.
+
+The same budget bounds the validation run at policy-compile time, so a
+top-level infinite loop is rejected by `PUT /api/policies` instead of hanging
+the Admin API. A script whose top level legitimately takes longer than
+`timeout_ms` to load will now fail to compile; raise the budget or move the
+work into `execute`.
 :::
 
 Note: the UI node editor's runtime select also lists `python`; choosing it fails at policy-compile time, since only `lua` is implemented.
