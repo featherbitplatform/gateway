@@ -319,6 +319,10 @@ impl Plugin for SkywalkingPlugin {
         "skywalking"
     }
 
+    fn reads_response_body(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, ctx: Context) -> PluginResult {
         let ctx = match self.phase {
             Phase::Start => self.run_start(ctx),
@@ -351,6 +355,7 @@ mod tests {
                 status_code: 200,
                 headers: HashMap::new(),
                 body: Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),

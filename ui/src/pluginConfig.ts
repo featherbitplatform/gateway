@@ -148,7 +148,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
         { key: 'port', label: 'Port', type: 'number', default: 3000 },
       ] },
     { key: 'load_balancing', label: 'Load balancing', type: 'select', options: ['round_robin', 'least_connections', 'ip_hash'], default: 'round_robin' },
-    { key: 'timeout_ms', label: 'Timeout (ms)', type: 'number', default: 60000, hint: 'whole-call deadline per proxied request' },
+    { key: 'timeout_ms', label: 'Timeout (ms)', type: 'number', default: 60000, hint: 'whole-call deadline per proxied request; for a streaming response this covers connect + request + response headers only' },
+    { key: 'stream_idle_timeout_ms', label: 'Stream idle timeout (ms)', type: 'number', default: 60000, hint: 'only used when the node is permitted to stream; reaps the stream if no frame arrives for this long' },
   ],
   'error-handler': [
     { key: 'status_code', label: 'Status code', type: 'number', default: 502 },

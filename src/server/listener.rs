@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
@@ -22,10 +23,20 @@ use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 use crate::config::SystemConfig;
+use crate::context::stream::ResponseStream;
 use crate::context::{Context, GatewayRequest, Protocol};
+use crate::outbound::BoxError;
 use crate::routing::matches_route;
 use crate::server::{tls, websocket};
 use crate::state::SharedState;
+
+/// Boxes a fixed `Full<Bytes>` body into the widened response body type used
+/// throughout this module, so a buffered response composes with a streamed
+/// one behind a single `Response<BoxBody<Bytes, BoxError>>` return type.
+/// `Full`'s error is `Infallible`; the conversion can never actually error.
+fn boxed_full(body: Bytes) -> BoxBody<Bytes, BoxError> {
+    Full::new(body).map_err(|never| match never {}).boxed()
+}
 
 /// Binds the data-plane listener and serves requests until the process exits.
 ///
@@ -177,7 +188,7 @@ async fn handle_request(
     remote_addr: SocketAddr,
     client_cert: Option<tls::ClientCertIdentity>,
     state: &SharedState,
-) -> Result<Response<Full<Bytes>>, hyper::Error> {
+) -> Result<Response<BoxBody<Bytes, BoxError>>, hyper::Error> {
     // Detect a WebSocket upgrade and capture the client's upgrade handle BEFORE
     // the request is consumed by `into_parts()` — afterwards it's gone. Two
     // client transports upgrade to WebSocket: HTTP/1.1 (`Connection: Upgrade`)
@@ -259,7 +270,7 @@ async fn handle_request(
                 builder = builder.header("x-featherbit-trace-id", id);
             }
             return Ok(builder
-                .body(Full::new(Bytes::from(
+                .body(boxed_full(Bytes::from(
                     r#"{"error": "not_found", "message": "No route matched"}"#,
                 )))
                 .unwrap());
@@ -433,27 +444,30 @@ async fn handle_request(
                 }
                 identity
             });
-            return Ok(
-                match websocket::proxy_upgrade(
-                    host,
-                    port as u16,
-                    path,
-                    tls,
-                    verify,
-                    tls_identity,
-                    &result_ctx.request.headers,
-                    on_upgrade,
-                    client_is_h2,
-                )
-                .await
-                {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        warn!("websocket proxy to upstream failed: {}", e);
-                        websocket::bad_gateway_502()
-                    }
-                },
-            );
+            let resp = match websocket::proxy_upgrade(
+                host,
+                port as u16,
+                path,
+                tls,
+                verify,
+                tls_identity,
+                &result_ctx.request.headers,
+                on_upgrade,
+                client_is_h2,
+            )
+            .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    warn!("websocket proxy to upstream failed: {}", e);
+                    websocket::bad_gateway_502()
+                }
+            };
+            // `proxy_upgrade`/`bad_gateway_502` return `Response<Full<Bytes>>`
+            // (a 101 switching-protocols response has no body to stream); box
+            // it into the widened body type this handler returns everywhere
+            // else.
+            return Ok(resp.map(|b| b.map_err(|never| match never {}).boxed()));
         }
     }
 
@@ -462,6 +476,7 @@ async fn handle_request(
         &result_ctx.response.headers,
         trace_id.as_deref(),
         result_ctx.response.body,
+        result_ctx.response.stream,
     ))
 }
 
@@ -484,7 +499,8 @@ fn build_response(
     headers: &HashMap<String, Vec<String>>,
     trace_id: Option<&str>,
     body: Bytes,
-) -> Response<Full<Bytes>> {
+    stream: Option<ResponseStream>,
+) -> Response<BoxBody<Bytes, BoxError>> {
     let mut response_builder = Response::builder().status(status);
 
     for (key, values) in headers {
@@ -519,11 +535,49 @@ fn build_response(
         response_builder = response_builder.header("x-featherbit-trace-id", id);
     }
 
-    response_builder.body(Full::new(body)).unwrap_or_else(|e| {
+    let out_body = match stream {
+        Some(s) => {
+            // The invariant documented on `GatewayResponse.stream` is "when
+            // `stream` is set, `body` is empty" — every producer of a stream
+            // (the `upstream` node) and every writer of a generated error
+            // body (`ErrorHandlerPlugin::execute`, the engine's no-handler
+            // 500 fallback, the engine's `NODE_NOT_FOUND` fallback) is
+            // responsible for upholding it. If it's violated here, the code
+            // below silently discards `body` in favor of the stream — which
+            // is exactly the failure Part 2 of this task exists to prevent,
+            // and would otherwise be near-undiagnosable from the outside
+            // ("my error page vanished"). Surface it loudly: warn in every
+            // build (so a release build at least logs the anomaly instead of
+            // silently eating the response), and hard-fail in dev/test
+            // builds where the bug should be caught before it ships.
+            if !body.is_empty() {
+                warn!(
+                    "response.stream and a non-empty response.body ({} bytes) were both \
+                     set; the buffered body is being discarded in favor of the stream — \
+                     this indicates a node wrote a generated body without clearing \
+                     response.stream",
+                    body.len()
+                );
+            }
+            debug_assert!(
+                body.is_empty(),
+                "response.stream and a non-empty response.body ({} bytes) must never both \
+                 be set — see GatewayResponse.stream's documented invariant",
+                body.len()
+            );
+            let (body, guards) = s.into_parts();
+            // Guards must outlive the body; attach them to it so they drop
+            // when the response finishes streaming or the client disconnects.
+            crate::outbound::idle::body_holding(body, guards)
+        }
+        None => boxed_full(body),
+    };
+
+    response_builder.body(out_body).unwrap_or_else(|e| {
         error!("failed to build response: {}", e);
         Response::builder()
             .status(500)
-            .body(Full::new(Bytes::from_static(b"internal server error")))
+            .body(boxed_full(Bytes::from_static(b"internal server error")))
             .expect("static 500 response must build")
     })
 }
@@ -933,7 +987,7 @@ policies:
         headers.insert("x-bad-value".to_string(), vec!["line1\nline2".to_string()]);
         headers.insert("x-good".to_string(), vec!["fine".to_string()]);
 
-        let resp = build_response(200, &headers, None, Bytes::from_static(b"ok"));
+        let resp = build_response(200, &headers, None, Bytes::from_static(b"ok"), None);
 
         assert_eq!(resp.status(), 200);
         assert!(
@@ -949,5 +1003,591 @@ policies:
         // nothing to look up by key — the assertion above (only the good
         // header survives) already covers it, together with the fact this
         // call did not panic.
+    }
+
+    /// A buffered response must keep its exact `content-length` and bytes —
+    /// widening the body type must be invisible to every non-streaming route.
+    #[tokio::test]
+    async fn test_buffered_response_is_unchanged() {
+        let mut headers = HashMap::new();
+        headers.insert("content-type".to_string(), vec!["text/plain".to_string()]);
+
+        let resp = build_response(200, &headers, None, Bytes::from("hello"), None);
+
+        assert_eq!(resp.status(), 200);
+        let collected = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(collected, Bytes::from("hello"));
+    }
+
+    /// A streamed response carries the stream's bytes through unaltered.
+    ///
+    /// This deliberately does NOT assert anything about `content-length`:
+    /// `build_response` never sets that header itself (this test's `headers`
+    /// map is empty, and the same absence would hold for a buffered body with
+    /// an empty header map too, so it would prove nothing about streaming
+    /// specifically) — and a streamed relay of a known-length upstream body
+    /// can legitimately carry one anyway, since `BodyHolding`/`IdleTimeoutBody`
+    /// both delegate `size_hint` to the wrapped body. The real guarantee is
+    /// that the stream's bytes — not `body` — are what the client receives.
+    #[tokio::test]
+    async fn test_streamed_response_carries_stream_body() {
+        let body = Full::new(Bytes::from("data: one\n\n"))
+            .map_err(|never| match never {})
+            .boxed();
+
+        let resp = build_response(
+            200,
+            &HashMap::new(),
+            None,
+            Bytes::new(),
+            Some(crate::context::stream::ResponseStream::new(body)),
+        );
+
+        let collected = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(collected, Bytes::from("data: one\n\n"));
+    }
+
+    /// End-to-end confirmation that widening the body type did not change
+    /// what a real (non-streaming) client receives on the wire: hyper still
+    /// computes an exact `content-length` for a `Full`-backed body boxed into
+    /// `BoxBody`, and the bytes are exactly the configured body.
+    #[tokio::test]
+    async fn test_buffered_route_is_byte_identical_on_the_wire() {
+        let gw_yaml = r#"
+routes:
+  - name: r1
+    match: { path: /plain }
+    policy: p1
+policies:
+  - name: p1
+    nodes:
+      - { id: listener, type: listener }
+      - { id: e, type: echo, config: { body: "hello world" } }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: e.in }
+      - { from: e.success, to: client.in }
+"#;
+        let gw = start_gateway(build_state(gw_yaml), false).await;
+        let url = format!("http://127.0.0.1:{}/plain", gw.port());
+        let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+        assert_eq!(
+            resp.headers()
+                .get("content-length")
+                .map(|v| v.to_str().unwrap()),
+            Some("11"),
+            "content-length must still be computed exactly for a buffered body"
+        );
+        let body = resp.text().await.unwrap();
+        assert_eq!(body, "hello world");
+    }
+
+    /// `build_response` silently favors the stream over a non-empty buffered
+    /// `body` when both are set — exactly the failure the Part 2 stream-clear
+    /// fixes exist to prevent (a node writing a generated error body without
+    /// clearing `response.stream`). That combination must never reach this
+    /// function in the first place, so it is self-policing at the choke
+    /// point: it warns (so a release build at least logs the anomaly instead
+    /// of silently dropping the body) and `debug_assert!`s (so a dev/test
+    /// build fails loudly rather than shipping the bug).
+    #[test]
+    fn test_build_response_flags_body_and_stream_both_set() {
+        use std::panic::AssertUnwindSafe;
+
+        let boxed = Full::new(Bytes::from_static(b"stream-bytes"))
+            .map_err(|never| match never {})
+            .boxed();
+        let stream = Some(crate::context::stream::ResponseStream::new(boxed));
+        let leftover_body = Bytes::from_static(b"leftover body");
+
+        let (_guard, logs) = crate::test_log::capture_warnings();
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            build_response(200, &HashMap::new(), None, leftover_body, stream)
+        }));
+
+        assert!(
+            result.is_err(),
+            "debug_assert! must fire when response.stream and a non-empty response.body are both set"
+        );
+        let out = logs.contents();
+        assert!(out.contains("WARN"), "expected a WARN line, got: {out:?}");
+        assert!(
+            out.contains("13"),
+            "warning should name the discarded buffered body's length (13 bytes), got: {out:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Streaming responses: the end-to-end proof, plus two wire-level
+    // properties nothing above has ever observed (real TCP framing, and
+    // what upstream's verbatim header copy actually puts on the wire).
+    // ------------------------------------------------------------------
+
+    /// Builds a full gateway config from a bare `{nodes, edges}` policy value
+    /// (the shape every test in this section writes) and starts the
+    /// data-plane accept loop on an ephemeral port. The single route always
+    /// matches `/stream`, since every caller only ever needs one.
+    async fn spawn_gateway_with_policy(policy: serde_json::Value) -> u16 {
+        let gateway_cfg = serde_json::json!({
+            "routes": [
+                { "name": "r1", "match": { "path": "/stream" }, "policy": "p1" }
+            ],
+            "policies": [
+                {
+                    "name": "p1",
+                    "nodes": policy["nodes"],
+                    "edges": policy["edges"],
+                }
+            ]
+        });
+        // JSON is valid YAML, so this reuses `build_state`'s YAML parser
+        // unchanged rather than needing a second config-loading path.
+        let gw_yaml = serde_json::to_string(&gateway_cfg).expect("policy JSON must serialize");
+        let state = build_state(&gw_yaml);
+        start_gateway(state, false).await.port()
+    }
+
+    /// The position of the first occurrence of `needle` in `haystack`, at
+    /// byte granularity — `str::find` would require the whole buffer to be
+    /// valid UTF-8, which raw chunk-framed bytes are not guaranteed to be
+    /// this test only needs the header block located before decoding it.
+    fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+    }
+
+    /// Opens a plain (non-pooling, non-buffering) TCP connection to the
+    /// gateway and issues a bare HTTP/1.1 GET. Deliberately not `reqwest`:
+    /// every property this section checks — an event arriving mid-stream,
+    /// exact chunk framing, exact header text — requires seeing bytes as
+    /// they land on the socket, not after a client library has reassembled
+    /// them into a `Response`.
+    async fn raw_get(port: u16, path: &str) -> TcpStream {
+        use tokio::io::AsyncWriteExt;
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(
+                format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        stream
+    }
+
+    /// Reads raw bytes from `stream` until a complete SSE event (a line
+    /// followed by a blank line) has arrived, and returns just that line —
+    /// e.g. `"data: first"`. Reading is byte-by-byte off the socket as it
+    /// arrives; nothing buffers the whole response first.
+    async fn read_first_sse_event(port: u16, path: &str) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut stream = raw_get(port, path).await;
+        let mut acc = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "connection closed before an SSE event arrived");
+            acc.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&acc);
+            if let Some(idx) = text.find("data: first") {
+                let line = text[idx..].lines().next().unwrap();
+                return line.to_string();
+            }
+        }
+    }
+
+    /// The whole point of the feature: an SSE event must reach the client
+    /// before the upstream closes the response. Today the gateway buffers, so
+    /// the client sees nothing until the server hangs up — this test fails on
+    /// any buffering implementation, which is exactly what makes it worth having.
+    #[tokio::test]
+    async fn test_sse_event_arrives_before_upstream_closes() {
+        // Upstream: sends one event, waits 10s, then closes.
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = upstream.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let _ = s
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                      transfer-encoding: chunked\r\n\r\nd\r\ndata: first\n\n\r\n",
+                    )
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            }
+        });
+
+        // Gateway: listener -> upstream -> header-only response-rewrite -> client.
+        let gw_port = spawn_gateway_with_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "127.0.0.1", "port": up_port }] } },
+                { "id": "hdr", "type": "response-rewrite",
+                  "config": { "headers": { "set": { "x-gw": "1" } } } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "hdr.in" },
+                { "from": "hdr.success", "to": "client.in" }
+            ]
+        }))
+        .await;
+
+        // Read the first event with a 3s bound — well inside the upstream's 10s hold.
+        let got = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            read_first_sse_event(gw_port, "/stream"),
+        )
+        .await
+        .expect("first event must arrive while the upstream is still open");
+
+        assert_eq!(got, "data: first");
+    }
+
+    /// A stream that goes silent — no more frames, and the upstream never
+    /// closes either — must be reaped after `stream_idle_timeout_ms` rather
+    /// than held open indefinitely. The idle bound is set well below the
+    /// upstream's 10s hold, so only the reap (never upstream EOF) can be
+    /// what ends the connection within this test's bound.
+    #[tokio::test]
+    async fn test_stream_idle_timeout_reaps_a_silent_stream() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = upstream.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let _ = s
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                      transfer-encoding: chunked\r\n\r\nd\r\ndata: only\n\n\r\n",
+                    )
+                    .await;
+                // Go silent. The connection is held open far past the idle
+                // bound below, so the client must see it close on its own.
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            }
+        });
+
+        let gw_port = spawn_gateway_with_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "127.0.0.1", "port": up_port }],
+                              "stream_idle_timeout_ms": 300 } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "client.in" }
+            ]
+        }))
+        .await;
+
+        use tokio::io::AsyncReadExt;
+        let mut stream = raw_get(gw_port, "/stream").await;
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let mut buf = [0u8; 4096];
+            let mut saw_data = false;
+            loop {
+                match stream.read(&mut buf).await {
+                    Ok(0) => return saw_data,
+                    Ok(_) => saw_data = true,
+                    Err(_) => return saw_data,
+                }
+            }
+        })
+        .await
+        .expect("the idle-timed-out stream must close well before the upstream's own 10s hold");
+
+        assert!(
+            outcome,
+            "the one event sent before the upstream went silent must still have arrived"
+        );
+    }
+
+    /// A stream sending an event every 200ms must survive well past a
+    /// deliberately short `timeout_ms` — proof that, once a response is
+    /// streaming, the whole-call deadline no longer covers the body (it
+    /// bounded only connect + request + headers).
+    #[tokio::test]
+    async fn test_streamed_response_survives_past_short_timeout_ms() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = upstream.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let _ = s
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                          transfer-encoding: chunked\r\n\r\n",
+                    )
+                    .await;
+                for i in 0..5u32 {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let payload = format!("data: evt{i}\n\n");
+                    let chunk = format!("{:x}\r\n{}\r\n", payload.len(), payload);
+                    if s.write_all(chunk.as_bytes()).await.is_err() {
+                        break;
+                    }
+                }
+                let _ = s.write_all(b"0\r\n\r\n").await;
+            }
+        });
+
+        let gw_port = spawn_gateway_with_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "127.0.0.1", "port": up_port }],
+                              "timeout_ms": 50 } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "client.in" }
+            ]
+        }))
+        .await;
+
+        let start = std::time::Instant::now();
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            use tokio::io::AsyncReadExt;
+            let mut stream = raw_get(gw_port, "/stream").await;
+            let mut acc = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                acc.extend_from_slice(&buf[..n]);
+            }
+            acc
+        })
+        .await
+        .expect("the streamed body must complete despite a 50ms timeout_ms");
+        let elapsed = start.elapsed();
+
+        let text = String::from_utf8_lossy(&body);
+        for i in 0..5u32 {
+            assert!(
+                text.contains(&format!("data: evt{i}")),
+                "expected event {i} in the body, got: {text:?}"
+            );
+        }
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "body took only {elapsed:?} — the 5x200ms upstream cadence should dominate, \
+             not a 50ms request deadline that (pre-streaming) would have killed this early"
+        );
+    }
+
+    /// Wire-level proof that a streamed response is genuinely chunk-framed
+    /// and carries no `content-length` — every test above this one collects
+    /// the body in-process (via `reqwest` or a raw socket read to EOF), so
+    /// none of them has ever looked at what actually goes out on the wire.
+    /// The upstream here deliberately sends neither `content-length` nor
+    /// `transfer-encoding` (a close-delimited body of unknown length), so
+    /// this isolates the gateway's *own* framing choice from the separate
+    /// header-passthrough question the next test pins.
+    #[tokio::test]
+    async fn test_streamed_response_is_chunked_with_no_content_length_on_the_wire() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = upstream.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let _ = s
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n\
+                          data: first\n\n",
+                    )
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+
+        let gw_port = spawn_gateway_with_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "127.0.0.1", "port": up_port }] } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "client.in" }
+            ]
+        }))
+        .await;
+
+        use tokio::io::AsyncReadExt;
+        let mut stream = raw_get(gw_port, "/stream").await;
+
+        let mut acc = Vec::new();
+        let mut buf = [0u8; 4096];
+        let header_end = loop {
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "connection closed before headers arrived");
+            acc.extend_from_slice(&buf[..n]);
+            if let Some(pos) = find_subslice(&acc, b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+
+        let header_text = String::from_utf8_lossy(&acc[..header_end]).to_lowercase();
+        assert!(
+            header_text.contains("transfer-encoding: chunked"),
+            "a streamed response of unknown length must be chunk-framed on the wire; \
+             got headers:\n{header_text}"
+        );
+        assert!(
+            !header_text.contains("content-length:"),
+            "a chunked response must not also carry content-length; got headers:\n{header_text}"
+        );
+
+        // Read on into the body and confirm real chunk framing: a hex
+        // chunk-size line, CRLF, then the chunk's own bytes.
+        while acc.len() < header_end + 4 {
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "connection closed before any chunk arrived");
+            acc.extend_from_slice(&buf[..n]);
+        }
+        let body_text = String::from_utf8_lossy(&acc[header_end..]);
+        let size_line = body_text.lines().next().unwrap();
+        assert!(
+            u64::from_str_radix(size_line.trim(), 16).is_ok(),
+            "the first body line on the wire must be a valid hex chunk-size, got {size_line:?}"
+        );
+    }
+
+    /// Pins what the client actually receives when the upstream's own
+    /// `transfer-encoding: chunked` header is copied through verbatim by
+    /// `upstream.rs`'s streaming branch (`ctx.response.headers = resp.headers;`,
+    /// around line 391) — no code anywhere strips hop-by-hop framing headers
+    /// before they reach `build_response`. This was inert while every
+    /// response was buffered (hyper always recomputed framing for a `Full`
+    /// body regardless of what headers happened to be set); a streaming
+    /// relay makes it newly observable, since the gateway's own outbound
+    /// body is now unbounded too and hyper again wants to pick the framing.
+    ///
+    /// Finding (see the task report for the full writeup): this turns out to
+    /// be harmless, not a bug. Hyper's outbound `Incoming` body already
+    /// de-chunks the upstream's bytes (`resp.body` carries the plain
+    /// payload, not raw chunk envelopes), and when hyper's H1 server codec
+    /// then writes that unbounded `BoxBody` out to the client, it sees the
+    /// copied-through `transfer-encoding: chunked` header, agrees with it
+    /// (no `content-length`, HTTP/1.1, unknown size), performs the actual
+    /// chunk-encoding itself, and does not add a second header. Captured on
+    /// the wire for exactly this fixture:
+    /// `"...transfer-encoding: chunked\r\n...\r\n\r\nD\r\ndata: first\n\n\r\n0\r\n\r\n"`
+    /// — one header, and a genuinely valid chunk frame (`D` = 13 = the byte
+    /// length of `"data: first\n\n"`) followed by the terminal `0\r\n\r\n`.
+    /// Nothing to fix here; a "fix" (stripping hop-by-hop headers before
+    /// `build_response`) would also touch the buffered path's byte-identical
+    /// guarantee and is out of scope for this task regardless.
+    #[tokio::test]
+    async fn test_upstream_transfer_encoding_header_is_copied_through_verbatim() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = upstream.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let _ = s
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                      transfer-encoding: chunked\r\n\r\nd\r\ndata: first\n\n\r\n0\r\n\r\n",
+                    )
+                    .await;
+            }
+        });
+
+        let gw_port = spawn_gateway_with_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "127.0.0.1", "port": up_port }] } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "client.in" }
+            ]
+        }))
+        .await;
+
+        use tokio::io::AsyncReadExt;
+        let mut stream = raw_get(gw_port, "/stream").await;
+        let mut acc = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(3), stream.read(&mut buf))
+                .await
+            {
+                Ok(Ok(0)) | Err(_) => break,
+                Ok(Ok(n)) => acc.extend_from_slice(&buf[..n]),
+                Ok(Err(_)) => break,
+            }
+        }
+
+        let header_end = find_subslice(&acc, b"\r\n\r\n")
+            .map(|pos| pos + 4)
+            .expect("response must have a complete header block");
+        let header_text = String::from_utf8_lossy(&acc[..header_end]).to_lowercase();
+
+        // Pin the actual, current behavior: the upstream's header is copied
+        // through exactly once (upstream.rs does not itself duplicate it —
+        // hyper, seeing transfer-encoding already present, does not add a
+        // second one), so the count is 1, not 0 (stripped) or 2 (doubled).
+        let te_count = header_text.matches("transfer-encoding:").count();
+        assert_eq!(
+            te_count, 1,
+            "expected the upstream's transfer-encoding header to be copied through exactly \
+             once; got {te_count} occurrences in:\n{header_text}"
+        );
+        assert!(
+            header_text.contains("transfer-encoding: chunked"),
+            "got headers:\n{header_text}"
+        );
+
+        // And pin that the body is not merely *labeled* chunked but is
+        // actually, validly chunk-framed: a hex size line for the payload's
+        // exact byte length, the payload itself, and the terminal 0-chunk —
+        // not, say, the plain unframed bytes a naive pass-through of an
+        // already-dechunked `Incoming` body might have produced.
+        let body = &acc[header_end..];
+        let payload = b"data: first\n\n";
+        let expected = format!("{:X}\r\n", payload.len());
+        assert!(
+            body.starts_with(expected.as_bytes()),
+            "expected the chunk-size line {:?}, got {:?}",
+            expected,
+            String::from_utf8_lossy(&body[..body.len().min(16)])
+        );
+        assert!(
+            body.ends_with(b"0\r\n\r\n"),
+            "expected the response to end with the terminal chunk, got {:?}",
+            String::from_utf8_lossy(body)
+        );
+        assert!(
+            find_subslice(body, payload).is_some(),
+            "expected the upstream's payload bytes intact in the body, got {:?}",
+            String::from_utf8_lossy(body)
+        );
     }
 }

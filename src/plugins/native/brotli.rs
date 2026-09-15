@@ -204,6 +204,7 @@ mod tests {
                 status_code: 200,
                 headers: response_headers,
                 body: Bytes::copy_from_slice(body),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),
