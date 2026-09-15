@@ -537,6 +537,34 @@ fn build_response(
 
     let out_body = match stream {
         Some(s) => {
+            // The invariant documented on `GatewayResponse.stream` is "when
+            // `stream` is set, `body` is empty" — every producer of a stream
+            // (the `upstream` node) and every writer of a generated error
+            // body (`ErrorHandlerPlugin::execute`, the engine's no-handler
+            // 500 fallback, the engine's `NODE_NOT_FOUND` fallback) is
+            // responsible for upholding it. If it's violated here, the code
+            // below silently discards `body` in favor of the stream — which
+            // is exactly the failure Part 2 of this task exists to prevent,
+            // and would otherwise be near-undiagnosable from the outside
+            // ("my error page vanished"). Surface it loudly: warn in every
+            // build (so a release build at least logs the anomaly instead of
+            // silently eating the response), and hard-fail in dev/test
+            // builds where the bug should be caught before it ships.
+            if !body.is_empty() {
+                warn!(
+                    "response.stream and a non-empty response.body ({} bytes) were both \
+                     set; the buffered body is being discarded in favor of the stream — \
+                     this indicates a node wrote a generated body without clearing \
+                     response.stream",
+                    body.len()
+                );
+            }
+            debug_assert!(
+                body.is_empty(),
+                "response.stream and a non-empty response.body ({} bytes) must never both \
+                 be set — see GatewayResponse.stream's documented invariant",
+                body.len()
+            );
             let (body, guards) = s.into_parts();
             // Guards must outlive the body; attach them to it so they drop
             // when the response finishes streaming or the client disconnects.
@@ -991,7 +1019,16 @@ policies:
         assert_eq!(collected, Bytes::from("hello"));
     }
 
-    /// A streamed response carries the stream's bytes and sets no content-length.
+    /// A streamed response carries the stream's bytes through unaltered.
+    ///
+    /// This deliberately does NOT assert anything about `content-length`:
+    /// `build_response` never sets that header itself (this test's `headers`
+    /// map is empty, and the same absence would hold for a buffered body with
+    /// an empty header map too, so it would prove nothing about streaming
+    /// specifically) — and a streamed relay of a known-length upstream body
+    /// can legitimately carry one anyway, since `BodyHolding`/`IdleTimeoutBody`
+    /// both delegate `size_hint` to the wrapped body. The real guarantee is
+    /// that the stream's bytes — not `body` — are what the client receives.
     #[tokio::test]
     async fn test_streamed_response_carries_stream_body() {
         let body = Full::new(Bytes::from("data: one\n\n"))
@@ -1006,7 +1043,6 @@ policies:
             Some(crate::context::stream::ResponseStream::new(body)),
         );
 
-        assert!(resp.headers().get("content-length").is_none());
         let collected = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(collected, Bytes::from("data: one\n\n"));
     }
@@ -1044,5 +1080,40 @@ policies:
         );
         let body = resp.text().await.unwrap();
         assert_eq!(body, "hello world");
+    }
+
+    /// `build_response` silently favors the stream over a non-empty buffered
+    /// `body` when both are set — exactly the failure the Part 2 stream-clear
+    /// fixes exist to prevent (a node writing a generated error body without
+    /// clearing `response.stream`). That combination must never reach this
+    /// function in the first place, so it is self-policing at the choke
+    /// point: it warns (so a release build at least logs the anomaly instead
+    /// of silently dropping the body) and `debug_assert!`s (so a dev/test
+    /// build fails loudly rather than shipping the bug).
+    #[test]
+    fn test_build_response_flags_body_and_stream_both_set() {
+        use std::panic::AssertUnwindSafe;
+
+        let boxed = Full::new(Bytes::from_static(b"stream-bytes"))
+            .map_err(|never| match never {})
+            .boxed();
+        let stream = Some(crate::context::stream::ResponseStream::new(boxed));
+        let leftover_body = Bytes::from_static(b"leftover body");
+
+        let (_guard, logs) = crate::test_log::capture_warnings();
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            build_response(200, &HashMap::new(), None, leftover_body, stream)
+        }));
+
+        assert!(
+            result.is_err(),
+            "debug_assert! must fire when response.stream and a non-empty response.body are both set"
+        );
+        let out = logs.contents();
+        assert!(out.contains("WARN"), "expected a WARN line, got: {out:?}");
+        assert!(
+            out.contains("13"),
+            "warning should name the discarded buffered body's length (13 bytes), got: {out:?}"
+        );
     }
 }
