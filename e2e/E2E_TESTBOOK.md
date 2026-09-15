@@ -501,7 +501,7 @@ suite instead of a `.spec.ts`.
 | ID | Scenario | Expected |
 |---|---|---|
 | E2E-STREAM-01 | An SSE upstream sends one event, then holds the connection open for 10s before closing | `test_sse_event_arrives_before_upstream_closes`: the event reaches the client within a 3s bound — while the upstream is still open, not after it closes. This is the property that fails by timeout against any buffering implementation, which is what makes it the keystone test for the whole feature |
-| E2E-STREAM-02 | A streaming-eligible policy (`listener → upstream → gzip → client`) — `gzip` reads the response body | `POST /api/policies/validate` reports `buffering: [{"upstream": "up", "blocked_by": "<gzip node id>"}]` (`test_validate_reports_forced_buffering` in `src/admin/policies.rs`, and the equivalent compiler-level check in `src/graph/engine.rs`'s `test_filters_force_buffering_and_are_reported`); the policy still compiles and serves traffic, buffered rather than streamed |
+| E2E-STREAM-02 | A streaming-eligible policy (`listener → upstream → response-rewrite → client`) where `response-rewrite` is configured with `filters` — a body-reading configuration (as would `gzip`, `brotli`, or a body-logging logger) | `POST /api/policies/validate` reports `buffering: [{"upstream": "up", "blocked_by": "rw"}]` (`test_validate_reports_forced_buffering` in `src/admin/policies.rs`, and the equivalent compiler-level check in `src/graph/engine.rs`'s `test_filters_force_buffering_and_are_reported`); the policy still compiles and serves traffic, buffered rather than streamed |
 
 ## Deliberately out of scope
 

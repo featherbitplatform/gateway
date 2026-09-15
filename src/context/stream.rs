@@ -14,12 +14,12 @@ use crate::outbound::BoxError;
 /// guards whose lifetime must match the stream rather than the node that
 /// produced it (balancer in-flight counters, `limit-conn` permits).
 pub struct ResponseStream {
-    // Read back out by `into_parts` in Task 6, once the listener relays a
-    // stream instead of buffering it; unread on any path exercised today.
+    // Read back out by `into_parts`, called by the listener's
+    // `build_response` once it decides to relay a stream instead of
+    // buffering it.
     // `BoxBody` is already `Send + Sync` (see `http_body_util`'s
     // `combinators::BoxBody`, as opposed to the `Send`-only
     // `UnsyncBoxBody`), so it needs no help to keep `ResponseStream: Sync`.
-    #[allow(dead_code)]
     body: BoxBody<Bytes, BoxError>,
     // `Box<dyn Send + 'static>` guards are `Send`-only, not `Sync`, so a bare
     // `Vec` here would make `ResponseStream` — and, nested inside
@@ -33,11 +33,6 @@ pub struct ResponseStream {
     guards: std::sync::Mutex<Vec<Box<dyn Send + 'static>>>,
 }
 
-// Task 1 only lands the data model; nothing constructs or consumes a
-// `ResponseStream` yet (a node starts populating `response.stream` in Task
-// 2, and the listener starts calling `into_parts` in Task 6), so these are
-// legitimately unused for now rather than dead in the usual sense.
-#[allow(dead_code)]
 impl ResponseStream {
     pub fn new(body: BoxBody<Bytes, BoxError>) -> Self {
         Self {
@@ -47,6 +42,10 @@ impl ResponseStream {
     }
 
     /// Attaches a guard released when the stream is consumed or dropped.
+    /// Production code binds guards in at construction instead (see
+    /// `upstream.rs`'s use of `body_holding`); this is exercised directly by
+    /// this module's own tests.
+    #[allow(dead_code)]
     pub fn hold(&mut self, guard: Box<dyn Send + 'static>) {
         // `&mut self` already guarantees exclusive access; this never blocks.
         self.guards.get_mut().unwrap().push(guard);

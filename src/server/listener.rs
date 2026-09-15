@@ -535,42 +535,48 @@ fn build_response(
         response_builder = response_builder.header("x-featherbit-trace-id", id);
     }
 
-    let out_body = match stream {
-        Some(s) => {
-            // The invariant documented on `GatewayResponse.stream` is "when
-            // `stream` is set, `body` is empty" — every producer of a stream
-            // (the `upstream` node) and every writer of a generated error
-            // body (`ErrorHandlerPlugin::execute`, the engine's no-handler
-            // 500 fallback, the engine's `NODE_NOT_FOUND` fallback) is
-            // responsible for upholding it. If it's violated here, the code
-            // below silently discards `body` in favor of the stream — which
-            // is exactly the failure Part 2 of this task exists to prevent,
-            // and would otherwise be near-undiagnosable from the outside
-            // ("my error page vanished"). Surface it loudly: warn in every
-            // build (so a release build at least logs the anomaly instead of
-            // silently eating the response), and hard-fail in dev/test
-            // builds where the bug should be caught before it ships.
-            if !body.is_empty() {
-                warn!(
-                    "response.stream and a non-empty response.body ({} bytes) were both \
-                     set; the buffered body is being discarded in favor of the stream — \
-                     this indicates a node wrote a generated body without clearing \
-                     response.stream",
-                    body.len()
-                );
-            }
-            debug_assert!(
-                body.is_empty(),
-                "response.stream and a non-empty response.body ({} bytes) must never both \
-                 be set — see GatewayResponse.stream's documented invariant",
+    // The invariant documented on `GatewayResponse.stream` is "when `stream`
+    // is set, `body` is empty" — every producer of a stream (the `upstream`
+    // node) and every writer of a generated error body
+    // (`ErrorHandlerPlugin::execute`, the engine's no-handler 500 fallback,
+    // the engine's `NODE_NOT_FOUND` fallback) is responsible for upholding
+    // it. If it's violated, prefer the buffered `body` and drop the stream:
+    // a policy's `error_handler` can be an arbitrary node id with no type
+    // constraint, so a future or third-party node can write a generated body
+    // without knowing to clear `response.stream`. Failing safe here means a
+    // missed call site degrades to "the error page is sent, plus a warning"
+    // instead of "the error page silently vanishes and a half-finished
+    // stream goes out instead." Surface the anomaly loudly either way: warn
+    // in every build (so a release build at least logs it instead of
+    // silently swallowing the mismatch), and hard-fail in dev/test builds
+    // where the bug should be caught before it ships.
+    let out_body = if !body.is_empty() {
+        if stream.is_some() {
+            warn!(
+                "response.stream and a non-empty response.body ({} bytes) were both \
+                 set; the stream is being discarded in favor of the buffered body — \
+                 this indicates a node wrote a generated body without clearing \
+                 response.stream",
                 body.len()
             );
-            let (body, guards) = s.into_parts();
-            // Guards must outlive the body; attach them to it so they drop
-            // when the response finishes streaming or the client disconnects.
-            crate::outbound::idle::body_holding(body, guards)
         }
-        None => boxed_full(body),
+        debug_assert!(
+            stream.is_none(),
+            "response.stream and a non-empty response.body ({} bytes) must never both \
+             be set — see GatewayResponse.stream's documented invariant",
+            body.len()
+        );
+        boxed_full(body)
+    } else {
+        match stream {
+            Some(s) => {
+                let (body, guards) = s.into_parts();
+                // Guards must outlive the body; attach them to it so they drop
+                // when the response finishes streaming or the client disconnects.
+                crate::outbound::idle::body_holding(body, guards)
+            }
+            None => boxed_full(body),
+        }
     };
 
     response_builder.body(out_body).unwrap_or_else(|e| {
@@ -1082,16 +1088,26 @@ policies:
         assert_eq!(body, "hello world");
     }
 
-    /// `build_response` silently favors the stream over a non-empty buffered
-    /// `body` when both are set — exactly the failure the Part 2 stream-clear
-    /// fixes exist to prevent (a node writing a generated error body without
-    /// clearing `response.stream`). That combination must never reach this
-    /// function in the first place, so it is self-policing at the choke
+    /// `build_response` logs when both a stream and a non-empty buffered
+    /// `body` are set — that combination must never reach this function in
+    /// the first place (a node writing a generated error body without
+    /// clearing `response.stream`), so it is self-policing at the choke
     /// point: it warns (so a release build at least logs the anomaly instead
-    /// of silently dropping the body) and `debug_assert!`s (so a dev/test
-    /// build fails loudly rather than shipping the bug).
+    /// of silently swallowing it) and `debug_assert!`s (so a dev/test build
+    /// fails loudly rather than shipping the bug). The body wins over the
+    /// stream when this happens — see
+    /// `test_build_response_prefers_body_over_stale_stream` for that
+    /// precedence itself.
+    ///
+    /// Split into two tests because the two halves live in different
+    /// profiles: `warn!` is unconditional and must stay covered in
+    /// `cargo test --release` too, while `debug_assert!` compiles out
+    /// entirely in release, so a single test asserting the panic would fail
+    /// `--release` for a reason that has nothing to do with a real
+    /// regression — see `test_build_response_panics_when_body_and_stream_both_set`
+    /// below, which is gated to only exist where the assert does.
     #[test]
-    fn test_build_response_flags_body_and_stream_both_set() {
+    fn test_build_response_warns_when_body_and_stream_both_set() {
         use std::panic::AssertUnwindSafe;
 
         let boxed = Full::new(Bytes::from_static(b"stream-bytes"))
@@ -1101,6 +1117,38 @@ policies:
         let leftover_body = Bytes::from_static(b"leftover body");
 
         let (_guard, logs) = crate::test_log::capture_warnings();
+        // `warn!` runs before `debug_assert!` inside `build_response`, so the
+        // log is already captured regardless of whether this call goes on to
+        // panic (debug/test builds) or return normally (release builds) —
+        // `catch_unwind` here only tolerates whichever of those happens.
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            build_response(200, &HashMap::new(), None, leftover_body, stream)
+        }));
+
+        let out = logs.contents();
+        assert!(out.contains("WARN"), "expected a WARN line, got: {out:?}");
+        assert!(
+            out.contains("13"),
+            "warning should name the buffered body's length (13 bytes), got: {out:?}"
+        );
+    }
+
+    /// The `debug_assert!` half of the same guard — only compiled where the
+    /// assert itself is. Ungated, this failed `cargo test --release`
+    /// (`debug_assert!` is a no-op there, so `build_response` would simply
+    /// return instead of panicking) even though nothing was actually wrong.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn test_build_response_panics_when_body_and_stream_both_set() {
+        use std::panic::AssertUnwindSafe;
+
+        let boxed = Full::new(Bytes::from_static(b"stream-bytes"))
+            .map_err(|never| match never {})
+            .boxed();
+        let stream = Some(crate::context::stream::ResponseStream::new(boxed));
+        let leftover_body = Bytes::from_static(b"leftover body");
+
+        let (_guard, _logs) = crate::test_log::capture_warnings();
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             build_response(200, &HashMap::new(), None, leftover_body, stream)
         }));
@@ -1109,11 +1157,37 @@ policies:
             result.is_err(),
             "debug_assert! must fire when response.stream and a non-empty response.body are both set"
         );
-        let out = logs.contents();
-        assert!(out.contains("WARN"), "expected a WARN line, got: {out:?}");
-        assert!(
-            out.contains("13"),
-            "warning should name the discarded buffered body's length (13 bytes), got: {out:?}"
+    }
+
+    /// The precedence itself: when both a generated `body` and a stale
+    /// `response.stream` are set, the client must receive the generated
+    /// body, not the stream. This is what makes a missed stream-clear call
+    /// site fail safe (an error page still reaches the client, alongside the
+    /// warning) instead of silently vanishing behind a half-finished
+    /// upstream stream.
+    ///
+    /// Gated the same way as `test_build_response_panics_when_body_and_stream_both_set`
+    /// above and for the same reason, just the opposite half: in a dev/test
+    /// build `debug_assert!` panics before `build_response` can return
+    /// anything to inspect, so the only build where this function's return
+    /// value is observable for this input is release, where the assert
+    /// compiles out.
+    #[cfg(not(debug_assertions))]
+    #[tokio::test]
+    async fn test_build_response_prefers_body_over_stale_stream() {
+        let boxed = Full::new(Bytes::from_static(b"stale-stream-bytes"))
+            .map_err(|never| match never {})
+            .boxed();
+        let stream = Some(crate::context::stream::ResponseStream::new(boxed));
+        let generated_body = Bytes::from_static(b"generated error body");
+
+        let (_guard, _logs) = crate::test_log::capture_warnings();
+        let resp = build_response(500, &HashMap::new(), None, generated_body.clone(), stream);
+
+        let collected = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            collected, generated_body,
+            "the generated body must win over a stale stream, not be silently discarded"
         );
     }
 
@@ -1471,6 +1545,97 @@ policies:
         assert!(
             u64::from_str_radix(size_line.trim(), 16).is_ok(),
             "the first body line on the wire must be a valid hex chunk-size, got {size_line:?}"
+        );
+    }
+
+    /// The symmetric case to the test above: when the upstream declares a
+    /// `content-length`, that header is copied through unchanged and hyper's
+    /// H1 encoder trusts it — the response stays length-delimited, not
+    /// chunked. Streaming is decided purely by graph shape (§5 of the design
+    /// doc), not by upstream framing, so an ordinary known-length response
+    /// behind header-only nodes still streams frame-by-frame as it arrives;
+    /// it just doesn't get chunked on the wire the way an unknown-length one
+    /// does. Pinned here because the docs previously claimed, incorrectly,
+    /// that a streamed response never carries `content-length`.
+    #[tokio::test]
+    async fn test_streamed_response_with_known_content_length_is_length_delimited_on_the_wire() {
+        let payload = b"data: first\n\n";
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = upstream.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n",
+                    payload.len()
+                );
+                let _ = s.write_all(header.as_bytes()).await;
+                let _ = s.write_all(payload).await;
+                // Hold the connection open past the body: with an exact
+                // content-length, the client must stop reading at that many
+                // bytes on its own, not because the connection closed.
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+
+        let gw_port = spawn_gateway_with_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "127.0.0.1", "port": up_port }] } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "client.in" }
+            ]
+        }))
+        .await;
+
+        use tokio::io::AsyncReadExt;
+        let mut stream = raw_get(gw_port, "/stream").await;
+
+        let mut acc = Vec::new();
+        let mut buf = [0u8; 4096];
+        let header_end = loop {
+            let n = stream.read(&mut buf).await.unwrap();
+            assert!(n > 0, "connection closed before headers arrived");
+            acc.extend_from_slice(&buf[..n]);
+            if let Some(pos) = find_subslice(&acc, b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+
+        let header_text = String::from_utf8_lossy(&acc[..header_end]).to_lowercase();
+        assert!(
+            header_text.contains(&format!("content-length: {}", payload.len())),
+            "the upstream's content-length must be passed through unchanged; got headers:\n{header_text}"
+        );
+        assert!(
+            !header_text.contains("transfer-encoding:"),
+            "a length-delimited response must not also be chunked; got headers:\n{header_text}"
+        );
+
+        // Read exactly `payload.len()` more bytes — bounded, so this hangs
+        // (and the test times out) if the gateway is chunking after all.
+        let want = header_end + payload.len();
+        let body = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while acc.len() < want {
+                let n = stream.read(&mut buf).await.unwrap();
+                assert!(n > 0, "connection closed before the full body arrived");
+                acc.extend_from_slice(&buf[..n]);
+            }
+            acc[header_end..want].to_vec()
+        })
+        .await
+        .expect("the length-delimited body must arrive without waiting on connection close");
+
+        assert_eq!(
+            body, payload,
+            "the raw bytes on the wire must be the payload itself, with no chunk-size line \
+             or other framing wrapped around it"
         );
     }
 
