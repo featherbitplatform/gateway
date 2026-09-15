@@ -349,6 +349,7 @@ mod tests {
                 status_code: 201,
                 headers: HashMap::new(),
                 body: Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),

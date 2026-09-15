@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
+pub mod stream;
+
 /// Holds all state for one request as it travels through a policy graph.
 ///
 /// Each plugin receives the context, may mutate any part of it, and passes it
@@ -55,7 +57,7 @@ pub struct GatewayRequest {
 }
 
 /// The response under construction, ultimately returned to the client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GatewayResponse {
     /// HTTP status code; `0` until a node (e.g. upstream or error-handler) sets it.
     pub status_code: u16,
@@ -64,6 +66,28 @@ pub struct GatewayResponse {
     /// Response body, serialized as base64.
     #[serde(with = "bytes_serde")]
     pub body: Bytes,
+    /// Streaming body, when the upstream response is relayed unbuffered.
+    /// Skipped by serde: `Context` must stay serializable for Lua marshalling
+    /// and debug snapshots. Invariant: when this is `Some`, `body` is empty.
+    /// Set by a node starting in Task 2; read by the listener starting in
+    /// Task 6, so it is unread on any path exercised today.
+    #[serde(skip)]
+    #[allow(dead_code)]
+    pub stream: Option<crate::context::stream::ResponseStream>,
+}
+
+impl Clone for GatewayResponse {
+    /// Cloning drops any stream: a stream has exactly one consumer, and every
+    /// caller that clones a response (debug snapshots, cache stores) wants the
+    /// buffered form.
+    fn clone(&self) -> Self {
+        Self {
+            status_code: self.status_code,
+            headers: self.headers.clone(),
+            body: self.body.clone(),
+            stream: None,
+        }
+    }
 }
 
 /// An error recorded by a node during graph execution.
@@ -111,6 +135,7 @@ impl Context {
                 status_code: 0,
                 headers: HashMap::new(),
                 body: Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),
