@@ -128,6 +128,12 @@ impl Plugin for MultiAuthPlugin {
     async fn execute(&self, ctx: Context) -> PluginResult {
         // Snapshot the pristine response so a failed attempt's rejection body
         // never leaks onto the request if a later attempt succeeds.
+        // `GatewayResponse::clone()` always drops any `stream` (sets it to
+        // `None`), so restoring from this snapshot below discards a stream a
+        // sub-plugin may have set — safe only because `multi-auth` does not
+        // opt out of `Plugin::reads_response_body()` (defaults to `true`),
+        // so the policy compiler never marks an upstream stream-capable when
+        // a `multi-auth` node sits downstream — a stream can never reach here.
         let original_response = ctx.response.clone();
         let mut ctx = ctx;
 
