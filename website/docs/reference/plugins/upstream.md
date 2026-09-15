@@ -77,9 +77,23 @@ The plugin builds an HTTP request to `http://<host>:<port><path>?<query>`, forwa
 
 Failures return the Context along with an error so the graph engine routes through the `error` port; the error is appended to `context.errors` — see [Errors](#errors).
 
-The plugin does not read or write `context.message`.
+The plugin does not read or write `context.message`, other than consulting the reserved `__may_stream` key the graph compiler sets — see [Streaming](#streaming).
 
-Each proxied call runs under the `timeout_ms` deadline; exceeding it fails the node with error code `UPSTREAM_TIMEOUT` through the error port.
+Each proxied call runs under the `timeout_ms` deadline; exceeding it fails the node with error code `UPSTREAM_TIMEOUT` through the error port. On a streaming response this deadline's meaning changes — see below.
+
+## Streaming
+
+Whether a response streams straight through to the client instead of being fully buffered first is **inferred at compile time — there is no config key to turn it on**. When a policy is compiled, the graph walks every node on an `upstream` node's success path; if all of them declare (via `Plugin::reads_response_body`) that they never read `context.response.body`, that upstream is marked stream-capable and the compiled graph tells this node so at request time through the reserved `context.message.__may_stream` key. Nothing else reads or sets that key.
+
+When permitted to stream:
+
+- The node returns to the graph engine as soon as the upstream's status and headers have arrived; the body is relayed to the client frame-by-frame as it is read from the upstream, not accumulated into memory first — this is what lets, for example, an SSE event reach a client while the upstream connection is still open.
+- **`timeout_ms` changes meaning**: instead of bounding connect + request + the whole response body, it bounds only connect + request + response **headers**. Once headers are in, the only bound left on the body is `stream_idle_timeout_ms` — so a slow-arriving first byte still fails fast, but a long-lived, actively-streaming body is never killed by `timeout_ms`.
+- No `content-length` is set on the response; HTTP/1.1 sends it chunked, HTTP/2 as ordinary data frames.
+
+**A body-reading node anywhere on the success path forces the whole upstream to buffer instead of stream.** `gzip`, `brotli`, a `response-rewrite` configured with `filters` (or `body`), `proxy-cache`, `body-transformer`, and any body-logging logger all read `context.response.body`, so adding one after `upstream` opts that upstream back into full buffering — silently, from the policy author's point of view, unless they check. They don't have to: `POST /api/policies/validate` (and the policy compiler generally) reports it, naming both nodes, e.g. a `buffering` array entry `{"upstream": "up", "blocked_by": "gzip"}`. The policy still compiles and serves traffic exactly as it did before this feature — it is just buffered, not broken.
+
+**A mid-stream failure can never become an error response.** Once this node has prepared a streaming response, its status code and headers are already committed to the wire by the time any failure in the body — an idle timeout, the upstream dropping the connection, any other transport error partway through — could occur, so there is no way to rewrite it into a `4xx`/`5xx` with a body the way a pre-body failure can. The connection is instead terminated without the chunked terminator, so a client sees an unambiguous truncation rather than a response that silently and incorrectly claims to be complete.
 
 ## Errors
 
