@@ -152,6 +152,13 @@ impl Plugin for UdpLoggerPlugin {
         "udp-logger"
     }
 
+    fn reads_response_body(&self) -> bool {
+        crate::plugins::util::log_entry::reads_response_body(
+            self.log_format.as_ref(),
+            self.include_resp_body,
+        )
+    }
+
     async fn execute(&self, ctx: Context) -> PluginResult {
         let entry = build_entry(
             &ctx,

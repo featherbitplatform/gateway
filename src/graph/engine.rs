@@ -2077,4 +2077,90 @@ mod tests {
              proving up2 did not silently bypass it by streaming"
         );
     }
+
+    /// The payoff for the logger opt-out: `upstream -> http-logger -> client`
+    /// is an ordinary policy, and every logger used to force it to buffer even
+    /// when its format never mentioned the body.
+    // `http-logger` starts a batch processor when it is constructed, so
+    // building this policy needs a reactor even though the inference itself
+    // is synchronous.
+    #[tokio::test]
+    async fn test_logger_with_a_body_free_format_is_stream_capable() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "log", "type": "http-logger",
+                  "config": { "uri": "http://localhost:9/log",
+                              "log_format": { "path": "{{request.path}}",
+                                              "status": "{{response.status}}" } } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "log.in" },
+                { "from": "log.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(graph.is_stream_capable("up"));
+        assert!(graph.buffering_reasons().is_empty());
+    }
+
+    /// A logger whose format does read the body still blocks, and the compiler
+    /// must name it rather than silently logging an empty body.
+    // `http-logger` starts a batch processor when it is constructed, so
+    // building this policy needs a reactor even though the inference itself
+    // is synchronous.
+    #[tokio::test]
+    async fn test_logger_reading_the_body_still_forces_buffering_and_is_reported() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "log", "type": "http-logger",
+                  "config": { "uri": "http://localhost:9/log",
+                              "log_format": { "body": "{{response.body}}" } } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "log.in" },
+                { "from": "log.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(!graph.is_stream_capable("up"));
+        let reasons = graph.buffering_reasons();
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].blocked_by_node_id, "log");
+    }
+
+    /// A logger with no `log_format` keeps buffering: the default entry
+    /// records the body length, which streaming would reduce to 0.
+    // `http-logger` starts a batch processor when it is constructed, so
+    // building this policy needs a reactor even though the inference itself
+    // is synchronous.
+    #[tokio::test]
+    async fn test_logger_without_a_format_still_forces_buffering() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "log", "type": "http-logger",
+                  "config": { "uri": "http://localhost:9/log" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "log.in" },
+                { "from": "log.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(!graph.is_stream_capable("up"));
+    }
 }
