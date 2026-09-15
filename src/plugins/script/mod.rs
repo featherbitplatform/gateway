@@ -42,8 +42,13 @@ impl ScriptPlugin {
     /// - `inline` (string): script text embedded in the config. One of
     ///   `source` or `inline` is required (`source` wins if both are set);
     ///   omitting both is an error, as is an unreadable `source` file.
-    /// - `timeout_ms` (integer, default `5000`): script execution timeout;
-    ///   currently stored by the Lua runtime but not yet enforced.
+    /// - `timeout_ms` (integer, default `5000`): wall-clock budget for one
+    ///   execution, covering both loading the source and the `execute(ctx)`
+    ///   call. Enforced by a Luau VM interrupt, which fires at instruction
+    ///   boundaries -- a runaway loop is stopped and the node fails with
+    ///   `LUA_TIMEOUT`, but time inside a Rust callback or `require`'s file
+    ///   IO is not interrupted. The same budget bounds the validation run at
+    ///   policy-compile time. `0` disables enforcement.
     /// - `modules_path` (string, default: the `source` script's parent
     ///   directory; none for `inline`): directory the sandboxed `require`
     ///   resolves modules from.
