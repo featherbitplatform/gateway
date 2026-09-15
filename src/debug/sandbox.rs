@@ -127,6 +127,7 @@ impl SandboxContextInput {
                     .body
                     .map(|b| Bytes::from(b.into_bytes()))
                     .unwrap_or_default(),
+                stream: None,
             },
             message: self.message,
             errors: Vec::new(),

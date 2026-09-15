@@ -56,6 +56,12 @@ impl Plugin for LoggingPlugin {
         "logging"
     }
 
+    // No `reads_response_body` override: `execute` below reads
+    // `ctx.response.body.len()` into `response_body_bytes` on every call, so
+    // this plugin must keep the trait default (`true`) and force buffering.
+    // If a future change stops reading the body at all, an override can be
+    // added then.
+
     async fn execute(&self, ctx: Context) -> PluginResult {
         let mut fields = serde_json::json!({
             "method": ctx.request.method,
@@ -111,6 +117,7 @@ mod tests {
                 status_code: 200,
                 headers: HashMap::new(),
                 body: Bytes::from_static(b"resp"),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),
@@ -135,5 +142,15 @@ mod tests {
         let plugin = LoggingPlugin::from_config(&HashMap::new()).unwrap();
         assert!(!plugin.include_headers);
         assert!(!plugin.include_body);
+    }
+
+    /// `execute` reads `ctx.response.body.len()` into `response_body_bytes`
+    /// on every call, regardless of config, so this plugin must never opt
+    /// out of `reads_response_body` — it must keep the trait default
+    /// (`true`) and force buffering.
+    #[test]
+    fn test_reads_response_body_defaults_true() {
+        let plugin = LoggingPlugin::from_config(&HashMap::new()).unwrap();
+        assert!(plugin.reads_response_body());
     }
 }

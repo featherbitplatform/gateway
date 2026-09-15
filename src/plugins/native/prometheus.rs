@@ -101,6 +101,10 @@ impl Plugin for PrometheusPlugin {
         "prometheus"
     }
 
+    fn reads_response_body(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, ctx: Context) -> PluginResult {
         if let Some(ref metrics) = self.metrics {
             let consumer = Self::consumer_label(&ctx);
@@ -146,6 +150,7 @@ mod tests {
                 status_code: 200,
                 headers: HashMap::new(),
                 body: Bytes::new(),
+                stream: None,
             },
             message,
             errors: Vec::new(),

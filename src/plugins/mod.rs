@@ -99,6 +99,18 @@ pub trait Plugin: Send + Sync {
     ///   for *the node could not do its job* — configuration, parse, or
     ///   infrastructure failure. A plugin must never name `error` from `Ok`.
     async fn execute(&self, ctx: Context) -> PluginResult;
+
+    /// Whether this **configured instance** reads `context.response.body`.
+    ///
+    /// Defaults to `true`: a plugin that does not opt out forces the policy to
+    /// buffer, so adding a plugin can never silently break a stream. Opting out
+    /// is a deliberate statement about a specific configuration. Consulted at
+    /// policy-compile time by `infer_stream_capability` (`src/graph/engine.rs`),
+    /// which walks an `upstream` node's success path and only marks it
+    /// stream-capable when every node on that path opts out.
+    fn reads_response_body(&self) -> bool {
+        true
+    }
 }
 
 /// Every plugin type [`create_plugin`] can build, for save-time validation of

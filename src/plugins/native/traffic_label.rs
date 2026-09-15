@@ -211,6 +211,10 @@ impl Plugin for TrafficLabelPlugin {
         "traffic-label"
     }
 
+    fn reads_response_body(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, mut ctx: Context) -> PluginResult {
         for rule in &self.rules {
             let matched = rule.matcher.as_ref().is_none_or(|e| e.eval(&ctx));
@@ -277,6 +281,7 @@ mod tests {
                 status_code: 0,
                 headers: HashMap::new(),
                 body: Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),

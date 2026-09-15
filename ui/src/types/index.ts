@@ -312,6 +312,15 @@ export interface BodyCapture {
   unchanged?: boolean;
   /** True when the body is not valid UTF-8 (image, blob, …); `text` is omitted. */
   binary?: boolean;
+  /**
+   * True when the response body was streamed to the client unbuffered
+   * instead of being captured here — the stream itself is never read to
+   * produce a trace snapshot, since the client is its only legitimate
+   * consumer. `len`/`text`/`truncated`/`binary` are all left at their
+   * defaults in this case, so a streamed response otherwise looks like an
+   * empty 0-byte body with no explanation.
+   */
+  streamed?: boolean;
 }
 
 /**

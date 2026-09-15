@@ -489,6 +489,20 @@ The in-UI agent chat. The OpenAI-compatible provider is a `page.route` fake unde
 | E2E-CHAT-02 | **Browser.** Chat → **New chat** → send "please write a policy for me" → **Skip** on the `put_policy` card; then tick **Auto-run writes** and send the request again | The card shows `awaiting confirmation` with **Run**/**Skip**; after Skip it shows `declined`, the model's follow-up text renders, the provider received `{"role":"tool","content":"Declined by the user."}`, and `GET /api/policies/e2e-chat-tmp` is `404`. With auto-run on, the connection line says `auto-run writes ON`, the second `put_policy` card completes with no **Run** button, and the policy exists (`200`); the test deletes it afterwards |
 | E2E-CHAT-03 | **Browser.** Chat → New chat → send a message containing `Authorization: Bearer supersecrettoken123` and the write MCP token → **Clear all chats** | The user bubble, the request the provider received, and `featherbit.chat.threads` all contain `[REDACTED]` and neither secret; after clearing, the thread list shows "No chats yet.", `featherbit.chat.threads` has zero threads, and `featherbit.chat.settings` still holds the API key |
 
+## Streaming — `src/server/listener.rs`
+
+Streaming responses (an SSE-style event reaching the client while the upstream is
+still open) are proven with real sockets and exact response timing rather than
+through Playwright, for the same reason TLS and the WebSocket relay are — see
+"Deliberately out of scope" below. The IDs still live in this catalog since they
+are real, load-bearing scenarios; they are just exercised by the Rust integration
+suite instead of a `.spec.ts`.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-STREAM-01 | An SSE upstream sends one event, then holds the connection open for 10s before closing | `test_sse_event_arrives_before_upstream_closes`: the event reaches the client within a 3s bound — while the upstream is still open, not after it closes. This is the property that fails by timeout against any buffering implementation, which is what makes it the keystone test for the whole feature |
+| E2E-STREAM-02 | A streaming-eligible policy (`listener → upstream → response-rewrite → client`) where `response-rewrite` is configured with `filters` — a body-reading configuration (as would `gzip`, `brotli`, or a body-logging logger) | `POST /api/policies/validate` reports `buffering: [{"upstream": "up", "blocked_by": "rw"}]` (`test_validate_reports_forced_buffering` in `src/admin/policies.rs`, and the equivalent compiler-level check in `src/graph/engine.rs`'s `test_filters_force_buffering_and_are_reported`); the policy still compiles and serves traffic, buffered rather than streamed |
+
 ## Deliberately out of scope
 
 Covered by the Rust suite with real sockets, or unreachable from Playwright:
@@ -496,6 +510,7 @@ Covered by the Rust suite with real sockets, or unreachable from Playwright:
 - TLS/mTLS handshakes, SNI cert selection, cert hot-reload (`src/server/tls.rs`)
 - HTTP/2 (ALPN + h2c) and the WebSocket relay, incl. RFC 8441
 - L4 TCP/UDP stream proxying (Playwright cannot speak raw UDP)
+- Streaming responses: exact event timing and wire-level chunk framing (`E2E-STREAM-*` above)
 - Graceful-shutdown drain on SIGTERM
 - etcd cluster convergence (needs `examples/compose/etcd-cluster/compose.yaml`) — redis/valkey
   stores, by contrast, now have gated in-suite coverage (`E2E-SESS-*`) against
