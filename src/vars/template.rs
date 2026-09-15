@@ -405,6 +405,7 @@ mod tests {
                     h
                 },
                 body: Bytes::from_static(b"resp-body"),
+                stream: None,
             },
             message,
             errors: Vec::new(),

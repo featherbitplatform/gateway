@@ -6,6 +6,7 @@
 //! Supports `http` and `https` (rustls, native roots); `ssl_verify: false`
 //! selects a lazily-built client with certificate verification disabled.
 
+pub mod idle;
 pub mod tls;
 
 use std::collections::HashMap;
@@ -13,6 +14,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
+use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -20,6 +22,23 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 
 type PooledClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
+
+/// The error type carried by every streaming response body in this crate
+/// (`ResponseStream`, `OutboundStreamingResponse::body`, the `idle` module's
+/// wrappers). Deliberately *not* `hyper::Error`: that type has no public
+/// constructor anywhere in the `hyper` crate (every one of them is
+/// `pub(super)`), so nothing built on top of it can ever report its own
+/// failure (an idle timeout, a future size cap, a shutdown-drain cutoff) —
+/// only forward an error hyper already produced from a real connection. A
+/// boxed `std::error::Error` is strictly more permissive than what hyper's
+/// own `serve_connection` requires of a response body's error type
+/// (`Into<Box<dyn StdError + Send + Sync>>`), so this costs nothing on the
+/// send side while unblocking every synthetic error this crate needs to
+/// produce. `hyper::Error` itself satisfies `Into<BoxError>` via the
+/// standard library's blanket `From<E: Error + Send + Sync> for Box<dyn
+/// Error + Send + Sync>`, so forwarding a real hyper error through is a
+/// no-op conversion, not a loss of information.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// A single outbound request. `timeout` covers the whole call: connect,
 /// request write, and response body collection.
@@ -61,6 +80,13 @@ pub struct OutboundResponse {
     pub status: u16,
     pub headers: HashMap<String, Vec<String>>,
     pub body: Bytes,
+}
+
+/// A response whose headers have arrived and whose body is still streaming.
+pub struct OutboundStreamingResponse {
+    pub status: u16,
+    pub headers: HashMap<String, Vec<String>>,
+    pub body: BoxBody<Bytes, BoxError>,
 }
 
 /// Outbound call failure, distinguishing timeouts from transport errors so
@@ -122,30 +148,9 @@ impl OutboundClient {
 
     /// Performs the request, honoring `timeout` and `ssl_verify`.
     pub async fn request(&self, req: OutboundRequest) -> Result<OutboundResponse, OutboundError> {
-        let mut builder = http::Request::builder().method(req.method).uri(&req.url);
-        for (name, value) in &req.headers {
-            builder = builder.header(name.as_str(), value.as_str());
-        }
-        let request = builder
-            .body(Full::new(req.body))
-            .map_err(|e| OutboundError::InvalidRequest(e.to_string()))?;
-
-        let custom_client;
-        let client = match &req.tls {
-            Some(identity) => {
-                custom_client = self.identity_client(identity)?;
-                &custom_client
-            }
-            None if req.ssl_verify => &self.verified,
-            None => self.insecure.get_or_init(build_insecure_client),
-        };
-
         let deadline = req.timeout;
         let call = async {
-            let response = client
-                .request(request)
-                .await
-                .map_err(|e| OutboundError::Transport(e.to_string()))?;
+            let response = self.dispatch(&req).await?;
 
             let status = response.status().as_u16();
             let mut headers: HashMap<String, Vec<String>> = HashMap::new();
@@ -172,6 +177,77 @@ impl OutboundClient {
         tokio::time::timeout(deadline, call)
             .await
             .map_err(|_| OutboundError::Timeout(deadline))?
+    }
+
+    /// Like [`request`](Self::request) but returns as soon as the response
+    /// headers arrive, leaving the body to stream. `req.timeout` bounds
+    /// connect + request + headers; the caller owns any idle bound on the body.
+    pub async fn request_streaming(
+        &self,
+        req: OutboundRequest,
+    ) -> Result<OutboundStreamingResponse, OutboundError> {
+        let deadline = req.timeout;
+        let call = async {
+            let response = self.dispatch(&req).await?;
+
+            let status = response.status().as_u16();
+            let mut headers: HashMap<String, Vec<String>> = HashMap::new();
+            for (name, value) in response.headers() {
+                headers
+                    .entry(name.as_str().to_string())
+                    .or_default()
+                    .push(value.to_str().unwrap_or("").to_string());
+            }
+            // `hyper::Error: Error + Send + Sync + 'static`, so this is the
+            // standard library's blanket `From` impl at work — a real
+            // transport/parse error from `Incoming` forwards unchanged, just
+            // re-wrapped as `BoxError` so this body composes with the idle
+            // timeout and other synthetic-error wrappers in `outbound::idle`.
+            let body: BoxBody<Bytes, BoxError> = response.into_body().map_err(Into::into).boxed();
+
+            Ok(OutboundStreamingResponse {
+                status,
+                headers,
+                body,
+            })
+        };
+
+        tokio::time::timeout(deadline, call)
+            .await
+            .map_err(|_| OutboundError::Timeout(deadline))?
+    }
+
+    /// Builds and dispatches the outbound request, yielding the response with
+    /// its body still unread. Shared by `request` and `request_streaming` so
+    /// the two can never drift in connector, TLS or header handling.
+    async fn dispatch(
+        &self,
+        req: &OutboundRequest,
+    ) -> Result<http::Response<hyper::body::Incoming>, OutboundError> {
+        let mut builder = http::Request::builder()
+            .method(req.method.clone())
+            .uri(&req.url);
+        for (name, value) in &req.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        let request = builder
+            .body(Full::new(req.body.clone()))
+            .map_err(|e| OutboundError::InvalidRequest(e.to_string()))?;
+
+        let custom_client;
+        let client = match &req.tls {
+            Some(identity) => {
+                custom_client = self.identity_client(identity)?;
+                &custom_client
+            }
+            None if req.ssl_verify => &self.verified,
+            None => self.insecure.get_or_init(build_insecure_client),
+        };
+
+        client
+            .request(request)
+            .await
+            .map_err(|e| OutboundError::Transport(e.to_string()))
     }
 
     /// Returns the pooled client for `identity`, building it on first use.
@@ -350,6 +426,56 @@ impl rustls::client::danger::ServerCertVerifier for NoVerification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The streaming call's deadline covers connect + request + response
+    /// headers only. A server that sends headers and then stalls must still
+    /// yield a response promptly — the buffered `request()` would block on the
+    /// body until the whole-call deadline expired.
+    #[tokio::test]
+    async fn test_request_streaming_returns_after_headers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                // Headers only, chunked, then hold the connection open.
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                          transfer-encoding: chunked\r\n\r\n",
+                    )
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+
+        let client = OutboundClient::new();
+        let req = OutboundRequest {
+            method: http::Method::GET,
+            url: format!("http://127.0.0.1:{port}/stream"),
+            headers: Vec::new(),
+            body: Bytes::new(),
+            timeout: std::time::Duration::from_secs(5),
+            ssl_verify: true,
+            tls: None,
+        };
+
+        let resp = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.request_streaming(req),
+        )
+        .await
+        .expect("request_streaming must return before the body arrives")
+        .expect("streaming call succeeded");
+
+        assert_eq!(resp.status, 200);
+        assert_eq!(
+            resp.headers.get("content-type").map(|v| v[0].as_str()),
+            Some("text/event-stream")
+        );
+    }
 
     #[test]
     fn test_client_tls_connector_insecure_builds() {

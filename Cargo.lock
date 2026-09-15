@@ -812,6 +812,7 @@ dependencies = [
  "futures-util",
  "governor",
  "http",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-rustls",

@@ -479,6 +479,7 @@ mod tests {
                 status_code: 0,
                 headers: HashMap::new(),
                 body: Bytes::new(),
+                stream: None,
             },
             message,
             errors: Vec::new(),

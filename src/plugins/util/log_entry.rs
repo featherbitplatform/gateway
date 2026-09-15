@@ -219,6 +219,7 @@ mod tests {
                 status_code: 200,
                 headers: HashMap::new(),
                 body: Bytes::from_static(b"hello"),
+                stream: None,
             },
             message,
             errors: Vec::new(),

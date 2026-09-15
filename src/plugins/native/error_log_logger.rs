@@ -217,6 +217,7 @@ mod tests {
                 status_code: 500,
                 headers: HashMap::new(),
                 body: Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors,

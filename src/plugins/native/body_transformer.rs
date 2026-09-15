@@ -330,6 +330,7 @@ mod tests {
                 status_code: 200,
                 headers: resp_headers,
                 body: Bytes::from(resp_body.to_string()),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),
