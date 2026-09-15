@@ -33,6 +33,23 @@ pub struct CompiledGraph {
     /// Process-wide services (metrics registry, shared clients); per-node
     /// metrics recording is disabled when `resources.metrics` is `None`.
     resources: Arc<PluginResources>,
+    /// Ids of `upstream` nodes whose `success` path reaches `client` without
+    /// passing any node that reads the response body.
+    // Not yet consumed outside tests: the runtime doesn't act on this until
+    // the streaming feature's execution task wires it in.
+    #[allow(dead_code)]
+    stream_capable: HashSet<String>,
+    /// Why each non-capable upstream must buffer, for operator-visible reporting.
+    #[allow(dead_code)]
+    buffering_reasons: Vec<BufferingReason>,
+}
+
+/// Records that one node on an upstream's success path forces buffering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BufferingReason {
+    pub upstream_node_id: String,
+    pub blocked_by_node_id: String,
+    pub node_type: String,
 }
 
 // Manual impl: `Box<dyn Plugin>` doesn't implement `Debug`, so `#[derive]`
@@ -268,6 +285,23 @@ impl CompiledGraph {
 
         (ctx, recorder)
     }
+
+    /// Whether the `upstream` node named `node_id` may stream its response
+    /// body straight through to the client — nothing between it and `client`
+    /// on the `success` path reads the buffered response body.
+    // Not yet called outside tests: the execution path starts reading this
+    // in the streaming feature's follow-up task.
+    #[allow(dead_code)]
+    pub fn is_stream_capable(&self, node_id: &str) -> bool {
+        self.stream_capable.contains(node_id)
+    }
+
+    /// Why each non-stream-capable `upstream` node must buffer, one entry per
+    /// blocked upstream, for operator-visible reporting.
+    #[allow(dead_code)]
+    pub fn buffering_reasons(&self) -> &[BufferingReason] {
+        &self.buffering_reasons
+    }
 }
 
 /// Compiles a [`PolicyConfig`] into a ready-to-execute [`CompiledGraph`].
@@ -432,6 +466,66 @@ pub fn compile_policy(
         .cloned()
         .unwrap_or_else(|| listener_node_id.clone());
 
+    // Compile-time streaming inference: for each `upstream` node, walk only
+    // the `success` path forward to see whether anything before `client`
+    // reads the response body. The `error` port is deliberately not walked:
+    // it is taken exactly when the upstream produced no body at all, so
+    // whatever sits there handles a body the gateway generated itself (e.g.
+    // an `error-handler`'s JSON) and says nothing about the upstream's own
+    // response.
+    let mut stream_capable = HashSet::new();
+    let mut buffering_reasons = Vec::new();
+
+    for (node_id, plugin) in &nodes {
+        if plugin.plugin_type() != "upstream" {
+            continue;
+        }
+        let mut blocked_by: Option<(&String, &str)> = None;
+        let mut seen: HashSet<&String> = HashSet::new();
+        let mut queue: Vec<&String> = edges
+            .get(node_id)
+            .and_then(|ports| ports.get("success"))
+            .into_iter()
+            .collect();
+
+        while let Some(current) = queue.pop() {
+            if !seen.insert(current) {
+                continue;
+            }
+            let Some(p) = nodes.get(current) else {
+                continue;
+            };
+            if p.reads_response_body() {
+                blocked_by = Some((current, p.plugin_type()));
+                break;
+            }
+            if let Some(ports) = edges.get(current) {
+                queue.extend(ports.values());
+            }
+        }
+
+        match blocked_by {
+            None => {
+                stream_capable.insert(node_id.clone());
+            }
+            Some((blocker, node_type)) => buffering_reasons.push(BufferingReason {
+                upstream_node_id: node_id.clone(),
+                blocked_by_node_id: blocker.clone(),
+                node_type: node_type.to_string(),
+            }),
+        }
+    }
+
+    for reason in &buffering_reasons {
+        tracing::info!(
+            policy = %policy.name,
+            upstream = %reason.upstream_node_id,
+            blocked_by = %reason.blocked_by_node_id,
+            node_type = %reason.node_type,
+            "response buffering: upstream cannot stream because a downstream node reads the response body"
+        );
+    }
+
     Ok(CompiledGraph {
         nodes,
         edges,
@@ -440,6 +534,8 @@ pub fn compile_policy(
         catch_all_handler: policy.error_handler.clone(),
         policy_name: policy.name.clone(),
         resources,
+        stream_capable,
+        buffering_reasons,
     })
 }
 
@@ -819,6 +915,8 @@ mod tests {
             catch_all_handler: catch_all,
             policy_name: "p".to_string(),
             resources: PluginResources::empty(),
+            stream_capable: HashSet::new(),
+            buffering_reasons: Vec::new(),
         }
     }
 
@@ -1054,6 +1152,8 @@ mod tests {
             catch_all_handler: None,
             policy_name: "p".to_string(),
             resources: PluginResources::empty(),
+            stream_capable: HashSet::new(),
+            buffering_reasons: Vec::new(),
         }
     }
 
@@ -1349,5 +1449,132 @@ mod tests {
             to: "client.in".to_string(),
         });
         assert!(compile_policy(&policy, PluginResources::empty()).is_ok());
+    }
+
+    // ---- streaming inference -----------------------------------------
+
+    /// Turns a JSON policy (nodes + edges, `name` optional) into a compiled
+    /// graph, panicking on any deserialize/compile failure so tests read as
+    /// plain assertions.
+    fn compile_test_policy(json: serde_json::Value) -> CompiledGraph {
+        let mut value = json;
+        if let serde_json::Value::Object(ref mut map) = value {
+            map.entry("name")
+                .or_insert_with(|| serde_json::Value::String("test".to_string()));
+        }
+        let policy: PolicyConfig =
+            serde_json::from_value(value).expect("test policy JSON must deserialize");
+        compile_policy(&policy, PluginResources::empty()).expect("test policy must compile")
+    }
+
+    /// An upstream whose success path reaches `client` through header-only
+    /// nodes can stream.
+    #[test]
+    fn test_upstream_is_stream_capable_with_header_only_tail() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "hdr", "type": "response-rewrite",
+                  "config": { "headers": { "set": { "x-a": "b" } } } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "hdr.in" },
+                { "from": "hdr.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(graph.is_stream_capable("up"));
+        assert!(graph.buffering_reasons().is_empty());
+    }
+
+    /// A body-rewriting node on the success path forces buffering, and the
+    /// compiler must name it — silence here is the failure mode this feature
+    /// exists to avoid.
+    #[test]
+    fn test_filters_force_buffering_and_are_reported() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "rw", "type": "response-rewrite",
+                  "config": { "filters": [{ "regex": "a", "replace": "b" }] } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "rw.in" },
+                { "from": "rw.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(!graph.is_stream_capable("up"));
+        let reasons = graph.buffering_reasons();
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].upstream_node_id, "up");
+        assert_eq!(reasons[0].blocked_by_node_id, "rw");
+    }
+
+    /// The error path must not influence the decision: it is taken only when
+    /// the upstream produced no body at all.
+    #[test]
+    fn test_error_path_does_not_force_buffering() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "errs", "type": "error-handler",
+                  "config": { "status_code": 502, "body_template": "{}" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "client.in" },
+                { "from": "up.error", "to": "errs.in" },
+                { "from": "errs.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(
+            graph.is_stream_capable("up"),
+            "an error-handler on the error path must not block streaming"
+        );
+    }
+
+    /// A `script` node on the success path forces buffering. This is not
+    /// just another case: Task 1 left comments in `lua_runtime.rs` and
+    /// `multi_auth.rs` asserting a discarded stream is safe there *because*
+    /// those plugins never opt out of `reads_response_body`. Without this
+    /// test that safety argument is only prose in a ledger; this makes the
+    /// suite enforce it.
+    #[test]
+    fn test_script_node_forces_buffering() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "s", "type": "script",
+                  "config": { "inline": "function execute(ctx) return ctx end" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "s.in" },
+                { "from": "s.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(!graph.is_stream_capable("up"));
+        let reasons = graph.buffering_reasons();
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].upstream_node_id, "up");
+        assert_eq!(reasons[0].blocked_by_node_id, "s");
+        assert_eq!(reasons[0].node_type, "script");
     }
 }
