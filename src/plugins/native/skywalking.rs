@@ -319,6 +319,10 @@ impl Plugin for SkywalkingPlugin {
         "skywalking"
     }
 
+    fn reads_response_body(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, ctx: Context) -> PluginResult {
         let ctx = match self.phase {
             Phase::Start => self.run_start(ctx),
