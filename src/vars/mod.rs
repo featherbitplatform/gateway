@@ -704,6 +704,7 @@ mod tests {
                 status_code: 502,
                 headers: HashMap::new(),
                 body: Bytes::from_static(b"bad gateway"),
+                stream: None,
             },
             message,
             errors: Vec::new(),

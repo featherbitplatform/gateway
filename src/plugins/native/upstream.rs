@@ -7,8 +7,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
+
 use crate::balancer::{Balancer, Strategy, Target};
+use crate::context::stream::ResponseStream;
 use crate::context::{Context, GatewayError, Protocol};
+use crate::outbound::idle::{body_holding, idle_timeout_body};
 use crate::outbound::{OutboundClient, OutboundError, OutboundRequest};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
@@ -21,11 +25,17 @@ use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 /// through this node's error port.
 pub struct UpstreamPlugin {
     /// Backend pool + load-balancing strategy (shared with the L4 stream proxy).
-    balancer: Balancer,
+    /// `Arc`-wrapped so the streaming branch can take an `owned_acquire`
+    /// in-flight guard that outlives this call's stack frame — it travels
+    /// with the response stream, released only when the body finishes.
+    balancer: Arc<Balancer>,
     /// Shared pooled HTTP client (from `PluginResources`).
     client: Arc<OutboundClient>,
     /// Whole-call deadline per proxied request.
     timeout: Duration,
+    /// Idle bound on a streaming response body: no frame for this long and
+    /// the stream is reaped. Only consulted when `__may_stream` is set.
+    stream_idle_timeout: Duration,
     /// Connect to the upstream over TLS (`https`/`wss`); default false.
     tls: bool,
     /// Verify the upstream's TLS certificate; default true. Only meaningful
@@ -65,6 +75,14 @@ impl UpstreamPlugin {
     /// - `timeout_ms` (integer, default `60000`): whole-call deadline
     ///   (connect + request + response body) per proxied request; exceeding
     ///   it fails the node with `UPSTREAM_TIMEOUT` through the error port.
+    ///   For a streaming response (see `__may_stream` on
+    ///   [`crate::graph::engine`]) this bounds connect + request + response
+    ///   headers only — the body is then bounded by `stream_idle_timeout_ms`
+    ///   instead.
+    /// - `stream_idle_timeout_ms` (integer, default `60000`): only consulted
+    ///   when the node is permitted to stream; no frame arriving on the
+    ///   response body for this long reaps the stream. Resets on every
+    ///   frame, so a steady stream survives indefinitely.
     /// - `tls` (bool, default `false`): connect to the upstream over TLS
     ///   (`https` for the buffered path, `wss` for WebSocket).
     /// - `ssl_verify` (bool, default `true`): verify the upstream's TLS
@@ -135,11 +153,17 @@ impl UpstreamPlugin {
             }
         };
 
-        let balancer = Balancer::new(targets, strategy)?;
+        let balancer = Arc::new(Balancer::new(targets, strategy)?);
 
         let timeout = Duration::from_millis(
             config
                 .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(60_000),
+        );
+        let stream_idle_timeout = Duration::from_millis(
+            config
+                .get("stream_idle_timeout_ms")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(60_000),
         );
@@ -197,11 +221,55 @@ impl UpstreamPlugin {
             balancer,
             client: resources.outbound.clone(),
             timeout,
+            stream_idle_timeout,
             tls,
             ssl_verify,
             tls_identity,
         })
     }
+
+    /// Builds the [`OutboundRequest`] to send to `target`: method, URL,
+    /// forwarded headers (Host overridden to the target), body, timeout, and
+    /// TLS settings. Shared by the buffered and streaming branches of
+    /// `execute` so they can't drift — every field here (ssl_verify, tls
+    /// identity, timeout) affects both equally.
+    fn outbound_request(
+        &self,
+        ctx: &Context,
+        uri: String,
+        method: http::Method,
+        target: &Target,
+    ) -> OutboundRequest {
+        OutboundRequest {
+            method,
+            url: uri,
+            headers: forwarded_headers(ctx, target),
+            body: ctx.request.body.clone(),
+            timeout: self.timeout,
+            ssl_verify: self.ssl_verify,
+            tls: self.tls_identity.clone(),
+        }
+    }
+}
+
+/// Forwards the request's headers to the upstream, overriding `Host` with
+/// the selected target. Shared by both `execute` branches via
+/// [`UpstreamPlugin::outbound_request`].
+fn forwarded_headers(ctx: &Context, target: &Target) -> Vec<(String, String)> {
+    let mut headers: Vec<(String, String)> = Vec::new();
+    for (key, values) in &ctx.request.headers {
+        if key.eq_ignore_ascii_case("host") {
+            continue;
+        }
+        for value in values {
+            headers.push((key.clone(), value.clone()));
+        }
+    }
+    headers.push((
+        "host".to_string(),
+        format!("{}:{}", target.host, target.port),
+    ));
+    headers
 }
 
 /// The outbound request-target: the request path plus the rebuilt query
@@ -218,6 +286,33 @@ fn request_target(ctx: &Context) -> String {
         ctx.request.path.clone()
     } else {
         format!("{}?{}", ctx.request.path, query)
+    }
+}
+
+/// Maps an [`OutboundError`] to the `(code, message)` pair used on this
+/// node's error port. Shared by the buffered and streaming branches so a fix
+/// to one (e.g. a wording or timeout-classification change) can't land in
+/// only one of them.
+fn map_outbound_error(e: OutboundError, target: &Target) -> (&'static str, String) {
+    match &e {
+        OutboundError::Timeout(d) => (
+            "UPSTREAM_TIMEOUT",
+            format!(
+                "Upstream {}:{} timed out after {:?}",
+                target.host, target.port, d
+            ),
+        ),
+        OutboundError::InvalidRequest(m) => (
+            "UPSTREAM_REQUEST_BUILD_ERROR",
+            format!("Failed to build upstream request: {}", m),
+        ),
+        OutboundError::Transport(m) => (
+            "UPSTREAM_CONNECTION_ERROR",
+            format!(
+                "Failed to reach upstream {}:{}: {}",
+                target.host, target.port, m
+            ),
+        ),
     }
 }
 
@@ -268,7 +363,6 @@ impl Plugin for UpstreamPlugin {
             return Ok(PluginOutput::success(ctx));
         }
 
-        let _in_flight_guard = self.balancer.acquire(target_idx);
         let scheme = if self.tls { "https" } else { "http" };
         let uri = format!(
             "{}://{}:{}{}",
@@ -280,54 +374,62 @@ impl Plugin for UpstreamPlugin {
 
         let method: http::Method = ctx.request.method.parse().unwrap_or(http::Method::GET);
 
-        // Forward request headers, overriding Host with the upstream target.
-        let mut headers: Vec<(String, String)> = Vec::new();
-        for (key, values) in &ctx.request.headers {
-            if key.eq_ignore_ascii_case("host") {
-                continue;
-            }
-            for value in values {
-                headers.push((key.clone(), value.clone()));
-            }
-        }
-        headers.push((
-            "host".to_string(),
-            format!("{}:{}", target.host, target.port),
-        ));
+        let may_stream = ctx
+            .message
+            .get("__may_stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
-        let outbound = OutboundRequest {
-            method,
-            url: uri,
-            headers,
-            body: ctx.request.body.clone(),
-            timeout: self.timeout,
-            ssl_verify: self.ssl_verify,
-            tls: self.tls_identity.clone(),
-        };
+        if may_stream {
+            // Owned, not borrowed: this guard must outlive `execute`'s stack
+            // frame — it travels with the response stream and is released
+            // only when the body finishes, not when this node returns.
+            let guard = self.balancer.owned_acquire(target_idx);
+            let outbound = self.outbound_request(&ctx, uri, method, target);
+            return match self.client.request_streaming(outbound).await {
+                Ok(resp) => {
+                    ctx.response.status_code = resp.status;
+                    ctx.response.headers = resp.headers;
+                    // Invariant: exactly one of `body`/`stream` carries
+                    // content. This node is about to populate `stream`.
+                    ctx.response.body = Bytes::new();
+                    // The guard is bound into the body at construction, not
+                    // attached after via `stream.hold(...)`: `into_parts`
+                    // hands body and guards back as two independent values,
+                    // so keeping them together end-to-end from the moment
+                    // the stream exists removes any chance of the transport
+                    // task dropping one half and not the other.
+                    let idled = idle_timeout_body(resp.body, self.stream_idle_timeout);
+                    let held = body_holding(idled, vec![Box::new(guard)]);
+                    ctx.response.stream = Some(ResponseStream::new(held));
+                    Ok(PluginOutput::success(ctx))
+                }
+                Err(e) => {
+                    // No byte has reached the client yet (the deadline covers
+                    // only connect + request + response headers), so this is
+                    // an ordinary error-port exit exactly like the buffered
+                    // path's failure below.
+                    let (code, message) = map_outbound_error(e, target);
+                    Err(PluginExecutionError {
+                        context: ctx,
+                        error: GatewayError {
+                            node_id: String::new(),
+                            code: code.to_string(),
+                            message,
+                            metadata: HashMap::new(),
+                        },
+                    })
+                }
+            };
+        }
+
+        let _in_flight_guard = self.balancer.acquire(target_idx);
+        let outbound = self.outbound_request(&ctx, uri, method, target);
 
         let response = match self.client.request(outbound).await {
             Ok(resp) => resp,
             Err(e) => {
-                let (code, message) = match &e {
-                    OutboundError::Timeout(d) => (
-                        "UPSTREAM_TIMEOUT",
-                        format!(
-                            "Upstream {}:{} timed out after {:?}",
-                            target.host, target.port, d
-                        ),
-                    ),
-                    OutboundError::InvalidRequest(m) => (
-                        "UPSTREAM_REQUEST_BUILD_ERROR",
-                        format!("Failed to build upstream request: {}", m),
-                    ),
-                    OutboundError::Transport(m) => (
-                        "UPSTREAM_CONNECTION_ERROR",
-                        format!(
-                            "Failed to reach upstream {}:{}: {}",
-                            target.host, target.port, m
-                        ),
-                    ),
-                };
+                let (code, message) = map_outbound_error(e, target);
                 let error = GatewayError {
                     node_id: String::new(),
                     code: code.to_string(),
@@ -345,6 +447,11 @@ impl Plugin for UpstreamPlugin {
         ctx.response.status_code = response.status;
         ctx.response.headers = response.headers;
         ctx.response.body = response.body;
+        // Invariant, enforced locally rather than argued globally: a
+        // buffered response never carries a stream. Matters on a failover
+        // policy shape where an earlier node's context (including a stale
+        // `response.stream` from some prior hop) reaches this node.
+        ctx.response.stream = None;
 
         Ok(PluginOutput::success(ctx))
     }
@@ -591,8 +698,11 @@ mod tests {
     }
 
     /// Minimal one-shot HTTP server that records the request line (method and
-    /// request-target) of the first request it receives and answers `200`.
-    /// Returns its port and a receiver for the captured line.
+    /// request-target) of the first request it receives and answers `200`
+    /// with a non-empty body — a `content-length: 0` reply would make any
+    /// `body.is_empty()` assertion on the caller's side vacuous (it would
+    /// pass whether or not the plugin actually populated `body`/`stream`
+    /// correctly). Returns its port and a receiver for the captured line.
     async fn spawn_request_line_capture() -> (u16, tokio::sync::oneshot::Receiver<String>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -608,9 +718,9 @@ mod tests {
                 let _ = stream
                     .write_all(
                         b"HTTP/1.1 200 OK
-content-length: 0
+content-length: 2
 
-",
+ok",
                     )
                     .await;
                 let _ = stream.shutdown().await;
@@ -705,6 +815,110 @@ content-length: 0
         assert_eq!(
             out.context.message.get("__ws_upstream_path").unwrap(),
             "/ws/chat?token=abc123"
+        );
+    }
+
+    /// With `__may_stream` set, the node must hand back a stream rather than a
+    /// buffered body — and must leave `body` empty, per the invariant.
+    #[tokio::test]
+    async fn test_upstream_streams_when_permitted() {
+        let (port, _rx) = spawn_request_line_capture().await;
+        let mut ctx = ctx_with_query("/stream", vec![]);
+        ctx.message
+            .insert("__may_stream".to_string(), serde_json::json!(true));
+
+        let out = plugin_at(port).execute(ctx).await.unwrap();
+
+        assert!(out.context.response.stream.is_some(), "expected a stream");
+        assert!(
+            out.context.response.body.is_empty(),
+            "invariant: body must be empty when stream is set"
+        );
+    }
+
+    /// Without the key, behaviour is exactly as today: buffered body, no stream.
+    #[tokio::test]
+    async fn test_upstream_buffers_when_not_permitted() {
+        let (port, _rx) = spawn_request_line_capture().await;
+        let ctx = ctx_with_query("/stream", vec![]);
+
+        let out = plugin_at(port).execute(ctx).await.unwrap();
+
+        assert!(out.context.response.stream.is_none());
+        assert_eq!(
+            out.context.response.body.as_ref(),
+            b"ok",
+            "buffered path must actually carry the upstream's body"
+        );
+    }
+
+    /// Sends response headers plus a first chunk immediately, then blocks
+    /// until `resume` is signaled before sending the final chunk and the
+    /// chunked terminator and closing — giving a test a window to observe
+    /// the balancer's in-flight count while the stream is still open, before
+    /// deciding when the body is allowed to finish.
+    async fn spawn_pausable_stream_server() -> (u16, tokio::sync::oneshot::Sender<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n",
+                    )
+                    .await;
+                let _ = resume_rx.await;
+                let _ = stream.write_all(b"6\r\nworld!\r\n0\r\n\r\n").await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        (port, resume_tx)
+    }
+
+    /// The balancer's in-flight guard must be bound to the streaming body's
+    /// own lifetime (via `body_holding`), not to this node's `execute` call.
+    /// Swapping that binding for a bare `drop(guard)` — the exact bug this
+    /// guards against — would release the count the instant `execute`
+    /// returns, long before the client has actually received the whole
+    /// body; the whole rest of the test suite stays green either way, which
+    /// is what makes this property worth testing directly rather than
+    /// trusting it stayed wired correctly.
+    #[tokio::test]
+    async fn test_in_flight_guard_released_only_when_stream_completes() {
+        use http_body_util::BodyExt;
+
+        let (port, resume_tx) = spawn_pausable_stream_server().await;
+        let plugin = plugin_at(port);
+        let mut ctx = ctx_with_query("/stream", vec![]);
+        ctx.message
+            .insert("__may_stream".to_string(), serde_json::json!(true));
+
+        let out = plugin.execute(ctx).await.unwrap();
+        let stream = out
+            .context
+            .response
+            .stream
+            .expect("expected a stream when __may_stream is set");
+
+        assert_eq!(
+            plugin.balancer.in_flight_count(0),
+            1,
+            "in-flight count must stay held while the stream is still open"
+        );
+
+        let (body, _guards) = stream.into_parts();
+        let _ = resume_tx.send(());
+        let collected = body.collect().await.unwrap().to_bytes();
+        assert_eq!(collected.as_ref(), b"helloworld!");
+
+        assert_eq!(
+            plugin.balancer.in_flight_count(0),
+            0,
+            "in-flight count must release once the stream body completes"
         );
     }
 }

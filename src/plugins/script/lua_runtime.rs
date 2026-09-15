@@ -419,6 +419,12 @@ fn lua_to_context(
         status_code,
         headers: field_string_lists(&resp_table, "headers", "ctx.response")?,
         body: field_body(&resp_table, "ctx.response")?,
+        // Rebuilding from the Lua table always discards any stream: safe only
+        // because `script` does not opt out of `Plugin::reads_response_body()`
+        // (defaults to `true`), so the policy compiler never marks an
+        // upstream stream-capable when a script node sits downstream — a
+        // stream can never reach here.
+        stream: None,
     };
 
     let mut message = HashMap::new();
@@ -528,6 +534,7 @@ mod tests {
                 status_code: 0,
                 headers: HashMap::new(),
                 body: bytes::Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),

@@ -209,6 +209,7 @@ mod tests {
                 status_code: status,
                 headers: response_headers,
                 body: Bytes::from_static(b"original"),
+                stream: None,
             },
             message: HashMap::new(),
             errors,

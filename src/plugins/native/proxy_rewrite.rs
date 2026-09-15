@@ -176,6 +176,10 @@ impl Plugin for ProxyRewritePlugin {
         "proxy-rewrite"
     }
 
+    fn reads_response_body(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, mut ctx: Context) -> PluginResult {
         match self.phase {
             RewritePhase::Request => {
@@ -257,6 +261,7 @@ mod tests {
                 status_code: 0,
                 headers: HashMap::new(),
                 body: Bytes::new(),
+                stream: None,
             },
             message: HashMap::new(),
             errors: Vec::new(),
