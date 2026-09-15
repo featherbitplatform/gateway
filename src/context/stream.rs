@@ -14,24 +14,22 @@ use http_body_util::combinators::BoxBody;
 pub struct ResponseStream {
     // Read back out by `into_parts` in Task 6, once the listener relays a
     // stream instead of buffering it; unread on any path exercised today.
+    // `BoxBody` is already `Send + Sync` (see `http_body_util`'s
+    // `combinators::BoxBody`, as opposed to the `Send`-only
+    // `UnsyncBoxBody`), so it needs no help to keep `ResponseStream: Sync`.
     #[allow(dead_code)]
     body: BoxBody<Bytes, hyper::Error>,
-    guards: Vec<Box<dyn Send + 'static>>,
+    // `Box<dyn Send + 'static>` guards are `Send`-only, not `Sync`, so a bare
+    // `Vec` here would make `ResponseStream` — and, nested inside
+    // `GatewayResponse`, `Context` — lose `Sync`. Several existing plugins
+    // hold `&Context` across an `.await`, which requires `Context: Sync` for
+    // their `execute` future to stay `Send`. `Mutex<T>` is `Sync` whenever
+    // `T: Send`, restoring `Sync` without `unsafe`. Neither `hold` nor
+    // `into_parts` below actually contends the lock: both already have
+    // exclusive access (`&mut self` / `self`), so this costs nothing at
+    // runtime.
+    guards: std::sync::Mutex<Vec<Box<dyn Send + 'static>>>,
 }
-
-// SAFETY: `ResponseStream` never hands out a `&`-reference to `body` or
-// `guards` — the only ways to reach them are by value (`into_parts`, which
-// consumes `self`) or through `&mut self` (`hold`). Two threads can therefore
-// never observe the same inner data through a shared `&ResponseStream`
-// simultaneously, so implementing `Sync` introduces no possibility of a data
-// race even though the erased trait objects it holds (`BoxBody`,
-// `Box<dyn Send>`) are `Send`-only, not `Sync` (the same justification used
-// by the `sync_wrapper` crate). This is needed so `Context` — which nests
-// this behind `Option<ResponseStream>` — stays `Sync`: several existing
-// plugins (session-backed auth: `authz-casdoor`, `cas-auth`, `dingtalk-auth`,
-// `feishu-auth`, `openid-connect`) hold `&Context` across an `.await`, which
-// requires `Context: Sync` for their `execute` future to remain `Send`.
-unsafe impl Sync for ResponseStream {}
 
 // Task 1 only lands the data model; nothing constructs or consumes a
 // `ResponseStream` yet (a node starts populating `response.stream` in Task
@@ -42,19 +40,23 @@ impl ResponseStream {
     pub fn new(body: BoxBody<Bytes, hyper::Error>) -> Self {
         Self {
             body,
-            guards: Vec::new(),
+            guards: std::sync::Mutex::new(Vec::new()),
         }
     }
 
     /// Attaches a guard released when the stream is consumed or dropped.
     pub fn hold(&mut self, guard: Box<dyn Send + 'static>) {
-        self.guards.push(guard);
+        // `&mut self` already guarantees exclusive access; this never blocks.
+        self.guards.get_mut().unwrap().push(guard);
     }
 
-    /// Takes the body for transmission. Guards travel with the returned body's
-    /// owner, so the caller must keep `self` alive until the body is finished.
+    /// Takes the body for transmission. The guards travel with the returned
+    /// `Vec`, not with `self` (which is consumed here) — the caller must keep
+    /// that `Vec` alive until the returned body has finished streaming to the
+    /// client; dropping it early releases the guards early.
     pub fn into_parts(self) -> (BoxBody<Bytes, hyper::Error>, Vec<Box<dyn Send + 'static>>) {
-        (self.body, self.guards)
+        // `self` is owned here, so nothing else can hold the lock; never blocks.
+        (self.body, self.guards.into_inner().unwrap())
     }
 }
 
@@ -62,7 +64,7 @@ impl ResponseStream {
 impl std::fmt::Debug for ResponseStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResponseStream")
-            .field("guards", &self.guards.len())
+            .field("guards", &self.guards.lock().map(|g| g.len()).unwrap_or(0))
             .finish()
     }
 }
@@ -109,5 +111,53 @@ mod tests {
             1,
             "guard not released on drop"
         );
+    }
+
+    /// `into_parts` is the accessor Task 6 depends on: it must hand the
+    /// guards over alongside the body rather than dropping them, and the
+    /// guards' lifetime must be tied to the returned `Vec`, not to the body
+    /// or to `self` (which no longer exists once `into_parts` returns).
+    #[tokio::test]
+    async fn test_into_parts_hands_guards_to_the_caller_with_the_body() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct Guard(Arc<AtomicUsize>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut stream = ResponseStream::new(boxed("data: hello\n\n"));
+        stream.hold(Box::new(Guard(dropped.clone())));
+
+        let (body, guards) = stream.into_parts();
+
+        drop(body);
+        assert_eq!(
+            dropped.load(Ordering::SeqCst),
+            0,
+            "guard released when the body was dropped, before the guard vec was"
+        );
+
+        drop(guards);
+        assert_eq!(
+            dropped.load(Ordering::SeqCst),
+            1,
+            "guard not released when the returned guard vec was dropped"
+        );
+    }
+
+    /// `Context` gained a nested `Send`-only member (`ResponseStream`'s
+    /// `BoxBody` and guards) in this change; pin down that it stays both
+    /// `Send` (required for `Plugin::execute`'s boxed future) and `Sync`
+    /// (required because several plugins hold `&Context` across an
+    /// `.await`), so a future change can't silently regress either.
+    #[test]
+    fn test_context_stays_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<crate::context::Context>();
     }
 }
