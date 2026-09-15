@@ -155,6 +155,13 @@ pub struct BodyCapture {
     /// still reports the true size.
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub binary: bool,
+    /// True when the response body was streamed to the client unbuffered
+    /// (`ctx.response.stream` was set) rather than buffered in `ctx.response.body`.
+    /// The stream itself is never read to produce this snapshot — the client is
+    /// its only legitimate consumer — so `len`/`text`/`truncated`/`binary` above
+    /// are all left at their defaults in this case.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub streamed: bool,
 }
 
 /// Redacted view of `Context.request`.
@@ -238,7 +245,17 @@ impl ContextSnapshot {
                 headers: redact_map(&ctx.response.headers, |k| {
                     opts.redaction.header_is_secret(k)
                 }),
-                body: capture_body(&ctx.response.body, prev.response.as_ref(), opts),
+                body: if ctx.response.stream.is_some() {
+                    // Never read the stream to snapshot it: the client is the
+                    // only legitimate consumer, and reading here would
+                    // swallow the events. Record only that it streamed.
+                    BodyCapture {
+                        streamed: true,
+                        ..Default::default()
+                    }
+                } else {
+                    capture_body(&ctx.response.body, prev.response.as_ref(), opts)
+                },
             },
             message: ctx
                 .message
@@ -466,6 +483,41 @@ mod tests {
             capture_bodies,
             ..Default::default()
         }
+    }
+
+    /// A streamed response must be traceable without consuming the stream:
+    /// headers and status are recorded, the body is flagged rather than read.
+    #[test]
+    fn test_trace_marks_streamed_body_without_consuming_it() {
+        use crate::context::stream::ResponseStream;
+        use http_body_util::{BodyExt, Full};
+
+        let mut c = ctx();
+        c.response.status_code = 200;
+        let boxed = Full::new(Bytes::from_static(b"data: one\n\n"))
+            .map_err(|never| match never {})
+            .boxed();
+        c.response.stream = Some(ResponseStream::new(boxed));
+
+        let snapshot = ContextSnapshot::capture(&c, &opts(true), &PreviousBodies::default());
+
+        assert_eq!(snapshot.response.status_code, 200);
+        assert!(
+            snapshot.response.body.streamed,
+            "streamed body must be flagged"
+        );
+        assert_eq!(
+            snapshot.response.body.len, 0,
+            "a streamed body is never captured"
+        );
+        assert!(
+            snapshot.response.body.text.is_none(),
+            "a streamed body's text must never be captured"
+        );
+        assert!(
+            c.response.stream.is_some(),
+            "snapshotting must not take the stream"
+        );
     }
 
     #[test]

@@ -270,6 +270,13 @@ impl CompiledGraph {
                         ctx.response.body = bytes::Bytes::from(
                             r#"{"error": "internal_error", "message": "Unhandled error in routing policy"}"#,
                         );
+                        // This overwrites `response.body`; a stream set by an
+                        // earlier node in the same chain (e.g. `upstream`)
+                        // must not survive alongside it — see
+                        // `ErrorHandlerPlugin::execute` for the same rule and
+                        // why it matters (the listener treats a set stream as
+                        // authoritative over `body`).
+                        ctx.response.stream = None;
                         ctx.response.headers.insert(
                             "content-type".to_string(),
                             vec!["application/json".to_string()],
@@ -1159,6 +1166,37 @@ mod tests {
         // ...and the engine wrote its generic 500.
         assert_eq!(out.response.status_code, 500);
         assert_eq!(trace.steps[0].after.response.status_code, 500);
+    }
+
+    /// The engine's no-handler 500 fallback overwrites `response.body`. If a
+    /// stream was set on the context that arrived here (e.g. an `upstream`
+    /// node had started relaying a response, then a later node in the same
+    /// chain errored with neither an error edge nor a catch-all), the stale
+    /// stream must be cleared too — otherwise the listener would see both
+    /// `body` and `stream` set and, per the documented invariant, send the
+    /// half-finished stream instead of this generated 500.
+    #[tokio::test]
+    async fn test_unhandled_error_clears_stale_stream() {
+        use crate::context::stream::ResponseStream;
+        use http_body_util::{BodyExt, Full};
+
+        let graph = failing_graph(HashMap::new(), None);
+        let mut ctx = test_context("/x");
+        let boxed = Full::new(Bytes::from_static(b"partial-stream-bytes"))
+            .map_err(|never| match never {})
+            .boxed();
+        ctx.response.stream = Some(ResponseStream::new(boxed));
+
+        let out = graph.execute(ctx).await;
+
+        assert_eq!(out.response.status_code, 500);
+        assert!(
+            out.response.stream.is_none(),
+            "the generated 500 body must not coexist with a stale stream"
+        );
+        assert!(String::from_utf8(out.response.body.to_vec())
+            .unwrap()
+            .contains("Unhandled error in routing policy"));
     }
 
     // ---- per-port outcome routing -----------------------------------------
