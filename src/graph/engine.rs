@@ -34,10 +34,8 @@ pub struct CompiledGraph {
     /// metrics recording is disabled when `resources.metrics` is `None`.
     resources: Arc<PluginResources>,
     /// Ids of `upstream` nodes whose `success` path reaches `client` without
-    /// passing any node that reads the response body.
-    // Not yet consumed outside tests: the runtime doesn't act on this until
-    // the streaming feature's execution task wires it in.
-    #[allow(dead_code)]
+    /// passing any node that reads the response body. Read by
+    /// `is_stream_capable`, consulted per node in `run`.
     stream_capable: HashSet<String>,
     /// Why each non-capable upstream must buffer, for operator-visible reporting.
     #[allow(dead_code)]
@@ -145,6 +143,17 @@ impl CompiledGraph {
             };
 
             let node_type = node.plugin_type().to_string();
+            // Reserved `context.message` key, same mechanism as `__policy`,
+            // `__route`, and `__request_start_ms` (set by the listener before
+            // the graph runs; see `src/server/listener.rs`): tells a
+            // stream-capable `upstream` node it may hand back a
+            // `response.stream` instead of buffering. Set fresh on every
+            // node so a node downstream of a non-capable one never
+            // misreads a stale `true` left by an earlier hop.
+            if self.is_stream_capable(&current_node_id) {
+                ctx.message
+                    .insert("__may_stream".to_string(), serde_json::json!(true));
+            }
             let started = std::time::Instant::now();
             let result = node.execute(ctx).await;
             let elapsed = started.elapsed();
@@ -288,10 +297,8 @@ impl CompiledGraph {
 
     /// Whether the `upstream` node named `node_id` may stream its response
     /// body straight through to the client — nothing between it and `client`
-    /// on the `success` path reads the buffered response body.
-    // Not yet called outside tests: the execution path starts reading this
-    // in the streaming feature's follow-up task.
-    #[allow(dead_code)]
+    /// on the `success` path reads the buffered response body. Consulted by
+    /// `run` to set the `__may_stream` reserved key before invoking the node.
     pub fn is_stream_capable(&self, node_id: &str) -> bool {
         self.stream_capable.contains(node_id)
     }

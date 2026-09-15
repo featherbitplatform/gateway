@@ -6,6 +6,7 @@
 //! Supports `http` and `https` (rustls, native roots); `ssl_verify: false`
 //! selects a lazily-built client with certificate verification disabled.
 
+pub mod idle;
 pub mod tls;
 
 use std::collections::HashMap;
@@ -65,7 +66,6 @@ pub struct OutboundResponse {
 }
 
 /// A response whose headers have arrived and whose body is still streaming.
-#[allow(dead_code)] // consumed by Task 5, which bridges this into ResponseStream
 pub struct OutboundStreamingResponse {
     pub status: u16,
     pub headers: HashMap<String, Vec<String>>,
@@ -165,7 +165,6 @@ impl OutboundClient {
     /// Like [`request`](Self::request) but returns as soon as the response
     /// headers arrive, leaving the body to stream. `req.timeout` bounds
     /// connect + request + headers; the caller owns any idle bound on the body.
-    #[allow(dead_code)] // consumed by Task 5, which bridges this into ResponseStream
     pub async fn request_streaming(
         &self,
         req: OutboundRequest,

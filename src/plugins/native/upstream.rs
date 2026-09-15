@@ -7,8 +7,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
+
 use crate::balancer::{Balancer, Strategy, Target};
+use crate::context::stream::ResponseStream;
 use crate::context::{Context, GatewayError, Protocol};
+use crate::outbound::idle::idle_timeout_body;
 use crate::outbound::{OutboundClient, OutboundError, OutboundRequest};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
@@ -21,11 +25,17 @@ use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 /// through this node's error port.
 pub struct UpstreamPlugin {
     /// Backend pool + load-balancing strategy (shared with the L4 stream proxy).
-    balancer: Balancer,
+    /// `Arc`-wrapped so the streaming branch can take an `owned_acquire`
+    /// in-flight guard that outlives this call's stack frame — it travels
+    /// with the response stream, released only when the body finishes.
+    balancer: Arc<Balancer>,
     /// Shared pooled HTTP client (from `PluginResources`).
     client: Arc<OutboundClient>,
     /// Whole-call deadline per proxied request.
     timeout: Duration,
+    /// Idle bound on a streaming response body: no frame for this long and
+    /// the stream is reaped. Only consulted when `__may_stream` is set.
+    stream_idle_timeout: Duration,
     /// Connect to the upstream over TLS (`https`/`wss`); default false.
     tls: bool,
     /// Verify the upstream's TLS certificate; default true. Only meaningful
@@ -65,6 +75,14 @@ impl UpstreamPlugin {
     /// - `timeout_ms` (integer, default `60000`): whole-call deadline
     ///   (connect + request + response body) per proxied request; exceeding
     ///   it fails the node with `UPSTREAM_TIMEOUT` through the error port.
+    ///   For a streaming response (see `__may_stream` on
+    ///   [`crate::graph::engine`]) this bounds connect + request + response
+    ///   headers only — the body is then bounded by `stream_idle_timeout_ms`
+    ///   instead.
+    /// - `stream_idle_timeout_ms` (integer, default `60000`): only consulted
+    ///   when the node is permitted to stream; no frame arriving on the
+    ///   response body for this long reaps the stream. Resets on every
+    ///   frame, so a steady stream survives indefinitely.
     /// - `tls` (bool, default `false`): connect to the upstream over TLS
     ///   (`https` for the buffered path, `wss` for WebSocket).
     /// - `ssl_verify` (bool, default `true`): verify the upstream's TLS
@@ -135,11 +153,17 @@ impl UpstreamPlugin {
             }
         };
 
-        let balancer = Balancer::new(targets, strategy)?;
+        let balancer = Arc::new(Balancer::new(targets, strategy)?);
 
         let timeout = Duration::from_millis(
             config
                 .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(60_000),
+        );
+        let stream_idle_timeout = Duration::from_millis(
+            config
+                .get("stream_idle_timeout_ms")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(60_000),
         );
@@ -197,11 +221,55 @@ impl UpstreamPlugin {
             balancer,
             client: resources.outbound.clone(),
             timeout,
+            stream_idle_timeout,
             tls,
             ssl_verify,
             tls_identity,
         })
     }
+
+    /// Builds the [`OutboundRequest`] to send to `target`: method, URL,
+    /// forwarded headers (Host overridden to the target), body, timeout, and
+    /// TLS settings. Shared by the buffered and streaming branches of
+    /// `execute` so they can't drift — every field here (ssl_verify, tls
+    /// identity, timeout) affects both equally.
+    fn outbound_request(
+        &self,
+        ctx: &Context,
+        uri: String,
+        method: http::Method,
+        target: &Target,
+    ) -> OutboundRequest {
+        OutboundRequest {
+            method,
+            url: uri,
+            headers: forwarded_headers(ctx, target),
+            body: ctx.request.body.clone(),
+            timeout: self.timeout,
+            ssl_verify: self.ssl_verify,
+            tls: self.tls_identity.clone(),
+        }
+    }
+}
+
+/// Forwards the request's headers to the upstream, overriding `Host` with
+/// the selected target. Shared by both `execute` branches via
+/// [`UpstreamPlugin::outbound_request`].
+fn forwarded_headers(ctx: &Context, target: &Target) -> Vec<(String, String)> {
+    let mut headers: Vec<(String, String)> = Vec::new();
+    for (key, values) in &ctx.request.headers {
+        if key.eq_ignore_ascii_case("host") {
+            continue;
+        }
+        for value in values {
+            headers.push((key.clone(), value.clone()));
+        }
+    }
+    headers.push((
+        "host".to_string(),
+        format!("{}:{}", target.host, target.port),
+    ));
+    headers
 }
 
 /// The outbound request-target: the request path plus the rebuilt query
@@ -218,6 +286,33 @@ fn request_target(ctx: &Context) -> String {
         ctx.request.path.clone()
     } else {
         format!("{}?{}", ctx.request.path, query)
+    }
+}
+
+/// Maps an [`OutboundError`] to the `(code, message)` pair used on this
+/// node's error port. Shared by the buffered and streaming branches so a fix
+/// to one (e.g. a wording or timeout-classification change) can't land in
+/// only one of them.
+fn map_outbound_error(e: OutboundError, target: &Target) -> (&'static str, String) {
+    match &e {
+        OutboundError::Timeout(d) => (
+            "UPSTREAM_TIMEOUT",
+            format!(
+                "Upstream {}:{} timed out after {:?}",
+                target.host, target.port, d
+            ),
+        ),
+        OutboundError::InvalidRequest(m) => (
+            "UPSTREAM_REQUEST_BUILD_ERROR",
+            format!("Failed to build upstream request: {}", m),
+        ),
+        OutboundError::Transport(m) => (
+            "UPSTREAM_CONNECTION_ERROR",
+            format!(
+                "Failed to reach upstream {}:{}: {}",
+                target.host, target.port, m
+            ),
+        ),
     }
 }
 
@@ -268,7 +363,6 @@ impl Plugin for UpstreamPlugin {
             return Ok(PluginOutput::success(ctx));
         }
 
-        let _in_flight_guard = self.balancer.acquire(target_idx);
         let scheme = if self.tls { "https" } else { "http" };
         let uri = format!(
             "{}://{}:{}{}",
@@ -280,54 +374,57 @@ impl Plugin for UpstreamPlugin {
 
         let method: http::Method = ctx.request.method.parse().unwrap_or(http::Method::GET);
 
-        // Forward request headers, overriding Host with the upstream target.
-        let mut headers: Vec<(String, String)> = Vec::new();
-        for (key, values) in &ctx.request.headers {
-            if key.eq_ignore_ascii_case("host") {
-                continue;
-            }
-            for value in values {
-                headers.push((key.clone(), value.clone()));
-            }
-        }
-        headers.push((
-            "host".to_string(),
-            format!("{}:{}", target.host, target.port),
-        ));
+        let may_stream = ctx
+            .message
+            .get("__may_stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
-        let outbound = OutboundRequest {
-            method,
-            url: uri,
-            headers,
-            body: ctx.request.body.clone(),
-            timeout: self.timeout,
-            ssl_verify: self.ssl_verify,
-            tls: self.tls_identity.clone(),
-        };
+        if may_stream {
+            // Owned, not borrowed: this guard must outlive `execute`'s stack
+            // frame — it travels with the response stream and is released
+            // only when the body finishes, not when this node returns.
+            let guard = self.balancer.owned_acquire(target_idx);
+            let outbound = self.outbound_request(&ctx, uri, method, target);
+            return match self.client.request_streaming(outbound).await {
+                Ok(resp) => {
+                    ctx.response.status_code = resp.status;
+                    ctx.response.headers = resp.headers;
+                    // Invariant: exactly one of `body`/`stream` carries
+                    // content. This node is about to populate `stream`.
+                    ctx.response.body = Bytes::new();
+                    let mut stream =
+                        ResponseStream::new(idle_timeout_body(resp.body, self.stream_idle_timeout));
+                    stream.hold(Box::new(guard));
+                    ctx.response.stream = Some(stream);
+                    Ok(PluginOutput::success(ctx))
+                }
+                Err(e) => {
+                    // No byte has reached the client yet (the deadline covers
+                    // only connect + request + response headers), so this is
+                    // an ordinary error-port exit exactly like the buffered
+                    // path's failure below.
+                    let (code, message) = map_outbound_error(e, target);
+                    Err(PluginExecutionError {
+                        context: ctx,
+                        error: GatewayError {
+                            node_id: String::new(),
+                            code: code.to_string(),
+                            message,
+                            metadata: HashMap::new(),
+                        },
+                    })
+                }
+            };
+        }
+
+        let _in_flight_guard = self.balancer.acquire(target_idx);
+        let outbound = self.outbound_request(&ctx, uri, method, target);
 
         let response = match self.client.request(outbound).await {
             Ok(resp) => resp,
             Err(e) => {
-                let (code, message) = match &e {
-                    OutboundError::Timeout(d) => (
-                        "UPSTREAM_TIMEOUT",
-                        format!(
-                            "Upstream {}:{} timed out after {:?}",
-                            target.host, target.port, d
-                        ),
-                    ),
-                    OutboundError::InvalidRequest(m) => (
-                        "UPSTREAM_REQUEST_BUILD_ERROR",
-                        format!("Failed to build upstream request: {}", m),
-                    ),
-                    OutboundError::Transport(m) => (
-                        "UPSTREAM_CONNECTION_ERROR",
-                        format!(
-                            "Failed to reach upstream {}:{}: {}",
-                            target.host, target.port, m
-                        ),
-                    ),
-                };
+                let (code, message) = map_outbound_error(e, target);
                 let error = GatewayError {
                     node_id: String::new(),
                     code: code.to_string(),
@@ -706,5 +803,34 @@ content-length: 0
             out.context.message.get("__ws_upstream_path").unwrap(),
             "/ws/chat?token=abc123"
         );
+    }
+
+    /// With `__may_stream` set, the node must hand back a stream rather than a
+    /// buffered body — and must leave `body` empty, per the invariant.
+    #[tokio::test]
+    async fn test_upstream_streams_when_permitted() {
+        let (port, _rx) = spawn_request_line_capture().await;
+        let mut ctx = ctx_with_query("/stream", vec![]);
+        ctx.message
+            .insert("__may_stream".to_string(), serde_json::json!(true));
+
+        let out = plugin_at(port).execute(ctx).await.unwrap();
+
+        assert!(out.context.response.stream.is_some(), "expected a stream");
+        assert!(
+            out.context.response.body.is_empty(),
+            "invariant: body must be empty when stream is set"
+        );
+    }
+
+    /// Without the key, behaviour is exactly as today: buffered body, no stream.
+    #[tokio::test]
+    async fn test_upstream_buffers_when_not_permitted() {
+        let (port, _rx) = spawn_request_line_capture().await;
+        let ctx = ctx_with_query("/stream", vec![]);
+
+        let out = plugin_at(port).execute(ctx).await.unwrap();
+
+        assert!(out.context.response.stream.is_none());
     }
 }
