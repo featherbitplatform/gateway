@@ -13,7 +13,8 @@ Proxies the request to one of the configured backend targets over HTTP and write
 |---|---|---|---|
 | `targets` | array of `{host, port}` | **required** | The backend pool. Entries missing `host` or `port` are skipped; if no valid target remains, config load fails. |
 | `load_balancing` | string | `round_robin` | One of `round_robin`, `least_connections`, `ip_hash`. Hyphenated and short spellings (`round-robin`, `least-conn`) are accepted, as is the legacy key name `load_balancer` (saved by earlier UI builds). |
-| `timeout_ms` | integer | `60000` | Whole-call deadline (connect + request + response body) per proxied request; exceeding it emits `UPSTREAM_TIMEOUT` through the error port. |
+| `timeout_ms` | integer | `60000` | Whole-call deadline (connect + request + response body) per proxied request; exceeding it emits `UPSTREAM_TIMEOUT` through the error port. When the node is permitted to stream its response (see below), this bounds connect + request + response headers only — the body is then bounded by `stream_idle_timeout_ms` instead. |
+| `stream_idle_timeout_ms` | integer | `60000` | Only consulted when the node is permitted to stream its response body straight through to the client. If no frame arrives on the body for this long, the stream is reaped; the timer resets on every frame, so a steady stream survives indefinitely. |
 | `tls` | bool | `false` | Connect to the upstream over TLS — `https` for the buffered path, `wss` for a WebSocket upgrade. |
 | `ssl_verify` | bool | `true` | Verify the upstream's TLS certificate against the system's native root store. Only meaningful when `tls` is set; set `false` for self-signed backends. |
 
