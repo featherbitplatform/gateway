@@ -198,19 +198,30 @@ pub fn optional_ttl(
     config: &HashMap<String, Value>,
     node_type: &str,
 ) -> Result<Option<u64>, String> {
-    match config.get("ttl_seconds") {
+    optional_seconds(config, "ttl_seconds", node_type)
+}
+
+/// Parses an optional positive duration in seconds.
+///
+/// Absent means "no duration"; `0` is rejected rather than read as "none",
+/// because the two are too easy to confuse and omitting the field is how you
+/// say it. Pure config parsing with no store dependency, so unlike `resolve`
+/// this needs no `redis-store`-gated pair.
+pub fn optional_seconds(
+    config: &HashMap<String, Value>,
+    field: &str,
+    node_type: &str,
+) -> Result<Option<u64>, String> {
+    match config.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(v) => {
             let n = v.as_u64().ok_or_else(|| {
-                format!(
-                    "{}: 'ttl_seconds' must be a non-negative integer",
-                    node_type
-                )
+                format!("{}: '{}' must be a non-negative integer", node_type, field)
             })?;
             if n == 0 {
                 return Err(format!(
-                    "{}: 'ttl_seconds' must be greater than 0; omit the field for no expiry",
-                    node_type
+                    "{}: '{}' must be greater than 0; omit the field to leave it unset",
+                    node_type, field
                 ));
             }
             Ok(Some(n))
@@ -998,5 +1009,184 @@ mod live_tests {
         .unwrap();
         assert!(!incr_plain.reads_response_body());
         assert!(incr_reads.reads_response_body());
+    }
+
+    /// The mirror of `test_incr_does_not_refresh_the_ttl`: with
+    /// `refresh_ttl: true` the expiry is pushed back out on every increment,
+    /// giving "N events within `ttl_seconds` of each other" instead of
+    /// "N events since the first one".
+    ///
+    /// The assertion is the inverse of the guarded case, and deliberately as
+    /// strong: a *rise* of nearly the whole sleep, not merely `ttl2 > ttl1`,
+    /// which round-trip jitter alone could satisfy.
+    #[tokio::test]
+    async fn test_incr_with_refresh_ttl_extends_the_expiry() {
+        let Some(url) = store_url() else {
+            eprintln!(
+                "skipping test_incr_with_refresh_ttl_extends_the_expiry: FEATHERBIT_TEST_REDIS_URL not set"
+            );
+            return;
+        };
+        let resources = resources_with_store(&url);
+        let key = unique_key("ttl-slide");
+        let redis_key = namespaced_key("fb", &key);
+
+        let client = resources.stores.load().client("test").unwrap();
+        let mut raw = client.conn().await.unwrap();
+
+        let incr = StoreIncrPlugin::from_config(
+            &cfg(serde_json::json!({
+                "store": "test",
+                "key": key,
+                "name": "n",
+                "ttl_seconds": LIVE_TEST_TTL_SECONDS,
+                "refresh_ttl": true,
+            })),
+            &resources,
+        )
+        .unwrap();
+
+        incr.execute(test_ctx()).await.unwrap();
+        let ttl1: i64 = redis::cmd("PTTL")
+            .arg(&redis_key)
+            .query_async(&mut raw)
+            .await
+            .unwrap();
+        assert!(ttl1 > 0, "key must have a TTL right after creation: {ttl1}");
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        incr.execute(test_ctx()).await.unwrap();
+        let ttl2: i64 = redis::cmd("PTTL")
+            .arg(&redis_key)
+            .query_async(&mut raw)
+            .await
+            .unwrap();
+
+        // Both samples are taken immediately after an increment, so a
+        // refreshing script leaves them roughly EQUAL -- it is the *absence*
+        // of the countdown that proves the refresh, not a rise. The guarded
+        // (create-only) script would show a drop tracking the ~1100ms sleep,
+        // exactly as `test_incr_does_not_refresh_the_ttl` asserts, so this
+        // bound of 200ms fails against it while tolerating round-trip jitter.
+        let drop = ttl1 - ttl2;
+        assert!(
+            drop <= 200,
+            "refresh_ttl must re-arm the expiry on each increment, so it must not count down: ttl1={ttl1} ttl2={ttl2} drop={drop}"
+        );
+    }
+
+    /// `extend_ttl_seconds` makes a read push the key's expiry out, so an
+    /// entry stays alive while it is being used and disappears a fixed time
+    /// after the last access.
+    #[tokio::test]
+    async fn test_get_with_extend_ttl_pushes_the_expiry_out() {
+        let Some(url) = store_url() else {
+            eprintln!(
+                "skipping test_get_with_extend_ttl_pushes_the_expiry_out: FEATHERBIT_TEST_REDIS_URL not set"
+            );
+            return;
+        };
+        let resources = resources_with_store(&url);
+        let key = unique_key("touch");
+        let redis_key = namespaced_key("fb", &key);
+
+        let client = resources.stores.load().client("test").unwrap();
+        let mut raw = client.conn().await.unwrap();
+
+        let set = StoreSetPlugin::from_config(
+            &cfg(serde_json::json!({
+                "store": "test",
+                "key": key,
+                "value": "alive",
+                "ttl_seconds": LIVE_TEST_TTL_SECONDS,
+            })),
+            &resources,
+        )
+        .unwrap();
+        set.execute(test_ctx()).await.unwrap();
+
+        let ttl1: i64 = redis::cmd("PTTL")
+            .arg(&redis_key)
+            .query_async(&mut raw)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        let get = StoreGetPlugin::from_config(
+            &cfg(serde_json::json!({
+                "store": "test",
+                "key": key,
+                "name": "v",
+                "extend_ttl_seconds": LIVE_TEST_TTL_SECONDS,
+            })),
+            &resources,
+        )
+        .unwrap();
+        let out = get.execute(test_ctx()).await.unwrap();
+
+        // The read still returns the value -- extending must not replace GET's job.
+        assert_eq!(
+            out.context.message.get("v").and_then(|v| v.as_str()),
+            Some("alive")
+        );
+
+        let ttl2: i64 = redis::cmd("PTTL")
+            .arg(&redis_key)
+            .query_async(&mut raw)
+            .await
+            .unwrap();
+
+        // Same shape as the refresh_ttl assertion above: ttl1 is sampled just
+        // after the write and ttl2 just after the extending read, so a working
+        // GETEX leaves them roughly equal. A plain GET would let the TTL count
+        // down by the ~1100ms sleep, which this bound rejects.
+        let drop = ttl1 - ttl2;
+        assert!(
+            drop <= 200,
+            "a read with extend_ttl_seconds must re-arm the expiry, so it must not count down: ttl1={ttl1} ttl2={ttl2} drop={drop}"
+        );
+    }
+
+    /// Extending must not conjure a key. `GETEX` on a missing key returns nil
+    /// and creates nothing, so the node still exits `miss` and the store is
+    /// left untouched -- otherwise a keep-alive read would manufacture the
+    /// very entries it is meant to keep warm.
+    #[tokio::test]
+    async fn test_get_with_extend_ttl_on_an_absent_key_still_misses() {
+        let Some(url) = store_url() else {
+            eprintln!(
+                "skipping test_get_with_extend_ttl_on_an_absent_key_still_misses: FEATHERBIT_TEST_REDIS_URL not set"
+            );
+            return;
+        };
+        let resources = resources_with_store(&url);
+        let key = unique_key("touch-absent");
+        let redis_key = namespaced_key("fb", &key);
+
+        let client = resources.stores.load().client("test").unwrap();
+        let mut raw = client.conn().await.unwrap();
+
+        let get = StoreGetPlugin::from_config(
+            &cfg(serde_json::json!({
+                "store": "test",
+                "key": key,
+                "name": "v",
+                "extend_ttl_seconds": LIVE_TEST_TTL_SECONDS,
+            })),
+            &resources,
+        )
+        .unwrap();
+
+        let out = get.execute(test_ctx()).await.unwrap();
+        assert_eq!(out.port, Some("miss"));
+
+        let exists: i64 = redis::cmd("EXISTS")
+            .arg(&redis_key)
+            .query_async(&mut raw)
+            .await
+            .unwrap();
+        assert_eq!(exists, 0, "a missing key must not be created by extending");
     }
 }
