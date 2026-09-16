@@ -14,7 +14,8 @@
 
 - **Node names, verbatim:** `store-get`, `store-set`, `store-incr`, `store-delete`.
 - **Error codes, verbatim:** `STORE_ERROR` (store outage), `STORE_VALUE_INVALID` (unparseable/non-numeric value).
-- **Key namespace:** every key is `format!("{}:kv:{}", client.key_prefix(), rendered_key)`. This matches the `{}:cnt:{}` convention in `src/stores/counter.rs:86`; the spec's §6 writes it as `<key_prefix>kv:` informally — the colon-separated form here is the one to implement.
+- **Key namespace:** every key is `format!("{}:kv:{}", client.key_prefix(), rendered_key)`, and the `kv` literal comes from `stores::namespaces::POLICY_KV`, never a hand-written string.
+- **Error codes, verbatim:** `STORE_ERROR`, `STORE_VALUE_INVALID`, `STORE_KEY_INVALID` (the `key` template rendered empty).
 - **A store outage never fails open** and never looks like a miss: it exits the `error` port with a 503 prepared. This is the rule the five session plugins follow.
 - **`store-incr` TTL applies at creation only**, never refreshed on later increments.
 - **`ttl_seconds: 0` is a config error**, not "no expiry". Omitting the key means no expiry.
@@ -44,6 +45,144 @@
 
 ---
 
+### Task 0: Namespace registry and separation guarantees
+
+**Files:**
+- Create: `src/stores/namespaces.rs`
+- Modify: `src/stores/mod.rs`, `src/stores/counter.rs`, `src/acme/storage/redis.rs`, `src/sessions/redis.rs`
+
+**Interfaces:**
+- Produces, used by Task 1: `stores::namespaces::{COUNTERS, ACME, SESSIONS, POLICY_KV, MANAGED}`.
+
+featherbit writes keys from exactly three places (`cnt`, `acme`, `sess`); the only other redis
+calls in the codebase are `PING`/`INFO`, which touch no keys. `kv` is free. This task makes it
+**stay** free, and proves a policy key cannot name a managed one.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `src/stores/namespaces.rs` with only this test module:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A policy must never be able to address a namespace featherbit owns.
+    #[test]
+    fn test_policy_namespace_is_not_managed() {
+        assert!(!MANAGED.contains(&POLICY_KV));
+    }
+
+    #[test]
+    fn test_all_namespaces_are_distinct() {
+        let all = [COUNTERS, ACME, SESSIONS, POLICY_KV];
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                assert_ne!(a, b, "namespaces must be pairwise distinct");
+            }
+        }
+    }
+
+    /// The drift guard: each subsystem's real key builder must still produce
+    /// keys under its declared namespace. A subsystem that changes its prefix,
+    /// or a new one that reuses `kv`, fails here.
+    #[test]
+    fn test_key_builders_stay_inside_their_declared_namespace() {
+        let sess = crate::sessions::redis::sess_key("fb", "abc");
+        assert!(sess.starts_with(&format!("fb:{}:", SESSIONS)), "{sess}");
+
+        let acme = crate::acme::storage::redis::account_key("fb");
+        assert!(acme.starts_with(&format!("fb:{}:", ACME)), "{acme}");
+
+        let cnt = crate::stores::counter::window_key("fb", 7, "u1");
+        assert!(cnt.starts_with(&format!("fb:{}:", COUNTERS)), "{cnt}");
+    }
+}
+```
+
+> `window_key` does not exist yet: `counter.rs:86` builds its key inline as
+> `format!("{}:cnt:{}:{}", prefix, slot, key)`. Extract it as
+> `pub(crate) fn window_key(prefix: &str, slot: u64, key: &str) -> String` and call it from
+> `incr_fixed_window`, so the builder is testable. Widen `sess_key` and `account_key` to
+> `pub(crate)` for the same reason. That visibility change and the extraction are the only
+> changes to existing behavior in this task.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cargo test --no-run 2>&1 | grep "^error"`
+Expected: `cannot find value 'MANAGED' in this scope`, `cannot find function 'window_key'`.
+
+- [ ] **Step 3: Write the implementation**
+
+Put this above the test module in `src/stores/namespaces.rs`:
+
+```rust
+//! The key namespaces featherbit writes under a store's `key_prefix`.
+//!
+//! Every key is `{key_prefix}:{namespace}:...`. These must stay disjoint: a
+//! policy-written key must never be able to name a key a managed subsystem
+//! reads or writes, in either direction. Declaring them in one place -- and
+//! testing the real builders against it -- is what keeps that true as
+//! subsystems are added.
+
+/// Rate-limit counters (`src/stores/counter.rs`).
+pub const COUNTERS: &str = "cnt";
+/// ACME account, certificate, challenge and lease state (`src/acme/storage/redis.rs`).
+pub const ACME: &str = "acme";
+/// Server-side sessions (`src/sessions/redis.rs`).
+pub const SESSIONS: &str = "sess";
+/// Policy-written keys: the `store-get`/`store-set`/`store-incr`/`store-delete` nodes.
+pub const POLICY_KV: &str = "kv";
+
+/// Namespaces owned by featherbit itself. A policy can never address these,
+/// because every `store-*` key is prefixed with [`POLICY_KV`].
+pub const MANAGED: &[&str] = &[COUNTERS, ACME, SESSIONS];
+```
+
+Add `pub mod namespaces;` to `src/stores/mod.rs`. Extract `window_key` in `counter.rs`:
+
+```rust
+/// The key for one fixed window of one counter.
+pub(crate) fn window_key(prefix: &str, slot: u64, key: &str) -> String {
+    format!("{}:{}:{}:{}", prefix, super::namespaces::COUNTERS, slot, key)
+}
+```
+
+and call it from `incr_fixed_window` in place of the inline `format!`. Change the ACME and
+session builders the same way — interpolating the constant instead of a string literal, e.g.
+`format!("{prefix}:{}:account", crate::stores::namespaces::ACME)`.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cargo test namespaces`
+Expected: 3 passed.
+
+Then run the full `cargo test`. The refactor touches three subsystems, and the existing
+session, ACME and counter tests are the real check that every key is byte-identical to before
+ -- a changed key would silently orphan live sessions and certificates on upgrade.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/stores/namespaces.rs src/stores/mod.rs src/stores/counter.rs src/acme/storage/redis.rs src/sessions/redis.rs
+git commit -m "refactor(stores): declare key namespaces in one place
+
+featherbit writes keys from three subsystems (cnt, acme, sess), each
+building its prefix from a string literal. Nothing stopped a fourth from
+picking a name already in use, and nothing proved they were disjoint.
+
+Declare all four namespaces -- including kv for the upcoming store-*
+nodes -- in one module, and test each subsystem's real key builder
+against it, so a subsystem that changes its prefix or reuses another's
+fails the build rather than colliding in production.
+
+Keys are byte-identical; the existing session, ACME and counter tests are
+what prove it, since a changed key would orphan live sessions and
+certificates on upgrade."
+```
+
+---
+
 ### Task 1: Shared store-kv helper
 
 **Files:**
@@ -51,13 +190,14 @@
 - Modify: `src/plugins/util/mod.rs`
 
 **Interfaces:**
-- Consumes: `crate::stores::StoreRegistry::client(&str) -> Result<Arc<RedisStoreClient>, String>`; `crate::plugins::resources::PluginResources.stores: ArcSwap<StoreRegistry>`.
+- Consumes: `stores::namespaces::{POLICY_KV, MANAGED}` (Task 0); `crate::stores::StoreRegistry::client(&str) -> Result<Arc<RedisStoreClient>, String>`; `crate::plugins::resources::PluginResources.stores: ArcSwap<StoreRegistry>`.
 - Produces, used by Tasks 2–5:
   - `pub struct StoreHandle` with `pub async fn conn(&self) -> Result<redis::aio::ConnectionManager, String>` and `pub fn key_for(&self, rendered: &str) -> String`
   - `pub fn resolve(config: &HashMap<String, Value>, resources: &Arc<PluginResources>, node_type: &str) -> Result<StoreHandle, String>`
   - `pub fn required_template(config: &HashMap<String, Value>, key: &str, node_type: &str) -> Result<Template, String>`
   - `pub fn optional_ttl(config: &HashMap<String, Value>, node_type: &str) -> Result<Option<u64>, String>`
   - `pub fn store_error(node_type: &str, op: &str, store: &str, msg: String) -> GatewayError`
+  - `pub fn key_invalid(node_type: &str) -> GatewayError`
   - `pub fn value_invalid(node_type: &str, msg: String) -> GatewayError`
 
 - [ ] **Step 1: Write the failing tests**
@@ -79,6 +219,39 @@ mod tests {
     #[test]
     fn test_key_for_namespaces_under_kv() {
         assert_eq!(namespaced_key("fb", "retry:abc"), "fb:kv:retry:abc");
+    }
+
+    /// `key` is templated, so its rendered value can contain anything a caller
+    /// can put in a header. The rendered part is a *suffix*, so it cannot walk
+    /// back out of the namespace -- assert that against hostile inputs rather
+    /// than assuming it.
+    #[test]
+    fn test_a_rendered_key_cannot_escape_the_kv_namespace() {
+        let hostile = [
+            ":sess:{abc}",
+            "../sess:{abc}",
+            "fb:sess:{abc}",
+            "fb:acme:account",
+            "a\nfb:cnt:0:u1",
+        ];
+        for h in hostile {
+            let built = namespaced_key("fb", h);
+            assert!(built.starts_with("fb:kv:"), "escaped the namespace: {built}");
+            for ns in crate::stores::namespaces::MANAGED {
+                assert!(
+                    !built.starts_with(&format!("fb:{ns}:")),
+                    "{built} lands in the {ns} namespace"
+                );
+            }
+        }
+    }
+
+    /// An empty rendered key is not a collision -- `fb:kv:` is still inside the
+    /// namespace -- but it silently puts every request on one shared key, so a
+    /// template typo becomes a cross-tenant leak. Fail loudly instead.
+    #[test]
+    fn test_empty_key_has_its_own_code() {
+        assert_eq!(key_invalid("store-get").code, "STORE_KEY_INVALID");
     }
 
     #[test]
@@ -194,7 +367,26 @@ impl StoreHandle {
 /// The `kv:` segment keeps policy-written keys from colliding with the `cnt:`,
 /// session and `acme:` keys that share the same store.
 pub fn namespaced_key(prefix: &str, rendered: &str) -> String {
-    format!("{}:kv:{}", prefix, rendered)
+    format!(
+        "{}:{}:{}",
+        prefix,
+        crate::stores::namespaces::POLICY_KV,
+        rendered
+    )
+}
+
+/// A `key` template that rendered to nothing.
+///
+/// `{prefix}:kv:` is still inside the namespace, so this is not a collision --
+/// but it would put every request on one shared key, turning a template typo
+/// into a cross-tenant leak. It fails loudly instead.
+pub fn key_invalid(node_type: &str) -> GatewayError {
+    GatewayError {
+        node_id: String::new(),
+        code: "STORE_KEY_INVALID".to_string(),
+        message: format!("{}: the 'key' template rendered to an empty string", node_type),
+        metadata: HashMap::new(),
+    }
 }
 
 /// Resolves the `store` config key to a handle, at construction time.
@@ -300,7 +492,7 @@ pub fn value_invalid(node_type: &str, msg: String) -> GatewayError {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test store_kv`
-Expected: 7 passed.
+Expected: 9 passed.
 
 Then run the full suite to confirm nothing else moved: `cargo test`
 
