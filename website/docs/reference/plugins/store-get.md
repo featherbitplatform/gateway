@@ -11,7 +11,7 @@ Reads a key from a declared [store](../../guides/configuration.md) into `context
   type: store-get
   config:
     store: sessions
-    key: "retry:{{request.cookie.fb_sid}}"
+    key: "retry:{{request.cookies.fb_sid}}"
     name: retry_count
     json: false
 ```
