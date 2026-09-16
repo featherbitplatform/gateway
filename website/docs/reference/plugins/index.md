@@ -170,6 +170,7 @@ Read and write policy-declared keys in a shared [store](../../guides/configurati
 | [`store-get`](store-get.md) | Read a key from a shared store into `context.message` (`miss` port when absent) |
 | [`store-set`](store-set.md) | Write a key into a shared store, with an optional TTL |
 | [`store-delete`](store-delete.md) | Remove a key from a shared store (idempotent) |
+| [`store-incr`](store-incr.md) | Atomically increment a counter in a shared store (TTL set at creation) |
 
 ## Reading the reference pages
 

@@ -863,6 +863,13 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
     { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookie.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
   ],
+  'store-incr': [
+    { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
+    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookie.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
+    { key: 'by', label: 'By', type: 'number', default: 1, hint: 'amount to add; may be negative' },
+    { key: 'ttl_seconds', label: 'TTL (s)', type: 'number', hint: 'applied only when the key is created, never refreshed' },
+    { key: 'name', label: 'Message key', type: 'text', placeholder: 'retry_count', hint: 'receives the new value; readable as $msg_<name>' },
+  ],
 };
 
 /**

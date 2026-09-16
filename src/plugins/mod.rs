@@ -208,6 +208,7 @@ pub const KNOWN_PLUGIN_TYPES: &[&str] = &[
     "store-get",
     "store-set",
     "store-delete",
+    "store-incr",
 ];
 
 /// Creates a plugin instance from a node type string and its YAML-derived config.
@@ -480,6 +481,9 @@ pub fn create_plugin(
         "store-delete" => Ok(Box::new(
             native::store_delete::StoreDeletePlugin::from_config(config, resources)?,
         )),
+        "store-incr" => Ok(Box::new(native::store_incr::StoreIncrPlugin::from_config(
+            config, resources,
+        )?)),
         _ => Err(format!("Unknown plugin type: {}", node_type)),
     }
 }
