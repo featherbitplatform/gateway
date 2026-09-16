@@ -21,6 +21,7 @@
 - **`ttl_seconds: 0` is a config error**, not "no expiry". Omitting the key means no expiry.
 - **`redis` is optional** (`redis-store` cargo feature, default-on). Every plugin must compile in a `--no-default-features` build; without the feature `from_config` returns `Err` naming the missing feature, mirroring `StoreRegistry::counter_store`'s non-feature arm (`src/stores/mod.rs:194`).
 - **Lint with CI's real command, not a weaker one:** `cargo clippy --all-targets --locked -- -D warnings` AND `cargo clippy --all-targets --no-default-features --locked -- -D warnings` (`.github/workflows/ci.yml:54,154`). Plain `cargo clippy --all-targets` exits 0 on unused items and hides a failure CI will catch. Never silence one with `#[allow(dead_code)]`: an item nothing uses either belongs in the task that uses it, or is test-only and takes `#[cfg(test)]`.
+- **No `src/lib.rs`:** this is a binary crate, so `dead_code` reachability roots at `fn main`. Anything without a production caller fails `-D warnings` no matter how it is gated. Code lands in the same commit as its first caller.
 - **Everything redis-backed is behind `redis-store`,** including `stores::counter`, `sessions::redis` and `acme::storage::redis`. Code that references them — or constants that only make sense alongside them — must be gated too, or the headless build breaks.
 - **Run the full `cargo test`,** never a filtered run: `test_catalog_covers_factory`, `test_every_catalog_plugin_has_an_icon`, `test_every_catalog_plugin_is_in_a_palette_category`, `test_every_catalog_plugin_has_a_docs_page` and `test_every_plugin_docs_page_is_in_the_sidebar` are what keep a node from being invisible to the UI and to MCP.
 - **Also run `cargo test --release`.** `debug_assert!` compiles out in release and the e2e suite runs the release binary; a debug-only green has bitten this repo before.
@@ -186,6 +187,14 @@ certificates on upgrade."
 ---
 
 ### Task 1: Shared store-kv helper
+
+> **Committed together with Task 2, not on its own.** This crate has no
+> `src/lib.rs`, so `dead_code` reachability roots at `fn main`: a helper whose
+> callers do not exist yet is unreachable, and every symbol here fails
+> `-D warnings` until `store-get` lands. Do the work as written, run the tests,
+> but make one commit covering Tasks 1 and 2 together. Same principle as a
+> constant landing with its first use, at module scale.
+
 
 **Files:**
 - Create: `src/plugins/util/store_kv.rs`
@@ -529,11 +538,15 @@ Expected: 10 passed (9 here plus the one that moved from Task 0).
 
 Then run the full suite to confirm nothing else moved: `cargo test`
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Do NOT commit yet**
 
-```bash
-git add src/plugins/util/store_kv.rs src/plugins/util/mod.rs
-git commit -m "feat(stores): shared helper for the store-* nodes
+Leave the helper staged. It is committed as part of Task 2, whose node is its
+first caller — see the note at the top of this task. The commit message below is
+folded into Task 2's.
+
+```text
+(folded into Task 2's commit)
+feat(stores): shared helper for the store-* nodes
 
 Store resolution, kv: key namespacing, and the two error codes the four
 nodes share. Resolution happens at policy-compile time and the node holds
