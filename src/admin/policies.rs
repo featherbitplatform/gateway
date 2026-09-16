@@ -416,6 +416,11 @@ pub(crate) fn plugin_catalog() -> Vec<serde_json::Value> {
         ("skywalking", "SkyWalking segment export (sw8 propagation)"),
         // Scripting
         ("script", "Custom plugin logic written in Lua"),
+        // Policy state
+        (
+            "store-get",
+            "Read a key from a shared store into context.message (miss port when absent)",
+        ),
     ];
 
     CATALOG

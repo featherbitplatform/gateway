@@ -847,6 +847,12 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'variables', label: 'Variables', type: 'list', addLabel: 'Variable', item: { type: 'text', placeholder: 'name', template: 'full' }, hint: 'resolved from query params first, then JSON body fields' },
     { key: 'operation_name', label: 'Operation name', type: 'text', placeholder: 'ListPersons', hint: 'for multi-operation documents', template: 'full' },
   ],
+  'store-get': [
+    { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
+    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookie.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
+    { key: 'name', label: 'Message key', type: 'text', placeholder: 'retry_count', hint: 'context.message key to write; readable as $msg_<name>' },
+    { key: 'json', label: 'Parse JSON', type: 'switch', default: false, hint: 'flattens an object into <name>.<field> message keys' },
+  ],
 };
 
 /**

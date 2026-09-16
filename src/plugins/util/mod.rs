@@ -5,4 +5,5 @@ pub mod headers;
 pub mod log_entry;
 pub mod provider_error;
 pub mod server_session;
+pub mod store_kv;
 pub mod trace;
