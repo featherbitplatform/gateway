@@ -425,6 +425,10 @@ pub(crate) fn plugin_catalog() -> Vec<serde_json::Value> {
             "store-set",
             "Write a key into a shared store, with an optional TTL",
         ),
+        (
+            "store-delete",
+            "Remove a key from a shared store (idempotent)",
+        ),
     ];
 
     CATALOG

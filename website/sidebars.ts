@@ -194,7 +194,11 @@ const sidebars: SidebarsConfig = {
             {
               type: 'category',
               label: 'Policy state',
-              items: ['reference/plugins/store-get', 'reference/plugins/store-set'],
+              items: [
+                'reference/plugins/store-get',
+                'reference/plugins/store-set',
+                'reference/plugins/store-delete',
+              ],
             },
             'reference/plugins/script',
           ],

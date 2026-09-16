@@ -859,6 +859,10 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'value', label: 'Value', type: 'text', placeholder: '1', hint: 'templated', template: 'full', legacyDollar: true },
     { key: 'ttl_seconds', label: 'TTL (s)', type: 'number', hint: 'omit for no expiry; 0 is rejected' },
   ],
+  'store-delete': [
+    { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
+    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookie.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
+  ],
 };
 
 /**
