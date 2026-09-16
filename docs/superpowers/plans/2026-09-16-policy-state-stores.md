@@ -20,6 +20,8 @@
 - **`store-incr` TTL applies at creation only**, never refreshed on later increments.
 - **`ttl_seconds: 0` is a config error**, not "no expiry". Omitting the key means no expiry.
 - **`redis` is optional** (`redis-store` cargo feature, default-on). Every plugin must compile in a `--no-default-features` build; without the feature `from_config` returns `Err` naming the missing feature, mirroring `StoreRegistry::counter_store`'s non-feature arm (`src/stores/mod.rs:194`).
+- **Lint with CI's real command, not a weaker one:** `cargo clippy --all-targets --locked -- -D warnings` AND `cargo clippy --all-targets --no-default-features --locked -- -D warnings` (`.github/workflows/ci.yml:54,154`). Plain `cargo clippy --all-targets` exits 0 on unused items and hides a failure CI will catch. Never silence one with `#[allow(dead_code)]`: an item nothing uses either belongs in the task that uses it, or is test-only and takes `#[cfg(test)]`.
+- **Everything redis-backed is behind `redis-store`,** including `stores::counter`, `sessions::redis` and `acme::storage::redis`. Code that references them — or constants that only make sense alongside them — must be gated too, or the headless build breaks.
 - **Run the full `cargo test`,** never a filtered run: `test_catalog_covers_factory`, `test_every_catalog_plugin_has_an_icon`, `test_every_catalog_plugin_is_in_a_palette_category`, `test_every_catalog_plugin_has_a_docs_page` and `test_every_plugin_docs_page_is_in_the_sidebar` are what keep a node from being invisible to the UI and to MCP.
 - **Also run `cargo test --release`.** `debug_assert!` compiles out in release and the e2e suite runs the release binary; a debug-only green has bitten this repo before.
 - **Commit style:** Conventional Commits. No `Co-Authored-By` trailer, no AI attribution.
@@ -67,15 +69,9 @@ Create `src/stores/namespaces.rs` with only this test module:
 mod tests {
     use super::*;
 
-    /// A policy must never be able to address a namespace featherbit owns.
-    #[test]
-    fn test_policy_namespace_is_not_managed() {
-        assert!(!MANAGED.contains(&POLICY_KV));
-    }
-
     #[test]
     fn test_all_namespaces_are_distinct() {
-        let all = [COUNTERS, ACME, SESSIONS, POLICY_KV];
+        let all = [COUNTERS, ACME, SESSIONS];
         for (i, a) in all.iter().enumerate() {
             for b in all.iter().skip(i + 1) {
                 assert_ne!(a, b, "namespaces must be pairwise distinct");
@@ -110,7 +106,7 @@ mod tests {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cargo test --no-run 2>&1 | grep "^error"`
-Expected: `cannot find value 'MANAGED' in this scope`, `cannot find function 'window_key'`.
+Expected: `cannot find value 'COUNTERS' in this scope`, `cannot find function 'window_key'`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -131,15 +127,21 @@ pub const COUNTERS: &str = "cnt";
 pub const ACME: &str = "acme";
 /// Server-side sessions (`src/sessions/redis.rs`).
 pub const SESSIONS: &str = "sess";
-/// Policy-written keys: the `store-get`/`store-set`/`store-incr`/`store-delete` nodes.
-pub const POLICY_KV: &str = "kv";
-
-/// Namespaces owned by featherbit itself. A policy can never address these,
-/// because every `store-*` key is prefixed with [`POLICY_KV`].
-pub const MANAGED: &[&str] = &[COUNTERS, ACME, SESSIONS];
 ```
 
-Add `pub mod namespaces;` to `src/stores/mod.rs`. Extract `window_key` in `counter.rs`:
+`POLICY_KV` and `MANAGED` are deliberately **not** declared here — they arrive in Task 1
+alongside the code that uses them. A constant nothing references is a `-D warnings` failure,
+and `#[allow(dead_code)]` is not an option (see Global Constraints).
+
+Add this to `src/stores/mod.rs` — gated, because every subsystem this module describes is
+gated, and a headless build has no keys to namespace:
+
+```rust
+#[cfg(feature = "redis-store")]
+pub mod namespaces;
+```
+
+Extract `window_key` in `counter.rs`:
 
 ```rust
 /// The key for one fixed window of one counter.
@@ -155,7 +157,7 @@ session builders the same way — interpolating the constant instead of a string
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test namespaces`
-Expected: 3 passed.
+Expected: 2 passed.
 
 Then run the full `cargo test`. The refactor touches three subsystems, and the existing
 session, ACME and counter tests are the real check that every key is byte-identical to before
@@ -190,7 +192,38 @@ certificates on upgrade."
 - Modify: `src/plugins/util/mod.rs`
 
 **Interfaces:**
-- Consumes: `stores::namespaces::{POLICY_KV, MANAGED}` (Task 0); `crate::stores::StoreRegistry::client(&str) -> Result<Arc<RedisStoreClient>, String>`; `crate::plugins::resources::PluginResources.stores: ArcSwap<StoreRegistry>`.
+- Consumes: `stores::namespaces::{COUNTERS, ACME, SESSIONS}` (Task 0, gated on `redis-store`); `crate::stores::StoreRegistry::client(&str) -> Result<Arc<RedisStoreClient>, String>`;
+- **Also adds to Task 0's module** (they land with their first use, so nothing is dead):
+
+```rust
+// src/stores/namespaces.rs
+/// Policy-written keys: the `store-get`/`store-set`/`store-incr`/`store-delete` nodes.
+pub const POLICY_KV: &str = "kv";
+
+/// Namespaces owned by featherbit itself. A policy can never address these,
+/// because every `store-*` key is prefixed with [`POLICY_KV`].
+///
+/// Test-only by design: nothing in production consults this list. It exists so
+/// the disjointness it describes is asserted rather than assumed.
+#[cfg(test)]
+pub const MANAGED: &[&str] = &[COUNTERS, ACME, SESSIONS];
+```
+
+plus the test that moved out of Task 0 for the same reason:
+
+```rust
+    /// A policy must never be able to address a namespace featherbit owns.
+    #[test]
+    fn test_policy_namespace_is_not_managed() {
+        assert!(!MANAGED.contains(&POLICY_KV));
+    }
+```
+
+- **Feature gating:** `namespaced_key` and its tests reference `namespaces`, which only exists
+  with `redis-store`. Gate `namespaced_key` with `#[cfg(feature = "redis-store")]` and the
+  `store_kv` test module with `#[cfg(all(test, feature = "redis-store"))]`. The rest of the
+  helper (`required_template`, `optional_ttl`, `store_error`, `value_invalid`, `key_invalid`)
+  stays ungated, since the plugins use it in both builds. `crate::plugins::resources::PluginResources.stores: ArcSwap<StoreRegistry>`.
 - Produces, used by Tasks 2–5:
   - `pub struct StoreHandle` with `pub async fn conn(&self) -> Result<redis::aio::ConnectionManager, String>` and `pub fn key_for(&self, rendered: &str) -> String`
   - `pub fn resolve(config: &HashMap<String, Value>, resources: &Arc<PluginResources>, node_type: &str) -> Result<StoreHandle, String>`
@@ -492,7 +525,7 @@ pub fn value_invalid(node_type: &str, msg: String) -> GatewayError {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test store_kv`
-Expected: 9 passed.
+Expected: 10 passed (9 here plus the one that moved from Task 0).
 
 Then run the full suite to confirm nothing else moved: `cargo test`
 
