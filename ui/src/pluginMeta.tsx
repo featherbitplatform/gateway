@@ -182,6 +182,7 @@ export const pluginMeta: Record<string, PluginMeta> = {
   openfunction:         { color: '#00b4a0', icon: Boxes },
   // Wave 8 — policy state.
   'store-get':          { color: '#0891b2', icon: Database },
+  'store-set':          { color: '#0891b2', icon: Database },
   // Supernodes and their boundary pseudo-nodes (src/graph/expand.rs)
   supernode:            { color: '#8b5cf6', icon: Boxes },
   input:                { color: '#64748b', icon: LogIn },

@@ -78,6 +78,7 @@ pub mod skywalking_logger;
 pub mod sls_logger;
 pub mod splunk_hec_logging;
 pub mod store_get;
+pub mod store_set;
 pub mod syslog;
 pub mod tcp_logger;
 pub mod tencent_cloud_cls;

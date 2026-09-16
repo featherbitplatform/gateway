@@ -853,6 +853,12 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'name', label: 'Message key', type: 'text', placeholder: 'retry_count', hint: 'context.message key to write; readable as $msg_<name>' },
     { key: 'json', label: 'Parse JSON', type: 'switch', default: false, hint: 'flattens an object into <name>.<field> message keys' },
   ],
+  'store-set': [
+    { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
+    { key: 'key', label: 'Key', type: 'text', placeholder: 'seen:{{request.headers.x-session}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
+    { key: 'value', label: 'Value', type: 'text', placeholder: '1', hint: 'templated', template: 'full', legacyDollar: true },
+    { key: 'ttl_seconds', label: 'TTL (s)', type: 'number', hint: 'omit for no expiry; 0 is rejected' },
+  ],
 };
 
 /**
