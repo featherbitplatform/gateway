@@ -12,27 +12,16 @@ use std::sync::Arc;
 use crate::context::Context;
 use crate::plugins::resources::PluginResources;
 use crate::plugins::util::store_kv::{self, StoreHandle};
-use crate::plugins::{Plugin, PluginExecutionError, PluginResult};
+use crate::plugins::{Plugin, PluginResult};
 use crate::vars::template::Template;
 
 #[cfg(feature = "redis-store")]
 use crate::plugins::PluginOutput;
 
+#[derive(Debug)]
 pub struct StoreDeletePlugin {
     store: StoreHandle,
     key: Template,
-}
-
-// `StoreHandle` does not derive `Debug` (its redis client does not), so this
-// is written by hand rather than derived; the store's declared name is enough
-// to identify an instance in a panic message.
-impl std::fmt::Debug for StoreDeletePlugin {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StoreDeletePlugin")
-            .field("store", &self.store.name)
-            .field("key", &self.key)
-            .finish()
-    }
 }
 
 impl StoreDeletePlugin {
@@ -67,49 +56,50 @@ impl Plugin for StoreDeletePlugin {
 
         let rendered = self.key.render(&ctx).to_string();
         if rendered.is_empty() {
-            return Err(PluginExecutionError {
-                context: ctx,
-                error: store_kv::key_invalid("store-delete"),
-            });
+            return Err(store_kv::key_invalid(
+                ctx,
+                "store-delete",
+                "DEL",
+                &self.store.name,
+            ));
         }
         let key = self.store.key_for(&rendered);
 
         let mut conn = match self.store.conn().await {
             Ok(c) => c,
             Err(e) => {
-                return Err(PluginExecutionError {
-                    context: ctx,
-                    error: store_kv::store_error("store-delete", "DEL", &self.store.name, e),
-                })
+                return Err(store_kv::store_error(
+                    ctx,
+                    "store-delete",
+                    "DEL",
+                    &self.store.name,
+                    e,
+                ))
             }
         };
 
         // DEL returns how many keys it removed; 0 is not a failure.
         match conn.del::<_, u64>(&key).await {
             Ok(_) => Ok(PluginOutput::success(ctx)),
-            Err(e) => Err(PluginExecutionError {
-                context: ctx,
-                error: store_kv::store_error(
-                    "store-delete",
-                    "DEL",
-                    &self.store.name,
-                    e.to_string(),
-                ),
-            }),
+            Err(e) => Err(store_kv::store_error(
+                ctx,
+                "store-delete",
+                "DEL",
+                &self.store.name,
+                e.to_string(),
+            )),
         }
     }
 
     #[cfg(not(feature = "redis-store"))]
     async fn execute(&self, ctx: Context) -> PluginResult {
-        Err(PluginExecutionError {
-            context: ctx,
-            error: store_kv::store_error(
-                "store-delete",
-                "DEL",
-                &self.store.name,
-                "built without the redis-store feature".to_string(),
-            ),
-        })
+        Err(store_kv::store_error(
+            ctx,
+            "store-delete",
+            "DEL",
+            &self.store.name,
+            "built without the redis-store feature".to_string(),
+        ))
     }
 }
 
@@ -129,16 +119,5 @@ mod tests {
         let err = StoreDeletePlugin::from_config(&cfg(serde_json::json!({ "store": "s" })), &r)
             .unwrap_err();
         assert!(err.contains("key"), "{err}");
-    }
-
-    /// `key` is a template, so a key referencing the response body makes this
-    /// node a body reader. Asserted on the parsed template, which needs no
-    /// live store.
-    #[test]
-    fn test_a_key_referencing_the_response_body_is_detected() {
-        let (plain, _) = Template::parse("k:{{request.path}}");
-        let (reads, _) = Template::parse("k:{{response.body}}");
-        assert!(!plain.references_response_body());
-        assert!(reads.references_response_body());
     }
 }

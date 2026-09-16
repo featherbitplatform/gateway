@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::context::Context;
 use crate::plugins::resources::PluginResources;
 use crate::plugins::util::store_kv::{self, StoreHandle};
-use crate::plugins::{Plugin, PluginExecutionError, PluginResult};
+use crate::plugins::{Plugin, PluginResult};
 use crate::vars::template::Template;
 
 #[cfg(feature = "redis-store")]
@@ -26,17 +26,36 @@ pub struct StoreGetPlugin {
     json: bool,
 }
 
-// `StoreHandle` does not derive `Debug` (its redis client does not), so this
-// is written by hand rather than derived; the store's declared name is enough
-// to identify an instance in a panic message.
+// `StoreHandle` now derives `Debug` on its own, so this struct *could*
+// derive too -- except `name`/`json` are only ever read inside the
+// `#[cfg(feature = "redis-store")]` `execute` body. In a headless
+// (`--no-default-features`) build that body doesn't exist, so a derived
+// impl (which the dead-code pass ignores) would leave both fields read
+// nowhere at all, and `-D warnings` fails the build; adding
+// `#[allow(dead_code)]` to silence it is off the table. A hand-written impl
+// reads them unconditionally, which is enough to keep the headless build
+// clean without the attribute.
 impl std::fmt::Debug for StoreGetPlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StoreGetPlugin")
-            .field("store", &self.store.name)
+            .field("store", &self.store)
             .field("key", &self.key)
             .field("name", &self.name)
             .field("json", &self.json)
             .finish()
+    }
+}
+
+/// Parses the optional `json` flag, which defaults to `false`. A present but
+/// wrong-typed value is a config error, the same treatment `by` and
+/// `ttl_seconds` already get -- silently ignoring, say, `json: "true"` would
+/// be the only config key in this node's set that fails that way.
+fn parse_json_flag(config: &HashMap<String, serde_json::Value>) -> Result<bool, String> {
+    match config.get("json") {
+        None | Some(serde_json::Value::Null) => Ok(false),
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| "store-get: 'json' must be a boolean".to_string()),
     }
 }
 
@@ -59,14 +78,12 @@ impl StoreGetPlugin {
                 "store-get: 'name' is required (the context.message key to write)".to_string()
             })?
             .to_string();
+        let json = parse_json_flag(config)?;
         Ok(Self {
             key: store_kv::required_template(config, "key", "store-get")?,
             store: store_kv::resolve(config, resources, "store-get")?,
             name,
-            json: config
-                .get("json")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
+            json,
         })
     }
 }
@@ -116,35 +133,38 @@ impl Plugin for StoreGetPlugin {
 
         let rendered = self.key.render(&ctx).to_string();
         if rendered.is_empty() {
-            return Err(PluginExecutionError {
-                context: ctx,
-                error: store_kv::key_invalid("store-get"),
-            });
+            return Err(store_kv::key_invalid(
+                ctx,
+                "store-get",
+                "GET",
+                &self.store.name,
+            ));
         }
         let key = self.store.key_for(&rendered);
 
         let mut conn = match self.store.conn().await {
             Ok(c) => c,
             Err(e) => {
-                return Err(PluginExecutionError {
-                    context: ctx,
-                    error: store_kv::store_error("store-get", "GET", &self.store.name, e),
-                })
+                return Err(store_kv::store_error(
+                    ctx,
+                    "store-get",
+                    "GET",
+                    &self.store.name,
+                    e,
+                ))
             }
         };
 
         let raw: Option<String> = match conn.get(&key).await {
             Ok(v) => v,
             Err(e) => {
-                return Err(PluginExecutionError {
-                    context: ctx,
-                    error: store_kv::store_error(
-                        "store-get",
-                        "GET",
-                        &self.store.name,
-                        e.to_string(),
-                    ),
-                })
+                return Err(store_kv::store_error(
+                    ctx,
+                    "store-get",
+                    "GET",
+                    &self.store.name,
+                    e.to_string(),
+                ))
             }
         };
 
@@ -156,13 +176,13 @@ impl Plugin for StoreGetPlugin {
             match serde_json::from_str::<serde_json::Value>(&raw) {
                 Ok(v) => flatten_into(&mut ctx.message, &self.name, v),
                 Err(e) => {
-                    return Err(PluginExecutionError {
-                        context: ctx,
-                        error: store_kv::value_invalid(
-                            "store-get",
-                            format!("value at '{}' is not valid JSON: {}", rendered, e),
-                        ),
-                    })
+                    return Err(store_kv::value_invalid(
+                        ctx,
+                        "store-get",
+                        "GET",
+                        &self.store.name,
+                        format!("value at '{}' is not valid JSON: {}", rendered, e),
+                    ))
                 }
             }
         } else {
@@ -175,15 +195,13 @@ impl Plugin for StoreGetPlugin {
 
     #[cfg(not(feature = "redis-store"))]
     async fn execute(&self, ctx: Context) -> PluginResult {
-        Err(PluginExecutionError {
-            context: ctx,
-            error: store_kv::store_error(
-                "store-get",
-                "GET",
-                &self.store.name,
-                "built without the redis-store feature".to_string(),
-            ),
-        })
+        Err(store_kv::store_error(
+            ctx,
+            "store-get",
+            "GET",
+            &self.store.name,
+            "built without the redis-store feature".to_string(),
+        ))
     }
 }
 
@@ -191,7 +209,6 @@ impl Plugin for StoreGetPlugin {
 mod tests {
     use super::*;
     use crate::plugins::resources::PluginResources;
-    use crate::vars::template::Template;
     use std::collections::HashMap;
 
     fn cfg(json: serde_json::Value) -> HashMap<String, serde_json::Value> {
@@ -254,14 +271,16 @@ mod tests {
         assert!(!msg.contains_key("cfg.limits.rps"));
     }
 
-    /// `key` is a template, so a key referencing the response body makes this
-    /// node a body reader. Asserted on the parsed template, which needs no
-    /// live store.
+    /// `json` gets the same treatment as `by`/`ttl_seconds`: a present but
+    /// wrong-typed value is a config error, not a silent fallback to `false`.
     #[test]
-    fn test_a_key_referencing_the_response_body_is_detected() {
-        let (plain, _) = Template::parse("k:{{request.path}}");
-        let (reads, _) = Template::parse("k:{{response.body}}");
-        assert!(!plain.references_response_body());
-        assert!(reads.references_response_body());
+    fn test_json_rejects_a_non_bool_value() {
+        let r = PluginResources::empty();
+        let err = StoreGetPlugin::from_config(
+            &cfg(serde_json::json!({ "store": "s", "key": "k", "name": "n", "json": "true" })),
+            &r,
+        )
+        .unwrap_err();
+        assert!(err.contains("json"), "{err}");
     }
 }

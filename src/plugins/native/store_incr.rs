@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::context::Context;
 use crate::plugins::resources::PluginResources;
 use crate::plugins::util::store_kv::{self, StoreHandle};
-use crate::plugins::{Plugin, PluginExecutionError, PluginResult};
+use crate::plugins::{Plugin, PluginResult};
 use crate::vars::template::Template;
 
 #[cfg(feature = "redis-store")]
@@ -44,13 +44,18 @@ pub struct StoreIncrPlugin {
     script: redis::Script,
 }
 
-// `StoreHandle` does not derive `Debug` (its redis client does not), so this
-// is written by hand rather than derived; the store's declared name is enough
-// to identify an instance in a panic message.
+// `StoreHandle`, `Template` and `redis::Script` are all `Debug`, so this
+// could derive -- except `by`/`ttl_seconds`/`name` are only read inside the
+// `#[cfg(feature = "redis-store")]` `execute` body, which does not exist in
+// a headless (`--no-default-features`) build. A derived impl doesn't count
+// as a read for the dead-code pass, so deriving would leave those three
+// fields read nowhere there and fail `-D warnings`; `#[allow(dead_code)]` is
+// off the table. Reading them here, unconditionally, keeps the headless
+// build clean without the attribute.
 impl std::fmt::Debug for StoreIncrPlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StoreIncrPlugin")
-            .field("store", &self.store.name)
+            .field("store", &self.store)
             .field("key", &self.key)
             .field("by", &self.by)
             .field("ttl_seconds", &self.ttl_seconds)
@@ -119,20 +124,25 @@ impl Plugin for StoreIncrPlugin {
     async fn execute(&self, mut ctx: Context) -> PluginResult {
         let rendered = self.key.render(&ctx).to_string();
         if rendered.is_empty() {
-            return Err(PluginExecutionError {
-                context: ctx,
-                error: store_kv::key_invalid("store-incr"),
-            });
+            return Err(store_kv::key_invalid(
+                ctx,
+                "store-incr",
+                "INCRBY",
+                &self.store.name,
+            ));
         }
         let key = self.store.key_for(&rendered);
 
         let mut conn = match self.store.conn().await {
             Ok(c) => c,
             Err(e) => {
-                return Err(PluginExecutionError {
-                    context: ctx,
-                    error: store_kv::store_error("store-incr", "INCRBY", &self.store.name, e),
-                })
+                return Err(store_kv::store_error(
+                    ctx,
+                    "store-incr",
+                    "INCRBY",
+                    &self.store.name,
+                    e,
+                ))
             }
         };
 
@@ -146,19 +156,27 @@ impl Plugin for StoreIncrPlugin {
         {
             Ok(n) => n,
             Err(e) => {
-                // A counter key holding a non-numeric value is a config/data
-                // problem, not an outage, and gets its own code.
-                let error = if e.to_string().contains("not an integer") {
+                // A counter key holding a non-numeric value, or one holding
+                // the wrong Redis type entirely (WRONGTYPE, e.g. a list), is
+                // a config/data problem, not an outage, and gets its own
+                // code. The rendered (un-namespaced) key is used in the
+                // message, matching `store-get`.
+                return Err(if store_kv::is_value_type_error(&e) {
                     store_kv::value_invalid(
+                        ctx,
                         "store-incr",
-                        format!("value at '{}' is not an integer", key),
+                        "INCRBY",
+                        &self.store.name,
+                        format!("value at '{}' is not usable as an integer", rendered),
                     )
                 } else {
-                    store_kv::store_error("store-incr", "INCRBY", &self.store.name, e.to_string())
-                };
-                return Err(PluginExecutionError {
-                    context: ctx,
-                    error,
+                    store_kv::store_error(
+                        ctx,
+                        "store-incr",
+                        "INCRBY",
+                        &self.store.name,
+                        e.to_string(),
+                    )
                 });
             }
         };
@@ -170,15 +188,13 @@ impl Plugin for StoreIncrPlugin {
 
     #[cfg(not(feature = "redis-store"))]
     async fn execute(&self, ctx: Context) -> PluginResult {
-        Err(PluginExecutionError {
-            context: ctx,
-            error: store_kv::store_error(
-                "store-incr",
-                "INCRBY",
-                &self.store.name,
-                "built without the redis-store feature".to_string(),
-            ),
-        })
+        Err(store_kv::store_error(
+            ctx,
+            "store-incr",
+            "INCRBY",
+            &self.store.name,
+            "built without the redis-store feature".to_string(),
+        ))
     }
 }
 

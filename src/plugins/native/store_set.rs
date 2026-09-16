@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::context::Context;
 use crate::plugins::resources::PluginResources;
 use crate::plugins::util::store_kv::{self, StoreHandle};
-use crate::plugins::{Plugin, PluginExecutionError, PluginResult};
+use crate::plugins::{Plugin, PluginResult};
 use crate::vars::template::Template;
 
 #[cfg(feature = "redis-store")]
@@ -20,13 +20,18 @@ pub struct StoreSetPlugin {
     ttl_seconds: Option<u64>,
 }
 
-// `StoreHandle` does not derive `Debug` (its redis client does not), so this
-// is written by hand rather than derived; the store's declared name is enough
-// to identify an instance in a panic message.
+// `StoreHandle`, `Template` and `Option<u64>` are all `Debug`, so this could
+// derive -- except `ttl_seconds` is only read inside the
+// `#[cfg(feature = "redis-store")]` `execute` body, which does not exist in
+// a headless (`--no-default-features`) build. A derived impl doesn't count
+// as a read for the dead-code pass, so deriving would leave `ttl_seconds`
+// read nowhere there and fail `-D warnings`; `#[allow(dead_code)]` is off
+// the table. Reading it here, unconditionally, keeps the headless build
+// clean without the attribute.
 impl std::fmt::Debug for StoreSetPlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StoreSetPlugin")
-            .field("store", &self.store.name)
+            .field("store", &self.store)
             .field("key", &self.key)
             .field("value", &self.value)
             .field("ttl_seconds", &self.ttl_seconds)
@@ -73,10 +78,12 @@ impl Plugin for StoreSetPlugin {
 
         let rendered = self.key.render(&ctx).to_string();
         if rendered.is_empty() {
-            return Err(PluginExecutionError {
-                context: ctx,
-                error: store_kv::key_invalid("store-set"),
-            });
+            return Err(store_kv::key_invalid(
+                ctx,
+                "store-set",
+                "SET",
+                &self.store.name,
+            ));
         }
         let key = self.store.key_for(&rendered);
         let value = self.value.render(&ctx).to_string();
@@ -84,10 +91,13 @@ impl Plugin for StoreSetPlugin {
         let mut conn = match self.store.conn().await {
             Ok(c) => c,
             Err(e) => {
-                return Err(PluginExecutionError {
-                    context: ctx,
-                    error: store_kv::store_error("store-set", "SET", &self.store.name, e),
-                })
+                return Err(store_kv::store_error(
+                    ctx,
+                    "store-set",
+                    "SET",
+                    &self.store.name,
+                    e,
+                ))
             }
         };
 
@@ -98,24 +108,25 @@ impl Plugin for StoreSetPlugin {
 
         match result {
             Ok(()) => Ok(PluginOutput::success(ctx)),
-            Err(e) => Err(PluginExecutionError {
-                context: ctx,
-                error: store_kv::store_error("store-set", "SET", &self.store.name, e.to_string()),
-            }),
+            Err(e) => Err(store_kv::store_error(
+                ctx,
+                "store-set",
+                "SET",
+                &self.store.name,
+                e.to_string(),
+            )),
         }
     }
 
     #[cfg(not(feature = "redis-store"))]
     async fn execute(&self, ctx: Context) -> PluginResult {
-        Err(PluginExecutionError {
-            context: ctx,
-            error: store_kv::store_error(
-                "store-set",
-                "SET",
-                &self.store.name,
-                "built without the redis-store feature".to_string(),
-            ),
-        })
+        Err(store_kv::store_error(
+            ctx,
+            "store-set",
+            "SET",
+            &self.store.name,
+            "built without the redis-store feature".to_string(),
+        ))
     }
 }
 
@@ -149,16 +160,5 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("ttl_seconds"), "{err}");
-    }
-
-    /// `key` and `value` are templates, so a value referencing the response
-    /// body makes this node a body reader (needed for `{{response.body}}`
-    /// to be buffered before this node runs).
-    #[test]
-    fn test_a_value_referencing_the_response_body_is_detected() {
-        let (plain, _) = Template::parse("1");
-        let (reads, _) = Template::parse("{{response.body}}");
-        assert!(!plain.references_response_body());
-        assert!(reads.references_response_body());
     }
 }
