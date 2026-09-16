@@ -292,6 +292,17 @@ pub const STORE_GET_SPEC: PortSpec = PortSpec {
     ],
 };
 
+/// `store-set` / `store-delete`: a write either succeeds or the store could
+/// not be reached -- no alternate outcome, so this is `success`/`error`
+/// exactly like [`DEFAULT_SPEC`]. Named separately so both write-shaped store
+/// nodes are registered explicitly in [`crate::plugins::port_spec`] rather
+/// than falling through its catch-all, matching how `STORE_GET_SPEC` is
+/// registered for the read side.
+pub const STORE_WRITE_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[SUCCESS, ERROR],
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

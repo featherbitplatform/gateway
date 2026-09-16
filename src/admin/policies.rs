@@ -421,6 +421,10 @@ pub(crate) fn plugin_catalog() -> Vec<serde_json::Value> {
             "store-get",
             "Read a key from a shared store into context.message (miss port when absent)",
         ),
+        (
+            "store-set",
+            "Write a key into a shared store, with an optional TTL",
+        ),
     ];
 
     CATALOG

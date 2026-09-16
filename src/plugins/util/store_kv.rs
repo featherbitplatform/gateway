@@ -140,12 +140,13 @@ pub fn required_template(
 
 /// Parses the optional `ttl_seconds`. Absent means no expiry; `0` is rejected.
 ///
-/// `store-get` (Task 2, the first caller of this module) has no use for a
-/// TTL -- reading a key never sets one. This stays test-only, gated exactly
-/// like its test module, until `store-set`/`store-incr` (Tasks 3-4) call it
-/// for real; otherwise it is dead code in the non-test binary and
-/// `-D warnings` refuses the build. Remove this gate at that point.
-#[cfg(all(test, feature = "redis-store"))]
+/// `store-get` (Task 2, the first caller of this module) had no use for a
+/// TTL -- reading a key never sets one -- so this was test-only for a while.
+/// `store-set` now calls it unconditionally from `from_config`, same as
+/// `required_template`: this is pure config validation with no dependency on
+/// a store actually being reachable, so unlike `resolve` it needs no
+/// `redis-store`-gated pair -- one definition, always compiled, matches how
+/// it is called on every feature combination.
 pub fn optional_ttl(
     config: &HashMap<String, Value>,
     node_type: &str,
