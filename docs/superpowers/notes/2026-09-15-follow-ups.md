@@ -47,6 +47,53 @@
 
 **Status:** fixed in 0.9.0 (`BodyCapture.streamed` + a badge in `TraceViewer`), noted here only because the same shape will recur for any future capture the backend marks but the UI does not render.
 
+## 8. A store outage hangs the request instead of failing fast
+
+**What we hit.** Writing the live tests for the `store-*` nodes, the "point a store at a
+closed port" case did not fail fast -- it hung for minutes. The test had to be rewritten
+around a `WRONGTYPE` error on an already-connected client to stay deterministic.
+
+**The gap.** `RedisStoreClient::conn` builds its `ConnectionManagerConfig` with
+`set_connection_timeout` and `set_response_timeout` (both from `connect_timeout_ms`), but
+leaves the retry policy at the crate defaults: `DEFAULT_NUMBER_OF_CONNECTION_RETRIES = 6`
+and `max_delay: None` -- uncapped exponential backoff. `connect_timeout_ms` bounds a single
+attempt, not the sum of attempts plus the waits between them.
+
+**Why it matters beyond these nodes.** This is the shared path for *every* store consumer:
+server-side sessions, `limit-count` with `policy: redis`, ACME certificate storage, and now
+the `store-*` nodes. The documented contract is that a store failure surfaces as a `503` and
+never fails open. That is true, but a `503` that arrives minutes later is a hang, and it
+arrives on the first request after an outage begins -- exactly when a gateway should shed
+load fastest.
+
+**Shape.** Surface the retry policy on `StoreConfig` (a `max_retry_delay_ms`, or a total
+budget bounding connect + retries), defaulting to something a request can survive. Leaving
+the crate defaults is the bug; the value itself is a judgment call.
+
+**It also unblocks a test.** Until the backoff is bounded, `store-*`'s "an unreachable store
+exits `error`, never `miss`" case cannot be tested against a genuinely unreachable store --
+only against a backend error, which exercises the same code path but not the same failure.
+
+## 9. Browser-level e2e coverage for the `store-*` nodes is still owed
+
+**What we hit.** The final review of the `store-*` branch found four testbook rows
+(`E2E-STORE-10..13`) describing browser-level scenarios for `store-get`/`store-incr`/
+`store-delete` -- miss vs. success through a real route, TTL-bounded reset, delete-then-miss,
+and the streaming/`buffering` report -- that were never backed by an actual Playwright test.
+The rows were removed from `e2e/E2E_TESTBOOK.md` rather than left unbacked, since the gated
+Rust live tests in `src/plugins/util/store_kv.rs` already exercise the same behavior through
+the real engine.
+
+**The gap.** None of that is exercised at the browser/e2e level: through an actual route,
+against the admin API's policy-validate/buffering report, or via the UI. The e2e harness has
+no redis available today, so these scenarios cannot be gated the way `E2E-SESS-*` is until
+that changes.
+
+**Shape.** Add a `store-kv` route/policy fixture (mirroring `oidc-redis`'s gating) once the
+e2e harness has a redis service available, and re-add the four scenarios (or their
+equivalents) to the testbook with real Playwright tests behind them, gated on
+`FEATHERBIT_TEST_REDIS_URL` the same way `E2E-SESS-*` is.
+
 ## Not worth building (recorded so it is not re-proposed)
 
 - **Storing retry counters in the OIDC session.** Wrong vehicle: the session does not exist pre-auth, which is exactly when the retry logic runs.
