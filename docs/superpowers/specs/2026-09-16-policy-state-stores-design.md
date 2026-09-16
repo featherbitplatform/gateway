@@ -93,7 +93,7 @@ Splitting by operation also matches the existing split between `limit-count` and
   type: store-get
   config:
     store: sessions
-    key: "retry:{{request.cookie.fb_sid}}"
+    key: "retry:{{request.cookies.fb_sid}}"
     name: retry_count
     json: false
 ```
@@ -172,7 +172,7 @@ way to say "no expiry" is to omit the key.
   type: store-incr
   config:
     store: sessions
-    key: "retry:{{request.cookie.fb_sid}}"
+    key: "retry:{{request.cookies.fb_sid}}"
     by: 1
     ttl_seconds: 300
     name: retry_count
@@ -203,7 +203,7 @@ Incrementing a key holding a non-numeric value exits `error` with `STORE_VALUE_I
   type: store-delete
   config:
     store: sessions
-    key: "retry:{{request.cookie.fb_sid}}"
+    key: "retry:{{request.cookies.fb_sid}}"
 ```
 
 **Ports:** `success`, `error`.

@@ -11,7 +11,7 @@ Removes a key from a declared [store](../../guides/configuration.md).
   type: store-delete
   config:
     store: sessions
-    key: "retry:{{request.cookie.fb_sid}}"
+    key: "retry:{{request.cookies.fb_sid}}"
 ```
 
 ## Config
