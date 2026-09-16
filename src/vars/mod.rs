@@ -243,6 +243,23 @@ fn scalar_str(v: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// Whether evaluating `node` reads `context.response.body`.
+///
+/// Walks the whole tree, so a body subject nested inside an AND/OR/NOT group
+/// counts exactly like one at the top level.
+fn node_references_response_body(node: &Node) -> bool {
+    match node {
+        Node::And(children) | Node::Or(children) => {
+            children.iter().any(node_references_response_body)
+        }
+        Node::Not(inner) => node_references_response_body(inner),
+        Node::Rule { subject, .. } => match subject {
+            Subject::Var(name) => name == "resp_body",
+            Subject::Json(j) => matches!(j.target, BodyTarget::Response),
+        },
+    }
+}
+
 impl Expr {
     /// Parses the APISIX `vars` shape: a JSON array of rules, ANDed.
     ///
@@ -266,6 +283,17 @@ impl Expr {
     /// `ipmatch`, which is false for an absent/unparsable address. JSONPath
     /// subjects match zero nodes (rule is false) when the body is empty or
     /// not valid JSON.
+    /// Whether evaluating this expression reads `context.response.body`.
+    ///
+    /// Consulted at policy-compile time by the nodes that gate on a condition
+    /// (`traffic-label`'s matchers, `response-rewrite`'s `vars`): a condition
+    /// on the response body makes the node a body reader even though none of
+    /// its other config touches the body, so the node must not report itself
+    /// stream-safe.
+    pub fn references_response_body(&self) -> bool {
+        node_references_response_body(&self.root)
+    }
+
     pub fn eval(&self, ctx: &Context) -> bool {
         let state = EvalState::new(ctx);
         eval_node(&self.root, &state)
@@ -1127,5 +1155,38 @@ mod tests {
             ["http_b", "present"]
         ]]))
         .is_err());
+    }
+
+    /// A condition on `resp_body` reads the response body, so any node gating
+    /// on it must force buffering.
+    #[test]
+    fn test_expr_reports_a_resp_body_subject() {
+        let e = Expr::parse(&serde_json::json!([["resp_body", "~~", "error"]])).unwrap();
+        assert!(e.references_response_body());
+    }
+
+    /// The JSONPath form reads it too, and must be detected through a nested
+    /// boolean group rather than only at the top level.
+    #[test]
+    fn test_expr_reports_a_response_body_jsonpath_subject() {
+        let e = Expr::parse(&serde_json::json!([[
+            "OR",
+            ["status", "==", 200],
+            ["response_body:$.error", "==", true]
+        ]]))
+        .unwrap();
+        assert!(e.references_response_body());
+    }
+
+    /// Request-side subjects, including a request-body JSONPath, leave the
+    /// response body untouched and must stay stream-safe.
+    #[test]
+    fn test_expr_without_a_response_body_subject_is_stream_safe() {
+        let e = Expr::parse(&serde_json::json!([
+            ["uri", "==", "/a"],
+            ["request_body:$.id", "==", 7]
+        ]))
+        .unwrap();
+        assert!(!e.references_response_body());
     }
 }

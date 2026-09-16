@@ -99,7 +99,9 @@ impl Plugin for RequestIdPlugin {
     }
 
     fn reads_response_body(&self) -> bool {
-        false
+        // `header_name` is a template, so it can reference the response body
+        // even though this node otherwise only reads and writes headers.
+        self.header_name.references_response_body()
     }
 
     async fn execute(&self, mut ctx: Context) -> PluginResult {
@@ -296,5 +298,25 @@ mod tests {
                 "error should list supported algorithms"
             );
         }
+    }
+
+    /// `header_name` is a template, so it can reference the response body even
+    /// though the node otherwise only touches headers.
+    #[test]
+    fn test_request_id_header_name_reading_the_body_forces_buffering() {
+        let mut config = HashMap::new();
+        config.insert(
+            "header_name".to_string(),
+            serde_json::Value::String("x-id-{{response.body}}".to_string()),
+        );
+        let p = RequestIdPlugin::from_config(&config).unwrap();
+        assert!(p.reads_response_body());
+    }
+
+    /// The default configuration must stay stream-safe.
+    #[test]
+    fn test_request_id_default_stays_stream_safe() {
+        let p = RequestIdPlugin::from_config(&HashMap::new()).unwrap();
+        assert!(!p.reads_response_body());
     }
 }

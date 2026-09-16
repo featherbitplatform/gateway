@@ -470,8 +470,15 @@ impl Plugin for ResponseRewritePlugin {
 
     fn reads_response_body(&self) -> bool {
         // `filters` rewrites the body; `body`/`body_base64` replaces it. Either
-        // needs the buffered body. Headers and status alone do not.
-        !self.filters.is_empty() || self.body.is_some()
+        // needs the buffered body. Headers and status alone do not -- unless
+        // the `vars` gate deciding whether to apply them reads the body, which
+        // makes even a headers-only rewrite a body reader.
+        !self.filters.is_empty()
+            || self.body.is_some()
+            || self
+                .vars
+                .as_ref()
+                .is_some_and(|e| e.references_response_body())
     }
 
     async fn execute(&self, mut ctx: Context) -> PluginResult {
@@ -913,5 +920,27 @@ mod tests {
 
         let with_body = plugin(serde_json::json!({ "body": "replaced" }));
         assert!(with_body.reads_response_body());
+    }
+
+    /// A headers-only rewrite gated on the response body still reads it: the
+    /// `vars` gate is evaluated against the body even when `filters` and
+    /// `body` are both absent.
+    #[test]
+    fn test_response_rewrite_vars_gate_on_the_body_forces_buffering() {
+        let p = plugin(serde_json::json!({
+            "headers": { "add": ["x-checked: 1"] },
+            "vars": [["response_body:$.error", "==", true]]
+        }));
+        assert!(p.reads_response_body());
+    }
+
+    /// The same headers-only rewrite gated on the status must stay stream-safe.
+    #[test]
+    fn test_response_rewrite_vars_gate_on_the_status_stays_stream_safe() {
+        let p = plugin(serde_json::json!({
+            "headers": { "add": ["x-checked: 1"] },
+            "vars": [["status", "==", "200"]]
+        }));
+        assert!(!p.reads_response_body());
     }
 }

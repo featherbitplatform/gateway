@@ -177,7 +177,15 @@ impl Plugin for ProxyRewritePlugin {
     }
 
     fn reads_response_body(&self) -> bool {
-        false
+        // Path rewriting never touches the body, but a response-phase
+        // `add_headers` value is rendered after the upstream and may reference
+        // the response body. In the request phase the body does not exist yet
+        // for any configuration, so only the response phase can read it.
+        self.phase == RewritePhase::Response
+            && self
+                .add_headers
+                .values()
+                .any(|t| t.references_response_body())
     }
 
     async fn execute(&self, mut ctx: Context) -> PluginResult {
@@ -505,5 +513,33 @@ mod tests {
 
         let result = plugin.execute(ctx).await.unwrap();
         assert!(!result.context.response.headers.contains_key("X-Powered-By"));
+    }
+
+    /// A response-phase header whose value renders the response body makes the
+    /// node a body reader; the legacy `$resp_body` spelling counts too, since
+    /// `add_headers` values interpolate it at render time.
+    #[test]
+    fn test_proxy_rewrite_response_header_reading_the_body_forces_buffering() {
+        let config: HashMap<String, serde_json::Value> =
+            serde_json::from_value(serde_json::json!({
+                "phase": "response",
+                "add_headers": { "x-echo": "$resp_body" }
+            }))
+            .unwrap();
+        let p = ProxyRewritePlugin::from_config(&config).unwrap();
+        assert!(p.reads_response_body());
+    }
+
+    /// Ordinary header rewriting must stay stream-safe.
+    #[test]
+    fn test_proxy_rewrite_plain_headers_stay_stream_safe() {
+        let config: HashMap<String, serde_json::Value> =
+            serde_json::from_value(serde_json::json!({
+                "phase": "response",
+                "add_headers": { "x-served-by": "featherbit" }
+            }))
+            .unwrap();
+        let p = ProxyRewritePlugin::from_config(&config).unwrap();
+        assert!(!p.reads_response_body());
     }
 }
