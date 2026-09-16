@@ -336,6 +336,12 @@ mod live_tests {
     use std::collections::HashMap;
     use std::time::Duration;
 
+    /// Every key this module writes -- through a plugin or directly via a raw
+    /// redis command -- gets this TTL, so a panicking or failing test still
+    /// self-cleans rather than leaking a permanent key onto a long-lived
+    /// redis. 60s is ample for these tests to run and observe the key.
+    const LIVE_TEST_TTL_SECONDS: u64 = 60;
+
     /// Skips unless a real store is configured, the same gate the session and
     /// ACME live tests use.
     fn store_url() -> Option<String> {
@@ -392,7 +398,7 @@ mod live_tests {
         let key = unique_key("roundtrip");
 
         let set = StoreSetPlugin::from_config(
-            &cfg(serde_json::json!({ "store": "test", "key": key, "value": "1" })),
+            &cfg(serde_json::json!({ "store": "test", "key": key, "value": "1", "ttl_seconds": LIVE_TEST_TTL_SECONDS })),
             &resources,
         )
         .unwrap();
@@ -445,6 +451,7 @@ mod live_tests {
                 "store": "test",
                 "key": key,
                 "value": r#"{"tier":"gold"}"#,
+                "ttl_seconds": LIVE_TEST_TTL_SECONDS,
             })),
             &resources,
         )
@@ -477,7 +484,7 @@ mod live_tests {
         let key = unique_key("badjson");
 
         let set = StoreSetPlugin::from_config(
-            &cfg(serde_json::json!({ "store": "test", "key": key, "value": "not json" })),
+            &cfg(serde_json::json!({ "store": "test", "key": key, "value": "not json", "ttl_seconds": LIVE_TEST_TTL_SECONDS })),
             &resources,
         )
         .unwrap();
@@ -542,7 +549,7 @@ mod live_tests {
                 "store": "test",
                 "key": key,
                 "name": "n",
-                "ttl_seconds": 60,
+                "ttl_seconds": LIVE_TEST_TTL_SECONDS,
             })),
             &resources,
         )
@@ -635,6 +642,14 @@ mod live_tests {
         let _: i64 = redis::cmd("LPUSH")
             .arg(&redis_key)
             .arg("x")
+            .query_async(&mut raw)
+            .await
+            .unwrap();
+        // Written directly (bypassing store-set), so it needs its own expiry
+        // to self-clean -- see `LIVE_TEST_TTL_SECONDS`.
+        let _: bool = redis::cmd("EXPIRE")
+            .arg(&redis_key)
+            .arg(LIVE_TEST_TTL_SECONDS)
             .query_async(&mut raw)
             .await
             .unwrap();
