@@ -198,6 +198,7 @@ const sidebars: SidebarsConfig = {
                 'reference/plugins/store-get',
                 'reference/plugins/store-set',
                 'reference/plugins/store-delete',
+                'reference/plugins/store-incr',
               ],
             },
             'reference/plugins/script',

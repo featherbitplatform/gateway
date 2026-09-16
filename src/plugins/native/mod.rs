@@ -79,6 +79,7 @@ pub mod sls_logger;
 pub mod splunk_hec_logging;
 pub mod store_delete;
 pub mod store_get;
+pub mod store_incr;
 pub mod store_set;
 pub mod syslog;
 pub mod tcp_logger;

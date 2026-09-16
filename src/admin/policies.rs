@@ -429,6 +429,10 @@ pub(crate) fn plugin_catalog() -> Vec<serde_json::Value> {
             "store-delete",
             "Remove a key from a shared store (idempotent)",
         ),
+        (
+            "store-incr",
+            "Atomically increment a counter in a shared store (TTL set at creation)",
+        ),
     ];
 
     CATALOG
