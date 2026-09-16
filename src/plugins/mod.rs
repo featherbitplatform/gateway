@@ -519,7 +519,6 @@ pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
         "traffic-split" => Some(&ports::TRAFFIC_SPLIT_SPEC),
         "proxy-cache" => Some(&ports::PROXY_CACHE_SPEC),
         "store-get" => Some(&ports::STORE_GET_SPEC),
-        "store-set" | "store-delete" => Some(&ports::STORE_WRITE_SPEC),
         _ if KNOWN_PLUGIN_TYPES.contains(&plugin_type) => Some(&ports::DEFAULT_SPEC),
         _ => None,
     }
