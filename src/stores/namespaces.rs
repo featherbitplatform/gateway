@@ -15,6 +15,10 @@ pub const COUNTERS: &str = "cnt";
 pub const ACME: &str = "acme";
 /// Server-side sessions (`src/sessions/redis.rs`).
 pub const SESSIONS: &str = "sess";
+/// Server-side session refresh locks (`src/sessions/redis.rs`'s `lock_key`).
+pub const SESSION_LOCKS: &str = "lock";
+/// Subject -> session-id index, for revoke-by-subject (`src/sessions/redis.rs`'s `subj_key`).
+pub const SESSION_SUBJECTS: &str = "subj";
 
 /// Policy-written keys: the `store-get`/`store-set`/`store-incr`/`store-delete` nodes.
 pub const POLICY_KV: &str = "kv";
@@ -25,7 +29,7 @@ pub const POLICY_KV: &str = "kv";
 /// Test-only by design: nothing in production consults this list. It exists so
 /// the disjointness it describes is asserted rather than assumed.
 #[cfg(test)]
-pub const MANAGED: &[&str] = &[COUNTERS, ACME, SESSIONS];
+pub const MANAGED: &[&str] = &[COUNTERS, ACME, SESSIONS, SESSION_LOCKS, SESSION_SUBJECTS];
 
 #[cfg(test)]
 mod tests {
@@ -39,7 +43,7 @@ mod tests {
 
     #[test]
     fn test_all_namespaces_are_distinct() {
-        let all = [COUNTERS, ACME, SESSIONS];
+        let all = [COUNTERS, ACME, SESSIONS, SESSION_LOCKS, SESSION_SUBJECTS];
         for (i, a) in all.iter().enumerate() {
             for b in all.iter().skip(i + 1) {
                 assert_ne!(a, b, "namespaces must be pairwise distinct");
@@ -60,5 +64,17 @@ mod tests {
 
         let cnt = crate::stores::counter::window_key("fb", 7, "u1");
         assert!(cnt.starts_with(&format!("fb:{}:", COUNTERS)), "{cnt}");
+
+        let lock = crate::sessions::redis::lock_key("fb", "abc");
+        assert!(
+            lock.starts_with(&format!("fb:{}:", SESSION_LOCKS)),
+            "{lock}"
+        );
+
+        let subj = crate::sessions::redis::subj_key("fb", "alice");
+        assert!(
+            subj.starts_with(&format!("fb:{}:", SESSION_SUBJECTS)),
+            "{subj}"
+        );
     }
 }
