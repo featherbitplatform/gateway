@@ -7,13 +7,24 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use serde_json::Value;
 
-use crate::context::GatewayError;
+use crate::context::{Context, GatewayError};
 use crate::plugins::resources::PluginResources;
+use crate::plugins::PluginExecutionError;
 use crate::vars::template::Template;
 
 /// A resolved store, held by a node for its lifetime.
+///
+/// `RedisStoreClient` carries its own hand-written `Debug` impl (its
+/// connection manager has none), so `Arc<RedisStoreClient>` is `Debug` too and
+/// this can derive rather than hand-write. The four `store-*` plugins that
+/// hold one still can't derive their own `Debug`: their other fields are only
+/// read inside the `#[cfg(feature = "redis-store")]` `execute` body, and a
+/// headless build has no such body to read them, so a derived impl (which
+/// the dead-code pass ignores) would leave them looking unused there.
+#[derive(Debug)]
 pub struct StoreHandle {
     /// Declared `stores:` name, carried for error messages.
     pub name: String,
@@ -49,25 +60,61 @@ pub fn namespaced_key(prefix: &str, rendered: &str) -> String {
     )
 }
 
+/// Prepares the response common to every store-node error before it exits
+/// the node's `error` port: status + JSON body + `content-type`, the same
+/// shape `limit-count` and the session plugins already use (e.g.
+/// `authz_casdoor::store_error`, `limit_count.rs`'s `RATE_LIMIT_UNAVAILABLE`
+/// branch).
+///
+/// Without this, a policy that wires `error -> client` -- structurally the
+/// only alternative to leaving the port unwired, and the port model nudges
+/// every port toward being wired -- would answer with whatever
+/// `Context::new` left in `ctx.response` (`status_code == 0`, mapped to `200`
+/// by the listener) instead of a real failure status. That is exactly the
+/// fail-open the design's §7 rules out.
+fn prepare_error_response(ctx: &mut Context, status: u16, code: &str, message: &str) {
+    ctx.response.status_code = status;
+    ctx.response.body =
+        Bytes::from(serde_json::json!({ "error": code, "message": message }).to_string());
+    ctx.response.headers.insert(
+        "content-type".to_string(),
+        vec!["application/json".to_string()],
+    );
+}
+
 /// A `key` template that rendered to nothing.
 ///
 /// `{prefix}:kv:` is still inside the namespace, so this is not a collision --
 /// but it would put every request on one shared key, turning a template typo
-/// into a cross-tenant leak. It fails loudly instead.
+/// into a cross-tenant leak. It fails loudly instead, with a `500`: this is a
+/// policy-authoring/config fault, not an outage.
 ///
 /// Only ever checked on the redis-backed data path (rendering a key is
 /// pointless without a backend to read or write it against), so this is
 /// `#[cfg(feature = "redis-store")]` like the rest of that path.
 #[cfg(feature = "redis-store")]
-pub fn key_invalid(node_type: &str) -> GatewayError {
-    GatewayError {
-        node_id: String::new(),
-        code: "STORE_KEY_INVALID".to_string(),
-        message: format!(
-            "{}: the 'key' template rendered to an empty string",
-            node_type
-        ),
-        metadata: HashMap::new(),
+pub fn key_invalid(
+    mut ctx: Context,
+    node_type: &str,
+    op: &str,
+    store: &str,
+) -> PluginExecutionError {
+    let message = format!(
+        "{}: the 'key' template rendered to an empty string",
+        node_type
+    );
+    prepare_error_response(&mut ctx, 500, "STORE_KEY_INVALID", &message);
+    let mut metadata = HashMap::new();
+    metadata.insert("store".to_string(), Value::String(store.to_string()));
+    metadata.insert("op".to_string(), Value::String(op.to_string()));
+    PluginExecutionError {
+        context: ctx,
+        error: GatewayError {
+            node_id: String::new(),
+            code: "STORE_KEY_INVALID".to_string(),
+            message,
+            metadata,
+        },
     }
 }
 
@@ -171,39 +218,103 @@ pub fn optional_ttl(
     }
 }
 
-/// A store outage. Never conflated with a miss: see the spec's §7.
-pub fn store_error(node_type: &str, op: &str, store: &str, msg: String) -> GatewayError {
+/// A store outage. Never conflated with a miss: see the spec's §7. Prepares a
+/// `503` -- the dependency is unavailable, not the caller's fault -- so a
+/// policy that wires `error -> client` cannot fail open with a `200`.
+///
+/// Not feature-gated: the `#[cfg(not(feature = "redis-store"))]` `execute`
+/// bodies in all four plugins call this too, to report "built without the
+/// redis-store feature" with the same shape.
+pub fn store_error(
+    mut ctx: Context,
+    node_type: &str,
+    op: &str,
+    store: &str,
+    msg: String,
+) -> PluginExecutionError {
+    let message = format!("{}: {} failed: {}", node_type, op, msg);
+    prepare_error_response(&mut ctx, 503, "STORE_ERROR", &message);
     let mut metadata = HashMap::new();
     metadata.insert("store".to_string(), Value::String(store.to_string()));
     metadata.insert("op".to_string(), Value::String(op.to_string()));
-    GatewayError {
-        node_id: String::new(),
-        code: "STORE_ERROR".to_string(),
-        message: format!("{}: {} failed: {}", node_type, op, msg),
-        metadata,
+    PluginExecutionError {
+        context: ctx,
+        error: GatewayError {
+            node_id: String::new(),
+            code: "STORE_ERROR".to_string(),
+            message,
+            metadata,
+        },
     }
 }
 
 /// A value that exists but is not usable as configured (bad JSON, non-numeric).
+/// Prepares a `500`: a data/config fault, not an outage.
 ///
 /// Only ever raised on the redis-backed data path -- see [`key_invalid`].
 #[cfg(feature = "redis-store")]
-pub fn value_invalid(node_type: &str, msg: String) -> GatewayError {
-    GatewayError {
-        node_id: String::new(),
-        code: "STORE_VALUE_INVALID".to_string(),
-        message: format!("{}: {}", node_type, msg),
-        metadata: HashMap::new(),
+pub fn value_invalid(
+    mut ctx: Context,
+    node_type: &str,
+    op: &str,
+    store: &str,
+    msg: String,
+) -> PluginExecutionError {
+    let message = format!("{}: {}", node_type, msg);
+    prepare_error_response(&mut ctx, 500, "STORE_VALUE_INVALID", &message);
+    let mut metadata = HashMap::new();
+    metadata.insert("store".to_string(), Value::String(store.to_string()));
+    metadata.insert("op".to_string(), Value::String(op.to_string()));
+    PluginExecutionError {
+        context: ctx,
+        error: GatewayError {
+            node_id: String::new(),
+            code: "STORE_VALUE_INVALID".to_string(),
+            message,
+            metadata,
+        },
     }
+}
+
+/// True when a redis error reflects a value/type problem rather than an
+/// outage: a command applied to a key holding the wrong type (`WRONGTYPE`,
+/// surfaced by the crate as an `ExtensionError` with that code), or a numeric
+/// operation against a non-numeric value (`ERR value is not an integer or
+/// out of range`). Both are data faults `store-incr` reports as
+/// `STORE_VALUE_INVALID`, never `STORE_ERROR`.
+///
+/// Classifying on `code()`/`kind()` rather than matching the whole message
+/// avoids depending on redis wrapping the message text a particular way; the
+/// substring check is kept only for the one case (`ResponseError`'s "not an
+/// integer" wording) that has no dedicated code of its own.
+#[cfg(feature = "redis-store")]
+pub fn is_value_type_error(e: &redis::RedisError) -> bool {
+    e.code() == Some("WRONGTYPE")
+        || (e.kind() == redis::ErrorKind::ResponseError && e.to_string().contains("not an integer"))
 }
 
 #[cfg(all(test, feature = "redis-store"))]
 mod tests {
     use super::*;
+    use crate::context::{GatewayRequest, Protocol};
     use std::collections::HashMap;
 
     fn cfg(json: serde_json::Value) -> HashMap<String, serde_json::Value> {
         serde_json::from_value(json).unwrap()
+    }
+
+    fn test_ctx() -> Context {
+        Context::new(GatewayRequest {
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            host: "example.com".to_string(),
+            scheme: "http".to_string(),
+            headers: HashMap::new(),
+            query_params: HashMap::new(),
+            body: bytes::Bytes::new(),
+            remote_addr: "10.1.2.3:44321".to_string(),
+            protocol: Protocol::Http1,
+        })
     }
 
     /// Keys are namespaced so a policy cannot collide with session, counter or
@@ -243,10 +354,16 @@ mod tests {
 
     /// An empty rendered key is not a collision -- `fb:kv:` is still inside the
     /// namespace -- but it silently puts every request on one shared key, so a
-    /// template typo becomes a cross-tenant leak. Fail loudly instead.
+    /// template typo becomes a cross-tenant leak. Fail loudly instead, with a
+    /// `500` (a config/authoring fault, not an outage) and a non-empty body.
     #[test]
     fn test_empty_key_has_its_own_code() {
-        assert_eq!(key_invalid("store-get").code, "STORE_KEY_INVALID");
+        let e = key_invalid(test_ctx(), "store-get", "GET", "sessions");
+        assert_eq!(e.error.code, "STORE_KEY_INVALID");
+        assert_eq!(e.context.response.status_code, 500);
+        assert!(!e.context.response.body.is_empty());
+        assert_eq!(e.error.metadata.get("store").unwrap(), "sessions");
+        assert_eq!(e.error.metadata.get("op").unwrap(), "GET");
     }
 
     #[test]
@@ -292,25 +409,77 @@ mod tests {
     }
 
     /// A store outage must be identifiable downstream, so the code is fixed and
-    /// the metadata carries enough to debug it.
+    /// the metadata carries enough to debug it. It must also leave the
+    /// response a real `503` with a non-empty body -- never the `200` an
+    /// untouched `Context::new` would answer with if a policy wires
+    /// `error -> client` -- which is the failure this whole fix round exists
+    /// to close (spec §7: never fail open).
     #[test]
-    fn test_store_error_carries_code_store_and_op() {
+    fn test_store_error_prepares_a_503_and_carries_code_store_and_op() {
         let e = store_error(
+            test_ctx(),
             "store-get",
             "GET",
             "sessions",
             "connection refused".to_string(),
         );
-        assert_eq!(e.code, "STORE_ERROR");
-        assert_eq!(e.metadata.get("store").unwrap(), "sessions");
-        assert_eq!(e.metadata.get("op").unwrap(), "GET");
-        assert!(e.message.contains("connection refused"), "{}", e.message);
+        assert_eq!(e.error.code, "STORE_ERROR");
+        assert_eq!(e.error.metadata.get("store").unwrap(), "sessions");
+        assert_eq!(e.error.metadata.get("op").unwrap(), "GET");
+        assert!(
+            e.error.message.contains("connection refused"),
+            "{}",
+            e.error.message
+        );
+        assert_eq!(e.context.response.status_code, 503);
+        assert!(!e.context.response.body.is_empty());
+        assert_eq!(
+            e.context.response.headers.get("content-type").unwrap(),
+            &vec!["application/json".to_string()]
+        );
     }
 
+    /// Same as above for `value_invalid`, whose status is `500`: a value/JSON
+    /// fault is a data problem, not an outage.
     #[test]
-    fn test_value_invalid_has_its_own_code() {
-        let e = value_invalid("store-get", "expected JSON".to_string());
-        assert_eq!(e.code, "STORE_VALUE_INVALID");
+    fn test_value_invalid_prepares_a_500_and_carries_code_store_and_op() {
+        let e = value_invalid(
+            test_ctx(),
+            "store-get",
+            "GET",
+            "sessions",
+            "expected JSON".to_string(),
+        );
+        assert_eq!(e.error.code, "STORE_VALUE_INVALID");
+        assert_eq!(e.error.metadata.get("store").unwrap(), "sessions");
+        assert_eq!(e.error.metadata.get("op").unwrap(), "GET");
+        assert_eq!(e.context.response.status_code, 500);
+        assert!(!e.context.response.body.is_empty());
+    }
+
+    /// `WRONGTYPE` (a key holding a list/hash) and the "not an integer"
+    /// message (a key holding a non-numeric string) must both classify as a
+    /// value-type error, not an outage -- see `store-incr`'s docs and the
+    /// spec's §5.3.
+    #[test]
+    fn test_is_value_type_error_covers_wrongtype_and_not_an_integer() {
+        // `make_extension_error` is how the redis crate itself builds an
+        // error whose `code()` is a raw RESP error code it does not have a
+        // dedicated `ErrorKind` for -- exactly WRONGTYPE's situation.
+        let wrongtype = redis::make_extension_error(
+            "WRONGTYPE".to_string(),
+            Some("Operation against a key holding the wrong kind of value".to_string()),
+        );
+        assert!(is_value_type_error(&wrongtype));
+
+        let not_an_integer = redis::RedisError::from((
+            redis::ErrorKind::ResponseError,
+            "value is not an integer or out of range",
+        ));
+        assert!(is_value_type_error(&not_an_integer));
+
+        let outage = redis::RedisError::from((redis::ErrorKind::IoError, "connection refused"));
+        assert!(!is_value_type_error(&outage));
     }
 }
 
@@ -661,5 +830,173 @@ mod live_tests {
         .unwrap();
         let err = get.execute(test_ctx()).await.unwrap_err();
         assert_eq!(err.error.code, "STORE_ERROR");
+    }
+
+    /// `store-incr` against a key holding a non-numeric string: the docs and
+    /// the spec both promise `STORE_VALUE_INVALID` for this, and it is the
+    /// case the substring match on "not an integer" was originally written
+    /// for -- see F6 in the final review.
+    #[tokio::test]
+    async fn test_incr_on_a_non_numeric_string_exits_value_invalid() {
+        let Some(url) = store_url() else {
+            eprintln!(
+                "skipping test_incr_on_a_non_numeric_string_exits_value_invalid: FEATHERBIT_TEST_REDIS_URL not set"
+            );
+            return;
+        };
+        let resources = resources_with_store(&url);
+        let key = unique_key("incr-non-numeric");
+
+        let set = StoreSetPlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": key, "value": "not-a-number", "ttl_seconds": LIVE_TEST_TTL_SECONDS })),
+            &resources,
+        )
+        .unwrap();
+        set.execute(test_ctx()).await.unwrap();
+
+        let incr = StoreIncrPlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": key, "name": "n" })),
+            &resources,
+        )
+        .unwrap();
+        let err = incr.execute(test_ctx()).await.unwrap_err();
+        assert_eq!(err.error.code, "STORE_VALUE_INVALID");
+    }
+
+    /// `store-incr` against a key holding a list (`WRONGTYPE`): the substring
+    /// match on "not an integer" missed this entirely, silently reporting a
+    /// pure data fault as `STORE_ERROR` -- an outage the caller did not have.
+    /// See F6 in the final review.
+    #[tokio::test]
+    async fn test_incr_on_a_list_value_exits_value_invalid_not_store_error() {
+        let Some(url) = store_url() else {
+            eprintln!(
+                "skipping test_incr_on_a_list_value_exits_value_invalid_not_store_error: FEATHERBIT_TEST_REDIS_URL not set"
+            );
+            return;
+        };
+        let resources = resources_with_store(&url);
+        let key = unique_key("incr-wrongtype");
+        let redis_key = namespaced_key("fb", &key);
+
+        let client = resources.stores.load().client("test").unwrap();
+        let mut raw = client.conn().await.unwrap();
+        let _: i64 = redis::cmd("LPUSH")
+            .arg(&redis_key)
+            .arg("x")
+            .query_async(&mut raw)
+            .await
+            .unwrap();
+        let _: bool = redis::cmd("EXPIRE")
+            .arg(&redis_key)
+            .arg(LIVE_TEST_TTL_SECONDS)
+            .query_async(&mut raw)
+            .await
+            .unwrap();
+
+        let incr = StoreIncrPlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": key, "name": "n" })),
+            &resources,
+        )
+        .unwrap();
+        let err = incr.execute(test_ctx()).await.unwrap_err();
+        assert_eq!(err.error.code, "STORE_VALUE_INVALID");
+    }
+
+    /// The empty-key guard, actually executed rather than only asserted on
+    /// the constructor's constant (F7 in the final review): a template that
+    /// renders to nothing must exit `STORE_KEY_INVALID` with a `500`, not
+    /// silently operate on `{prefix}:kv:`.
+    #[tokio::test]
+    async fn test_empty_rendered_key_exits_store_key_invalid() {
+        let Some(url) = store_url() else {
+            eprintln!(
+                "skipping test_empty_rendered_key_exits_store_key_invalid: FEATHERBIT_TEST_REDIS_URL not set"
+            );
+            return;
+        };
+        let resources = resources_with_store(&url);
+
+        let get = StoreGetPlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": "{{request.headers.x-absent}}", "name": "v" })),
+            &resources,
+        )
+        .unwrap();
+        let err = get.execute(test_ctx()).await.unwrap_err();
+        assert_eq!(err.error.code, "STORE_KEY_INVALID");
+        assert_eq!(err.context.response.status_code, 500);
+        assert!(!err.context.response.body.is_empty());
+    }
+
+    /// The one behaviour `reads_response_body()` exists for: a `key`/`value`
+    /// referencing the response body must force the route onto the buffered
+    /// path. `PluginResources::empty()` (used by every unit test in the four
+    /// plugins) has no declared stores, so `from_config` cannot succeed there
+    /// and the four unit tests could only assert `Template::
+    /// references_response_body()` on the side -- which cannot fail even if
+    /// `reads_response_body()` itself is hardcoded wrong (F3/F4 in the final
+    /// review). This constructs the real plugins against a declared store
+    /// and asserts the trait method directly.
+    #[tokio::test]
+    async fn test_reads_response_body_reflects_a_response_body_reference() {
+        let Some(url) = store_url() else {
+            eprintln!(
+                "skipping test_reads_response_body_reflects_a_response_body_reference: FEATHERBIT_TEST_REDIS_URL not set"
+            );
+            return;
+        };
+        let resources = resources_with_store(&url);
+
+        let get_plain = StoreGetPlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": "k", "name": "n" })),
+            &resources,
+        )
+        .unwrap();
+        let get_reads = StoreGetPlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": "{{response.body}}", "name": "n" })),
+            &resources,
+        )
+        .unwrap();
+        assert!(!get_plain.reads_response_body());
+        assert!(get_reads.reads_response_body());
+
+        let set_plain = StoreSetPlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": "k", "value": "1" })),
+            &resources,
+        )
+        .unwrap();
+        let set_reads = StoreSetPlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": "k", "value": "{{response.body}}" })),
+            &resources,
+        )
+        .unwrap();
+        assert!(!set_plain.reads_response_body());
+        assert!(set_reads.reads_response_body());
+
+        let delete_plain = StoreDeletePlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": "k" })),
+            &resources,
+        )
+        .unwrap();
+        let delete_reads = StoreDeletePlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": "{{response.body}}" })),
+            &resources,
+        )
+        .unwrap();
+        assert!(!delete_plain.reads_response_body());
+        assert!(delete_reads.reads_response_body());
+
+        let incr_plain = StoreIncrPlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": "k", "name": "n" })),
+            &resources,
+        )
+        .unwrap();
+        let incr_reads = StoreIncrPlugin::from_config(
+            &cfg(serde_json::json!({ "store": "test", "key": "{{response.body}}", "name": "n" })),
+            &resources,
+        )
+        .unwrap();
+        assert!(!incr_plain.reads_response_body());
+        assert!(incr_reads.reads_response_body());
     }
 }
