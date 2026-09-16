@@ -276,6 +276,22 @@ pub const PROXY_CACHE_SPEC: PortSpec = PortSpec {
     ],
 };
 
+/// `store-get`: a key that does not exist is a normal outcome, not an error --
+/// it exits `miss`, which the compiler forces the policy to wire. A store
+/// outage exits `error` instead, so the two stay distinguishable.
+pub const STORE_GET_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "miss",
+            kind: PortKind::Outcome,
+            description: "The key does not exist; nothing was written to context.message. Wire to whatever should happen on first sight.",
+        },
+        ERROR,
+    ],
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
