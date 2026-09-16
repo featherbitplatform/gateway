@@ -77,6 +77,7 @@ pub mod skywalking;
 pub mod skywalking_logger;
 pub mod sls_logger;
 pub mod splunk_hec_logging;
+pub mod store_delete;
 pub mod store_get;
 pub mod store_set;
 pub mod syslog;

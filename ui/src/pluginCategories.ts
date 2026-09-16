@@ -149,7 +149,7 @@ export const PLUGIN_CATEGORIES: PluginCategory[] = [
   },
   {
     label: 'Policy state',
-    types: ['store-get', 'store-set'],
+    types: ['store-get', 'store-set', 'store-delete'],
   },
 ];
 

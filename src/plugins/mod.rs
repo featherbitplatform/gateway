@@ -207,6 +207,7 @@ pub const KNOWN_PLUGIN_TYPES: &[&str] = &[
     "script",
     "store-get",
     "store-set",
+    "store-delete",
 ];
 
 /// Creates a plugin instance from a node type string and its YAML-derived config.
@@ -476,6 +477,9 @@ pub fn create_plugin(
         "store-set" => Ok(Box::new(native::store_set::StoreSetPlugin::from_config(
             config, resources,
         )?)),
+        "store-delete" => Ok(Box::new(
+            native::store_delete::StoreDeletePlugin::from_config(config, resources)?,
+        )),
         _ => Err(format!("Unknown plugin type: {}", node_type)),
     }
 }
@@ -515,7 +519,7 @@ pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
         "traffic-split" => Some(&ports::TRAFFIC_SPLIT_SPEC),
         "proxy-cache" => Some(&ports::PROXY_CACHE_SPEC),
         "store-get" => Some(&ports::STORE_GET_SPEC),
-        "store-set" => Some(&ports::STORE_WRITE_SPEC),
+        "store-set" | "store-delete" => Some(&ports::STORE_WRITE_SPEC),
         _ if KNOWN_PLUGIN_TYPES.contains(&plugin_type) => Some(&ports::DEFAULT_SPEC),
         _ => None,
     }
