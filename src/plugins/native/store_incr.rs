@@ -28,7 +28,7 @@ use crate::plugins::PluginOutput;
 #[cfg(feature = "redis-store")]
 const INCR_SCRIPT: &str = r#"
 local n = redis.call('INCRBY', KEYS[1], ARGV[1])
-if tonumber(ARGV[2]) > 0 and redis.call('TTL', KEYS[1]) < 0 then
+if tonumber(ARGV[2]) > 0 and (tonumber(ARGV[3]) == 1 or redis.call('TTL', KEYS[1]) < 0) then
   redis.call('EXPIRE', KEYS[1], ARGV[2])
 end
 return n
@@ -39,6 +39,7 @@ pub struct StoreIncrPlugin {
     key: Template,
     by: i64,
     ttl_seconds: Option<u64>,
+    refresh_ttl: bool,
     name: String,
     #[cfg(feature = "redis-store")]
     script: redis::Script,
@@ -59,8 +60,25 @@ impl std::fmt::Debug for StoreIncrPlugin {
             .field("key", &self.key)
             .field("by", &self.by)
             .field("ttl_seconds", &self.ttl_seconds)
+            .field("refresh_ttl", &self.refresh_ttl)
             .field("name", &self.name)
             .finish()
+    }
+}
+
+/// Parses the optional `refresh_ttl` flag.
+///
+/// Defaults to `false`, which keeps the expiry pinned to the key's creation.
+/// That default is load-bearing: a retry bound whose expiry refreshed on every
+/// increment could be held open indefinitely by the very client it limits.
+/// Setting it to `true` is the deliberate opposite -- a sliding window of
+/// "N events within `ttl_seconds` of each other".
+fn parse_refresh_ttl(config: &HashMap<String, serde_json::Value>) -> Result<bool, String> {
+    match config.get("refresh_ttl") {
+        None | Some(serde_json::Value::Null) => Ok(false),
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| "store-incr: 'refresh_ttl' must be a boolean".to_string()),
     }
 }
 
@@ -98,11 +116,19 @@ impl StoreIncrPlugin {
         let key = store_kv::required_template(config, "key", "store-incr")?;
         let by = parse_by(config)?;
         let ttl_seconds = store_kv::optional_ttl(config, "store-incr")?;
+        let refresh_ttl = parse_refresh_ttl(config)?;
+        if refresh_ttl && ttl_seconds.is_none() {
+            return Err(
+                "store-incr: 'refresh_ttl' requires 'ttl_seconds'; there is no expiry to refresh"
+                    .to_string(),
+            );
+        }
         Ok(Self {
             store: store_kv::resolve(config, resources, "store-incr")?,
             key,
             by,
             ttl_seconds,
+            refresh_ttl,
             name,
             #[cfg(feature = "redis-store")]
             script: redis::Script::new(INCR_SCRIPT),
@@ -151,6 +177,7 @@ impl Plugin for StoreIncrPlugin {
             .key(key.as_str())
             .arg(self.by)
             .arg(self.ttl_seconds.unwrap_or(0))
+            .arg(i64::from(self.refresh_ttl))
             .invoke_async(&mut conn)
             .await
         {
@@ -222,5 +249,32 @@ mod tests {
         assert_eq!(parse_by(&cfg(serde_json::json!({}))).unwrap(), 1);
         assert_eq!(parse_by(&cfg(serde_json::json!({ "by": -2 }))).unwrap(), -2);
         assert!(parse_by(&cfg(serde_json::json!({ "by": "x" }))).is_err());
+    }
+
+    /// `refresh_ttl` only means something alongside an expiry; accepting it
+    /// silently would hide a config typo in exactly the throttling rules it
+    /// exists for.
+    #[test]
+    fn test_refresh_ttl_without_a_ttl_is_a_config_error() {
+        let r = PluginResources::empty();
+        let err = StoreIncrPlugin::from_config(
+            &cfg(serde_json::json!({
+                "store": "s", "key": "k", "name": "n", "refresh_ttl": true
+            })),
+            &r,
+        )
+        .unwrap_err();
+        assert!(err.contains("refresh_ttl"), "{err}");
+        assert!(err.contains("ttl_seconds"), "{err}");
+    }
+
+    /// The default must stay create-only, so a retry bound cannot silently
+    /// become refreshable -- a client that keeps retrying would then keep its
+    /// own counter alive and the bound would never reset.
+    #[test]
+    fn test_refresh_ttl_defaults_to_false_and_parses() {
+        assert!(!parse_refresh_ttl(&cfg(serde_json::json!({}))).unwrap());
+        assert!(parse_refresh_ttl(&cfg(serde_json::json!({ "refresh_ttl": true }))).unwrap());
+        assert!(parse_refresh_ttl(&cfg(serde_json::json!({ "refresh_ttl": "yes" }))).is_err());
     }
 }

@@ -24,6 +24,7 @@ pub struct StoreGetPlugin {
     key: Template,
     name: String,
     json: bool,
+    extend_ttl_seconds: Option<u64>,
 }
 
 // `StoreHandle` now derives `Debug` on its own, so this struct *could*
@@ -42,6 +43,7 @@ impl std::fmt::Debug for StoreGetPlugin {
             .field("key", &self.key)
             .field("name", &self.name)
             .field("json", &self.json)
+            .field("extend_ttl_seconds", &self.extend_ttl_seconds)
             .finish()
     }
 }
@@ -79,8 +81,11 @@ impl StoreGetPlugin {
             })?
             .to_string();
         let json = parse_json_flag(config)?;
+        let extend_ttl_seconds =
+            store_kv::optional_seconds(config, "extend_ttl_seconds", "store-get")?;
         Ok(Self {
             key: store_kv::required_template(config, "key", "store-get")?,
+            extend_ttl_seconds,
             store: store_kv::resolve(config, resources, "store-get")?,
             name,
             json,
@@ -155,13 +160,28 @@ impl Plugin for StoreGetPlugin {
             }
         };
 
-        let raw: Option<String> = match conn.get(&key).await {
+        // With `extend_ttl_seconds`, GETEX reads and re-arms the expiry in one
+        // round trip, so an entry stays alive while it is being used. GETEX on
+        // a missing key returns nil and creates nothing, so a miss stays a
+        // miss -- a keep-alive read must not manufacture the entries it is
+        // meant to keep warm.
+        let read = match self.extend_ttl_seconds {
+            Some(ttl) => conn.get_ex(&key, redis::Expiry::EX(ttl)).await,
+            None => conn.get(&key).await,
+        };
+        let op = if self.extend_ttl_seconds.is_some() {
+            "GETEX"
+        } else {
+            "GET"
+        };
+
+        let raw: Option<String> = match read {
             Ok(v) => v,
             Err(e) => {
                 return Err(store_kv::store_error(
                     ctx,
                     "store-get",
-                    "GET",
+                    op,
                     &self.store.name,
                     e.to_string(),
                 ))
@@ -282,5 +302,21 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("json"), "{err}");
+    }
+
+    /// `extend_ttl_seconds: 0` is a config error for the same reason
+    /// `ttl_seconds: 0` is: there is no sensible "extend by zero", and
+    /// omitting the field is how you say "do not extend".
+    #[test]
+    fn test_extend_ttl_seconds_rejects_zero() {
+        let r = PluginResources::empty();
+        let err = StoreGetPlugin::from_config(
+            &cfg(serde_json::json!({
+                "store": "s", "key": "k", "name": "v", "extend_ttl_seconds": 0
+            })),
+            &r,
+        )
+        .unwrap_err();
+        assert!(err.contains("extend_ttl_seconds"), "{err}");
     }
 }
