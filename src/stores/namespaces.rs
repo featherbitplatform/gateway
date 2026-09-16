@@ -16,9 +16,26 @@ pub const ACME: &str = "acme";
 /// Server-side sessions (`src/sessions/redis.rs`).
 pub const SESSIONS: &str = "sess";
 
+/// Policy-written keys: the `store-get`/`store-set`/`store-incr`/`store-delete` nodes.
+pub const POLICY_KV: &str = "kv";
+
+/// Namespaces owned by featherbit itself. A policy can never address these,
+/// because every `store-*` key is prefixed with [`POLICY_KV`].
+///
+/// Test-only by design: nothing in production consults this list. It exists so
+/// the disjointness it describes is asserted rather than assumed.
+#[cfg(test)]
+pub const MANAGED: &[&str] = &[COUNTERS, ACME, SESSIONS];
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A policy must never be able to address a namespace featherbit owns.
+    #[test]
+    fn test_policy_namespace_is_not_managed() {
+        assert!(!MANAGED.contains(&POLICY_KV));
+    }
 
     #[test]
     fn test_all_namespaces_are_distinct() {

@@ -147,6 +147,10 @@ export const PLUGIN_CATEGORIES: PluginCategory[] = [
     label: 'Tracing & metrics',
     types: ['prometheus', 'opentelemetry', 'zipkin', 'skywalking'],
   },
+  {
+    label: 'Policy state',
+    types: ['store-get'],
+  },
 ];
 
 /** Label used for plugin types not listed in {@link PLUGIN_CATEGORIES}. */

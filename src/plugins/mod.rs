@@ -205,6 +205,7 @@ pub const KNOWN_PLUGIN_TYPES: &[&str] = &[
     "serverless-pre-function",
     "serverless-post-function",
     "script",
+    "store-get",
 ];
 
 /// Creates a plugin instance from a node type string and its YAML-derived config.
@@ -468,6 +469,9 @@ pub fn create_plugin(
             native::serverless_post_function::ServerlessPostFunctionPlugin::from_config(config)?,
         )),
         "script" => Ok(Box::new(script::ScriptPlugin::from_config(config)?)),
+        "store-get" => Ok(Box::new(native::store_get::StoreGetPlugin::from_config(
+            config, resources,
+        )?)),
         _ => Err(format!("Unknown plugin type: {}", node_type)),
     }
 }
@@ -506,6 +510,7 @@ pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
         "condition" => Some(&ports::CONDITION_SPEC),
         "traffic-split" => Some(&ports::TRAFFIC_SPLIT_SPEC),
         "proxy-cache" => Some(&ports::PROXY_CACHE_SPEC),
+        "store-get" => Some(&ports::STORE_GET_SPEC),
         _ if KNOWN_PLUGIN_TYPES.contains(&plugin_type) => Some(&ports::DEFAULT_SPEC),
         _ => None,
     }
