@@ -44,11 +44,18 @@ fn meta_key(prefix: &str, id: &str) -> String {
         crate::stores::namespaces::SESSIONS
     )
 }
-fn lock_key(prefix: &str, id: &str) -> String {
-    format!("{prefix}:lock:{{{id}}}")
+pub(crate) fn lock_key(prefix: &str, id: &str) -> String {
+    format!(
+        "{prefix}:{}:{{{id}}}",
+        crate::stores::namespaces::SESSION_LOCKS
+    )
 }
-fn subj_key(prefix: &str, subject: &str) -> String {
-    format!("{prefix}:subj:{{{}}}", sha256_hex(subject))
+pub(crate) fn subj_key(prefix: &str, subject: &str) -> String {
+    format!(
+        "{prefix}:{}:{{{}}}",
+        crate::stores::namespaces::SESSION_SUBJECTS,
+        sha256_hex(subject)
+    )
 }
 /// Extracts the id from a meta key produced by [`meta_key`].
 fn id_of_meta_key(prefix: &str, key: &str) -> Option<String> {

@@ -219,7 +219,7 @@ prefix (default `fb`). This matches the convention every existing subsystem alre
 
 ### 6.1 The complete namespace inventory
 
-featherbit writes keys from exactly three places today. There are no others — the only other
+featherbit writes keys from exactly five places today. There are no others — the only other
 redis calls in the codebase are `PING` and `INFO`, which touch no keys.
 
 | Namespace | Keys | Source |
@@ -227,6 +227,8 @@ redis calls in the codebase are `PING` and `INFO`, which touch no keys.
 | `cnt` | `{p}:cnt:{slot}:{key}` | `src/stores/counter.rs:86` |
 | `acme` | `{p}:acme:account`, `{p}:acme:cert:{id}`, `{p}:acme:challenge:{domain}`, `{p}:acme:lease:{id}` | `src/acme/storage/redis.rs:40-51` |
 | `sess` | `{p}:sess:{id}`, `{p}:sess:{id}:meta` | `src/sessions/redis.rs:38-42` |
+| `lock` | `{p}:lock:{id}` | `src/sessions/redis.rs`'s `lock_key` — session refresh coordination |
+| `subj` | `{p}:subj:{sha256(subject)}` | `src/sessions/redis.rs`'s `subj_key` — the subject → session-id index powering revoke-by-subject |
 
 `kv` is unused, so it is free to take.
 
@@ -247,11 +249,13 @@ namespace, with the three existing key builders refactored to use it:
 pub const COUNTERS: &str = "cnt";
 pub const ACME: &str = "acme";
 pub const SESSIONS: &str = "sess";
+pub const SESSION_LOCKS: &str = "lock";
+pub const SESSION_SUBJECTS: &str = "subj";
 /// Policy-written keys (`store-get`/`set`/`incr`/`delete`).
 pub const POLICY_KV: &str = "kv";
 
 /// Namespaces owned by featherbit itself. A policy can never address these.
-pub const MANAGED: &[&str] = &[COUNTERS, ACME, SESSIONS];
+pub const MANAGED: &[&str] = &[COUNTERS, ACME, SESSIONS, SESSION_LOCKS, SESSION_SUBJECTS];
 ```
 
 Tests assert that `POLICY_KV` is not in `MANAGED`, that all four are pairwise distinct, and —
