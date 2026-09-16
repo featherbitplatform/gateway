@@ -22,6 +22,8 @@ use crate::ratelimit::CounterStore;
 #[cfg(feature = "redis-store")]
 pub mod counter;
 #[cfg(feature = "redis-store")]
+pub mod namespaces;
+#[cfg(feature = "redis-store")]
 pub mod redis_store;
 
 /// Validates the `stores:` section: unique non-empty names, known types,
