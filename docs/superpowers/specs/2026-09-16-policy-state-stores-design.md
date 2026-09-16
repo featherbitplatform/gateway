@@ -62,7 +62,7 @@ is written under the store's configured `key_prefix`.
 | TTL on `store-incr` | **Applied at creation only**, never refreshed | Otherwise sustained traffic keeps a counter alive forever and it never resets |
 | Delete semantics | **Idempotent**: `success` + `error`, no `miss` | `DEL` on an absent key is not a failure; a mandatory port firing on "already gone" would be noise in every graph |
 | Store outage | **`error` port, `503`, never fail-open** | The rule the five session plugins already follow |
-| Key namespace | All keys under `<key_prefix>kv:` | Policy keys cannot collide with `acme:`, session, or counter keys |
+| Key namespace | All keys under `{key_prefix}:kv:`, enforced by a namespace registry with drift tests | Policy keys cannot collide with `acme:`, `sess:` or `cnt:` keys — see §6 |
 | Non-redis backends | **Out of scope** | `stores:` is redis/valkey today; nothing here presumes otherwise |
 
 ## 4. Why four node types and not one
@@ -214,16 +214,69 @@ every policy that clears state, to signal something almost no caller acts on.
 
 ## 6. Key namespacing
 
-Every key is `<key_prefix>kv:<rendered key>`, where `key_prefix` is the store's configured
-prefix.
+Every key is `{key_prefix}:kv:{rendered key}`, where `key_prefix` is the store's configured
+prefix (default `fb`). This matches the convention every existing subsystem already follows.
 
-This keeps policy-written keys from colliding with `acme:*`, session, and rate-limit keys in
-a store shared by all of them — which is the normal case, since `stores:` entries are
-declared once and referenced by name from everywhere.
+### 6.1 The complete namespace inventory
 
-The cost is that a key written by some *other* system is not reachable from a policy. That is
-accepted for v1. An escape hatch (`raw_key: true`, say) is easy to add later and should only
-be added when something actually needs it.
+featherbit writes keys from exactly three places today. There are no others — the only other
+redis calls in the codebase are `PING` and `INFO`, which touch no keys.
+
+| Namespace | Keys | Source |
+|---|---|---|
+| `cnt` | `{p}:cnt:{slot}:{key}` | `src/stores/counter.rs:86` |
+| `acme` | `{p}:acme:account`, `{p}:acme:cert:{id}`, `{p}:acme:challenge:{domain}`, `{p}:acme:lease:{id}` | `src/acme/storage/redis.rs:40-51` |
+| `sess` | `{p}:sess:{id}`, `{p}:sess:{id}:meta` | `src/sessions/redis.rs:38-42` |
+
+`kv` is unused, so it is free to take.
+
+### 6.2 Making it stay true
+
+Being free today is not the same as being safe tomorrow. Two things could break the
+separation, and neither is prevented by choosing a good name:
+
+1. A future subsystem picks `kv`, or a future `store-*` change picks `sess`.
+2. A policy key escapes its namespace and names a managed key.
+
+Both are closed structurally rather than by documentation.
+
+**A namespace registry** (`src/stores/namespaces.rs`) becomes the single declaration of every
+namespace, with the three existing key builders refactored to use it:
+
+```rust
+pub const COUNTERS: &str = "cnt";
+pub const ACME: &str = "acme";
+pub const SESSIONS: &str = "sess";
+/// Policy-written keys (`store-get`/`set`/`incr`/`delete`).
+pub const POLICY_KV: &str = "kv";
+
+/// Namespaces owned by featherbit itself. A policy can never address these.
+pub const MANAGED: &[&str] = &[COUNTERS, ACME, SESSIONS];
+```
+
+Tests assert that `POLICY_KV` is not in `MANAGED`, that all four are pairwise distinct, and —
+the part that catches real drift — that each subsystem's **actual key builder** still produces
+keys under its declared namespace. A subsystem that changes its prefix, or a new one that
+reuses `kv`, fails the build.
+
+**Escape is structurally impossible**, and a test proves it rather than assuming it. The
+rendered policy key is a *suffix*: `format!("{prefix}:kv:{rendered}")`. Even an adversarial
+rendered value — `../x`, or `:sess:{abc}` from a header a caller controls — produces
+`fb:kv::sess:{abc}`, which is not `fb:sess:{abc}`. There is no traversal syntax in redis keys
+for it to exploit. The test asserts this against hostile inputs, because `key` is templated
+and templates read caller-supplied data.
+
+**An empty rendered key is rejected** with `STORE_KEY_INVALID`. `fb:kv:` stays inside the
+namespace so it is not a collision, but a template that silently collapses to nothing would
+put every request on one shared key — a template typo becoming a cross-tenant data leak. It
+fails loudly instead.
+
+### 6.3 What this costs
+
+A key written by some *other* system is not reachable from a policy. That is accepted for v1.
+An escape hatch (`raw_key: true`, say) is easy to add later and should only be added when
+something actually needs it — and it would deliberately give up the guarantee above, so it
+wants its own decision.
 
 ## 7. Failure handling
 
