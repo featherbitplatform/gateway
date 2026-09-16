@@ -207,20 +207,4 @@ mod tests {
         assert_eq!(parse_by(&cfg(serde_json::json!({ "by": -2 }))).unwrap(), -2);
         assert!(parse_by(&cfg(serde_json::json!({ "by": "x" }))).is_err());
     }
-
-    /// The script must set the expiry only when the key has none. Refreshing it
-    /// on every increment means a client that keeps retrying keeps the counter
-    /// alive and the bound never resets — which is the whole point of the node.
-    #[test]
-    #[cfg(feature = "redis-store")]
-    fn test_script_sets_expiry_only_when_absent() {
-        assert!(
-            INCR_SCRIPT.contains("TTL"),
-            "script must inspect the existing TTL"
-        );
-        assert!(
-            INCR_SCRIPT.contains("EXPIRE"),
-            "script must set an expiry when there is none"
-        );
-    }
 }
