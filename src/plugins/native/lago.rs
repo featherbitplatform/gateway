@@ -239,6 +239,13 @@ impl Plugin for LagoPlugin {
         "lago"
     }
 
+    fn reads_response_body(&self) -> bool {
+        crate::plugins::util::log_entry::reads_response_body(
+            self.log_format.as_ref(),
+            self.include_resp_body,
+        )
+    }
+
     async fn execute(&self, ctx: Context) -> PluginResult {
         let transaction_id = self.event_transaction_id.render_with_legacy(&ctx);
         let external_subscription_id = self.subscription_id.render_with_legacy(&ctx);

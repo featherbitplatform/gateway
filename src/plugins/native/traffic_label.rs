@@ -212,7 +212,15 @@ impl Plugin for TrafficLabelPlugin {
     }
 
     fn reads_response_body(&self) -> bool {
-        false
+        // The actions only write headers, but a matcher is an arbitrary
+        // condition and may read the response body -- `resp_body`, or a
+        // `response_body:$...` JSONPath. Such a rule silently stops matching
+        // on a streaming route, so it has to force buffering instead.
+        self.rules.iter().any(|rule| {
+            rule.matcher
+                .as_ref()
+                .is_some_and(|e| e.references_response_body())
+        })
     }
 
     async fn execute(&self, mut ctx: Context) -> PluginResult {
@@ -419,5 +427,35 @@ mod tests {
             "rules": [{ "actions": [{ "set_headers": { "x": "y" }, "weight": 0 }] }]
         }))
         .is_err());
+    }
+
+    /// A matcher on the response body makes this node a body reader even
+    /// though nothing else in its config touches the body. Reporting `false`
+    /// unconditionally let a streaming route silently stop matching: empty
+    /// body, no error, no log, no `buffering` entry.
+    #[test]
+    fn test_traffic_label_matching_on_the_response_body_forces_buffering() {
+        let reads = plugin(serde_json::json!({
+            "rules": [{
+                "match": [["resp_body", "~~", "error"]],
+                "actions": [{ "set_headers": { "x-failed": "1" } }]
+            }]
+        }))
+        .unwrap();
+        assert!(reads.reads_response_body());
+    }
+
+    /// A request-side matcher leaves the response body untouched, so the node
+    /// must stay stream-safe -- over-reporting would buffer ordinary policies.
+    #[test]
+    fn test_traffic_label_matching_on_the_request_stays_stream_safe() {
+        let safe = plugin(serde_json::json!({
+            "rules": [{
+                "match": [["arg_channel", "==", "beta"]],
+                "actions": [{ "set_headers": { "x-server-id": "beta" } }]
+            }]
+        }))
+        .unwrap();
+        assert!(!safe.reads_response_body());
     }
 }
