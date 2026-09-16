@@ -84,7 +84,12 @@ counted server-side and capped at three.
 
 Wire `count-retry.success → under-cap.in`, `under-cap.true → relogin.in`, and
 `under-cap.false → client.in` so the fourth failure surfaces the original error
-instead of looping. On a successful login, clear the counter:
+instead of looping. `redirect` declares `success` and `redirect` as its own
+mandatory-wired outcome ports (`src/plugins/ports.rs`); with a `uri` configured
+(as here) it always exits on `redirect`, but `success` still has to go
+somewhere or the policy fails to compile — wire both `relogin.redirect →
+client.in` and `relogin.success → client.in`. On a successful login, clear the
+counter:
 
 ```yaml
 - id: clear-retries

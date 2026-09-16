@@ -59,8 +59,11 @@ Nested objects and arrays are written as their own JSON value under one dotted
 key, not recursed into. A JSON **scalar** is written under `name` unchanged, so
 `$msg_<name>` keeps working.
 
-Flattened keys are readable through `{{message.…}}` but **not** through legacy
-`$msg_<name>`, where a dot ends the token.
+Flattened keys are readable through `{{message.…}}`, and through the legacy
+`${msg_<name>}` brace form too — the name runs to the closing `}`, so
+`${msg_profile.tier}` resolves the dotted key. Only the bare `$msg_<name>`
+form stops at the dot (`src/vars/mod.rs`'s `interpolate`), so a dotted
+flattened key needs the brace form there.
 
 A value that is not valid JSON exits `error` with `STORE_VALUE_INVALID` rather
 than falling back to the raw string, which would make a malformed value

@@ -133,9 +133,10 @@ downstream can index into.
 ```
 
 Nested objects and arrays are written as their JSON text under their own flattened key, not
-recursed into; one level is what the flat namespace can express honestly. Note this is
-reachable through the `{{message.…}}` form but **not** through legacy `$msg_<name>`, where a
-dot terminates the token — the plugin page must say so.
+recursed into; one level is what the flat namespace can express honestly. This is reachable
+through the `{{message.…}}` form and through the legacy `${msg_<name>}` brace form (the name
+runs to the closing `}`, so `${msg_profile.tier}` resolves the dotted key) — only the bare
+`$msg_<name>` form stops at the dot. The plugin page must say so.
 
 A value that parses as a JSON scalar (a bare number, string or boolean) is written under
 `name` unchanged, so `$msg_<name>` keeps working for the common counter case.
