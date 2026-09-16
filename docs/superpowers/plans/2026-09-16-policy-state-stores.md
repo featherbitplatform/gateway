@@ -898,7 +898,7 @@ pub mod store_get;
 ```ts
   'store-get': [
     { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
-    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookie.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
+    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookies.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
     { key: 'name', label: 'Message key', type: 'text', placeholder: 'retry_count', hint: 'context.message key to write; readable as $msg_<name>' },
     { key: 'json', label: 'Parse JSON', type: 'boolean', default: false, hint: 'flattens an object into <name>.<field> message keys' },
   ],
@@ -922,7 +922,7 @@ Reads a key from a declared [store](../../guides/configuration.md) into `context
   type: store-get
   config:
     store: sessions
-    key: "retry:{{request.cookie.fb_sid}}"
+    key: "retry:{{request.cookies.fb_sid}}"
     name: retry_count
     json: false
 ```
@@ -1492,7 +1492,7 @@ impl Plugin for StoreIncrPlugin {
 ```ts
   'store-incr': [
     { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
-    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookie.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
+    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookies.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
     { key: 'by', label: 'By', type: 'number', default: 1, hint: 'amount to add; may be negative' },
     { key: 'ttl_seconds', label: 'TTL (s)', type: 'number', hint: 'applied only when the key is created, never refreshed' },
     { key: 'name', label: 'Message key', type: 'text', placeholder: 'retry_count', hint: 'receives the new value; readable as $msg_<name>' },
@@ -1750,7 +1750,7 @@ impl Plugin for StoreDeletePlugin {
 ```ts
   'store-delete': [
     { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
-    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookie.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
+    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookies.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
   ],
 ```
 
