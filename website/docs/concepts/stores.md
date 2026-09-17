@@ -15,7 +15,8 @@ stores:
     url: ${REDIS_URL:-redis://127.0.0.1:6379}
     password: ${REDIS_PASSWORD:-}    # optional; user/password also accepted in the URL
     key_prefix: fb                   # optional, default "fb"
-    connect_timeout_ms: 2000         # optional, default 2000
+    connect_timeout_ms: 2000         # optional, default 2000 -- one attempt
+    connect_budget_ms: 5000          # optional, default 5000 -- connect + all retries
     tls:                             # optional, for rediss:// / private CAs
       ca_cert_path: /etc/ssl/redis-ca.pem
 ```
@@ -28,8 +29,30 @@ stores:
 | `url` | string | — | `redis://` or `rediss://`. Stored **raw**: `${ENV}` placeholders resolve only when the store's client is built (config-apply time), so the Admin API and UI never serve a resolved secret — the same rule as every other `gateway.yaml` resource. |
 | `password` | string | — | Optional; overrides any password embedded in `url`. Same raw-`${ENV}` treatment. |
 | `key_prefix` | string | `fb` | Namespace prefix applied to every key the store writes. |
-| `connect_timeout_ms` | integer | `2000` | Applied to the client and to `ping`. |
+| `connect_timeout_ms` | integer | `2000` | Bounds a **single** connection attempt, and `ping`. |
+| `connect_budget_ms` | integer | `5000` | Bounds establishing the first connection **in total** — every retry and the backoff between them. See below. |
 | `tls.ca_cert_path` | string | — | PEM CA bundle for a `rediss://` store with a private CA. |
+
+:::note[Why there are two timeouts]
+`connect_timeout_ms` bounds one attempt. It says nothing about the retry
+schedule *around* those attempts, and the connection manager retries six times
+with exponential backoff.
+
+Measured against a refused connection, that is **~18 seconds** before the error
+surfaces — and it happens on the first request after an outage begins, which is
+exactly when a gateway should shed load fastest rather than hold requests open.
+
+`connect_budget_ms` bounds the whole thing: attempts, retries, and the waits
+between them. When it expires the store's node exits its `error` port with the
+usual `503`, promptly instead of eventually.
+
+A failed connect is **not** cached, so the next request tries again — one
+outage cannot poison a store for the life of the process.
+
+**Upgrade note:** a store that currently takes longer than the budget to
+connect will now fail instead of eventually succeeding. If you are on a link
+slow enough for that, raise `connect_budget_ms`.
+:::
 | `topology` | string | `standalone` | Reserved for Sentinel/Cluster. **v1 accepts only `standalone`** and rejects any other value at config load. |
 | `urls` | list | — | Reserved for the Sentinel/Cluster endpoint list. **Rejected at config load in v1** — declare `url` instead. |
 

@@ -251,9 +251,20 @@ pub struct StoreConfig {
     /// at config load in v1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub urls: Option<Vec<String>>,
-    /// Connect/response timeout applied to the client and to `ping`.
+    /// Connect/response timeout applied to the client and to `ping`. Bounds a
+    /// single attempt; see `connect_budget_ms` for the total.
     #[serde(default = "default_store_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
+    /// Total budget for establishing the first connection, covering every
+    /// retry and the backoff between them.
+    ///
+    /// `connect_timeout_ms` bounds one attempt only, so without this the
+    /// connection manager's retry schedule decides how long a request waits
+    /// on an unreachable store -- tens of seconds with the crate defaults, on
+    /// the first request after an outage begins. A failed connect is not
+    /// cached, so the next request tries again.
+    #[serde(default = "default_store_connect_budget_ms")]
+    pub connect_budget_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<StoreTlsConfig>,
 }
@@ -264,6 +275,10 @@ fn default_store_key_prefix() -> String {
 
 fn default_store_connect_timeout_ms() -> u64 {
     2000
+}
+
+fn default_store_connect_budget_ms() -> u64 {
+    5000
 }
 
 /// TLS options for a `rediss://` store.

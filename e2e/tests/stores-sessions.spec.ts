@@ -103,7 +103,19 @@ test.describe('Stores & sessions', () => {
     await row.click();
 
     await page.getByRole('button', {name: 'Ping store'}).click();
-    await expect(page.getByText(/Timed out|refused|connect/i)).toBeVisible();
+
+    // Scoped to the ping result itself, not the page. A page-wide
+    // `getByText(/connect/i)` also matches this form's own labels ("Connect
+    // timeout (ms)"), and `toBeVisible` resolves on the first match -- so it
+    // passed the instant the panel rendered, before any ping had run, and
+    // reported nothing about the ping at all.
+    //
+    // The wait is generous because the ping is bounded by the store's
+    // `connect_budget_ms` (default 5000ms), which is the whole point of that
+    // setting: the failure arrives promptly, but not instantly.
+    const pingError = page.getByTestId('ping-error');
+    await expect(pingError).toBeVisible({timeout: 15_000});
+    await expect(pingError).not.toBeEmpty();
 
     // Store-picker coverage: a scratch limit-count shared config renders a
     // `store`-select field (optionsFrom: 'stores') fed by the same

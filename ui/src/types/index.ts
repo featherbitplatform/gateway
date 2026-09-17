@@ -152,6 +152,7 @@ export interface StoreConfig {
   urls?: string[];
   /** Connect/response timeout in milliseconds (server default 2000). */
   connect_timeout_ms: number;
+  connect_budget_ms: number;
   /** Optional TLS options for `rediss://`. */
   tls?: StoreTlsConfig;
 }
