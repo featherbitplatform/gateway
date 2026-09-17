@@ -258,6 +258,7 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
           </button>
           {ping.state === 'ok' && (
             <span
+              data-testid="ping-ok"
               style={{
                 fontFamily: 'var(--font-mono)',
                 fontSize: 'var(--text-sm)',
@@ -268,7 +269,12 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
             </span>
           )}
           {ping.state === 'fail' && (
-            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--error)' }}>{ping.message}</span>
+            <span
+              data-testid="ping-error"
+              style={{ fontSize: 'var(--text-sm)', color: 'var(--error)' }}
+            >
+              {ping.message}
+            </span>
           )}
         </div>
         <p style={hintStyle}>pings the last saved configuration</p>
