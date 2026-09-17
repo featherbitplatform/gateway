@@ -79,7 +79,14 @@ async fn list_traces(
         return disabled("trace listing");
     }
     let traces = apply_filter(state.debug.list(), &filter);
-    Json(serde_json::json!({ "traces": traces })).into_response()
+    // `retention` travels with every listing: an empty `traces` is ambiguous
+    // on its own, since a rotated-out match and a match that never happened
+    // look identical.
+    Json(serde_json::json!({
+        "traces": traces,
+        "retention": state.debug.retention(),
+    }))
+    .into_response()
 }
 
 /// `GET /api/debug/traces/{id}` — one trace with computed changes.

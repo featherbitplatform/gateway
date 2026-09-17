@@ -411,6 +411,21 @@ export interface NodeStep {
 }
 
 /** Row shape from `GET /api/debug/traces`. */
+/**
+ * What the trace ring buffer holds and what it has discarded.
+ *
+ * Returned with every listing so an empty result is readable: a filter that
+ * matched nothing and a match that aged out are otherwise identical.
+ */
+export interface TraceRetention {
+  max_traces: number;
+  retained: number;
+  evicted: number;
+  /** `seq` of the oldest trace still held; anything older is gone. */
+  oldest_seq: number | null;
+  truncated: boolean;
+}
+
 export interface TraceSummary {
   id: string;
   seq: number;

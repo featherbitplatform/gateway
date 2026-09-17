@@ -41,6 +41,8 @@
 
 ## 6. `max_traces` default is too small for a real deployment
 
+**Status:** fixed. Every trace listing (Admin API and MCP `list_traces`) now carries a `retention` block — `truncated`, `evicted`, `oldest_seq`, `retained`, `max_traces` — so an empty result is no longer ambiguous, and the Debug panel says so in prose. The default is raised from 50 to 1000.
+
 **What we hit.** The default is **50**. On a live app generating ~80 traces/minute, a trace survives about 35 seconds — long enough that a filtered query returns empty while an unfiltered one taken moments earlier showed matches. That cost real debugging time and produced a false "the filter is broken" conclusion.
 
 **Shape.** Raise the default substantially (low thousands), or make it time-based rather than count-based, or surface the eviction in the trace list response (`"truncated": true`, oldest retained `seq`) so an empty filtered result is distinguishable from a rotated-out one. The last of those is the cheapest and removes the ambiguity entirely.

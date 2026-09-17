@@ -115,7 +115,7 @@ impl Default for DebugConfig {
             trace_all: false,
             capture_bodies: false,
             max_body_bytes: 8192,
-            max_traces: 50,
+            max_traces: 1000,
             max_steps: 200,
             sandbox_timeout_seconds: 30,
             redact_headers: Vec::new(),
@@ -917,7 +917,7 @@ mod tests {
         assert!(!cfg.capture_bodies);
         assert!(cfg.sandbox, "sandbox is allowed once debug itself is on");
         assert_eq!(cfg.trigger_header, "x-featherbit-debug");
-        assert_eq!(cfg.max_traces, 50);
+        assert_eq!(cfg.max_traces, 1000);
         assert_eq!(cfg.max_steps, 200);
         assert_eq!(cfg.max_body_bytes, 8192);
         assert_eq!(cfg.sandbox_timeout_seconds, 30);
