@@ -86,6 +86,8 @@ only against a backend error, which exercises the same code path but not the sam
 
 ## 9. Browser-level e2e coverage for the `store-*` nodes is still owed
 
+**Status:** fixed. `e2e/tests/policy-state.spec.ts` adds E2E-STORE-10..13, driving the nodes through real routes on the data plane (gated on `FEATHERBIT_TEST_REDIS_URL`, skipping cleanly without it). E2E-STORE-12 was restructured after a mutation check showed the first version could not fail against an unconditional `EXPIRE`.
+
 **What we hit.** The final review of the `store-*` branch found four testbook rows
 (`E2E-STORE-10..13`) describing browser-level scenarios for `store-get`/`store-incr`/
 `store-delete` -- miss vs. success through a real route, TTL-bounded reset, delete-then-miss,
