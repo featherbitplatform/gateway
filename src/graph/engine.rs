@@ -41,12 +41,29 @@ pub struct CompiledGraph {
     stream_capable: HashSet<String>,
     /// Why each non-capable upstream must buffer, for operator-visible reporting.
     buffering_reasons: Vec<BufferingReason>,
+    cache_pair_warnings: Vec<CachePairWarning>,
 }
 
 /// Records that one node on an upstream's success path forces buffering.
 ///
 /// Serializes as `{"upstream": ..., "blocked_by": ..., "node_type": ...}` —
 /// the shape the Admin API's policy-validate endpoint and the MCP
+/// One half of a `proxy-cache` pair with no counterpart.
+///
+/// A lookup with no store caches nothing; a store with no lookup is never
+/// read. Both are silent no-ops rather than errors -- and both are also what
+/// a policy looks like halfway through being built -- so they are reported
+/// the way a buffering reason is rather than refused.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CachePairWarning {
+    /// The shared `id` that links a pair.
+    pub cache_id: String,
+    /// The half that is present.
+    pub present_node_id: String,
+    /// The half that is missing: `"lookup"` or `"store"`.
+    pub missing_role: String,
+}
+
 /// `validate_policy` tool both report to operators/agents.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BufferingReason {
@@ -336,6 +353,12 @@ impl CompiledGraph {
 
     /// Why each non-stream-capable `upstream` node must buffer, one entry per
     /// blocked upstream, for operator-visible reporting.
+    /// `proxy-cache` halves with no counterpart. Informational, like
+    /// [`CompiledGraph::buffering_reasons`].
+    pub fn cache_pair_warnings(&self) -> &[CachePairWarning] {
+        &self.cache_pair_warnings
+    }
+
     pub fn buffering_reasons(&self) -> &[BufferingReason] {
         &self.buffering_reasons
     }
@@ -371,6 +394,11 @@ pub fn compile_policy(
     policy: &PolicyConfig,
     resources: Arc<PluginResources>,
 ) -> Result<CompiledGraph, String> {
+    // Before anything is constructed: this reads config only, and running it
+    // first means a split pair is reported as a split pair rather than as
+    // whatever its half happens to fail on downstream.
+    let cache_pair_warnings = validate_cache_pairs(&policy.nodes)?;
+
     let mut nodes: HashMap<String, Box<dyn Plugin>> = HashMap::new();
     let mut listener_node_id = None;
     let mut terminal_node_ids = HashSet::new();
@@ -531,7 +559,97 @@ pub fn compile_policy(
         resources,
         stream_capable,
         buffering_reasons,
+        cache_pair_warnings,
     })
+}
+
+/// Checks that every `proxy-cache` pair agrees about where it caches.
+///
+/// The two halves of a pair are linked only by their shared `id`; nothing
+/// else ties them together. If they disagree about `policy` or `store`, the
+/// store half writes somewhere the lookup half never reads, and the route
+/// compiles, serves traffic, and returns a permanent 100% miss with no error
+/// anywhere -- it simply looks like a cache that is never warm. There is no
+/// configuration for which that is correct, so it is refused.
+///
+/// A half with no counterpart is returned as a warning instead: equally
+/// useless, but also what a policy looks like halfway through being built.
+fn validate_cache_pairs(policy_nodes: &[NodeConfig]) -> Result<Vec<CachePairWarning>, String> {
+    /// One half, as configured.
+    struct Half<'a> {
+        cache_id: &'a str,
+        node_id: &'a str,
+        role: &'a str,
+        policy: &'a str,
+        store: &'a str,
+    }
+
+    let mut halves: Vec<Half> = Vec::new();
+    for node in policy_nodes {
+        if node.node_type != "proxy-cache" {
+            continue;
+        }
+        let get = |key: &str| -> Option<&str> { node.config.get(key).and_then(|v| v.as_str()) };
+        let Some(cache_id) = get("id") else { continue };
+        // `phase` is the documented key; `role` is accepted as an alias.
+        let Some(role) = get("phase").or_else(|| get("role")) else {
+            continue;
+        };
+        halves.push(Half {
+            node_id: &node.id,
+            role,
+            policy: get("policy").unwrap_or("local"),
+            store: get("store").unwrap_or(""),
+            cache_id,
+        });
+    }
+
+    let mut warnings = Vec::new();
+    let ids: Vec<&str> = {
+        let mut seen: Vec<&str> = Vec::new();
+        for h in &halves {
+            if !seen.contains(&h.cache_id) {
+                seen.push(h.cache_id);
+            }
+        }
+        seen
+    };
+
+    for cache_id in ids {
+        let group: Vec<&Half> = halves.iter().filter(|h| h.cache_id == cache_id).collect();
+
+        // Disagreement is a hard error: whichever half is wrong, the pair can
+        // never see its own entries.
+        for pair in group.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            for (key, left, right) in [("policy", a.policy, b.policy), ("store", a.store, b.store)]
+            {
+                if left != right {
+                    return Err(format!(
+                        "proxy-cache pair '{}': node '{}' uses {} '{}' but node '{}' uses {} '{}'.                          Both halves must agree, or the store half writes where the lookup half                          never reads and the route serves a permanent 100% miss with no error",
+                        cache_id, a.node_id, key, left, b.node_id, key, right
+                    ));
+                }
+            }
+        }
+
+        // A half with no counterpart: report, do not refuse.
+        let has_lookup = group.iter().any(|h| h.role == "lookup");
+        let has_store = group.iter().any(|h| h.role == "store");
+        if has_lookup != has_store {
+            let present = group
+                .iter()
+                .find(|h| h.role == if has_lookup { "lookup" } else { "store" })
+                .expect("the present half exists");
+            warnings.push(CachePairWarning {
+                cache_id: cache_id.to_string(),
+                present_node_id: present.node_id.to_string(),
+                missing_role: if has_lookup { "store" } else { "lookup" }.to_string(),
+            });
+        }
+    }
+
+    Ok(warnings)
 }
 
 /// For each `upstream` node, walks only the `success`/outcome ports forward
@@ -1013,6 +1131,7 @@ mod tests {
             resources: PluginResources::empty(),
             stream_capable: HashSet::new(),
             buffering_reasons: Vec::new(),
+            cache_pair_warnings: Vec::new(),
         }
     }
 
@@ -1221,6 +1340,7 @@ mod tests {
             resources: PluginResources::empty(),
             stream_capable: HashSet::new(),
             buffering_reasons: Vec::new(),
+            cache_pair_warnings: Vec::new(),
         };
         let mut ctx = test_context("/x");
         let boxed = Full::new(Bytes::from_static(b"partial-stream-bytes"))
@@ -1320,6 +1440,7 @@ mod tests {
             resources: PluginResources::empty(),
             stream_capable: HashSet::new(),
             buffering_reasons: Vec::new(),
+            cache_pair_warnings: Vec::new(),
         }
     }
 
@@ -1631,6 +1752,19 @@ mod tests {
         let policy: PolicyConfig =
             serde_json::from_value(value).expect("test policy JSON must deserialize");
         compile_policy(&policy, PluginResources::empty()).expect("test policy must compile")
+    }
+
+    /// The same, for a policy that must be REJECTED: returns the compile
+    /// error so a test can assert on what it says.
+    fn compile_test_policy_err(json: serde_json::Value) -> String {
+        let mut value = json;
+        if let serde_json::Value::Object(ref mut map) = value {
+            map.entry("name")
+                .or_insert_with(|| serde_json::Value::String("test".to_string()));
+        }
+        let policy: PolicyConfig =
+            serde_json::from_value(value).expect("test policy JSON must deserialize");
+        compile_policy(&policy, PluginResources::empty()).expect_err("this policy must not compile")
     }
 
     /// An upstream whose success path reaches `client` through header-only
@@ -2162,5 +2296,144 @@ mod tests {
         }));
 
         assert!(!graph.is_stream_capable("up"));
+    }
+
+    /// A cache pair links its two halves by `id`. If they disagree about the
+    /// backend, the store half writes where the lookup half never reads: the
+    /// route compiles, serves traffic, and returns a permanent 100% miss with
+    /// no error anywhere. There is no configuration for which that is correct,
+    /// so it is rejected rather than reported.
+    #[tokio::test]
+    async fn test_a_cache_pair_split_across_backends_is_rejected() {
+        let err = compile_test_policy_err(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "look", "type": "proxy-cache",
+                  "config": { "phase": "lookup", "id": "products", "policy": "local" } },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "keep", "type": "proxy-cache",
+                  "config": { "phase": "store", "id": "products", "policy": "redis", "store": "s" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "look.in" },
+                { "from": "look.success", "to": "up.in" },
+                { "from": "look.hit", "to": "client.in" },
+                { "from": "up.success", "to": "keep.in" },
+                { "from": "keep.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(
+            err.contains("products"),
+            "the error must name the pair: {err}"
+        );
+        assert!(
+            err.contains("look") && err.contains("keep"),
+            "and both halves: {err}"
+        );
+    }
+
+    /// The same failure arrives through a different key: same backend kind,
+    /// different store, so the two halves address different redis instances.
+    #[tokio::test]
+    async fn test_a_cache_pair_split_across_stores_is_rejected() {
+        let err = compile_test_policy_err(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "look", "type": "proxy-cache",
+                  "config": { "phase": "lookup", "id": "products", "policy": "redis", "store": "a" } },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "keep", "type": "proxy-cache",
+                  "config": { "phase": "store", "id": "products", "policy": "redis", "store": "b" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "look.in" },
+                { "from": "look.success", "to": "up.in" },
+                { "from": "look.hit", "to": "client.in" },
+                { "from": "up.success", "to": "keep.in" },
+                { "from": "keep.success", "to": "client.in" }
+            ]
+        }));
+
+        assert!(
+            err.contains("store"),
+            "the error must say which key disagrees: {err}"
+        );
+    }
+
+    /// Two independent pairs must not be compared with each other -- only
+    /// halves sharing an `id` form a pair, and a false positive here would
+    /// reject a perfectly ordinary two-cache policy.
+    #[tokio::test]
+    async fn test_two_independent_cache_pairs_do_not_collide() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "look-a", "type": "proxy-cache",
+                  "config": { "phase": "lookup", "id": "alpha", "policy": "local" } },
+                { "id": "look-b", "type": "proxy-cache",
+                  "config": { "phase": "lookup", "id": "beta", "policy": "local" } },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "keep-a", "type": "proxy-cache",
+                  "config": { "phase": "store", "id": "alpha", "policy": "local" } },
+                { "id": "keep-b", "type": "proxy-cache",
+                  "config": { "phase": "store", "id": "beta", "policy": "local" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "look-a.in" },
+                { "from": "look-a.success", "to": "look-b.in" },
+                { "from": "look-a.hit", "to": "client.in" },
+                { "from": "look-b.success", "to": "up.in" },
+                { "from": "look-b.hit", "to": "client.in" },
+                { "from": "up.success", "to": "keep-a.in" },
+                { "from": "keep-a.success", "to": "keep-b.in" },
+                { "from": "keep-b.success", "to": "client.in" },
+                // The port spec is per TYPE, not per role, so a store-role
+                // node declares `hit` too and the compiler requires it wired.
+                { "from": "keep-a.hit", "to": "client.in" },
+                { "from": "keep-b.hit", "to": "client.in" }
+            ]
+        }));
+
+        assert!(
+            graph.cache_pair_warnings().is_empty(),
+            "both pairs are complete and agree"
+        );
+    }
+
+    /// A lookup with no store caches nothing; a store with no lookup is never
+    /// read. Both are silent no-ops -- but they are also what a policy looks
+    /// like halfway through being built, so they are reported rather than
+    /// rejected, the same way a buffering reason is.
+    #[tokio::test]
+    async fn test_a_lone_cache_half_is_reported_not_rejected() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "look", "type": "proxy-cache",
+                  "config": { "phase": "lookup", "id": "orphan", "policy": "local" } },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "look.in" },
+                { "from": "look.success", "to": "up.in" },
+                { "from": "look.hit", "to": "client.in" },
+                { "from": "up.success", "to": "client.in" }
+            ]
+        }));
+
+        let warnings = graph.cache_pair_warnings();
+        assert_eq!(warnings.len(), 1, "one incomplete pair: {warnings:?}");
+        assert_eq!(warnings[0].cache_id, "orphan");
+        assert_eq!(warnings[0].present_node_id, "look");
+        assert_eq!(warnings[0].missing_role, "store");
     }
 }
