@@ -524,6 +524,9 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'cache_http_statuses', label: 'Cacheable statuses', type: 'list', addLabel: 'Status', item: { type: 'number' }, hint: 'defaults to 200, 301, 404' },
     { key: 'cache_method', label: 'Cacheable methods', type: 'list', addLabel: 'Method', item: { type: 'text', placeholder: 'GET' }, hint: 'defaults to GET, HEAD' },
     { key: 'hide_cache_headers', label: 'Hide cache headers', type: 'switch', switchLabel: 'Strip cache-control/expires on hits', default: false },
+    { key: 'policy', label: 'Policy', type: 'select', options: ['local', 'redis'], default: 'local', hint: 'redis = shared cache via a named store' },
+    { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'required when policy is redis: a declared stores: entry' },
+    { key: 'max_object_bytes', label: 'Max object bytes', type: 'number', default: 1048576, hint: 'responses larger than this are served but never cached' },
   ],
   // ---- Plugin catalog (Wave 3: callout auth & authz) -----------------
   'forward-auth': [
