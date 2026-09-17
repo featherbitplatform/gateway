@@ -30,6 +30,7 @@ pub struct RedisStoreClient {
     key_prefix: String,
     fingerprint: String,
     connect_timeout: Duration,
+    connect_budget: Duration,
     client: redis::Client,
     conn: OnceCell<redis::aio::ConnectionManager>,
 }
@@ -96,6 +97,7 @@ impl RedisStoreClient {
             key_prefix: cfg.key_prefix.clone(),
             fingerprint: Self::fingerprint_of(cfg),
             connect_timeout: Duration::from_millis(cfg.connect_timeout_ms),
+            connect_budget: Duration::from_millis(cfg.connect_budget_ms),
             client,
             conn: OnceCell::new(),
         })
@@ -130,8 +132,30 @@ impl RedisStoreClient {
             .get_or_try_init(|| async {
                 let cfg = redis::aio::ConnectionManagerConfig::new()
                     .set_connection_timeout(self.connect_timeout)
-                    .set_response_timeout(self.connect_timeout);
-                redis::aio::ConnectionManager::new_with_config(self.client.clone(), cfg).await
+                    .set_response_timeout(self.connect_timeout)
+                    // No individual backoff may outlast the budget itself.
+                    .set_max_delay(self.connect_budget.as_millis() as u64);
+
+                // `connect_timeout` bounds one attempt; it says nothing about
+                // the retry schedule around them. With the crate defaults that
+                // is six attempts separated by 100/200/400/800/1600/3200ms of
+                // backoff, none of it capped -- so an unreachable store held
+                // the request open for tens of seconds before the `503` the
+                // design promises, on the first request after an outage began.
+                // The budget bounds connect + retries + waits together, which
+                // is the only figure an operator can actually reason about.
+                match tokio::time::timeout(
+                    self.connect_budget,
+                    redis::aio::ConnectionManager::new_with_config(self.client.clone(), cfg),
+                )
+                .await
+                {
+                    Ok(result) => result.map_err(|e| e.to_string()),
+                    Err(_) => Err(format!(
+                        "gave up after {}ms (connect_budget_ms)",
+                        self.connect_budget.as_millis()
+                    )),
+                }
             })
             .await
             .map_err(|e| format!("store '{}': connect: {}", self.name, e))?;
@@ -240,5 +264,70 @@ mod tests {
         let client = RedisStoreClient::build(&c).unwrap();
         let info = client.ping().await.unwrap();
         assert!(!info.version.is_empty());
+    }
+
+    /// A store that cannot be reached must give up inside its budget rather
+    /// than working through the connection manager's retry schedule.
+    ///
+    /// Nothing listens on port 1, so every attempt is refused immediately and
+    /// the elapsed time is almost entirely the crate's exponential backoff:
+    /// with the defaults that is 100+200+400+800+1600+3200ms of waiting
+    /// between six attempts. The budget has to cut that short, because this
+    /// happens on the first request after an outage begins -- exactly when a
+    /// gateway should shed load fastest, not hold the request open.
+    #[tokio::test]
+    async fn test_connect_gives_up_inside_its_budget() {
+        let c = cfg("name: s1
+type: redis
+url: redis://127.0.0.1:1
+connect_budget_ms: 300
+");
+        let client = RedisStoreClient::build(&c).unwrap();
+
+        let started = std::time::Instant::now();
+        // `ConnectionManager` has no `Debug`, so `unwrap_err()` is unavailable.
+        let err = match client.conn().await {
+            Ok(_) => panic!("connecting to a closed port must fail"),
+            Err(e) => e,
+        };
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(2000),
+            "connect must abandon inside its budget, not run the full retry schedule: took {elapsed:?}"
+        );
+        assert!(err.contains("store 's1'"), "{err}");
+    }
+
+    /// A failed connect must not be cached: the `OnceCell` stays uninitialised
+    /// so the next request tries again, rather than a single outage poisoning
+    /// the store for the process's lifetime.
+    #[tokio::test]
+    async fn test_a_failed_connect_is_not_cached() {
+        let c = cfg("name: s1
+type: redis
+url: redis://127.0.0.1:1
+connect_budget_ms: 300
+");
+        let client = RedisStoreClient::build(&c).unwrap();
+
+        assert!(client.conn().await.is_err());
+        let started = std::time::Instant::now();
+        assert!(client.conn().await.is_err());
+        assert!(
+            started.elapsed() > Duration::from_millis(50),
+            "a second attempt must actually retry, not return a cached failure instantly"
+        );
+    }
+
+    /// The budget has a default, so an existing config with no new key is
+    /// still bounded rather than inheriting the crate's unbounded schedule.
+    #[test]
+    fn test_connect_budget_defaults() {
+        let c = cfg("name: s1
+type: redis
+url: redis://127.0.0.1:6379
+");
+        assert_eq!(c.connect_budget_ms, 5000);
     }
 }
