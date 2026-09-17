@@ -9,7 +9,7 @@ featherbit exposes Prometheus metrics and health probes on the admin port, and l
 
 `GET /metrics` on the admin port renders the shared gateway registry in the Prometheus text exposition format (`text/plain; charset=utf-8`). Unlike the health probes, `/metrics` requires Basic auth (see [Admin API](./admin-api.md)).
 
-Eight metric families are recorded — per-route metrics by the data plane, per-node metrics by the graph engine, plus per-store error counters:
+Ten metric families are recorded — per-route metrics by the data plane, per-node metrics by the graph engine, plus per-store error and cache-event counters:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
@@ -19,8 +19,10 @@ Eight metric families are recorded — per-route metrics by the data plane, per-
 | `gateway_node_executions_total` | counter | `policy`, `node_id`, `node_type` | Graph node executions |
 | `gateway_node_duration_seconds` | histogram | `policy`, `node_id` | Per-node execution latency (buckets 0.1 ms to 500 ms) |
 | `gateway_node_errors_total` | counter | `policy`, `node_id`, `error_code` | Node failures by error code |
+| `gateway_consumer_requests_total` | counter | `consumer`, `route` | Requests attributed to an authenticated consumer, by route |
 | `gateway_counter_store_errors_total` | counter | `store` | Counter-store (`stores:`) backend errors per named store |
 | `gateway_session_store_errors_total` | counter | `store` | Session-store backend errors per named store |
+| `gateway_cache_events_total` | counter | `backend`, `store`, `event` | [`proxy-cache`](../reference/plugins/proxy-cache.md) outcomes. `backend` is `local` or `redis`; `store` is the named `stores:` entry for `redis`, empty for `local`. `event` is one of `hit`, `miss`, `error`, `too_large`, `eviction`: `hit` and `miss` partition every lookup, so the hit rate is `hits/(hits+misses)`; `error` overlaps the miss or skipped write it caused rather than adding a fifth bucket; `too_large` counts a response skipped for exceeding `max_object_bytes`; `eviction` (backend `local` only) counts an entry discarded because `cache.max_entries` was reached |
 
 The per-node families let you pinpoint which node inside a routing policy is slow or failing, not just which route.
 
