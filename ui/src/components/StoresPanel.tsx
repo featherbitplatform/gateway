@@ -65,6 +65,7 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
   const [password, setPassword] = useState(def.password ?? '');
   const [keyPrefix, setKeyPrefix] = useState(def.key_prefix);
   const [connectTimeoutMs, setConnectTimeoutMs] = useState(def.connect_timeout_ms);
+  const [connectBudgetMs, setConnectBudgetMs] = useState(def.connect_budget_ms);
   const [ping, setPing] = useState<PingState>({ state: 'idle' });
 
   const handlePing = async () => {
@@ -90,6 +91,19 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
       onError('Invalid connect timeout', 'Connect timeout must be a positive number of milliseconds.');
       return;
     }
+    if (!Number.isFinite(connectBudgetMs) || connectBudgetMs <= 0) {
+      onError('Invalid connect budget', 'Connect budget must be a positive number of milliseconds.');
+      return;
+    }
+    // The budget covers connect + every retry, so a budget below one attempt's
+    // timeout can never let even the first attempt finish.
+    if (connectBudgetMs < connectTimeoutMs) {
+      onError(
+        'Connect budget too small',
+        'The budget covers the whole connect including retries, so it cannot be shorter than a single attempt’s timeout.',
+      );
+      return;
+    }
     await onSave({
       ...def,
       type,
@@ -98,6 +112,7 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
       password: password || undefined,
       key_prefix: keyPrefix,
       connect_timeout_ms: connectTimeoutMs,
+      connect_budget_ms: connectBudgetMs,
     });
   };
 
@@ -195,8 +210,22 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
           value={connectTimeoutMs}
           onChange={(e) => setConnectTimeoutMs(Number(e.target.value))}
           className="w-full"
-          style={{ ...inputStyle(), marginBottom: 16 }}
+          style={{ ...inputStyle(), marginBottom: 4 }}
         />
+        <div style={hintStyle}>Bounds a single connection attempt.</div>
+
+        <label style={labelStyle}>Connect budget (ms)</label>
+        <input
+          type="number"
+          value={connectBudgetMs}
+          onChange={(e) => setConnectBudgetMs(Number(e.target.value))}
+          className="w-full"
+          style={{ ...inputStyle(), marginBottom: 4 }}
+        />
+        <div style={{ ...hintStyle, marginBottom: 16 }}>
+          Bounds connect plus every retry. Without it an unreachable store holds a request
+          open for ~18s before its 503.
+        </div>
 
         <div
           className="flex items-center"
@@ -229,6 +258,7 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
           </button>
           {ping.state === 'ok' && (
             <span
+              data-testid="ping-ok"
               style={{
                 fontFamily: 'var(--font-mono)',
                 fontSize: 'var(--text-sm)',
@@ -239,7 +269,12 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
             </span>
           )}
           {ping.state === 'fail' && (
-            <span style={{ fontSize: 'var(--text-sm)', color: 'var(--error)' }}>{ping.message}</span>
+            <span
+              data-testid="ping-error"
+              style={{ fontSize: 'var(--text-sm)', color: 'var(--error)' }}
+            >
+              {ping.message}
+            </span>
           )}
         </div>
         <p style={hintStyle}>pings the last saved configuration</p>
