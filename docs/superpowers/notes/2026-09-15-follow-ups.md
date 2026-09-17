@@ -108,6 +108,8 @@ equivalents) to the testbook with real Playwright tests behind them, gated on
 
 ## 10. A split `proxy-cache` pair is silent and total
 
+**Status:** fixed. `validate_cache_pairs` runs at the head of `compile_policy`: a pair whose halves disagree about `policy` or `store` is rejected, naming both nodes; a half with no counterpart is reported in `cache_pairs` on both validate paths.
+
 **What we hit.** The final whole-branch review of the distributed response cache found
 that `proxy-cache`'s lookup and store nodes are validated independently: the compiler
 checks each node's own `policy`/`store`/`id` in isolation, but nothing checks that the two
