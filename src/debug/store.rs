@@ -39,6 +39,31 @@ pub struct DebugState {
     // keeps it that way.
     traces: Mutex<VecDeque<Arc<Trace>>>,
     seq: AtomicU64,
+    /// Traces dropped to keep the buffer at `max_traces`.
+    ///
+    /// Kept so a caller can tell an empty result apart from a rotated-out
+    /// one. Without it, filtering for something that has just aged out is
+    /// indistinguishable from filtering for something that never happened --
+    /// which has already produced one confident, wrong "the filter is broken"
+    /// diagnosis.
+    evicted: AtomicU64,
+}
+
+/// What the ring buffer currently holds, and what it has thrown away.
+#[derive(Debug, Clone, Serialize)]
+pub struct Retention {
+    /// Configured ceiling (`debug.max_traces`).
+    pub max_traces: usize,
+    /// Traces held right now.
+    pub retained: usize,
+    /// Traces evicted since startup.
+    pub evicted: u64,
+    /// `seq` of the oldest trace still held; `None` when the buffer is empty.
+    /// Anything older than this is gone.
+    pub oldest_seq: Option<u64>,
+    /// Whether anything has been evicted at all. When true, an empty result
+    /// may mean "rotated out", not "never happened".
+    pub truncated: bool,
 }
 
 /// Row shape for the trace list view.
@@ -80,6 +105,7 @@ impl DebugState {
             ),
             traces: Mutex::new(VecDeque::new()),
             seq: AtomicU64::new(0),
+            evicted: AtomicU64::new(0),
         }
     }
 
@@ -126,10 +152,33 @@ impl DebugState {
             return;
         }
         let mut buf = self.traces.lock().unwrap_or_else(|e| e.into_inner());
+        let mut dropped = 0u64;
         while buf.len() >= self.max_traces {
             buf.pop_front();
+            dropped += 1;
+        }
+        if dropped > 0 {
+            self.evicted.fetch_add(dropped, Ordering::Relaxed);
         }
         buf.push_back(Arc::new(trace));
+    }
+
+    /// What the buffer holds and what it has discarded.
+    ///
+    /// Returned alongside every trace listing so an empty result is
+    /// self-explanatory: with `truncated` set and an `oldest_seq` to compare
+    /// against, "no traces matched" and "the matches aged out" stop looking
+    /// the same.
+    pub fn retention(&self) -> Retention {
+        let buf = self.traces.lock().unwrap_or_else(|e| e.into_inner());
+        let evicted = self.evicted.load(Ordering::Relaxed);
+        Retention {
+            max_traces: self.max_traces,
+            retained: buf.len(),
+            evicted,
+            oldest_seq: buf.front().map(|t| t.seq),
+            truncated: evicted > 0,
+        }
     }
 
     /// Summaries, newest first.
@@ -353,5 +402,53 @@ mod tests {
         assert_eq!(s.next_seq(), 0);
         assert_eq!(s.next_seq(), 1);
         assert_eq!(s.next_seq(), 2);
+    }
+
+    /// An untouched buffer has discarded nothing, so an empty listing means
+    /// exactly what it says.
+    #[test]
+    fn test_retention_on_an_empty_buffer_is_not_truncated() {
+        let s = enabled_state(4);
+        let r = s.retention();
+        assert_eq!(r.retained, 0);
+        assert_eq!(r.evicted, 0);
+        assert_eq!(r.oldest_seq, None);
+        assert!(!r.truncated);
+    }
+
+    /// Filling the buffer exactly is still not truncation: nothing has been
+    /// lost, so a caller must not be told history is missing when it is not.
+    #[test]
+    fn test_retention_at_capacity_without_eviction_is_not_truncated() {
+        let s = enabled_state(4);
+        for i in 0..4 {
+            s.record(trace(&s, &format!("t{i}")));
+        }
+        let r = s.retention();
+        assert_eq!(r.retained, 4);
+        assert_eq!(r.evicted, 0);
+        assert!(
+            !r.truncated,
+            "a full buffer that has dropped nothing is intact"
+        );
+    }
+
+    /// Once the buffer starts dropping, a listing has to say so -- this is the
+    /// signal that separates "nothing matched" from "the matches aged out".
+    #[test]
+    fn test_retention_reports_eviction_and_the_surviving_window() {
+        let s = enabled_state(3);
+        for i in 0..7 {
+            s.record(trace(&s, &format!("t{i}")));
+        }
+        let r = s.retention();
+        assert_eq!(r.retained, 3);
+        assert_eq!(r.evicted, 4, "seven recorded into three survives three");
+        assert!(r.truncated);
+
+        // The oldest surviving trace's seq bounds the window: anything below
+        // it is gone, which is what makes an empty filtered result readable.
+        let oldest = s.list().last().expect("a listed trace").seq;
+        assert_eq!(r.oldest_seq, Some(oldest));
     }
 }

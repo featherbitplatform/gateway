@@ -12,7 +12,7 @@ import { Dialog, DialogButton } from './Dialog';
 import { TraceHeader, TraceViewer } from './TraceViewer';
 import { formatDuration } from '../format';
 import { api } from '../api/client';
-import type { DebugConfig, Policy, TraceDetail, TraceSummary } from '../types';
+import type { DebugConfig, Policy, TraceDetail, TraceSummary, TraceRetention } from '../types';
 
 /** Props for {@link DebugPanel}. */
 interface DebugPanelProps {
@@ -116,6 +116,7 @@ export function DebugPanel({
 
   // Traces tab
   const [traces, setTraces] = useState<TraceSummary[]>([]);
+  const [retention, setRetention] = useState<TraceRetention | null>(null);
   const [detail, setDetail] = useState<TraceDetail | null>(null);
   // Filter the recent-requests buffer down to one policy. '' = all.
   const [filterPolicy, setFilterPolicy] = useState('');
@@ -133,7 +134,9 @@ export function DebugPanel({
 
   const refresh = useCallback(async () => {
     try {
-      setTraces(await api.listTraces());
+      const listed = await api.listTracesWithRetention();
+      setTraces(listed.traces);
+      setRetention(listed.retention);
     } catch (e) {
       onError('Failed to load traces', `${e}`);
     }
@@ -310,6 +313,17 @@ export function DebugPanel({
                 {traces.length > 0 && visibleTraces.length === 0 && (
                   <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
                     No recent requests on this policy.
+                    {retention?.truncated && (
+                      <>
+                        {' '}
+                        The buffer is full and has dropped{' '}
+                        <strong>{retention.evicted.toLocaleString()}</strong> older trace
+                        {retention.evicted === 1 ? '' : 's'} (keeping the newest{' '}
+                        {retention.max_traces.toLocaleString()}), so a matching request may
+                        simply have rotated out. Raise <code>debug.max_traces</code> to widen
+                        the window.
+                      </>
+                    )}
                   </p>
                 )}
                 {visibleTraces.map((t) => (

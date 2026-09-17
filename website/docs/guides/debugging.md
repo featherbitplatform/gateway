@@ -28,13 +28,13 @@ debug:
   enabled: ${FEATHERBIT_DEBUG:-false}
   trace_all: ${FEATHERBIT_DEBUG_TRACE_ALL:-false}
   capture_bodies: ${FEATHERBIT_DEBUG_BODIES:-false}
-  max_traces: ${FEATHERBIT_DEBUG_MAX_TRACES:-50}
+  max_traces: ${FEATHERBIT_DEBUG_MAX_TRACES:-1000}
 ```
 
 The variable names are yours to choose — only what you write in `system.yaml` matters, the gateway does not look for any fixed set.
 
 :::caution Keep the `:-` default
-`${FEATHERBIT_DEBUG}` with the variable unset expands to empty text, which YAML reads as null — serde then rejects that for a boolean or number. Always write a default: `${FEATHERBIT_DEBUG:-false}`, `${FEATHERBIT_DEBUG_MAX_TRACES:-50}`. And a value you *do* set must be valid for the field (`max_traces: abc` will fail to parse).
+`${FEATHERBIT_DEBUG}` with the variable unset expands to empty text, which YAML reads as null — serde then rejects that for a boolean or number. Always write a default: `${FEATHERBIT_DEBUG:-false}`, `${FEATHERBIT_DEBUG_MAX_TRACES:-1000}`. And a value you *do* set must be valid for the field (`max_traces: abc` will fail to parse).
 :::
 
 | Key | Default | Description |
@@ -45,7 +45,7 @@ The variable names are yours to choose — only what you write in `system.yaml` 
 | `trace_all` | `false` | Trace every request instead of waiting for the header. |
 | `capture_bodies` | `false` | Include request/response bodies in snapshots. The costly flag — see [Bodies](#bodies). |
 | `max_body_bytes` | `8192` | Per-body truncation limit when capture is on. |
-| `max_traces` | `50` | Ring-buffer capacity; the oldest trace is evicted first. |
+| `max_traces` | `1000` | Ring-buffer capacity; the oldest trace is evicted first. Every listing reports what it has dropped — see [Knowing when a trace aged out](#knowing-when-a-trace-aged-out). |
 | `max_steps` | `200` | Maximum nodes recorded per trace. |
 | `sandbox_timeout_seconds` | `30` | Deadline for one sandbox run. |
 | `redact_headers` / `redact_query_params` / `redact_message_keys` | `[]` | Names to redact **in addition to** the built-in denylists. |
@@ -129,7 +129,7 @@ Adding the header works when you control the client. When you do not — a brows
 debug:
   enabled: true
   trace_all: true      # capture every request, not just header-flagged ones
-  max_traces: 50       # the "limited number" kept
+  max_traces: 1000     # the "limited number" kept
 ```
 
 Then browse the recent requests and select one to inspect, narrowing by the policy or route you are working on:
@@ -146,6 +146,37 @@ The web UI's **Traces** tab shows the same list with a policy filter, and refres
 Requests that match **no route** (a `404`) are captured too, under the policy label `(no route matched)` — so "I sent a request but nothing showed up" holds even for a path that never reaches a policy. Filter them out by picking a real policy if the 404 noise is in your way.
 
 :::note One shared, bounded buffer
+### Knowing when a trace aged out
+
+Every trace listing — `GET /api/debug/traces` and the MCP `list_traces` tool — carries a
+`retention` block alongside the rows:
+
+```json
+{
+  "traces": [],
+  "retention": {
+    "max_traces": 1000,
+    "retained": 1000,
+    "evicted": 4213,
+    "oldest_seq": 4213,
+    "truncated": true
+  }
+}
+```
+
+Without it an empty result is ambiguous, and the ambiguity is expensive: a filter that
+matched nothing and a match that was evicted a moment ago produce identical JSON. On a
+deployment recording ~80 traces a minute, the old default of 50 held about **35 seconds** of
+history — long enough that an unfiltered listing and a filtered one taken moments later
+disagree, which has already produced a confident and wrong "the filter is broken"
+conclusion.
+
+`truncated` tells you the buffer has dropped something; `oldest_seq` tells you where the
+surviving window starts. If `truncated` is `true` and you expected a match, widen
+`max_traces` or capture the request you care about directly with the trigger header.
+
+The Debug panel says the same thing in prose when a filtered view comes back empty.
+
 All routes share a single ring buffer of `max_traces`, and filtering happens on read. Under heavy mixed traffic a chatty route can therefore evict a rare request from a quiet one before you look at it — raise `max_traces`, or add the trigger header to the specific request you care about so you can fetch it by id immediately. `trace_all` also snapshots the context once per node for *all* traffic, so it is a development convenience, not a production sampling mechanism; the gateway logs a warning at startup when it is on.
 :::
 
