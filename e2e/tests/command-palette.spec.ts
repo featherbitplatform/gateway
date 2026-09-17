@@ -4,6 +4,7 @@
  */
 import { test, expect, type Page } from '@playwright/test';
 import { adminApi } from '../helpers/admin';
+import { openLibrary } from '../helpers/ui';
 
 /** Opens a route's policy on the canvas and waits for the graph to render. */
 async function openRoute(page: Page, route: string) {
@@ -181,6 +182,7 @@ test.describe('Command palette', () => {
     await page.goto('/');
     // Selecting a shared plugin config renders PluginConfigPanel instead of
     // GraphCanvas — no canvas is mounted, so no editor action is registered.
+    await openLibrary(page, 'Plugin configs');
     await page.getByText('e2e-cp-no-canvas', { exact: true }).click();
     await expect(page.getByText('e2e-cp-no-canvas').first()).toBeVisible();
 

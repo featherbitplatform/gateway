@@ -33,6 +33,8 @@
 
 ## 5. UI — the editor is getting cluttered
 
+**Status:** fixed. The sidebar now shows one library at a time, chosen from a strip of buttons under the header (Supernodes / Plugin configs / Stores, each with a count). Routes is the default and owns the whole body instead of the quarter it had when four libraries were stacked at 260px each.
+
 **What we hit (operator report).** Routes are barely visible on the canvas. Supernodes and plugin configs compete with them for the same space.
 
 **Shape.** Move supernodes and plugin configs out of the main canvas area and into the top-right toolbar as buttons, alongside the existing Notifications / Agent / Chat / Sessions / Certificates set. Routes get the canvas back; the library-style panels open on demand like the others already do. Consistent with where the UI already puts panel-shaped things.
