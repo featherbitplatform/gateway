@@ -442,6 +442,23 @@ is unset.
 | E2E-SESS-02 | *Gated.* `GET /api/sessions?store=e2e-redis` after establishing a session | The listing includes the session with `subject: 'alice'`, `plugin: 'openid-connect'`, `policy: 'oidc-redis-policy'`, `route: 'oidc-redis'`; the record has no payload-like fields beyond `id`/`subject`/`plugin`/`policy`/`route`/`created_at`/`expires_at` |
 | E2E-SESS-03 | *Gated.* **Browser.** Log in via `/oidc-redis/echo`, then in the admin UI open the Sessions panel (footer button), select store `e2e-redis`, and click the session's revoke button | The row disappears; a subsequent data-plane request carrying the old cookie is bounced back into login (302 to the IdP) |
 
+## Response cache — `tests/response-cache.spec.ts`
+
+`proxy-cache` with `policy: redis` over the fixture-owned `e2e-redis` store. Two
+policies (`e2e-cache-a`, `e2e-cache-b`), each a `lookup → mock "upstream" →
+store → client` pair with its own route and its own mock response body
+(`from-a` / `from-b`), but configured with the same proxy-cache `id` and the
+same `cache_key` (rendered from an `x-probe` request header only, not from
+path or method) over the same `store` — so the two policies land on the same
+redis key. All three scenarios are gated: they skip themselves when
+`FEATHERBIT_TEST_REDIS_URL` is unset.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-CACHE-01 | *Gated.* Two requests to `/e2e-cache/a` with the same `x-probe` header | First: `200`, `featherbit-cache-status: MISS`, body `from-a`. Second: `200`, `featherbit-cache-status: HIT`, same body — served from redis without asking the mock "upstream" again |
+| E2E-CACHE-02 | *Gated.* A request to `/e2e-cache/a` (populates the shared key), then a request to `/e2e-cache/b` with the same `x-probe` header | The second request also gets `featherbit-cache-status: HIT` with body `from-a` — policy B's own mock body (`from-b`) is never reached, proving the two policies share one cache entry via `store` + `id` + `cache_key`, not just per-policy state |
+| E2E-CACHE-03 | *Gated.* `POST /api/policies/validate` on a `proxy-cache` lookup node with `policy: redis` and no `store` | `valid: false`; `errors` contains a message naming the missing `store` requirement |
+
 ## Notifications — `tests/notifications.spec.ts`
 
 Every toast the UI raises is also appended to a persistent notification log
