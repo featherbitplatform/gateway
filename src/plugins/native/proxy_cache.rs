@@ -13,7 +13,7 @@
 //!
 //! Both nodes derive the cache key identically from the same `cache_key`
 //! template and the request, and share one namespace via `id`, so they always
-//! agree. State lives in [`crate::traffic::CacheRegistry`].
+//! agree. State lives behind a [`crate::traffic::ResponseCache`].
 //!
 //! # Wiring
 //!
@@ -43,6 +43,7 @@ use std::time::Duration;
 use crate::context::Context;
 use crate::plugins::resources::PluginResources;
 use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::traffic::{CachedResponse, ResponseCache};
 use crate::vars::template::Template;
 
 /// Header written by both nodes to report the cache outcome.
@@ -61,8 +62,8 @@ enum Role {
 
 /// One node of a `proxy-cache` lookup/store pair.
 ///
-/// Holds a handle to the process-wide [`crate::traffic::CacheRegistry`]; the
-/// key is derived per request from `cache_key`, namespaced by `id`.
+/// Holds a handle to the configured [`ResponseCache`] backend; the key is
+/// derived per request from `cache_key`, namespaced by `id`.
 pub struct ProxyCachePlugin {
     role: Role,
     /// Shared cache namespace — links the lookup and store nodes.
@@ -79,7 +80,9 @@ pub struct ProxyCachePlugin {
     cache_methods: Vec<String>,
     /// When set, hides upstream cache headers from served cache hits.
     hide_cache_headers: bool,
-    resources: Arc<PluginResources>,
+    /// The backend this node pair shares; local for now, `policy` arrives in
+    /// a later task.
+    cache: Arc<dyn ResponseCache>,
 }
 
 impl ProxyCachePlugin {
@@ -231,7 +234,7 @@ impl ProxyCachePlugin {
             cache_statuses,
             cache_methods,
             hide_cache_headers,
-            resources: resources.clone(),
+            cache: resources.traffic.cache.clone(),
         })
     }
 
@@ -298,7 +301,17 @@ impl Plugin for ProxyCachePlugin {
 
         match self.role {
             Role::Lookup => {
-                if let Some(entry) = self.resources.traffic.cache.get(&key) {
+                // A backend that cannot answer is treated as a miss: this
+                // cache exists to save a trip upstream, not to decide
+                // whether the request is allowed. Metered in a later task.
+                let found = match self.cache.get(&key).await {
+                    Ok(found) => found,
+                    Err(e) => {
+                        tracing::warn!(key = %key, "proxy-cache lookup failed: {e}");
+                        None
+                    }
+                };
+                if let Some(entry) = found {
                     // Hit: serve the cached response and short-circuit to the
                     // client via the `hit` port (→ client.in).
                     ctx.response.status_code = entry.status;
@@ -321,13 +334,14 @@ impl Plugin for ProxyCachePlugin {
             Role::Store => {
                 let status = ctx.response.status_code;
                 if self.cache_statuses.contains(&status) {
-                    self.resources.traffic.cache.put(
-                        key,
+                    let entry = CachedResponse {
                         status,
-                        ctx.response.headers.clone(),
-                        ctx.response.body.clone(),
-                        self.cache_ttl,
-                    );
+                        headers: ctx.response.headers.clone(),
+                        body: ctx.response.body.clone(),
+                    };
+                    if let Err(e) = self.cache.put(&key, &entry, self.cache_ttl).await {
+                        tracing::warn!(key = %key, "proxy-cache store failed: {e}");
+                    }
                 }
                 // This response came from the upstream, not the cache.
                 ctx.response
