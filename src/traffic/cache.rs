@@ -48,10 +48,67 @@ pub trait ResponseCache: Send + Sync {
         -> Result<(), CacheError>;
 }
 
+/// Entries the local cache keeps before it starts evicting.
+const DEFAULT_MAX_ENTRIES: usize = 10_000;
+
 /// Process-local cache. Shared by every `policy: local` node in the gateway.
-#[derive(Default)]
 pub struct LocalResponseCache {
     entries: DashMap<String, (CachedResponse, Instant)>,
+    /// Read on every insert; set once at startup from `cache.max_entries`.
+    capacity: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for LocalResponseCache {
+    fn default() -> Self {
+        Self {
+            entries: DashMap::new(),
+            capacity: std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_ENTRIES),
+        }
+    }
+}
+
+impl LocalResponseCache {
+    /// Sets the entry bound. Called once at startup, before traffic.
+    pub fn set_capacity(&self, max_entries: usize) {
+        self.capacity
+            .store(max_entries.max(1), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Entries currently held, live or not yet swept.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Makes room for one more entry.
+    ///
+    /// Expired entries go first, since they are already worthless. If that is
+    /// not enough, the entry expiring soonest goes next — deliberately not an
+    /// LRU (no LRU crate is in the dependency tree, and adding one for this is
+    /// not worth the supply-chain surface). For a cache whose entries all
+    /// carry TTLs this discards what was about to become useless anyway; the
+    /// cost is that a hot short-TTL entry loses to a cold long-TTL one.
+    fn make_room(&self, capacity: usize) {
+        if self.entries.len() < capacity {
+            return;
+        }
+        let now = Instant::now();
+        self.entries.retain(|_, (_, expires_at)| now < *expires_at);
+
+        while self.entries.len() >= capacity {
+            let soonest = self
+                .entries
+                .iter()
+                .min_by_key(|e| e.value().1)
+                .map(|e| e.key().clone());
+            match soonest {
+                Some(key) => {
+                    self.entries.remove(&key);
+                }
+                None => break,
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -76,6 +133,7 @@ impl ResponseCache for LocalResponseCache {
         entry: &CachedResponse,
         ttl: Duration,
     ) -> Result<(), CacheError> {
+        self.make_room(self.capacity.load(std::sync::atomic::Ordering::Relaxed));
         self.entries
             .insert(key.to_string(), (entry.clone(), Instant::now() + ttl));
         Ok(())
@@ -133,6 +191,80 @@ mod tests {
         assert!(
             cache.get("k").await.unwrap().is_none(),
             "an expired entry must not be served"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_local_evicts_expired_entries_before_live_ones() {
+        let cache = LocalResponseCache::default();
+        cache.set_capacity(2);
+
+        // One entry that is already dead, one that is not.
+        cache
+            .put("dead", &response("d"), Duration::from_millis(1))
+            .await
+            .unwrap();
+        cache
+            .put("live", &response("l"), Duration::from_secs(60))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // At capacity: the expired entry is the one that must go, not the
+        // useful one.
+        cache
+            .put("new", &response("n"), Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        assert!(cache.get("dead").await.unwrap().is_none());
+        assert!(
+            cache.get("live").await.unwrap().is_some(),
+            "a live entry must survive a sweep"
+        );
+        assert!(cache.get("new").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_local_at_capacity_evicts_the_soonest_to_expire() {
+        let cache = LocalResponseCache::default();
+        cache.set_capacity(2);
+
+        cache
+            .put("short", &response("s"), Duration::from_secs(1))
+            .await
+            .unwrap();
+        cache
+            .put("long", &response("l"), Duration::from_secs(600))
+            .await
+            .unwrap();
+        cache
+            .put("new", &response("n"), Duration::from_secs(600))
+            .await
+            .unwrap();
+
+        // Nothing has expired, so the bound falls back to discarding what was
+        // about to become worthless anyway. This is NOT an LRU and the test
+        // says so: a hot short-TTL entry loses to a cold long-TTL one.
+        assert!(cache.get("short").await.unwrap().is_none());
+        assert!(cache.get("long").await.unwrap().is_some());
+        assert!(cache.get("new").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_local_never_exceeds_its_capacity() {
+        let cache = LocalResponseCache::default();
+        cache.set_capacity(4);
+        for i in 0..50 {
+            cache
+                .put(&format!("k{i}"), &response("x"), Duration::from_secs(600))
+                .await
+                .unwrap();
+        }
+        assert!(
+            cache.len() <= 4,
+            "the bound must hold under sustained writes: {}",
+            cache.len()
         );
     }
 }

@@ -53,6 +53,28 @@ pub struct SystemConfig {
     /// then fails validation.
     #[serde(default)]
     pub acme: Option<AcmeConfig>,
+    /// Response-cache limits for `proxy-cache`'s `policy: local` backend.
+    #[serde(default)]
+    pub cache: CacheConfig,
+}
+
+/// Process-wide response-cache limits.
+///
+/// `max_entries` is here rather than on the node because every `policy: local`
+/// node shares one cache; a per-node value would be a setting that silently
+/// meant something else.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct CacheConfig {
+    pub max_entries: usize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            max_entries: 10_000,
+        }
+    }
 }
 
 /// Debug mode: per-request policy-execution tracing plus the plugin sandbox.
