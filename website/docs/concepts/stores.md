@@ -1,9 +1,9 @@
 ---
 title: Shared Stores & Sessions
-description: Named redis/valkey connections powering cluster-accurate rate limiting and revocable server-side sessions.
+description: Named redis/valkey connections powering cluster-accurate rate limiting, revocable server-side sessions, and a shared response cache.
 ---
 
-A **store** is a named Redis/Valkey connection declared once, top-level in `gateway.yaml` under `stores:`, and referenced by name from any plugin config that needs cluster-shared state. It is the same "declare once, reference by name" shape as [shared plugin configs](plugin-configs.md), applied to a stateful backend instead of a config profile. Two features currently consume it: `policy: redis` on [`limit-count`](../reference/plugins/limit-count.md) (and the `workflow` limit-count action) for cluster-accurate rate limiting, and `session.storage: redis` on five interactive auth plugins for revocable server-side sessions.
+A **store** is a named Redis/Valkey connection declared once, top-level in `gateway.yaml` under `stores:`, and referenced by name from any plugin config that needs cluster-shared state. It is the same "declare once, reference by name" shape as [shared plugin configs](plugin-configs.md), applied to a stateful backend instead of a config profile. Three features currently consume it: `policy: redis` on [`limit-count`](../reference/plugins/limit-count.md) (and the `workflow` limit-count action) for cluster-accurate rate limiting, `session.storage: redis` on five interactive auth plugins for revocable server-side sessions, and `policy: redis` on [`proxy-cache`](../reference/plugins/proxy-cache.md) for a shared response cache — one namespace, so a typo'd `key_prefix` or a name collision is a cross-feature outage, not just a cross-instance one.
 
 ## Declaring a store
 
@@ -73,6 +73,8 @@ session:
 ```
 
 `storage: cookie` is the unchanged, default behavior (the whole session payload sealed into the client-side cookie). `storage: redis` switches the plugin onto the store — see [Server-side sessions](#server-side-sessions) below.
+
+**Shared response cache.** [`proxy-cache`](../reference/plugins/proxy-cache.md) takes `policy: redis` + `store: <name>` in place of the default `policy: local`, so the lookup/store node pair caches into the named store instead of an in-memory map — multiple gateway instances (or, within one instance, multiple policies configured with the same `store` and cache key) then share hits. A cached response over `max_object_bytes` (default 1 MiB) is served but never written, so one oversized response cannot fill a store that rate-limit counters and sessions also live in. Unlike rate limiting and sessions, a cache backend that cannot answer is treated as a miss and fails **open** — see [proxy-cache](../reference/plugins/proxy-cache.md#behavior) for why.
 
 ## Server-side sessions
 

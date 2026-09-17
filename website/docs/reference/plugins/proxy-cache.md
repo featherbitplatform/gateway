@@ -1,6 +1,6 @@
 ---
 title: proxy-cache
-description: In-memory response caching, expressed as a lookup/store node pair sharing one cache namespace by id.
+description: Response caching, in-memory or shared over a redis-backed store, expressed as a lookup/store node pair sharing one cache namespace by id.
 ---
 
 <span className="plugin-chip" style={{'--chip-color': '#8b5cf6'}}>proxy-cache</span>
@@ -29,6 +29,8 @@ and the request, and share one namespace via `id`, so they always agree.
 | `cache_http_statuses` | array | `[200, 301, 404]` | Response statuses eligible for caching. (The singular spelling `cache_http_status` is also accepted for config compatibility.) |
 | `cache_method` | array | `["GET", "HEAD"]` | Cacheable request methods; other methods bypass the cache. |
 | `hide_cache_headers` | bool | `false` | Strip `cache-control` / `expires` from served cache hits. |
+| `policy` | string | `local` | `local` (an in-memory, per-instance cache) or `redis` (a shared cache over a declared [store](../../concepts/stores.md)). Both nodes of a pair must use the same policy and, for `redis`, the same `store`. |
+| `store` | string | — (required when `policy: redis`) | Name of a declared `stores:` entry. |
 | `max_object_bytes` | integer | `1048576` | Responses larger than this are served normally but never cached, in either backend. |
 
 ## Wiring
@@ -75,12 +77,31 @@ The **store** node caches the response when its status is in
 outgoing response `featherbit-cache-status: MISS` (it came from the upstream, not the
 cache).
 
-The cache is in-memory and per gateway instance; entries expire lazily on read.
+With `policy: local` (the default) the cache is in-memory and per gateway
+instance; entries expire lazily on read. With `policy: redis`, the pair
+shares one namespace in the named store, so multiple gateway instances — or
+multiple policies configured with the same `store` and `cache_key` — see each
+other's entries.
+
+:::note[This cache fails open, unlike the rest of the system]
+Sessions and the `store-*` nodes fail **closed**: losing their store means
+losing correctness, so the request fails rather than proceeding as though an
+absent session said yes.
+
+A cache is different in kind. Its only job is to save a trip to the upstream,
+so a backend it cannot reach is treated as a **miss** and the request is served
+normally. Turning a redis blip into a `503` on a route that was merely going
+faster would be a worse outage than the one it reports.
+
+It is not silent: `gateway_cache_events_total{event="error"}` counts every
+failed lookup, and a cache degraded to always-miss is otherwise invisible in
+every signal except the upstream's load.
+:::
 
 ## Ports
 
-`proxy-cache` declares three output ports: `success` (a cache miss, or a non-cacheable method — the request continues), `hit` (the response was served from cache; wire straight to `client`), and `error` (never actually used — cache reads/writes are infallible in-process calls). `success` and `hit` are mandatory on both the lookup and store nodes — the policy compiler rejects any policy that leaves either unwired, even on the store node where `hit` is never actually emitted. See [Wiring](#wiring) above.
+`proxy-cache` declares three output ports: `success` (a cache miss, or a non-cacheable method — the request continues), `hit` (the response was served from cache; wire straight to `client`), and `error` (never actually used — a backend outage or an oversized response degrades to a miss or a skipped write, not a routed error). `success` and `hit` are mandatory on both the lookup and store nodes — the policy compiler rejects any policy that leaves either unwired, even on the store node where `hit` is never actually emitted. See [Wiring](#wiring) above.
 
 ## Errors
 
-This node never fails at execution time: it always returns through `success`, so its `error` port is never taken.
+This node never fails at execution time: it always returns through `success` or `hit`, so its `error` port is never taken — see the fail-open note above.

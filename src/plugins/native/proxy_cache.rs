@@ -51,6 +51,13 @@ const CACHE_STATUS_HEADER: &str = "featherbit-cache-status";
 /// Response headers hidden from clients when `hide_cache_headers` is set.
 const HIDDEN_HEADERS: &[&str] = &["cache-control", "expires"];
 
+/// The `policy` values this build actually supports — naming `redis` on a
+/// headless build would describe an option that cannot work.
+#[cfg(feature = "redis-store")]
+const SUPPORTED_POLICIES: &str = "local, redis";
+#[cfg(not(feature = "redis-store"))]
+const SUPPORTED_POLICIES: &str = "local";
+
 /// Which half of the pair this node is.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Role {
@@ -265,7 +272,8 @@ impl ProxyCachePlugin {
             }
             other => {
                 return Err(format!(
-                    "proxy-cache: unknown policy '{other}' — supported: local, redis"
+                    "proxy-cache: unknown policy '{other}' — supported: {}",
+                    SUPPORTED_POLICIES
                 ))
             }
         };
@@ -568,6 +576,30 @@ mod tests {
             &r
         )
         .is_err());
+    }
+
+    /// An unknown `policy` must name only the policies this build actually
+    /// supports — `redis` on a headless build describes an option that
+    /// cannot work.
+    #[test]
+    fn test_unknown_policy_names_only_what_this_build_supports() {
+        let r = PluginResources::empty();
+        let err = match ProxyCachePlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("lookup")),
+                ("id", serde_json::json!("x")),
+                ("policy", serde_json::json!("bogus")),
+            ]),
+            &r,
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("an unknown policy must fail from_config"),
+        };
+        assert!(err.contains("local"), "{err}");
+        #[cfg(feature = "redis-store")]
+        assert!(err.contains("redis"), "{err}");
+        #[cfg(not(feature = "redis-store"))]
+        assert!(!err.contains("redis"), "{err}");
     }
 
     #[test]
