@@ -3,10 +3,31 @@
  * status, the selectable route list, and the create-route / delete-route /
  * reload-config actions that back the gateway's admin API.
  *
+ * The body shows one library at a time, chosen by the strip of buttons under
+ * the header. Routes is the default and the common case, so it gets the whole
+ * body instead of the quarter it had when all four libraries were stacked --
+ * which was the point of the change: with supernodes, plugin configs and
+ * stores each claiming a fixed 260px band, the route list was the first thing
+ * squeezed and the last thing anyone wanted squeezed.
+ *
  * @module components/Sidebar
  */
 import { useEffect, useState, type CSSProperties } from 'react';
-import { Plus, RotateCw, X, FileCode, Bug, KeyRound, ShieldCheck, Bell, Bot, MessageSquare } from 'lucide-react';
+import {
+  Plus,
+  RotateCw,
+  X,
+  FileCode,
+  Bug,
+  KeyRound,
+  ShieldCheck,
+  Bell,
+  Bot,
+  MessageSquare,
+  Boxes,
+  Puzzle,
+  Database,
+} from 'lucide-react';
 import type { Route, Supernode, PluginConfigDef, StoreConfig, GatewayStatus } from '../types';
 import { api } from '../api/client';
 
@@ -29,6 +50,24 @@ const footerButtonStyle: CSSProperties = {
   whiteSpace: 'nowrap',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
+};
+
+/**
+ * Which library the sidebar body is showing. `routes` is the default and the
+ * one operators live in; the other three are opened from the strip and step
+ * aside again as soon as something is selected.
+ */
+type Library = 'routes' | 'supernodes' | 'pluginConfigs' | 'stores';
+
+/** Shared style of the library strip's buttons. */
+const stripButtonStyle: CSSProperties = {
+  padding: '6px 0',
+  borderRadius: 'var(--radius-sm)',
+  fontSize: 'var(--text-xs)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 5,
 };
 
 /** Props for Sidebar. Route data and mutations are owned by the parent (App). */
@@ -147,6 +186,17 @@ export function Sidebar({
   onOpenChat,
 }: SidebarProps) {
   const [status, setStatus] = useState<GatewayStatus | null>(null);
+  const [library, setLibrary] = useState<Library>('routes');
+
+  /**
+   * Picking something from a library is the end of that errand, so the body
+   * goes back to routes. Leaving it open would hide the route list behind a
+   * list nobody is reading any more -- the clutter this change removes.
+   */
+  const pick = <T,>(select: (value: T) => void) => (value: T) => {
+    select(value);
+    setLibrary('routes');
+  };
 
   useEffect(() => {
     api.status().then(setStatus).catch(() => {});
@@ -203,7 +253,54 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* Routes */}
+      {/* Library strip: one button per library, each toggling the body. The
+          counts are here so the badge answers "do I have any supernodes?"
+          without opening anything -- the question the old always-visible
+          lists answered by costing permanent height. */}
+      <div
+        style={{
+          padding: '8px 10px',
+          borderTop: '1px solid var(--border)',
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: 6,
+        }}
+      >
+        {(
+          [
+            ['supernodes', 'Supernodes', Boxes, supernodes.length],
+            ['pluginConfigs', 'Plugin configs', Puzzle, pluginConfigs.length],
+            ['stores', 'Stores', Database, stores.length],
+          ] as const
+        ).map(([id, label, Icon, count]) => {
+          const active = library === id;
+          return (
+            <button
+              key={id}
+              onClick={() => setLibrary(active ? 'routes' : id)}
+              aria-label={label}
+              aria-pressed={active}
+              title={`${label} (${count})`}
+              className="transition-colors"
+              style={{
+                ...stripButtonStyle,
+                background: active ? 'var(--accent-soft, var(--surface-input))' : 'var(--surface-input)',
+                color: active ? 'var(--accent)' : 'var(--text-muted)',
+                border: `1px solid ${active ? 'var(--accent)' : 'transparent'}`,
+              }}
+            >
+              <Icon size={13} />
+              {count}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Each library is mounted only while it is the active one. Hiding with
+          CSS would leave every list in the DOM, where a page-wide locator
+          still finds it -- the shape of bug that made an e2e assertion pass
+          against a form label instead of the result it meant to check. */}
+      {library === 'routes' && (
       <div className="flex-1 overflow-y-auto min-h-40">
         <div className="p-3 flex items-center justify-between">
           <span className="eyebrow">Routes</span>
@@ -285,8 +382,10 @@ export function Sidebar({
         })}
       </div>
 
-      {/* Supernodes */}
-      <div className="shrink-0" style={{ borderTop: '1px solid var(--border)', maxHeight: 260, overflowY: 'auto' }}>
+      )}
+
+      {library === 'supernodes' && (
+      <div className="flex-1 overflow-y-auto min-h-40" style={{ borderTop: '1px solid var(--border)' }}>
         <div className="p-3 flex items-center justify-between">
           <span className="eyebrow">Supernodes</span>
           <button
@@ -313,7 +412,7 @@ export function Sidebar({
           return (
             <div
               key={supernode.name}
-              onClick={() => onSelectSupernode(supernode.name)}
+              onClick={() => pick(onSelectSupernode)(supernode.name)}
               className="mx-2 mb-1 cursor-pointer flex items-center justify-between group"
               style={{
                 padding: '8px 10px',
@@ -367,8 +466,10 @@ export function Sidebar({
         })}
       </div>
 
-      {/* Plugin Configs */}
-      <div className="shrink-0" style={{ borderTop: '1px solid var(--border)', maxHeight: 260, overflowY: 'auto' }}>
+      )}
+
+      {library === 'pluginConfigs' && (
+      <div className="flex-1 overflow-y-auto min-h-40" style={{ borderTop: '1px solid var(--border)' }}>
         <div className="p-3 flex items-center justify-between">
           <span className="eyebrow">Plugin Configs</span>
           <button
@@ -395,7 +496,7 @@ export function Sidebar({
           return (
             <div
               key={pc.name}
-              onClick={() => onSelectPluginConfig(pc.name)}
+              onClick={() => pick(onSelectPluginConfig)(pc.name)}
               className="mx-2 mb-1 cursor-pointer flex items-center justify-between group"
               style={{
                 padding: '8px 10px',
@@ -449,8 +550,10 @@ export function Sidebar({
         })}
       </div>
 
-      {/* Stores */}
-      <div className="shrink-0" style={{ borderTop: '1px solid var(--border)', maxHeight: 260, overflowY: 'auto' }}>
+      )}
+
+      {library === 'stores' && (
+      <div className="flex-1 overflow-y-auto min-h-40" style={{ borderTop: '1px solid var(--border)' }}>
         <div className="p-3 flex items-center justify-between">
           <span className="eyebrow">Stores</span>
           <button
@@ -477,7 +580,7 @@ export function Sidebar({
           return (
             <div
               key={s.name}
-              onClick={() => onSelectStore(s.name)}
+              onClick={() => pick(onSelectStore)(s.name)}
               className="mx-2 mb-1 cursor-pointer flex items-center justify-between group"
               style={{
                 padding: '8px 10px',
@@ -530,6 +633,8 @@ export function Sidebar({
           );
         })}
       </div>
+
+      )}
 
       {/* Footer */}
       <div style={{ padding: 12, borderTop: '1px solid var(--border)' }}>

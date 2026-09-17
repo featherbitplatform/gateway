@@ -14,6 +14,7 @@ import {test, expect, request} from '@playwright/test';
 
 import {GATEWAY_URL, IDP_URL} from '../playwright.config';
 import {adminApi, waitForDataPlane} from '../helpers/admin';
+import {openLibrary} from '../helpers/ui';
 
 test.describe('Stores & sessions', () => {
   test('E2E-STORE-01: stores CRUD, raw placeholder text, duplicate-create conflict', async () => {
@@ -89,6 +90,7 @@ test.describe('Stores & sessions', () => {
     await api.delete('/api/plugin-configs/e2e-picker-check');
 
     await page.goto('/');
+    await openLibrary(page, 'Stores');
     await page.getByRole('button', {name: 'New store'}).click();
     await page.getByPlaceholder('sessions-redis').fill('e2e-ui-store');
     await page.getByPlaceholder('redis://127.0.0.1:6379').fill('redis://127.0.0.1:1');
@@ -126,12 +128,19 @@ test.describe('Stores & sessions', () => {
     });
     expect(putPicker.ok(), await putPicker.text()).toBeTruthy();
     await page.reload();
+    // The reload resets the sidebar to routes, and this half of the test is
+    // about a plugin config rather than a store.
+    await openLibrary(page, 'Plugin configs');
     await page.getByText('e2e-picker-check', {exact: true}).click();
     const storeSelect = page.getByLabel('Store', {exact: true});
     await expect(storeSelect).toBeVisible();
     await expect(storeSelect.locator('option', {hasText: 'e2e-redis (redis)'})).toHaveCount(1);
     await api.delete('/api/plugin-configs/e2e-picker-check');
 
+    // Back to the store library for the delete half: the picker check above
+    // switched the sidebar body to plugin configs, so the store row -- and
+    // the `row` locator bound to it -- is unmounted until Stores is active.
+    await openLibrary(page, 'Stores');
     await row.hover(); // the delete button is only revealed on hover
     await page.getByRole('button', {name: 'Delete store e2e-ui-store'}).click();
     await page.getByRole('button', {name: 'Delete', exact: true}).click();
