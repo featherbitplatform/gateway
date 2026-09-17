@@ -852,6 +852,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookies.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
     { key: 'name', label: 'Message key', type: 'text', placeholder: 'retry_count', hint: 'context.message key to write; readable as $msg_<name>' },
     { key: 'json', label: 'Parse JSON', type: 'switch', default: false, hint: 'flattens an object into <name>.<field> message keys' },
+    { key: 'extend_ttl_seconds', label: 'Extend TTL on read (s)', type: 'number', hint: 're-arms the expiry when the key is read, so it expires after the last access' },
   ],
   'store-set': [
     { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
@@ -867,7 +868,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
     { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookies.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
     { key: 'by', label: 'By', type: 'number', default: 1, hint: 'amount to add; may be negative' },
-    { key: 'ttl_seconds', label: 'TTL (s)', type: 'number', hint: 'applied only when the key is created, never refreshed' },
+    { key: 'ttl_seconds', label: 'TTL (s)', type: 'number', hint: 'applied when the key is created; see Refresh TTL' },
+    { key: 'refresh_ttl', label: 'Refresh TTL', type: 'switch', default: false, hint: 'on: sliding window, re-armed each increment. off: fixed from creation' },
     { key: 'name', label: 'Message key', type: 'text', placeholder: 'retry_count', hint: 'receives the new value; readable as $msg_<name>' },
   ],
 };

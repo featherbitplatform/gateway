@@ -24,6 +24,28 @@ Reads a key from a declared [store](../../guides/configuration.md) into `context
 | `key` | string (templated) | yes | — | Key to read |
 | `name` | string | yes | — | `context.message` key to write; readable as `$msg_<name>` |
 | `json` | bool | no | `false` | Parse a JSON object and flatten its top-level fields |
+| `extend_ttl_seconds` | integer | no | — (do not extend) | Reading the key re-arms its expiry to this many seconds; `0` is rejected as a config error |
+
+:::note[`extend_ttl_seconds` turns the store into a cache]
+Without it, a read is a plain `GET` and the key's expiry keeps counting down
+regardless of use. With it, the read becomes `GETEX key EX n`: the entry stays
+alive while it is being used and disappears a fixed time after the **last
+access**. One round trip, so there is no read-then-write race between gateway
+instances.
+
+A miss stays a miss. `GETEX` on a key that does not exist returns nothing and
+creates nothing, so a keep-alive read never manufactures the entries it is
+meant to keep warm.
+
+**It will also give an expiry to a key that had none.** A value written by
+`store-set` *without* `ttl_seconds` persists forever; the first extending read
+makes it ephemeral. That is the point of the option rather than a surprise —
+but if a key is meant to be durable, do not read it through a node configured
+this way.
+
+Requires redis 6.2 or newer (`GETEX`). Both `redis:7` and `valkey:8` are
+covered by CI.
+:::
 
 ## Ports
 
