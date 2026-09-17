@@ -136,7 +136,7 @@ impl GatewayMetrics {
         let cache_events = IntCounterVec::new(
             Opts::new(
                 "gateway_cache_events_total",
-                "Response-cache outcomes per backend (hit, miss, error, too_large)",
+                "Response-cache outcomes per backend. hit and miss partition every lookup, so the hit rate is hits/(hits+misses); error is an overlapping diagnostic counted alongside the miss it caused, not a fourth bucket",
             ),
             &["backend", "event"],
         )

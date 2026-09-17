@@ -359,7 +359,11 @@ impl Plugin for ProxyCachePlugin {
                         body: ctx.response.body.clone(),
                     };
                     if let Err(e) = self.cache.put(&key, &entry, self.cache_ttl).await {
+                        // Metered as well as logged: a response is served
+                        // correctly whether or not it was cached, so a write
+                        // that has stopped working leaves no other trace.
                         tracing::warn!(key = %key, "proxy-cache store failed: {e}");
+                        self.record("error");
                     }
                 }
                 // This response came from the upstream, not the cache.
@@ -420,6 +424,31 @@ mod tests {
     }
 
     /// A lookup-phase plugin around a given cache backend, metrics disabled.
+    /// A write that cannot reach its backend must be counted too.
+    ///
+    /// The lookup side already meters its failures, but a store-side outage
+    /// left no trace at all: the response is served correctly either way, so
+    /// nothing downstream notices that the cache has stopped being written.
+    /// That is the same invisibility the lookup counter exists to remove.
+    #[tokio::test]
+    async fn test_a_failing_store_increments_the_error_counter() {
+        let metrics = test_metrics();
+        let plugin = store_plugin_with_cache_and_metrics(Arc::new(BrokenCache), metrics.clone());
+
+        let mut ctx = test_context();
+        ctx.response.status_code = 200;
+        plugin.execute(ctx).await.unwrap();
+
+        assert_eq!(
+            metrics
+                .cache_events
+                .with_label_values(&["local", "error"])
+                .get(),
+            1,
+            "a failed write must be visible in metrics, not only in the log"
+        );
+    }
+
     fn lookup_plugin_with_cache(cache: Arc<dyn ResponseCache>) -> ProxyCachePlugin {
         let mut plugin = lookup(&PluginResources::empty());
         plugin.cache = cache;
@@ -432,6 +461,16 @@ mod tests {
         metrics: Arc<crate::metrics::GatewayMetrics>,
     ) -> ProxyCachePlugin {
         let mut plugin = lookup(&PluginResources::new(Some(metrics)));
+        plugin.cache = cache;
+        plugin
+    }
+
+    /// A store-phase plugin around a given cache backend and metrics registry.
+    fn store_plugin_with_cache_and_metrics(
+        cache: Arc<dyn ResponseCache>,
+        metrics: Arc<crate::metrics::GatewayMetrics>,
+    ) -> ProxyCachePlugin {
+        let mut plugin = store(&PluginResources::new(Some(metrics)));
         plugin.cache = cache;
         plugin
     }
