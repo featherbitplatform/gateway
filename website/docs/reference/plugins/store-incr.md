@@ -23,8 +23,23 @@ Atomically increments a counter in a declared [store](../../guides/configuration
 | `store` | string | yes | — | Name of a declared `stores:` entry |
 | `key` | string (templated) | yes | — | Counter key |
 | `by` | integer | no | `1` | Amount to add; may be negative |
-| `ttl_seconds` | integer | no | — (no expiry) | Expiry applied **only when the key is created**; `0` is rejected as a config error |
+| `ttl_seconds` | integer | no | — (no expiry) | Expiry applied **only when the key is created** (unless `refresh_ttl`); `0` is rejected as a config error |
+| `refresh_ttl` | bool | no | `false` | Re-arm the expiry on **every** increment, turning the counter into a sliding window |
 | `name` | string | yes | — | `context.message` key receiving the new value; readable as `$msg_<name>` |
+
+:::note[Two different windows, and the default is the safe one]
+With `refresh_ttl: false` (the default) the key expires a fixed time after it
+**first appears**: "N events since the first one". This is what a retry bound
+needs — an expiry that refreshed on every increment could be held open
+indefinitely by the very client it limits, and the bound would never reset.
+
+With `refresh_ttl: true` the expiry is pushed back out on each increment:
+"N events within `ttl_seconds` of **each other**". That is the sliding window
+you want for burst throttling, where a quiet period should clear the counter.
+
+`refresh_ttl: true` without `ttl_seconds` is a config error — there is no
+expiry to refresh, and accepting it silently would hide a typo.
+:::
 
 ## Ports
 
