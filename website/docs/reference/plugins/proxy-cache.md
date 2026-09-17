@@ -29,6 +29,7 @@ and the request, and share one namespace via `id`, so they always agree.
 | `cache_http_statuses` | array | `[200, 301, 404]` | Response statuses eligible for caching. (The singular spelling `cache_http_status` is also accepted for config compatibility.) |
 | `cache_method` | array | `["GET", "HEAD"]` | Cacheable request methods; other methods bypass the cache. |
 | `hide_cache_headers` | bool | `false` | Strip `cache-control` / `expires` from served cache hits. |
+| `max_object_bytes` | integer | `1048576` | Responses larger than this are served normally but never cached, in either backend. |
 
 ## Wiring
 

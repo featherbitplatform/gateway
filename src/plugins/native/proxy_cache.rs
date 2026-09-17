@@ -85,6 +85,10 @@ pub struct ProxyCachePlugin {
     cache: Arc<dyn ResponseCache>,
     /// Label for the `backend` dimension of `cache_events`; `"local"` for now.
     backend_label: &'static str,
+    /// A response body larger than this is served but never cached — one
+    /// large response must not be able to fill a store that sessions,
+    /// counters and ACME also live in.
+    max_object_bytes: usize,
     /// Process-wide services, held for the metrics registry.
     resources: Arc<PluginResources>,
 }
@@ -110,6 +114,8 @@ impl ProxyCachePlugin {
     /// - `cache_method` (array, default `["GET", "HEAD"]`): cacheable methods.
     /// - `hide_cache_headers` (bool, default `false`): strip `cache-control` /
     ///   `expires` from served cache hits.
+    /// - `max_object_bytes` (integer, default `1048576`): responses larger
+    ///   than this are served normally but never cached, in either backend.
     ///
     /// ```yaml
     /// # before upstream
@@ -230,6 +236,11 @@ impl ProxyCachePlugin {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let max_object_bytes = config
+            .get("max_object_bytes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1_048_576) as usize;
+
         let policy = config
             .get("policy")
             .and_then(|v| v.as_str())
@@ -269,6 +280,7 @@ impl ProxyCachePlugin {
             hide_cache_headers,
             cache,
             backend_label,
+            max_object_bytes,
             resources: resources.clone(),
         })
     }
@@ -381,7 +393,11 @@ impl Plugin for ProxyCachePlugin {
             }
             Role::Store => {
                 let status = ctx.response.status_code;
-                if self.cache_statuses.contains(&status) {
+                if ctx.response.body.len() > self.max_object_bytes {
+                    // Metered so a route that mysteriously never caches is
+                    // explicable rather than mysterious.
+                    self.record("too_large");
+                } else if self.cache_statuses.contains(&status) {
                     let entry = CachedResponse {
                         status,
                         headers: ctx.response.headers.clone(),
@@ -501,6 +517,17 @@ mod tests {
     ) -> ProxyCachePlugin {
         let mut plugin = store(&PluginResources::new(Some(metrics)));
         plugin.cache = cache;
+        plugin
+    }
+
+    /// A store-phase plugin around a given cache backend and `max_object_bytes`.
+    fn store_plugin_with_cache_and_limit(
+        cache: Arc<dyn ResponseCache>,
+        max_object_bytes: usize,
+    ) -> ProxyCachePlugin {
+        let mut plugin = store(&PluginResources::empty());
+        plugin.cache = cache;
+        plugin.max_object_bytes = max_object_bytes;
         plugin
     }
 
@@ -672,5 +699,33 @@ mod tests {
             1,
             "a backend error must be visible in metrics"
         );
+    }
+
+    /// One large response must not be able to fill a store that sessions,
+    /// counters and ACME also live in.
+    #[tokio::test]
+    async fn test_a_response_over_max_object_bytes_is_not_cached() {
+        let cache = Arc::new(crate::traffic::LocalResponseCache::default());
+        let plugin = store_plugin_with_cache_and_limit(cache.clone(), 16);
+
+        let mut ctx = test_context();
+        ctx.response.status_code = 200;
+        ctx.response.body = bytes::Bytes::from(vec![b'x'; 64]);
+        plugin.execute(ctx).await.unwrap();
+
+        assert_eq!(cache.len(), 0, "an oversized response must not be stored");
+    }
+
+    #[tokio::test]
+    async fn test_a_response_within_max_object_bytes_is_cached() {
+        let cache = Arc::new(crate::traffic::LocalResponseCache::default());
+        let plugin = store_plugin_with_cache_and_limit(cache.clone(), 1024);
+
+        let mut ctx = test_context();
+        ctx.response.status_code = 200;
+        ctx.response.body = bytes::Bytes::from_static(b"small");
+        plugin.execute(ctx).await.unwrap();
+
+        assert_eq!(cache.len(), 1);
     }
 }
