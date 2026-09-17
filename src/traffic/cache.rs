@@ -51,6 +51,14 @@ pub trait ResponseCache: Send + Sync {
 /// Entries the local cache keeps before it starts evicting.
 const DEFAULT_MAX_ENTRIES: usize = 10_000;
 
+/// Fraction of capacity a sweep reclaims in one pass.
+///
+/// Evicting down to a low-water mark is what keeps the O(n) scan off the hot
+/// path: a saturated cache would otherwise pay a full scan on every write,
+/// forever. Reclaiming a tenth means the next ~capacity/10 inserts find room
+/// already waiting and return immediately.
+const RECLAIM_FRACTION: usize = 10;
+
 /// Process-local cache. Shared by every `policy: local` node in the gateway.
 pub struct LocalResponseCache {
     entries: DashMap<String, (CachedResponse, Instant)>,
@@ -83,30 +91,48 @@ impl LocalResponseCache {
     /// Makes room for one more entry.
     ///
     /// Expired entries go first, since they are already worthless. If that is
-    /// not enough, the entry expiring soonest goes next — deliberately not an
+    /// not enough, the entries expiring soonest go next — deliberately not an
     /// LRU (no LRU crate is in the dependency tree, and adding one for this is
     /// not worth the supply-chain surface). For a cache whose entries all
     /// carry TTLs this discards what was about to become useless anyway; the
     /// cost is that a hot short-TTL entry loses to a cold long-TTL one.
+    ///
+    /// The live-entry eviction reclaims down to a low-water mark
+    /// (`capacity - capacity / RECLAIM_FRACTION`) in one sorted pass, rather
+    /// than removing exactly one entry via a fresh per-entry `min_by_key`
+    /// scan. Once the cache is saturated, a per-entry scan would make every
+    /// `put` pay an O(n) cost for the life of the process; amortising the
+    /// sort over a batch of evictions means most inserts, most of the time,
+    /// find room already waiting and skip straight to the insert.
     fn make_room(&self, capacity: usize) {
         if self.entries.len() < capacity {
             return;
         }
+
+        // Expired entries first: they are already worthless, and clearing them in
+        // bulk is the one thing a per-entry eviction cannot do cheaply.
         let now = Instant::now();
         self.entries.retain(|_, (_, expires_at)| now < *expires_at);
+        if self.entries.len() < capacity {
+            return;
+        }
 
-        while self.entries.len() >= capacity {
-            let soonest = self
-                .entries
-                .iter()
-                .min_by_key(|e| e.value().1)
-                .map(|e| e.key().clone());
-            match soonest {
-                Some(key) => {
-                    self.entries.remove(&key);
-                }
-                None => break,
-            }
+        // Still full, so live entries have to go. Sort once and remove a batch,
+        // rather than rescanning for the minimum per entry.
+        let target = capacity.saturating_sub((capacity / RECLAIM_FRACTION).max(1));
+        let excess = self.entries.len().saturating_sub(target);
+        if excess == 0 {
+            return;
+        }
+
+        let mut by_expiry: Vec<(String, Instant)> = self
+            .entries
+            .iter()
+            .map(|e| (e.key().clone(), e.value().1))
+            .collect();
+        by_expiry.sort_unstable_by_key(|(_, expires_at)| *expires_at);
+        for (key, _) in by_expiry.into_iter().take(excess) {
+            self.entries.remove(&key);
         }
     }
 }
@@ -196,28 +222,46 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_evicts_expired_entries_before_live_ones() {
+        // An already-expired entry always has the earliest `Instant` of any
+        // entry in the map, so a single expired entry can't tell a two-phase
+        // sweep (expire all, then batch-evict live ones) apart from a
+        // one-phase "always evict the minimum" implementation: either would
+        // remove it. Several expired entries do distinguish the two: a
+        // per-entry min-eviction would stop after removing just one (as soon
+        // as it's back under capacity), while the sweep clears all of them
+        // in one pass.
         let cache = LocalResponseCache::default();
-        cache.set_capacity(2);
+        cache.set_capacity(5);
 
-        // One entry that is already dead, one that is not.
-        cache
-            .put("dead", &response("d"), Duration::from_millis(1))
-            .await
-            .unwrap();
+        for i in 0..4 {
+            cache
+                .put(
+                    &format!("dead{i}"),
+                    &response("d"),
+                    Duration::from_millis(1),
+                )
+                .await
+                .unwrap();
+        }
         cache
             .put("live", &response("l"), Duration::from_secs(60))
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
 
-        // At capacity: the expired entry is the one that must go, not the
-        // useful one.
+        // At capacity: a single put must trigger the sweep and clear every
+        // expired entry, not just one of them.
         cache
             .put("new", &response("n"), Duration::from_secs(60))
             .await
             .unwrap();
 
-        assert!(cache.get("dead").await.unwrap().is_none());
+        for i in 0..4 {
+            assert!(
+                cache.get(&format!("dead{i}")).await.unwrap().is_none(),
+                "all expired entries must be swept, not just one"
+            );
+        }
         assert!(
             cache.get("live").await.unwrap().is_some(),
             "a live entry must survive a sweep"
@@ -230,12 +274,16 @@ mod tests {
         let cache = LocalResponseCache::default();
         cache.set_capacity(2);
 
+        // `long` is inserted first and `short` second, so insertion order and
+        // expiry order disagree: an "evict oldest-inserted" implementation
+        // would evict `long`, not `short`. Only a policy that actually looks
+        // at expiry time evicts `short` here.
         cache
-            .put("short", &response("s"), Duration::from_secs(1))
+            .put("long", &response("l"), Duration::from_secs(600))
             .await
             .unwrap();
         cache
-            .put("long", &response("l"), Duration::from_secs(600))
+            .put("short", &response("s"), Duration::from_secs(1))
             .await
             .unwrap();
         cache
@@ -253,14 +301,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_never_exceeds_its_capacity() {
-        let cache = LocalResponseCache::default();
+        // Sequential writes are close to structurally guaranteed to respect
+        // the bound, since `make_room` runs before every insert. The
+        // interesting case — and the one the assertion message below has
+        // always claimed to cover — is concurrent writers racing `make_room`
+        // and `insert` against each other.
+        let cache = std::sync::Arc::new(LocalResponseCache::default());
         cache.set_capacity(4);
-        for i in 0..50 {
-            cache
-                .put(&format!("k{i}"), &response("x"), Duration::from_secs(600))
-                .await
-                .unwrap();
+
+        let mut tasks = Vec::new();
+        for task in 0..8 {
+            let cache = cache.clone();
+            tasks.push(tokio::spawn(async move {
+                for i in 0..50 {
+                    cache
+                        .put(
+                            &format!("k{task}-{i}"),
+                            &response("x"),
+                            Duration::from_secs(600),
+                        )
+                        .await
+                        .unwrap();
+                }
+            }));
         }
+        for task in tasks {
+            task.await.unwrap();
+        }
+
         assert!(
             cache.len() <= 4,
             "the bound must hold under sustained writes: {}",
