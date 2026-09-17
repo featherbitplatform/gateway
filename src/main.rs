@@ -140,6 +140,12 @@ async fn main() {
         }
     };
 
+    state
+        .resources
+        .traffic
+        .cache
+        .set_capacity(system.cache.max_entries);
+
     {
         let routes = state.routes.read().await;
         for (route, _) in routes.iter() {
