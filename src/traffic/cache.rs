@@ -5,6 +5,7 @@
 //! configured with and never learns which.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -64,18 +65,30 @@ pub struct LocalResponseCache {
     entries: DashMap<String, (CachedResponse, Instant)>,
     /// Read on every insert; set once at startup from `cache.max_entries`.
     capacity: std::sync::atomic::AtomicUsize,
+    /// Set once at construction (`PluginResources::new`); `None` disables
+    /// recording (unit tests). Used only to count evictions — hits, misses
+    /// and errors are metered by the `proxy-cache` plugin, which knows the
+    /// `store` label this backend does not have.
+    metrics: Option<Arc<crate::metrics::GatewayMetrics>>,
 }
 
 impl Default for LocalResponseCache {
     fn default() -> Self {
-        Self {
-            entries: DashMap::new(),
-            capacity: std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_ENTRIES),
-        }
+        Self::new(None)
     }
 }
 
 impl LocalResponseCache {
+    /// Creates the process-local cache, optionally wired to the metrics
+    /// registry so `make_room` can count evictions.
+    pub fn new(metrics: Option<Arc<crate::metrics::GatewayMetrics>>) -> Self {
+        Self {
+            entries: DashMap::new(),
+            capacity: std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_ENTRIES),
+            metrics,
+        }
+    }
+
     /// Sets the entry bound. Called once at startup, before traffic.
     pub fn set_capacity(&self, max_entries: usize) {
         self.capacity
@@ -131,8 +144,22 @@ impl LocalResponseCache {
             .map(|e| (e.key().clone(), e.value().1))
             .collect();
         by_expiry.sort_unstable_by_key(|(_, expires_at)| *expires_at);
+        // Counted separately from the expired sweep above: a live entry
+        // being evicted here — not merely swept for already being dead — is
+        // the signal that `max_entries` is too small for the working set.
+        let mut evicted: u64 = 0;
         for (key, _) in by_expiry.into_iter().take(excess) {
-            self.entries.remove(&key);
+            if self.entries.remove(&key).is_some() {
+                evicted += 1;
+            }
+        }
+        if evicted > 0 {
+            if let Some(metrics) = &self.metrics {
+                metrics
+                    .cache_events
+                    .with_label_values(&["local", "", "eviction"])
+                    .inc_by(evicted);
+            }
         }
     }
 }
@@ -297,6 +324,40 @@ mod tests {
         assert!(cache.get("short").await.unwrap().is_none());
         assert!(cache.get("long").await.unwrap().is_some());
         assert!(cache.get("new").await.unwrap().is_some());
+    }
+
+    /// Spec §8: an eviction driven by a full cache (not a merely-expired
+    /// sweep) must be visible, since it is the only signal that `max_entries`
+    /// is too small for the working set.
+    #[tokio::test]
+    async fn test_an_eviction_at_capacity_increments_the_eviction_counter() {
+        let metrics = Arc::new(crate::metrics::GatewayMetrics::new());
+        let cache = LocalResponseCache::new(Some(metrics.clone()));
+        cache.set_capacity(2);
+
+        // None of these expire during the test, so every entry beyond
+        // capacity is evicted live, not swept as already-dead.
+        cache
+            .put("a", &response("a"), Duration::from_secs(600))
+            .await
+            .unwrap();
+        cache
+            .put("b", &response("b"), Duration::from_secs(600))
+            .await
+            .unwrap();
+        cache
+            .put("c", &response("c"), Duration::from_secs(600))
+            .await
+            .unwrap();
+
+        assert!(
+            metrics
+                .cache_events
+                .with_label_values(&["local", "", "eviction"])
+                .get()
+                >= 1,
+            "a live-entry eviction at capacity must be counted"
+        );
     }
 
     #[tokio::test]

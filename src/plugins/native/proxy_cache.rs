@@ -87,11 +87,16 @@ pub struct ProxyCachePlugin {
     cache_methods: Vec<String>,
     /// When set, hides upstream cache headers from served cache hits.
     hide_cache_headers: bool,
-    /// The backend this node pair shares; local for now, `policy` arrives in
-    /// a later task.
+    /// The backend this node pair shares, chosen by `policy`: the process-local
+    /// cache for `local`, or a shared `RedisResponseCache` over a declared
+    /// `stores:` entry for `redis`.
     cache: Arc<dyn ResponseCache>,
-    /// Label for the `backend` dimension of `cache_events`; `"local"` for now.
+    /// Label for the `backend` dimension of `cache_events`.
     backend_label: &'static str,
+    /// Label for the `store` dimension of `cache_events`: the declared
+    /// store's name for `policy: redis`, empty for `policy: local` (which has
+    /// no store to name).
+    store_label: String,
     /// A response body larger than this is served but never cached — one
     /// large response must not be able to fill a store that sessions,
     /// counters and ACME also live in.
@@ -252,31 +257,33 @@ impl ProxyCachePlugin {
             .get("policy")
             .and_then(|v| v.as_str())
             .unwrap_or("local");
-        let (cache, backend_label): (Arc<dyn ResponseCache>, &'static str) = match policy {
-            "local" => (resources.traffic.cache.clone(), "local"),
-            #[cfg(feature = "redis-store")]
-            "redis" => {
-                let name = config
-                    .get("store")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| {
-                        "proxy-cache: policy 'redis' requires 'store' naming a declared stores: entry"
-                            .to_string()
-                    })?;
-                let client = resources.stores.load().client(name)?;
-                (
-                    Arc::new(crate::stores::redis_cache::RedisResponseCache::new(client)),
-                    "redis",
-                )
-            }
-            other => {
-                return Err(format!(
-                    "proxy-cache: unknown policy '{other}' — supported: {}",
-                    SUPPORTED_POLICIES
-                ))
-            }
-        };
+        let (cache, backend_label, store_label): (Arc<dyn ResponseCache>, &'static str, String) =
+            match policy {
+                "local" => (resources.traffic.cache.clone(), "local", String::new()),
+                #[cfg(feature = "redis-store")]
+                "redis" => {
+                    let name = config
+                        .get("store")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| {
+                            "proxy-cache: policy 'redis' requires 'store' naming a declared stores: entry"
+                                .to_string()
+                        })?;
+                    let client = resources.stores.load().client(name)?;
+                    (
+                        Arc::new(crate::stores::redis_cache::RedisResponseCache::new(client)),
+                        "redis",
+                        name.to_string(),
+                    )
+                }
+                other => {
+                    return Err(format!(
+                        "proxy-cache: unknown policy '{other}' — supported: {}",
+                        SUPPORTED_POLICIES
+                    ))
+                }
+            };
 
         Ok(Self {
             role,
@@ -288,6 +295,7 @@ impl ProxyCachePlugin {
             hide_cache_headers,
             cache,
             backend_label,
+            store_label,
             max_object_bytes,
             resources: resources.clone(),
         })
@@ -319,7 +327,7 @@ impl ProxyCachePlugin {
         if let Some(metrics) = &self.resources.metrics {
             metrics
                 .cache_events
-                .with_label_values(&[self.backend_label, event])
+                .with_label_values(&[self.backend_label, &self.store_label, event])
                 .inc();
         }
     }
@@ -401,22 +409,29 @@ impl Plugin for ProxyCachePlugin {
             }
             Role::Store => {
                 let status = ctx.response.status_code;
-                if ctx.response.body.len() > self.max_object_bytes {
-                    // Metered so a route that mysteriously never caches is
-                    // explicable rather than mysterious.
-                    self.record("too_large");
-                } else if self.cache_statuses.contains(&status) {
-                    let entry = CachedResponse {
-                        status,
-                        headers: ctx.response.headers.clone(),
-                        body: ctx.response.body.clone(),
-                    };
-                    if let Err(e) = self.cache.put(&key, &entry, self.cache_ttl).await {
-                        // Metered as well as logged: a response is served
-                        // correctly whether or not it was cached, so a write
-                        // that has stopped working leaves no other trace.
-                        tracing::warn!(key = %key, "proxy-cache store failed: {e}");
-                        self.record("error");
+                // The size check only applies to a response that would
+                // otherwise have been cached — a non-cacheable status was
+                // never going to be stored regardless of its size, so it
+                // must not inflate a counter whose whole purpose is showing
+                // what the size limit excluded.
+                if self.cache_statuses.contains(&status) {
+                    if ctx.response.body.len() > self.max_object_bytes {
+                        // Metered so a route that mysteriously never caches is
+                        // explicable rather than mysterious.
+                        self.record("too_large");
+                    } else {
+                        let entry = CachedResponse {
+                            status,
+                            headers: ctx.response.headers.clone(),
+                            body: ctx.response.body.clone(),
+                        };
+                        if let Err(e) = self.cache.put(&key, &entry, self.cache_ttl).await {
+                            // Metered as well as logged: a response is served
+                            // correctly whether or not it was cached, so a write
+                            // that has stopped working leaves no other trace.
+                            tracing::warn!(key = %key, "proxy-cache store failed: {e}");
+                            self.record("error");
+                        }
                     }
                 }
                 // This response came from the upstream, not the cache.
@@ -495,7 +510,7 @@ mod tests {
         assert_eq!(
             metrics
                 .cache_events
-                .with_label_values(&["local", "error"])
+                .with_label_values(&["local", "", "error"])
                 .get(),
             1,
             "a failed write must be visible in metrics, not only in the log"
@@ -726,7 +741,7 @@ mod tests {
         assert_eq!(
             metrics
                 .cache_events
-                .with_label_values(&["local", "error"])
+                .with_label_values(&["local", "", "error"])
                 .get(),
             1,
             "a backend error must be visible in metrics"
@@ -759,5 +774,115 @@ mod tests {
         plugin.execute(ctx).await.unwrap();
 
         assert_eq!(cache.len(), 1);
+    }
+
+    /// `max_object_bytes` must come from the node's own config, not only from
+    /// a value a test sets directly on the struct. The other two
+    /// `max_object_bytes` tests build the plugin with
+    /// `store_plugin_with_cache_and_limit`, which sets the field after
+    /// construction and so never exercises `from_config`'s
+    /// `config.get("max_object_bytes")` read — renaming or dropping that key
+    /// would leave every deployment silently back on the 1 MiB default and
+    /// this suite would not notice. This test goes through `from_config`
+    /// instead, with a limit (16 bytes) far below the default, so only the
+    /// configured value — not the constructor default — can explain a miss.
+    #[tokio::test]
+    async fn test_max_object_bytes_is_read_from_node_config() {
+        let r = PluginResources::empty();
+        let plugin = ProxyCachePlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("store")),
+                ("id", serde_json::json!("cfgtest")),
+                ("max_object_bytes", serde_json::json!(16)),
+            ]),
+            &r,
+        )
+        .unwrap();
+
+        let mut oversized = test_context();
+        oversized.response.status_code = 200;
+        oversized.response.body = bytes::Bytes::from(vec![b'x'; 64]);
+        plugin.execute(oversized).await.unwrap();
+        assert_eq!(
+            r.traffic.cache.len(),
+            0,
+            "a response over the configured max_object_bytes must not be stored"
+        );
+
+        let mut small = test_context();
+        small.response.status_code = 200;
+        small.response.body = bytes::Bytes::from_static(b"tiny");
+        plugin.execute(small).await.unwrap();
+        assert_eq!(
+            r.traffic.cache.len(),
+            1,
+            "a response under the configured max_object_bytes must still be stored"
+        );
+    }
+
+    /// Spec §7.1/§8: skipping an oversized response must be metered, so a
+    /// route that mysteriously never caches is explicable rather than
+    /// mysterious. Asserted nowhere before this test — a mutation that
+    /// deleted the `record("too_large")` call passed the whole suite.
+    #[tokio::test]
+    async fn test_an_oversized_response_increments_the_too_large_counter() {
+        let metrics = test_metrics();
+        let r = PluginResources::new(Some(metrics.clone()));
+        let plugin = ProxyCachePlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("store")),
+                ("id", serde_json::json!("toolarge")),
+                ("max_object_bytes", serde_json::json!(16)),
+            ]),
+            &r,
+        )
+        .unwrap();
+
+        let mut ctx = test_context();
+        ctx.response.status_code = 200; // cacheable status
+        ctx.response.body = bytes::Bytes::from(vec![b'x'; 64]);
+        plugin.execute(ctx).await.unwrap();
+
+        assert_eq!(
+            metrics
+                .cache_events
+                .with_label_values(&["local", "", "too_large"])
+                .get(),
+            1,
+            "an oversized response that would otherwise have been cached must be metered"
+        );
+    }
+
+    /// A response whose status was never going to be cached must not inflate
+    /// `too_large`, even if it is also oversized — that counter exists to
+    /// show what the *size limit* excluded, not every large response that
+    /// passes through the store node.
+    #[tokio::test]
+    async fn test_too_large_is_not_counted_for_a_non_cacheable_status() {
+        let metrics = test_metrics();
+        let r = PluginResources::new(Some(metrics.clone()));
+        let plugin = ProxyCachePlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("store")),
+                ("id", serde_json::json!("toolarge2")),
+                ("max_object_bytes", serde_json::json!(16)),
+            ]),
+            &r,
+        )
+        .unwrap();
+
+        let mut ctx = test_context();
+        ctx.response.status_code = 500; // not in the default cache_http_statuses
+        ctx.response.body = bytes::Bytes::from(vec![b'x'; 64]);
+        plugin.execute(ctx).await.unwrap();
+
+        assert_eq!(
+            metrics
+                .cache_events
+                .with_label_values(&["local", "", "too_large"])
+                .get(),
+            0,
+            "a response that was never cacheable must not count against the size limit"
+        );
     }
 }

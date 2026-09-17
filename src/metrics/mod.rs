@@ -47,7 +47,12 @@ pub struct GatewayMetrics {
     // headless build registers the collector but never reads the field.
     #[cfg_attr(not(feature = "redis-store"), allow(dead_code))]
     pub counter_store_errors: IntCounterVec,
-    /// Response-cache outcomes, per backend and event.
+    /// Response-cache outcomes, per backend, store, and event.
+    ///
+    /// `store` is the named `stores:` entry for `policy: redis`, and the
+    /// empty string for `policy: local` (which has no store to name) — the
+    /// same convention `counter_store_errors`/`session_store_errors` would
+    /// use if they had a backend without one.
     ///
     /// `error` is the one that matters: a cache degraded to always-miss keeps
     /// serving correct responses, just slower and with more upstream load, so
@@ -136,9 +141,9 @@ impl GatewayMetrics {
         let cache_events = IntCounterVec::new(
             Opts::new(
                 "gateway_cache_events_total",
-                "Response-cache outcomes per backend. hit and miss partition every lookup, so the hit rate is hits/(hits+misses); error is an overlapping diagnostic counted alongside the miss it caused, not a fourth bucket",
+                "Response-cache outcomes per backend, store (empty for policy: local), and event. hit and miss partition every lookup, so the hit rate is hits/(hits+misses); error is an overlapping diagnostic counted alongside the miss it caused, not a fourth bucket",
             ),
-            &["backend", "event"],
+            &["backend", "store", "event"],
         )
         .unwrap();
 
