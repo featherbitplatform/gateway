@@ -83,6 +83,10 @@ pub struct ProxyCachePlugin {
     /// The backend this node pair shares; local for now, `policy` arrives in
     /// a later task.
     cache: Arc<dyn ResponseCache>,
+    /// Label for the `backend` dimension of `cache_events`; `"local"` for now.
+    backend_label: &'static str,
+    /// Process-wide services, held for the metrics registry.
+    resources: Arc<PluginResources>,
 }
 
 impl ProxyCachePlugin {
@@ -235,6 +239,8 @@ impl ProxyCachePlugin {
             cache_methods,
             hide_cache_headers,
             cache: resources.traffic.cache.clone(),
+            backend_label: "local",
+            resources: resources.clone(),
         })
     }
 
@@ -257,6 +263,16 @@ impl ProxyCachePlugin {
             key.push_str(&component.render_with_legacy(ctx));
         }
         key
+    }
+
+    /// Counts one cache outcome. A no-op when metrics are disabled (unit tests).
+    fn record(&self, event: &str) {
+        if let Some(metrics) = &self.resources.metrics {
+            metrics
+                .cache_events
+                .with_label_values(&[self.backend_label, event])
+                .inc();
+        }
     }
 }
 
@@ -303,14 +319,17 @@ impl Plugin for ProxyCachePlugin {
             Role::Lookup => {
                 // A backend that cannot answer is treated as a miss: this
                 // cache exists to save a trip upstream, not to decide
-                // whether the request is allowed. Metered in a later task.
+                // whether the request is allowed. Counted either way, so a
+                // fully-degraded cache stays visible.
                 let found = match self.cache.get(&key).await {
                     Ok(found) => found,
                     Err(e) => {
                         tracing::warn!(key = %key, "proxy-cache lookup failed: {e}");
+                        self.record("error");
                         None
                     }
                 };
+                self.record(if found.is_some() { "hit" } else { "miss" });
                 if let Some(entry) = found {
                     // Hit: serve the cached response and short-circuit to the
                     // client via the `hit` port (→ client.in).
@@ -388,6 +407,33 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect()
+    }
+
+    /// A neutral cacheable request; the outage tests don't need to vary it.
+    fn test_context() -> Context {
+        ctx("GET")
+    }
+
+    /// A fresh metrics registry, as `src/graph/engine.rs`'s tests build one.
+    fn test_metrics() -> Arc<crate::metrics::GatewayMetrics> {
+        Arc::new(crate::metrics::GatewayMetrics::new())
+    }
+
+    /// A lookup-phase plugin around a given cache backend, metrics disabled.
+    fn lookup_plugin_with_cache(cache: Arc<dyn ResponseCache>) -> ProxyCachePlugin {
+        let mut plugin = lookup(&PluginResources::empty());
+        plugin.cache = cache;
+        plugin
+    }
+
+    /// A lookup-phase plugin around a given cache backend and metrics registry.
+    fn lookup_plugin_with_cache_and_metrics(
+        cache: Arc<dyn ResponseCache>,
+        metrics: Arc<crate::metrics::GatewayMetrics>,
+    ) -> ProxyCachePlugin {
+        let mut plugin = lookup(&PluginResources::new(Some(metrics)));
+        plugin.cache = cache;
+        plugin
     }
 
     fn lookup(r: &Arc<PluginResources>) -> ProxyCachePlugin {
@@ -496,6 +542,67 @@ mod tests {
         assert!(
             out.port.is_none(),
             "non-cacheable method must never hit the cache"
+        );
+    }
+
+    /// A backend that cannot answer. Stands in for a redis outage, so the
+    /// degradation path is testable without a live store.
+    struct BrokenCache;
+
+    #[async_trait::async_trait]
+    impl crate::traffic::ResponseCache for BrokenCache {
+        async fn get(
+            &self,
+            _key: &str,
+        ) -> Result<Option<crate::traffic::CachedResponse>, crate::traffic::cache::CacheError>
+        {
+            Err(crate::traffic::cache::CacheError(
+                "backend down".to_string(),
+            ))
+        }
+        async fn put(
+            &self,
+            _key: &str,
+            _entry: &crate::traffic::CachedResponse,
+            _ttl: std::time::Duration,
+        ) -> Result<(), crate::traffic::cache::CacheError> {
+            Err(crate::traffic::cache::CacheError(
+                "backend down".to_string(),
+            ))
+        }
+    }
+
+    /// The load-bearing behaviour: an outage costs latency, not availability.
+    /// A lookup against a dead backend must leave through `success` (on to the
+    /// upstream), not `error` and not `hit`.
+    #[tokio::test]
+    async fn test_a_failing_backend_is_a_miss_not_an_error() {
+        let plugin = lookup_plugin_with_cache(Arc::new(BrokenCache));
+        let out = plugin
+            .execute(test_context())
+            .await
+            .expect("a cache outage must not fail the request");
+        assert_eq!(
+            out.port, None,
+            "a miss continues to the upstream on `success`"
+        );
+    }
+
+    /// ...but it must not be silent, or a fully-degraded cache is
+    /// indistinguishable from a working one.
+    #[tokio::test]
+    async fn test_a_failing_backend_increments_the_error_counter() {
+        let metrics = test_metrics();
+        let plugin = lookup_plugin_with_cache_and_metrics(Arc::new(BrokenCache), metrics.clone());
+        plugin.execute(test_context()).await.unwrap();
+
+        assert_eq!(
+            metrics
+                .cache_events
+                .with_label_values(&["local", "error"])
+                .get(),
+            1,
+            "a backend error must be visible in metrics"
         );
     }
 }
