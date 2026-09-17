@@ -490,6 +490,7 @@ export default function App() {
         url,
         key_prefix: 'fb',
         connect_timeout_ms: 2000,
+        connect_budget_ms: 5000,
       });
       await loadData();
       handleSelectStore(name);

@@ -49,6 +49,12 @@
 
 ## 8. A store outage hangs the request instead of failing fast
 
+**Status:** fixed. `connect_budget_ms` on `StoreConfig` (default 5000) bounds connect
++ retries + backoff together, enforced by a `tokio::time::timeout` around the first
+connect. Measured before the fix: **17.96s** against a refused connection, which is
+also the assertion the regression test now makes. A failed connect is not cached, so
+the next request retries.
+
 **What we hit.** Writing the live tests for the `store-*` nodes, the "point a store at a
 closed port" case did not fail fast -- it hung for minutes. The test had to be rewritten
 around a `WRONGTYPE` error on an already-connected client to stay deterministic.
