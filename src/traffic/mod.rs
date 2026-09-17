@@ -21,10 +21,11 @@ use dashmap::DashMap;
 use tokio::sync::Mutex;
 
 pub mod cache;
-// `CacheError` is public via `cache::CacheError` for callers that need to name
-// it; it stays out of this re-export until a backend that can actually
-// return `Err` (the redis backend, a later task) gives it a real user —
-// otherwise it is an unused import under `-D warnings`.
+// `CacheError` joins the re-export now that the redis backend (`redis_cache.rs`)
+// is a real non-test caller that needs to name it — but that caller only
+// exists under `redis-store`, so a headless build still has no user for it.
+#[cfg(feature = "redis-store")]
+pub use cache::CacheError;
 pub use cache::{CachedResponse, LocalResponseCache, ResponseCache};
 
 /// Per-key in-flight request counters for `limit-conn`.

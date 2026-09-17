@@ -230,6 +230,35 @@ impl ProxyCachePlugin {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let policy = config
+            .get("policy")
+            .and_then(|v| v.as_str())
+            .unwrap_or("local");
+        let (cache, backend_label): (Arc<dyn ResponseCache>, &'static str) = match policy {
+            "local" => (resources.traffic.cache.clone(), "local"),
+            #[cfg(feature = "redis-store")]
+            "redis" => {
+                let name = config
+                    .get("store")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        "proxy-cache: policy 'redis' requires 'store' naming a declared stores: entry"
+                            .to_string()
+                    })?;
+                let client = resources.stores.load().client(name)?;
+                (
+                    Arc::new(crate::stores::redis_cache::RedisResponseCache::new(client)),
+                    "redis",
+                )
+            }
+            other => {
+                return Err(format!(
+                    "proxy-cache: unknown policy '{other}' — supported: local, redis"
+                ))
+            }
+        };
+
         Ok(Self {
             role,
             id,
@@ -238,8 +267,8 @@ impl ProxyCachePlugin {
             cache_statuses,
             cache_methods,
             hide_cache_headers,
-            cache: resources.traffic.cache.clone(),
-            backend_label: "local",
+            cache,
+            backend_label,
             resources: resources.clone(),
         })
     }
