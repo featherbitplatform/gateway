@@ -135,6 +135,18 @@ pub struct TrafficRegistries {
     pub cache: Arc<LocalResponseCache>,
 }
 
+impl TrafficRegistries {
+    /// Builds the registries with the process metrics wired into the local
+    /// cache, so its evictions are observable from the moment traffic starts.
+    pub fn new(metrics: Option<Arc<crate::metrics::GatewayMetrics>>) -> Self {
+        Self {
+            conn: ConnRegistry::default(),
+            breakers: BreakerRegistry::default(),
+            cache: Arc::new(LocalResponseCache::new(metrics)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
