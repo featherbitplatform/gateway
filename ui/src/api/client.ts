@@ -17,6 +17,7 @@ import type {
   DebugConfig,
   VarEntry,
   TraceSummary,
+  TraceRetention,
   TraceDetail,
   SandboxResult,
   StoreConfig,
@@ -195,6 +196,22 @@ export const api = {
     const qs = q.toString();
     return request<{ traces: TraceSummary[] }>(`/api/debug/traces${qs ? '?' + qs : ''}`).then(
       (r) => r.traces,
+    );
+  },
+  /**
+   * The same endpoint, keeping the `retention` block the list response
+   * carries. Separate from `listTraces` so the callers that only want rows
+   * (var suggestions) stay unchanged; the Debug panel needs the window to
+   * explain an empty result.
+   */
+  listTracesWithRetention: (filter?: { policy?: string; limit?: number; source?: string }) => {
+    const q = new URLSearchParams();
+    if (filter?.policy) q.set('policy', filter.policy);
+    if (filter?.limit) q.set('limit', String(filter.limit));
+    if (filter?.source) q.set('source', filter.source);
+    const qs = q.toString();
+    return request<{ traces: TraceSummary[]; retention: TraceRetention }>(
+      `/api/debug/traces${qs ? '?' + qs : ''}`,
     );
   },
   /** `GET /api/debug/traces/{id}` — one trace with per-step computed changes. */
