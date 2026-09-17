@@ -78,10 +78,15 @@ outgoing response `featherbit-cache-status: MISS` (it came from the upstream, no
 cache).
 
 With `policy: local` (the default) the cache is in-memory and per gateway
-instance; entries expire lazily on read. With `policy: redis`, the pair
-shares one namespace in the named store, so multiple gateway instances — or
-multiple policies configured with the same `store` and `cache_key` — see each
-other's entries.
+instance; entries expire lazily on read, and the process-wide `cache.max_entries`
+setting in [`system.yaml`](../../guides/configuration.md) (default `10000`, shared
+by every `policy: local` node) bounds how many it holds — once full, the
+entries expiring soonest are evicted
+(`gateway_cache_events_total{backend="local",event="eviction"}`). With
+`policy: redis`, the pair shares one namespace in the named store, so multiple
+gateway instances — or multiple policies configured with the same `store` and
+`cache_key` — see each other's entries; `max_entries` does not apply, since the
+store bounds itself via its own `maxmemory` policy.
 
 :::note[This cache fails open, unlike the rest of the system]
 Sessions and the `store-*` nodes fail **closed**: losing their store means
@@ -93,9 +98,12 @@ so a backend it cannot reach is treated as a **miss** and the request is served
 normally. Turning a redis blip into a `503` on a route that was merely going
 faster would be a worse outage than the one it reports.
 
-It is not silent: `gateway_cache_events_total{event="error"}` counts every
-failed lookup, and a cache degraded to always-miss is otherwise invisible in
-every signal except the upstream's load.
+It is not silent: `gateway_cache_events_total{backend="...",store="...",event="error"}`
+counts every failed lookup or write, labelled by which store degraded (empty
+for `policy: local`), and a cache degraded to always-miss is otherwise
+invisible in every signal except the upstream's load. See
+[Observability](../../guides/observability.md#prometheus-metrics) for the full
+label reference.
 :::
 
 ## Ports
