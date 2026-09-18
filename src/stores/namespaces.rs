@@ -23,13 +23,23 @@ pub const SESSION_SUBJECTS: &str = "subj";
 /// Policy-written keys: the `store-get`/`store-set`/`store-incr`/`store-delete` nodes.
 pub const POLICY_KV: &str = "kv";
 
+/// Cached responses (`proxy-cache` with `policy: redis`).
+pub const CACHE: &str = "cache";
+
 /// Namespaces owned by featherbit itself. A policy can never address these,
 /// because every `store-*` key is prefixed with [`POLICY_KV`].
 ///
 /// Test-only by design: nothing in production consults this list. It exists so
 /// the disjointness it describes is asserted rather than assumed.
 #[cfg(test)]
-pub const MANAGED: &[&str] = &[COUNTERS, ACME, SESSIONS, SESSION_LOCKS, SESSION_SUBJECTS];
+pub const MANAGED: &[&str] = &[
+    COUNTERS,
+    ACME,
+    SESSIONS,
+    SESSION_LOCKS,
+    SESSION_SUBJECTS,
+    CACHE,
+];
 
 #[cfg(test)]
 mod tests {
@@ -43,7 +53,14 @@ mod tests {
 
     #[test]
     fn test_all_namespaces_are_distinct() {
-        let all = [COUNTERS, ACME, SESSIONS, SESSION_LOCKS, SESSION_SUBJECTS];
+        let all = [
+            COUNTERS,
+            ACME,
+            SESSIONS,
+            SESSION_LOCKS,
+            SESSION_SUBJECTS,
+            CACHE,
+        ];
         for (i, a) in all.iter().enumerate() {
             for b in all.iter().skip(i + 1) {
                 assert_ne!(a, b, "namespaces must be pairwise distinct");
@@ -76,5 +93,8 @@ mod tests {
             subj.starts_with(&format!("fb:{}:", SESSION_SUBJECTS)),
             "{subj}"
         );
+
+        let cache = crate::stores::redis_cache::cache_key("fb", "abc");
+        assert!(cache.starts_with(&format!("fb:{}:", CACHE)), "{cache}");
     }
 }

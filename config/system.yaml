@@ -56,6 +56,14 @@ debug:
   capture_bodies: ${FEATHERBIT_DEBUG_BODIES:-false}
   max_traces: ${FEATHERBIT_DEBUG_MAX_TRACES:-50}
 
+# Entry bound for proxy-cache's policy: local backend (process-wide, shared by
+# every policy: local node). Once full, the entries expiring soonest are
+# evicted -- watch gateway_cache_events_total{backend="local",event="eviction"}
+# to see whether this is too small for your working set. Has no effect on
+# policy: redis, which the store's own maxmemory policy bounds instead.
+# cache:
+#   max_entries: 10000
+
 # Automatic TLS certificates via ACME (TLS-ALPN-01). Uncomment `acme:` and
 # replace `tls.cert_path/key_path` with `tls.acme.domains`. Restart-gated.
 # Experiment against Let's Encrypt STAGING first — production has strict
