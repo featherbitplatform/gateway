@@ -178,6 +178,11 @@ pub async fn validate_policy(
     };
     let compiled = crate::graph::prepare_policy(policy, &supernodes, &plugin_configs)
         .and_then(|p| crate::graph::compile_policy(&p, state.resources.clone()));
+    let cache_pairs: Value = match &compiled {
+        Ok(graph) => serde_json::to_value(graph.cache_pair_warnings())
+            .expect("CachePairWarning always serializes"),
+        Err(_) => serde_json::json!([]),
+    };
     let (errors, buffering): (Vec<String>, Value) = match compiled {
         Ok(graph) => (
             Vec::new(),
@@ -189,7 +194,12 @@ pub async fn validate_policy(
             serde_json::json!([]),
         ),
     };
-    Ok(serde_json::json!({ "valid": errors.is_empty(), "errors": errors, "buffering": buffering }))
+    Ok(serde_json::json!({
+        "valid": errors.is_empty(),
+        "errors": errors,
+        "buffering": buffering,
+        "cache_pairs": cache_pairs
+    }))
 }
 
 /// Structural validation of a supernode definition.

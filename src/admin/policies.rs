@@ -157,22 +157,27 @@ async fn validate_policy(
     let compiled = crate::graph::prepare_policy(policy, &supernodes, &plugin_configs)
         .and_then(|p| crate::graph::compile_policy(&p, state.resources.clone()));
 
-    let (errors, buffering): (Vec<String>, serde_json::Value) = match compiled {
-        Ok(graph) => (
-            Vec::new(),
-            serde_json::to_value(graph.buffering_reasons())
-                .expect("BufferingReason always serializes"),
-        ),
-        Err(e) => (
-            e.split("; ").map(str::to_string).collect(),
-            serde_json::json!([]),
-        ),
-    };
+    let (errors, buffering, cache_pairs): (Vec<String>, serde_json::Value, serde_json::Value) =
+        match compiled {
+            Ok(graph) => (
+                Vec::new(),
+                serde_json::to_value(graph.buffering_reasons())
+                    .expect("BufferingReason always serializes"),
+                serde_json::to_value(graph.cache_pair_warnings())
+                    .expect("CachePairWarning always serializes"),
+            ),
+            Err(e) => (
+                e.split("; ").map(str::to_string).collect(),
+                serde_json::json!([]),
+                serde_json::json!([]),
+            ),
+        };
 
     Json(serde_json::json!({
         "valid": errors.is_empty(),
         "errors": errors,
-        "buffering": buffering
+        "buffering": buffering,
+        "cache_pairs": cache_pairs
     }))
     .into_response()
 }

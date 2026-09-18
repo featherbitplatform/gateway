@@ -106,6 +106,23 @@ invisible in every signal except the upstream's load. See
 label reference.
 :::
 
+:::note[Both halves of a pair must agree on where they cache]
+The lookup and store nodes are linked only by their shared `id`. If they
+disagree about `policy` or `store`, the store half writes somewhere the lookup
+half never reads — the policy compiles, serves traffic, and returns a permanent
+100% miss with no error anywhere. It simply looks like a cache that is never
+warm.
+
+There is no configuration for which that is correct, so the compiler now
+rejects it and names both nodes.
+
+A half with **no counterpart** is reported rather than rejected: a lookup with
+no store caches nothing, and a store with no lookup is never read, but both are
+also what a policy looks like halfway through being built. They appear in the
+`cache_pairs` array of `POST /api/policies/validate` and the MCP
+`validate_policy` tool, alongside `buffering`.
+:::
+
 ## Ports
 
 `proxy-cache` declares three output ports: `success` (a cache miss, or a non-cacheable method — the request continues), `hit` (the response was served from cache; wire straight to `client`), and `error` (never actually used — a backend outage or an oversized response degrades to a miss or a skipped write, not a routed error). `success` and `hit` are mandatory on both the lookup and store nodes — the policy compiler rejects any policy that leaves either unwired, even on the store node where `hit` is never actually emitted. See [Wiring](#wiring) above.
