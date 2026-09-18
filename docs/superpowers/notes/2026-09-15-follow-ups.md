@@ -106,6 +106,35 @@ e2e harness has a redis service available, and re-add the four scenarios (or the
 equivalents) to the testbook with real Playwright tests behind them, gated on
 `FEATHERBIT_TEST_REDIS_URL` the same way `E2E-SESS-*` is.
 
+## 10. A split `proxy-cache` pair is silent and total
+
+**What we hit.** The final whole-branch review of the distributed response cache found
+that `proxy-cache`'s lookup and store nodes are validated independently: the compiler
+checks each node's own `policy`/`store`/`id` in isolation, but nothing checks that the two
+nodes of a pair *agree*. A lookup node configured `policy: redis, store: cache-a` paired
+with a store node left on the `policy: local` default (or pointed at a different `store`)
+compiles cleanly, runs without error, and produces a permanent 100% miss rate — the two
+halves simply write to and read from different places and never see each other's entries.
+
+**The gap.** The metrics make it worse, not better: the misses land under one `backend`
+(and `store`) label, the never-read writes land under another, so neither series looks
+wrong on its own. There is no cross-node `proxy-cache` validation anywhere in `src/graph/`
+today (confirmed by grep), and the same shape has always existed for an `id` mismatch
+between the two nodes — this is just the first version where the invariant spans two
+independently-configured subsystems (`policy` and `store`) instead of one string.
+
+**Why it is not in this fix round.** Validating that a `proxy-cache` pair agrees is real
+design work of its own: the compiler would need to associate nodes across a policy graph
+by `id` and role, decide what "agree" means when one side omits a key that defaults
+(`policy` defaulting to `local`), and decide whether a mismatch is a hard compile error or
+a lint-level warning. That is a different shape of change than the observability gaps this
+round closed, and deserves its own design pass rather than a bolted-on check.
+
+**Shape (for whoever picks this up).** At policy-compile time, group `proxy-cache` nodes by
+`id`, and for each group with both a `lookup` and a `store` node, require `policy` (and, for
+`redis`, `store`) to match; reject the policy otherwise, the same way an unwired
+`success`/outcome port is rejected today.
+
 ## Not worth building (recorded so it is not re-proposed)
 
 - **Storing retry counters in the OIDC session.** Wrong vehicle: the session does not exist pre-auth, which is exactly when the retry logic runs.

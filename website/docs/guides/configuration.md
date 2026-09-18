@@ -50,6 +50,7 @@ admin:
 | `timeouts` | `connection_seconds`, `read_seconds`, `write_seconds` (default `30` each), `idle_seconds` (default `300`) |
 | `logging` | `level` (default `info`), `format` (`json` is the default; any other value produces plain text) |
 | `admin` | `bind` (default `0.0.0.0`), `port` (default `9090`), `username` and `password` (required, typically supplied via `${ENV_VAR}`), `ui_enabled` (default `true`) — serve the embedded web UI; `false` gives 404 on non-API paths. Inert in the `-headless` image, whose binary omits the UI entirely. Omitting the whole section disables the admin server entirely |
+| `cache` | `max_entries` (default `10000`) — entry bound for the `proxy-cache` [plugin](../reference/plugins/proxy-cache.md)'s `policy: local` backend, process-wide and shared by every `policy: local` node. Once full, entries expiring soonest are evicted (`gateway_cache_events_total{backend="local",event="eviction"}`); has no effect on `policy: redis`, which is bounded by the store's own `maxmemory` policy instead |
 
 The `RUST_LOG` environment variable, when set, overrides `logging.level` at startup.
 
