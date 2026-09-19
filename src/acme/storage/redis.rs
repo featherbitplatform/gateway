@@ -37,17 +37,28 @@ else
   return 0
 end"#;
 
-pub(super) fn account_key(prefix: &str) -> String {
-    format!("{prefix}:acme:account")
+pub(crate) fn account_key(prefix: &str) -> String {
+    format!("{prefix}:{}:account", crate::stores::namespaces::ACME)
 }
 pub(super) fn cert_key(prefix: &str, id: &CertId) -> String {
-    format!("{prefix}:acme:cert:{{{}}}", id.as_str())
+    format!(
+        "{prefix}:{}:cert:{{{}}}",
+        crate::stores::namespaces::ACME,
+        id.as_str()
+    )
 }
 fn challenge_key(prefix: &str, domain: &str) -> String {
-    format!("{prefix}:acme:challenge:{domain}")
+    format!(
+        "{prefix}:{}:challenge:{domain}",
+        crate::stores::namespaces::ACME
+    )
 }
 fn lease_key(prefix: &str, id: &CertId) -> String {
-    format!("{prefix}:acme:lease:{{{}}}", id.as_str())
+    format!(
+        "{prefix}:{}:lease:{{{}}}",
+        crate::stores::namespaces::ACME,
+        id.as_str()
+    )
 }
 
 #[derive(Serialize, Deserialize)]

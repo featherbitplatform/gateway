@@ -524,6 +524,9 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'cache_http_statuses', label: 'Cacheable statuses', type: 'list', addLabel: 'Status', item: { type: 'number' }, hint: 'defaults to 200, 301, 404' },
     { key: 'cache_method', label: 'Cacheable methods', type: 'list', addLabel: 'Method', item: { type: 'text', placeholder: 'GET' }, hint: 'defaults to GET, HEAD' },
     { key: 'hide_cache_headers', label: 'Hide cache headers', type: 'switch', switchLabel: 'Strip cache-control/expires on hits', default: false },
+    { key: 'policy', label: 'Policy', type: 'select', options: ['local', 'redis'], default: 'local', hint: 'redis = shared cache via a named store' },
+    { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'required when policy is redis: a declared stores: entry' },
+    { key: 'max_object_bytes', label: 'Max object bytes', type: 'number', default: 1048576, hint: 'responses larger than this are served but never cached' },
   ],
   // ---- Plugin catalog (Wave 3: callout auth & authz) -----------------
   'forward-auth': [
@@ -846,6 +849,31 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'query', label: 'GraphQL query', type: 'textarea', rows: 6, placeholder: 'query ($name: String!) { persons(filter: { name: $name }) { id name } }', hint: 'required; sent upstream as the query document', template: 'full' },
     { key: 'variables', label: 'Variables', type: 'list', addLabel: 'Variable', item: { type: 'text', placeholder: 'name', template: 'full' }, hint: 'resolved from query params first, then JSON body fields' },
     { key: 'operation_name', label: 'Operation name', type: 'text', placeholder: 'ListPersons', hint: 'for multi-operation documents', template: 'full' },
+  ],
+  'store-get': [
+    { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
+    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookies.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
+    { key: 'name', label: 'Message key', type: 'text', placeholder: 'retry_count', hint: 'context.message key to write; readable as $msg_<name>' },
+    { key: 'json', label: 'Parse JSON', type: 'switch', default: false, hint: 'flattens an object into <name>.<field> message keys' },
+    { key: 'extend_ttl_seconds', label: 'Extend TTL on read (s)', type: 'number', hint: 're-arms the expiry when the key is read, so it expires after the last access' },
+  ],
+  'store-set': [
+    { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
+    { key: 'key', label: 'Key', type: 'text', placeholder: 'seen:{{request.headers.x-session}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
+    { key: 'value', label: 'Value', type: 'text', placeholder: '1', hint: 'templated', template: 'full', legacyDollar: true },
+    { key: 'ttl_seconds', label: 'TTL (s)', type: 'number', hint: 'omit for no expiry; 0 is rejected' },
+  ],
+  'store-delete': [
+    { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
+    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookies.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
+  ],
+  'store-incr': [
+    { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'a declared stores: entry' },
+    { key: 'key', label: 'Key', type: 'text', placeholder: 'retry:{{request.cookies.fb_sid}}', hint: 'templated; stored under the kv: namespace', template: 'full', legacyDollar: true },
+    { key: 'by', label: 'By', type: 'number', default: 1, hint: 'amount to add; may be negative' },
+    { key: 'ttl_seconds', label: 'TTL (s)', type: 'number', hint: 'applied when the key is created; see Refresh TTL' },
+    { key: 'refresh_ttl', label: 'Refresh TTL', type: 'switch', default: false, hint: 'on: sliding window, re-armed each increment. off: fixed from creation' },
+    { key: 'name', label: 'Message key', type: 'text', placeholder: 'retry_count', hint: 'receives the new value; readable as $msg_<name>' },
   ],
 };
 

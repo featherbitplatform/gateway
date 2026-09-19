@@ -56,6 +56,29 @@ pub fn build_entry(
     }
 }
 
+/// Whether a logger with this configuration reads `context.response.body`.
+///
+/// A logger opts out of buffering only when it has a `log_format` whose
+/// entries never reference the response body and it was not asked to include
+/// the body outright.
+///
+/// With **no** `log_format` it falls through to [`build_default`], which
+/// always records `size: ctx.response.body.len()`. On a streaming route that
+/// would silently log `0`, so the absent-format case keeps buffering rather
+/// than trading a correct byte count for a stream.
+pub fn reads_response_body(log_format: Option<&LogFormat>, include_resp_body: bool) -> bool {
+    if include_resp_body {
+        return true;
+    }
+    match log_format {
+        None => true,
+        Some(fmt) => fmt.values().any(|v| match v {
+            LogFormatValue::Template(t) => t.references_response_body(),
+            LogFormatValue::Literal(_) => false,
+        }),
+    }
+}
+
 /// Parses a `log_format` config value (an object of `name -> string`) into a
 /// [`LogFormat`], or `None` when absent. Returns an error if it is present but
 /// not an object of scalar values. String values are pre-parsed into
@@ -290,5 +313,55 @@ mod tests {
         assert!(parse_log_format(&config).is_err());
         config.insert("log_format".to_string(), json!({ "a": { "nested": 1 } }));
         assert!(parse_log_format(&config).is_err());
+    }
+
+    fn fmt(entries: &[(&str, &str)]) -> LogFormat {
+        entries
+            .iter()
+            .map(|(k, v)| {
+                let (t, _) = Template::parse(v);
+                (k.to_string(), LogFormatValue::Template(t))
+            })
+            .collect()
+    }
+
+    /// A custom format that never mentions the body is the case worth
+    /// unblocking: a policy of `upstream -> logger -> client` is ordinary, and
+    /// today every one of them is forced to buffer.
+    #[test]
+    fn test_body_free_log_format_does_not_read_the_response_body() {
+        let f = fmt(&[
+            ("path", "{{request.path}}"),
+            ("status", "{{response.status}}"),
+        ]);
+        assert!(!reads_response_body(Some(&f), false));
+    }
+
+    /// Both spellings of a body reference must be caught.
+    #[test]
+    fn test_log_format_referencing_the_body_reads_it() {
+        assert!(reads_response_body(
+            Some(&fmt(&[("b", "{{response.body}}")])),
+            false
+        ));
+        assert!(reads_response_body(
+            Some(&fmt(&[("b", "$resp_body")])),
+            false
+        ));
+    }
+
+    /// With no `log_format` the logger falls through to the default entry,
+    /// which always records `size: ctx.response.body.len()`. Streaming that
+    /// would silently log 0, so it must keep buffering.
+    #[test]
+    fn test_absent_log_format_reads_the_response_body() {
+        assert!(reads_response_body(None, false));
+    }
+
+    /// An explicit request for the body always reads it, whatever the format.
+    #[test]
+    fn test_include_resp_body_reads_the_response_body() {
+        let f = fmt(&[("path", "{{request.path}}")]);
+        assert!(reads_response_body(Some(&f), true));
     }
 }

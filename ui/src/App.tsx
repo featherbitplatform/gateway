@@ -27,6 +27,7 @@ import { usePortNames } from './usePortNames';
 import { toggleTheme } from './theme';
 import { api } from './api/client';
 import { parseApiError } from './apiError';
+import { writeToClipboard } from './clipboard';
 import { withMcpHint, mcpEndpoint } from './agentPrompts';
 import { useChat } from './chat/useChat';
 import type {
@@ -489,6 +490,7 @@ export default function App() {
         url,
         key_prefix: 'fb',
         connect_timeout_ms: 2000,
+        connect_budget_ms: 5000,
       });
       await loadData();
       handleSelectStore(name);
@@ -569,7 +571,7 @@ export default function App() {
   const copyYaml = async () => {
     if (yamlView == null) return;
     try {
-      await navigator.clipboard.writeText(yamlView);
+      await writeToClipboard(yamlView);
       notify({ tone: 'success', title: 'Copied to clipboard' });
     } catch (e) {
       notify({ tone: 'error', title: 'Copy failed', message: `${e}` });
@@ -676,7 +678,7 @@ export default function App() {
   const copyText = useCallback(
     async (label: string, text: string) => {
       try {
-        await navigator.clipboard.writeText(text);
+        await writeToClipboard(text);
         notify({ tone: 'success', title: 'Copied to clipboard', message: label });
       } catch (e) {
         notify({ tone: 'error', title: 'Copy failed', message: `${e}` });

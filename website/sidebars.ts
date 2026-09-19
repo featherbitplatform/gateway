@@ -191,6 +191,16 @@ const sidebars: SidebarsConfig = {
                 'reference/plugins/skywalking',
               ],
             },
+            {
+              type: 'category',
+              label: 'Policy state',
+              items: [
+                'reference/plugins/store-get',
+                'reference/plugins/store-set',
+                'reference/plugins/store-delete',
+                'reference/plugins/store-incr',
+              ],
+            },
             'reference/plugins/script',
           ],
         },

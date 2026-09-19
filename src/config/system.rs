@@ -53,6 +53,28 @@ pub struct SystemConfig {
     /// then fails validation.
     #[serde(default)]
     pub acme: Option<AcmeConfig>,
+    /// Response-cache limits for `proxy-cache`'s `policy: local` backend.
+    #[serde(default)]
+    pub cache: CacheConfig,
+}
+
+/// Process-wide response-cache limits.
+///
+/// `max_entries` is here rather than on the node because every `policy: local`
+/// node shares one cache; a per-node value would be a setting that silently
+/// meant something else.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct CacheConfig {
+    pub max_entries: usize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            max_entries: 10_000,
+        }
+    }
 }
 
 /// Debug mode: per-request policy-execution tracing plus the plugin sandbox.
@@ -115,7 +137,7 @@ impl Default for DebugConfig {
             trace_all: false,
             capture_bodies: false,
             max_body_bytes: 8192,
-            max_traces: 50,
+            max_traces: 1000,
             max_steps: 200,
             sandbox_timeout_seconds: 30,
             redact_headers: Vec::new(),
@@ -917,7 +939,7 @@ mod tests {
         assert!(!cfg.capture_bodies);
         assert!(cfg.sandbox, "sandbox is allowed once debug itself is on");
         assert_eq!(cfg.trigger_header, "x-featherbit-debug");
-        assert_eq!(cfg.max_traces, 50);
+        assert_eq!(cfg.max_traces, 1000);
         assert_eq!(cfg.max_steps, 200);
         assert_eq!(cfg.max_body_bytes, 8192);
         assert_eq!(cfg.sandbox_timeout_seconds, 30);

@@ -91,23 +91,34 @@ When permitted to stream:
 - **`timeout_ms` changes meaning**: instead of bounding connect + request + the whole response body, it bounds only connect + request + response **headers**. Once headers are in, the only bound left on the body is `stream_idle_timeout_ms` — so a slow-arriving first byte still fails fast, but a long-lived, actively-streaming body is never killed by `timeout_ms`.
 - Framing follows whatever the upstream declared, since response headers (including `content-length`, if present) are copied through unchanged: an upstream response of **unknown length** (no `content-length`) relays chunked on HTTP/1.1, with no `content-length` on the gateway's response either; an upstream response that **declares a `content-length`** is passed through with that header intact, and the gateway's response stays length-delimited (not chunked) instead. Either way the body is still relayed frame-by-frame as it arrives, not buffered first — `content-length` here only describes the framing, not whether the response streams.
 
-**Streaming is an allow-list, not a block-list — read it as "everything blocks unless it's one of these nine."** `Plugin::reads_response_body` defaults to `true`; a node forces the whole upstream to buffer unless its type is one of exactly nine opt-outs: `client`, `proxy-rewrite`, `response-rewrite` (only when it has neither `filters` nor `body` configured), `request-id`, `traffic-label`, `prometheus`, `opentelemetry`, `zipkin`, and `skywalking`. Every other registered node type — every other logger included — reads the body and buffers.
+**Streaming is an allow-list, not a block-list — read it as "everything blocks unless it opts out."** `Plugin::reads_response_body` defaults to `true`; a node forces the whole upstream to buffer unless it opts out. The opt-out is answered by the **configured instance**, not the type, so the same node type can block on one route and stream on another:
+
+| Opts out | When |
+|---|---|
+| `client`, `prometheus`, `opentelemetry`, `zipkin`, `skywalking` | always |
+| `response-rewrite` | no `filters`, no `body`, and no `vars` gate reading the response body |
+| `proxy-rewrite` | not the response phase, or no `add_headers` value reading the response body |
+| `request-id` | `header_name` does not read the response body |
+| `traffic-label` | no rule's `matcher` reads the response body |
+| the 16 `log_format` loggers | a `log_format` is set, none of its entries read the response body, and `include_resp_body` is off |
 
 Two consequences worth calling out because they run the other way from what an operator might expect:
 
-- **All 18 loggers block streaming, unconditionally** — not just the ones whose `log_format` references the body. `upstream → http-logger → client` does **not** stream, even with a `log_format` that never mentions `$resp_body`.
+- **A logger with no `log_format` still blocks streaming.** It falls through to the default entry, which records `size: ctx.response.body.len()` — streaming would silently log `0`, so the gateway keeps buffering rather than report a wrong byte count. Set a `log_format` that does not reference the body to let the route stream.
 - **`limit-conn` can never stream.** Its `release` node must sit after `upstream` on every path out, and `limit-conn` does not opt out — so any policy using it buffers, full stop.
 
 Adding a body-reading node after `upstream` opts that upstream back into full buffering — silently, from the policy author's point of view, unless they check. They don't have to: `POST /api/policies/validate` (and the policy compiler generally) reports it, naming both nodes, e.g. a `buffering` array entry `{"upstream": "up", "blocked_by": "gzip"}`. The policy still compiles and serves traffic exactly as it did before this feature — it is just buffered, not broken.
 
-**Known limitation: an opted-out node can still read an empty body through a template or condition.** Opting out (`reads_response_body() == false`) is a static, per-type declaration — it is not a check of what that node's *configured* templates and expressions actually reference. The response body is reachable from any `Template` or `Expression` via the `resp_body` var, a `response_body:$...` JSONPath, or a `{{response.body}}` template reference. Four of the nine opt-out types evaluate one of these *after* `upstream` has run:
+**Body references inside templates and conditions are detected.** The response body is reachable from any `Template` or `Expression` — via the `resp_body` var, a `response_body:$...` JSONPath, or a `{{response.body}}` reference — so a node that otherwise only touches headers becomes a body reader through its own config. Four node types evaluate one of these *after* `upstream` has run, and each is checked at compile time:
 
 - `traffic-label` — a rule's `matcher` condition
 - `response-rewrite` — the `vars` gate
 - `proxy-rewrite` — a response-phase `add_headers` template
 - `request-id` — the `header_name` template
 
-On a streaming route these see an **empty** `response.body`, not the real one: the upstream streamed because the node opted out, so there was never a buffered body to read. A `traffic-label` rule matching on `["resp_body", "~~", "error"]`, for example, silently never matches on a streaming route — no error, no log entry, just labels that quietly never get set. This is not currently caught at compile time (that would require scanning each parsed template/expression for a response-body reference, which is follow-up work) — if a node in this list is configured to read the response body, wire something into its success path that forces buffering (or avoid depending on the response body in that node's config on routes that are expected to stream).
+A `traffic-label` rule matching on `["resp_body", "~~", "error"]` therefore forces buffering and keeps matching, instead of silently never matching against an empty body. The blocking node is named in the `buffering` report like any other.
+
+The check errs toward buffering. The legacy `$resp_body` spelling is detected textually, because it is resolved at render time and never becomes a parsed reference — so a literal string containing `$resp_body` in a field that never interpolates `$var` also forces buffering. Buffering a response that could have streamed forgoes an optimization; streaming one whose body a node needed corrupts it.
 
 **A mid-stream failure can never become an error response.** Once this node has prepared a streaming response, its status code and headers are already committed to the wire by the time any failure in the body — an idle timeout, the upstream dropping the connection, any other transport error partway through — could occur, so there is no way to rewrite it into a `4xx`/`5xx` with a body the way a pre-body failure can. The connection is instead terminated without the chunked terminator, so a client sees an unambiguous truncation rather than a response that silently and incorrectly claims to be complete.
 

@@ -157,22 +157,27 @@ async fn validate_policy(
     let compiled = crate::graph::prepare_policy(policy, &supernodes, &plugin_configs)
         .and_then(|p| crate::graph::compile_policy(&p, state.resources.clone()));
 
-    let (errors, buffering): (Vec<String>, serde_json::Value) = match compiled {
-        Ok(graph) => (
-            Vec::new(),
-            serde_json::to_value(graph.buffering_reasons())
-                .expect("BufferingReason always serializes"),
-        ),
-        Err(e) => (
-            e.split("; ").map(str::to_string).collect(),
-            serde_json::json!([]),
-        ),
-    };
+    let (errors, buffering, cache_pairs): (Vec<String>, serde_json::Value, serde_json::Value) =
+        match compiled {
+            Ok(graph) => (
+                Vec::new(),
+                serde_json::to_value(graph.buffering_reasons())
+                    .expect("BufferingReason always serializes"),
+                serde_json::to_value(graph.cache_pair_warnings())
+                    .expect("CachePairWarning always serializes"),
+            ),
+            Err(e) => (
+                e.split("; ").map(str::to_string).collect(),
+                serde_json::json!([]),
+                serde_json::json!([]),
+            ),
+        };
 
     Json(serde_json::json!({
         "valid": errors.is_empty(),
         "errors": errors,
-        "buffering": buffering
+        "buffering": buffering,
+        "cache_pairs": cache_pairs
     }))
     .into_response()
 }
@@ -416,6 +421,23 @@ pub(crate) fn plugin_catalog() -> Vec<serde_json::Value> {
         ("skywalking", "SkyWalking segment export (sw8 propagation)"),
         // Scripting
         ("script", "Custom plugin logic written in Lua"),
+        // Policy state
+        (
+            "store-get",
+            "Read a key from a shared store into context.message (miss port when absent)",
+        ),
+        (
+            "store-set",
+            "Write a key into a shared store, with an optional TTL",
+        ),
+        (
+            "store-delete",
+            "Remove a key from a shared store (idempotent)",
+        ),
+        (
+            "store-incr",
+            "Atomically increment a counter in a shared store (TTL set at creation)",
+        ),
     ];
 
     CATALOG

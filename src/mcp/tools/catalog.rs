@@ -145,6 +145,43 @@ mod tests {
         assert_eq!(err.code, "invalid_input");
     }
 
+    /// get_node_type is what an agent reads before authoring a node. A missing
+    /// docs page returns `docs: null` rather than failing, so assert it directly
+    /// instead of trusting the file-existence guard.
+    #[tokio::test]
+    async fn store_nodes_expose_their_docs_to_agents() {
+        let s = state("{}", "{}");
+        for t in ["store-get", "store-set", "store-incr", "store-delete"] {
+            let v = call(&s, "get_node_type", obj(serde_json::json!({ "type": t })))
+                .await
+                .unwrap();
+            assert!(
+                v["docs"].as_str().is_some_and(|d| !d.is_empty()),
+                "{t} must serve a docs page to agents"
+            );
+        }
+    }
+
+    /// An agent must see that store-get has a mandatory `miss` port, or it will
+    /// author a policy that fails to compile.
+    #[tokio::test]
+    async fn store_get_exposes_its_miss_port() {
+        let s = state("{}", "{}");
+        let v = call(
+            &s,
+            "get_node_type",
+            obj(serde_json::json!({ "type": "store-get" })),
+        )
+        .await
+        .unwrap();
+        let outs = v["ports"]["outputs"].as_array().unwrap();
+        let miss = outs
+            .iter()
+            .find(|p| p["name"] == "miss")
+            .expect("miss port");
+        assert_eq!(miss["kind"], "outcome");
+    }
+
     #[tokio::test]
     async fn list_vars_explains_both_syntaxes_and_where_they_apply() {
         let s = state("{}", ECHO_GATEWAY);
