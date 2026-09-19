@@ -32,7 +32,7 @@ node in `config/gateway.yaml` at it.
 Every stack defaults to the `latest` image tag. Override it to pin a release:
 
 ```bash
-FEATHERBIT_TAG=0.9.0 docker compose -f examples/compose/minimal/compose.yaml up
+FEATHERBIT_TAG=0.10.0 docker compose -f examples/compose/minimal/compose.yaml up
 ```
 
 Add `-headless` to any tag for the build without the embedded web UI.

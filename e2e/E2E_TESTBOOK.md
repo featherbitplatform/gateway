@@ -434,9 +434,30 @@ is unset.
 | E2E-STORE-02 | Reference `e2e-redis` from a `limit-count` plugin config's `store` key, then `DELETE /api/stores/e2e-redis` | `409 {"error":"in_use","referrers":["plugin_config 'e2e-store-ref'"]}`; deleting the plugin config (not the fixture-owned store) clears the reference |
 | E2E-STORE-03 | **Browser.** Create a store named `e2e-ui-store` via the sidebar's "New store" dialog (`url: redis://127.0.0.1:1`), open it, click **Ping**; create a scratch `limit-count` shared plugin config via the API, reload, and open it from the sidebar; then delete `e2e-ui-store` via the sidebar's delete button + confirm dialog | The store appears in the sidebar; Ping surfaces a failure message (timeout or refused, OS-dependent); the plugin config's `Store` select (`optionsFrom: 'stores'`) lists the fixture store as `e2e-redis (redis)`; delete removes `e2e-ui-store` from the sidebar and `GET /api/stores/e2e-ui-store` returns `404` |
 | E2E-STORE-04 | `GET /api/sessions` (no `store`); `GET /api/sessions?store=nope` | `400`; `404` — both decided before any backend is contacted |
+| E2E-STORE-10 | *Gated.* A read on `/e2e-store/read` before anything is stored; then `/e2e-store/write`; then read again; then `/e2e-store/drop`; then read again | `404 miss` → write `200` → `200 hit=stored` → drop `200` → `404 miss`. Proves `miss` is a wired branch a request actually takes, that a value survives between requests, and that `store-delete` returns the route to its miss branch |
+| E2E-STORE-11 | *Gated.* Write under `x-probe: tenant-a`, then read under `tenant-b`, then read under `tenant-a` | `tenant-b` misses, `tenant-a` hits — the templated key renders per request rather than collapsing to one shared constant |
+| E2E-STORE-12 | *Gated.* Three increments on `/e2e-store/count` (`ttl_seconds: 3`) at t≈0, t≈2 (**inside** the window) and t≈4 | `count=1`, `count=2`, `count=1`. The middle increment is what makes the test able to fail: with a quiet period longer than the TTL a refreshing implementation expires at the same moment as a creation-pinned one. Verified by mutation — an unconditional `EXPIRE` reports `count=3` here |
+| E2E-STORE-13 | *Gated.* `POST /api/policies/validate` on `upstream → store-set → client` | `valid: true` with an empty `buffering` array — a store node whose key is an ordinary template must leave a streaming upstream streaming |
 | E2E-SESS-01 | *Gated on `FEATHERBIT_TEST_REDIS_URL`.* Interactive login on `/oidc-redis/echo` (same authorize/callback choreography as the `app-api` interactive scenarios, driven through a plain API context), then replay the request | The `oidc_redis_session` cookie is a bare 32-char lowercase-hex id (`/^[0-9a-f]{32}$/`), not a sealed blob; the replayed request succeeds without a second trip to the IdP |
 | E2E-SESS-02 | *Gated.* `GET /api/sessions?store=e2e-redis` after establishing a session | The listing includes the session with `subject: 'alice'`, `plugin: 'openid-connect'`, `policy: 'oidc-redis-policy'`, `route: 'oidc-redis'`; the record has no payload-like fields beyond `id`/`subject`/`plugin`/`policy`/`route`/`created_at`/`expires_at` |
 | E2E-SESS-03 | *Gated.* **Browser.** Log in via `/oidc-redis/echo`, then in the admin UI open the Sessions panel (footer button), select store `e2e-redis`, and click the session's revoke button | The row disappears; a subsequent data-plane request carrying the old cookie is bounced back into login (302 to the IdP) |
+
+## Response cache — `tests/response-cache.spec.ts`
+
+`proxy-cache` with `policy: redis` over the fixture-owned `e2e-redis` store. Two
+policies (`e2e-cache-a`, `e2e-cache-b`), each a `lookup → mock "upstream" →
+store → client` pair with its own route and its own mock response body
+(`from-a` / `from-b`), but configured with the same proxy-cache `id` and the
+same `cache_key` (rendered from an `x-probe` request header only, not from
+path or method) over the same `store` — so the two policies land on the same
+redis key. All three scenarios are gated: they skip themselves when
+`FEATHERBIT_TEST_REDIS_URL` is unset.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-CACHE-01 | *Gated.* Two requests to `/e2e-cache/a` with the same `x-probe` header | First: `200`, `featherbit-cache-status: MISS`, body `from-a`. Second: `200`, `featherbit-cache-status: HIT`, same body — served from redis without asking the mock "upstream" again |
+| E2E-CACHE-02 | *Gated.* A request to `/e2e-cache/a` (populates the shared key), then a request to `/e2e-cache/b` with the same `x-probe` header | The second request also gets `featherbit-cache-status: HIT` with body `from-a` — policy B's own mock body (`from-b`) is never reached, proving the two policies share one cache entry via `store` + `id` + `cache_key`, not just per-policy state |
+| E2E-CACHE-03 | *Gated.* `POST /api/policies/validate` on a `proxy-cache` lookup node with `policy: redis` and no `store` | `valid: false`; `errors` contains a message naming the missing `store` requirement |
 
 ## Notifications — `tests/notifications.spec.ts`
 

@@ -8,6 +8,9 @@
 use mlua::prelude::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::context::{Context, GatewayError, GatewayRequest, GatewayResponse, Protocol};
 use crate::plugins::PluginExecutionError;
@@ -22,9 +25,9 @@ pub struct LuaRuntime {
     /// Directory the sandboxed `require` resolves modules from; `None`
     /// disables `require`.
     modules_path: Option<PathBuf>,
-    /// Configured execution timeout in milliseconds (currently stored but
-    /// not enforced by the VM).
-    #[allow(dead_code)] // see roadmap: script execution timeouts
+    /// Wall-clock budget for one execution, covering both loading the
+    /// source and the `execute(ctx)` call. Enforced by a Luau VM interrupt;
+    /// `0` disables enforcement.
     timeout_ms: u64,
 }
 
@@ -38,12 +41,24 @@ impl LuaRuntime {
         timeout_ms: u64,
         modules_path: Option<PathBuf>,
     ) -> Result<Self, String> {
-        // Validate the script compiles
+        // Validate the script compiles. This executes the source's top
+        // level, so it needs the same deadline the request path gets: a
+        // `while true do end` at the top level would otherwise hang the
+        // Admin API thread serving `PUT /api/policies`, with no request
+        // involved.
         let lua = Lua::new();
+        let timed_out = install_deadline(&lua, timeout_ms);
         setup_module_loader(&lua, &modules_path);
-        lua.load(source)
-            .exec()
-            .map_err(|e| format!("Lua compilation error: {}", e))?;
+        lua.load(source).exec().map_err(|e| {
+            if timed_out.load(Ordering::Relaxed) {
+                format!(
+                    "Lua script exceeded its {}ms timeout while loading",
+                    timeout_ms
+                )
+            } else {
+                format!("Lua compilation error: {}", e)
+            }
+        })?;
 
         // Verify execute function exists
         lua.globals()
@@ -64,11 +79,16 @@ impl LuaRuntime {
     /// or a runtime error raised by the script) returns a
     /// `PluginExecutionError` carrying the original context, with a
     /// distinguishing error code (`LUA_LOAD_ERROR`, `LUA_MARSHAL_ERROR`,
-    /// `LUA_MISSING_EXECUTE`, `LUA_EXECUTION_ERROR`, `LUA_UNMARSHAL_ERROR`),
-    /// so the graph engine routes through the error port exactly like a
-    /// native plugin failure.
+    /// `LUA_MISSING_EXECUTE`, `LUA_EXECUTION_ERROR`, `LUA_UNMARSHAL_ERROR`,
+    /// and `LUA_TIMEOUT` when the script outran `timeout_ms`), so the graph
+    /// engine routes through the error port exactly like a native plugin
+    /// failure.
+    ///
+    /// `timeout_ms` is a single budget covering both loading the source and
+    /// the `execute(ctx)` call.
     pub fn execute(&self, ctx: Context) -> Result<Context, PluginExecutionError> {
         let lua = Lua::new();
+        let timed_out = install_deadline(&lua, self.timeout_ms);
         setup_module_loader(&lua, &self.modules_path);
 
         if let Err(e) = lua.load(&self.source).exec() {
@@ -76,7 +96,7 @@ impl LuaRuntime {
                 context: ctx,
                 error: GatewayError {
                     node_id: String::new(),
-                    code: "LUA_LOAD_ERROR".to_string(),
+                    code: failure_code(&timed_out, "LUA_LOAD_ERROR"),
                     message: format!("Failed to load Lua script: {}", e),
                     metadata: HashMap::new(),
                 },
@@ -120,7 +140,7 @@ impl LuaRuntime {
                     context: ctx,
                     error: GatewayError {
                         node_id: String::new(),
-                        code: "LUA_EXECUTION_ERROR".to_string(),
+                        code: failure_code(&timed_out, "LUA_EXECUTION_ERROR"),
                         message: format!("Lua execution error: {}", e),
                         metadata: HashMap::new(),
                     },
@@ -512,6 +532,52 @@ fn lua_to_json(value: &LuaValue) -> serde_json::Value {
     }
 }
 
+/// Installs a wall-clock deadline on `lua`, returning the flag its interrupt
+/// sets when the budget runs out.
+///
+/// Luau calls the interrupt at VM instruction boundaries, so a tight loop is
+/// caught; time spent inside a Rust callback or `require`'s file IO is not.
+/// Returning an error from the interrupt propagates it through whatever the
+/// VM was executing, which is what stops the script.
+///
+/// The flag -- not the error message -- is what distinguishes a deadline
+/// abort from an ordinary script fault, so the two never blur together if
+/// the message is ever reworded.
+///
+/// `timeout_ms: 0` installs nothing: an explicit opt-out for a trusted
+/// long-running script.
+fn install_deadline(lua: &Lua, timeout_ms: u64) -> Arc<AtomicBool> {
+    let timed_out = Arc::new(AtomicBool::new(false));
+    if timeout_ms == 0 {
+        return timed_out;
+    }
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let flag = Arc::clone(&timed_out);
+    lua.set_interrupt(move |_| {
+        if Instant::now() >= deadline {
+            flag.store(true, Ordering::Relaxed);
+            Err(LuaError::runtime(format!(
+                "script exceeded its {}ms timeout",
+                timeout_ms
+            )))
+        } else {
+            Ok(LuaVmState::Continue)
+        }
+    });
+    timed_out
+}
+
+/// The error code for a failed Lua call: `LUA_TIMEOUT` when the deadline
+/// tripped, otherwise the caller's code for that failure site.
+fn failure_code(timed_out: &Arc<AtomicBool>, default_code: &str) -> String {
+    if timed_out.load(Ordering::Relaxed) {
+        "LUA_TIMEOUT".to_string()
+    } else {
+        default_code.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -782,6 +848,85 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.error.code, "LUA_EXECUTION_ERROR");
+    }
+
+    /// A script that never returns must be stopped by `timeout_ms`. Before
+    /// enforcement landed this call did not fail -- it hung, pinning the
+    /// tokio worker thread that was polling it, so N runaway scripts wedged
+    /// N of the runtime's workers.
+    #[test]
+    fn test_lua_runaway_script_is_stopped_by_timeout() {
+        let rt = LuaRuntime::new(
+            r#"
+            function execute(ctx)
+                while true do end
+                return ctx
+            end
+            "#,
+            50,
+            None,
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        let result = rt.execute(test_context());
+        let elapsed = started.elapsed();
+
+        let err = result.expect_err("a script that never returns must not succeed");
+        assert_eq!(
+            err.error.code, "LUA_TIMEOUT",
+            "a timeout must be distinguishable from an ordinary script fault"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "the interrupt should fire near its 50ms budget, took {:?}",
+            elapsed
+        );
+    }
+
+    /// The interrupt must not trip on a script that finishes inside its
+    /// budget: a false positive here would break every working script.
+    #[test]
+    fn test_lua_script_within_budget_is_not_timed_out() {
+        let rt = LuaRuntime::new(
+            r#"
+            function execute(ctx)
+                local total = 0
+                for i = 1, 100000 do total = total + i end
+                ctx.message.total = total
+                return ctx
+            end
+            "#,
+            5000,
+            None,
+        )
+        .unwrap();
+
+        let result = rt.execute(test_context()).unwrap();
+        assert_eq!(
+            result.message.get("total").and_then(|v| v.as_f64()),
+            Some(5000050000.0)
+        );
+    }
+
+    /// The same hang exists at policy-compile time: `new` validates a script
+    /// by executing its top level, so a loop there blocks the Admin API
+    /// thread serving `PUT /api/policies` -- no request needed to trigger it.
+    #[test]
+    fn test_lua_compile_time_validation_is_bounded() {
+        let started = std::time::Instant::now();
+        let result = LuaRuntime::new("while true do end", 50, None);
+        let elapsed = started.elapsed();
+
+        assert!(
+            result.is_err(),
+            "a top-level infinite loop must fail to compile, not hang"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "compile-time validation should be bounded, took {:?}",
+            elapsed
+        );
     }
 
     #[test]

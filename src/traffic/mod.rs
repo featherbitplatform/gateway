@@ -20,6 +20,14 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use tokio::sync::Mutex;
 
+pub mod cache;
+// `CacheError` joins the re-export now that the redis backend (`redis_cache.rs`)
+// is a real non-test caller that needs to name it — but that caller only
+// exists under `redis-store`, so a headless build still has no user for it.
+#[cfg(feature = "redis-store")]
+pub use cache::CacheError;
+pub use cache::{CachedResponse, LocalResponseCache, ResponseCache};
+
 /// Per-key in-flight request counters for `limit-conn`.
 ///
 /// The acquire node increments and the release node decrements the same
@@ -119,63 +127,24 @@ impl BreakerRegistry {
     }
 }
 
-/// A cached upstream response.
-#[derive(Clone)]
-pub struct CacheEntry {
-    pub status: u16,
-    pub headers: std::collections::HashMap<String, Vec<String>>,
-    pub body: bytes::Bytes,
-    expires_at: Instant,
-}
-
-/// Response cache for `proxy-cache` lookup/store node pairs.
-///
-/// In-memory and per gateway instance; entries expire lazily on read.
-#[derive(Default)]
-pub struct CacheRegistry {
-    entries: DashMap<String, CacheEntry>,
-}
-
-impl CacheRegistry {
-    /// Returns a fresh cached entry for `key`, or `None` on miss/expiry.
-    pub fn get(&self, key: &str) -> Option<CacheEntry> {
-        let entry = self.entries.get(key)?;
-        if Instant::now() < entry.expires_at {
-            Some(entry.clone())
-        } else {
-            drop(entry);
-            self.entries.remove(key);
-            None
-        }
-    }
-
-    /// Stores `entry` under `key` with a `ttl` freshness lifetime.
-    pub fn put(
-        &self,
-        key: String,
-        status: u16,
-        headers: std::collections::HashMap<String, Vec<String>>,
-        body: bytes::Bytes,
-        ttl: Duration,
-    ) {
-        self.entries.insert(
-            key,
-            CacheEntry {
-                status,
-                headers,
-                body,
-                expires_at: Instant::now() + ttl,
-            },
-        );
-    }
-}
-
 /// The three registries, held in `PluginResources`.
 #[derive(Default)]
 pub struct TrafficRegistries {
     pub conn: ConnRegistry,
     pub breakers: BreakerRegistry,
-    pub cache: CacheRegistry,
+    pub cache: Arc<LocalResponseCache>,
+}
+
+impl TrafficRegistries {
+    /// Builds the registries with the process metrics wired into the local
+    /// cache, so its evictions are observable from the moment traffic starts.
+    pub fn new(metrics: Option<Arc<crate::metrics::GatewayMetrics>>) -> Self {
+        Self {
+            conn: ConnRegistry::default(),
+            breakers: BreakerRegistry::default(),
+            cache: Arc::new(LocalResponseCache::new(metrics)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -220,25 +189,5 @@ mod tests {
         s.record_unhealthy(1, 2, 100); // trip 1 → 4s
         let second = s.open_until.unwrap();
         assert!(second > first, "cooldown should grow across trips");
-    }
-
-    #[test]
-    fn test_cache_get_put_and_expiry() {
-        let reg = CacheRegistry::default();
-        let mut headers = std::collections::HashMap::new();
-        headers.insert("content-type".to_string(), vec!["text/plain".to_string()]);
-        reg.put(
-            "k".to_string(),
-            200,
-            headers,
-            bytes::Bytes::from_static(b"hi"),
-            Duration::from_millis(30),
-        );
-        let hit = reg.get("k").unwrap();
-        assert_eq!(hit.status, 200);
-        assert_eq!(hit.body, bytes::Bytes::from_static(b"hi"));
-
-        std::thread::sleep(Duration::from_millis(45));
-        assert!(reg.get("k").is_none(), "entry should have expired");
     }
 }

@@ -61,7 +61,14 @@ pub async fn list_traces(state: &SharedState, a: ListTracesArgs) -> Result<Value
         limit: Some(a.limit.unwrap_or(20)),
     };
     let traces = apply_filter(state.debug.list(), &f);
-    Ok(serde_json::json!({ "traces": traces }))
+    // Agents read this tool's output as evidence. Without `retention`, an
+    // empty result after a filter reads as "the filter matched nothing",
+    // which has already produced a confident and wrong "the filter is
+    // broken" conclusion when the traces had simply aged out.
+    Ok(serde_json::json!({
+        "traces": traces,
+        "retention": state.debug.retention(),
+    }))
 }
 
 pub async fn get_trace(state: &SharedState, a: GetTraceArgs) -> Result<Value, ToolError> {
@@ -302,6 +309,38 @@ mod tests {
         .await
         .unwrap();
         assert!(list["traces"].as_array().unwrap().is_empty());
+
+        // An empty result must arrive with the retention window attached.
+        // This is the agent-facing half of the ambiguity: without it, "no
+        // traces matched this filter" and "the matching traces were evicted"
+        // are the same JSON, and the difference decides whether a reader
+        // concludes the filter is broken.
+        let r = &list["retention"];
+        assert!(!r.is_null(), "a listing must report its retention window");
+        assert_eq!(r["truncated"], false, "nothing was evicted in this test");
+        assert_eq!(r["evicted"], 0);
+        assert!(
+            r["retained"].as_u64().unwrap() >= 1,
+            "the sandbox trace is still held: {r}"
+        );
+
+        // The positive case: filtering by the policy the trace actually ran
+        // must return it. Without this, a filter that always matched nothing
+        // would satisfy the negative assertion above and look correct.
+        let list = call(
+            &s,
+            "list_traces",
+            obj(serde_json::json!({"policy": "echo-policy"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            list["traces"].as_array().unwrap().len(),
+            1,
+            "policy filter dropped a trace that ran under that policy: {}",
+            list["traces"]
+        );
+        assert_eq!(list["traces"][0]["id"], id);
 
         let t = call(&s, "get_trace", obj(serde_json::json!({"id": id})))
             .await

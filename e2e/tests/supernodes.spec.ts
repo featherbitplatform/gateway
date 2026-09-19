@@ -4,6 +4,7 @@
 import {test, expect} from '@playwright/test';
 
 import {adminApi, dataPlane, deleteRouteIfPresent, waitForDataPlane} from '../helpers/admin';
+import {openLibrary} from '../helpers/ui';
 
 /** Header that opts a single request into debug tracing (see debug.spec.ts). */
 const DEBUG_HEADER = {'x-featherbit-debug': '1'};
@@ -123,6 +124,9 @@ test.describe('Supernodes', () => {
     expect((await api.put('/api/supernodes/e2e-editor-check', {data: sn})).ok()).toBeTruthy();
 
     await page.goto('/');
+    // Supernodes live behind their own strip button now; the sidebar body
+    // shows routes until one is opened.
+    await openLibrary(page, 'Supernodes');
     await page.getByText('e2e-editor-check', {exact: true}).click();
     await page.waitForSelector('.react-flow__node');
     await page.getByRole('button', {name: 'Save Supernode'}).click();
@@ -269,6 +273,7 @@ test.describe('Supernodes', () => {
 
     // Delete the definition from the sidebar library (hover reveals the X),
     // confirming in the dialog.
+    await openLibrary(page, 'Supernodes');
     await page.getByText('e2e-preview-orphan', {exact: true}).hover();
     await page.getByRole('button', {name: 'Delete supernode e2e-preview-orphan'}).click();
     await page
@@ -480,6 +485,9 @@ test.describe('Supernodes', () => {
     await expect(page.getByText(`⬡ ${snName}`, {exact: true})).toBeVisible();
     await page.getByRole('button', {name: 'Dismiss'}).click();
     await page.locator('.react-flow__pane').first().click({position: {x: 5, y: 5}});
+    // Opening the library is also the assertion's point: the extracted
+    // definition has to show up in the supernode list, not merely on canvas.
+    await openLibrary(page, 'Supernodes');
     await expect(page.getByText(snName, {exact: true})).toBeVisible();
 
     await page.getByRole('button', {name: 'Save Policy'}).click();

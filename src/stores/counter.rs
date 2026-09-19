@@ -38,6 +38,17 @@ fn window_slot(now_ms: u64, window_ms: u64) -> (u64, u64) {
     (start, expire_ms)
 }
 
+/// The key for one fixed window of one counter.
+pub(crate) fn window_key(prefix: &str, slot: u64, key: &str) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        prefix,
+        super::namespaces::COUNTERS,
+        slot,
+        key
+    )
+}
+
 pub struct RedisCounterStore {
     client: Arc<RedisStoreClient>,
     store_name: String,
@@ -83,7 +94,7 @@ impl CounterStore for RedisCounterStore {
             .unwrap_or_default()
             .as_millis() as u64;
         let (slot, expire_ms) = window_slot(now_ms, window.as_millis() as u64);
-        let redis_key = format!("{}:cnt:{}:{}", self.client.key_prefix(), slot, key);
+        let redis_key = window_key(self.client.key_prefix(), slot, key);
 
         let mut conn = self.client.conn().await.map_err(|e| self.backend_err(e))?;
         let (count, pttl): (u64, i64) = self

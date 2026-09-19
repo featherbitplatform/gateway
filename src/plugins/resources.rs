@@ -45,11 +45,11 @@ impl PluginResources {
     /// store; callers swap in the real store via [`PluginResources::consumers`].
     pub fn new(metrics: Option<Arc<GatewayMetrics>>) -> Arc<Self> {
         Arc::new(Self {
+            traffic: TrafficRegistries::new(metrics.clone()),
             metrics,
             outbound: Arc::new(OutboundClient::new()),
             consumers: ArcSwap::from_pointee(ConsumerStore::default()),
             counters: CounterStoreRegistry::default(),
-            traffic: TrafficRegistries::default(),
             stores: ArcSwap::from_pointee(crate::stores::StoreRegistry::default()),
         })
     }

@@ -176,6 +176,12 @@ impl Plugin for ErrorLogLoggerPlugin {
         "error-log-logger"
     }
 
+    fn reads_response_body(&self) -> bool {
+        // This logger never carries the body itself; only its
+        // `log_format` can pull the body in.
+        crate::plugins::util::log_entry::reads_response_body(self.log_format.as_ref(), false)
+    }
+
     async fn execute(&self, ctx: Context) -> PluginResult {
         // Only log requests that accumulated errors.
         if !ctx.errors.is_empty() {
