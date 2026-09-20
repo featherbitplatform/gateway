@@ -37,7 +37,7 @@ export const READ_TOOLS: readonly string[] = [
 /** Tools that additionally need a `write` token. */
 export const WRITE_TOOLS: readonly string[] = [
   'put_route', 'delete_route', 'put_policy', 'delete_policy', 'put_supernode', 'delete_supernode',
-  'put_plugin_config', 'delete_plugin_config', 'put_store', 'delete_store', 'reload_config',
+  'put_plugin_config', 'delete_plugin_config', 'put_store', 'delete_store', 'purge_cache', 'reload_config',
 ];
 
 const MCP_HINT =

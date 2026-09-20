@@ -65,7 +65,7 @@ Several traffic plugins need to act **both before and after** the upstream call.
 | [`api-breaker`](api-breaker.md) | Circuit breaker on unhealthy upstreams (check/observe pair) |
 | [`traffic-split`](traffic-split.md) | Weighted / conditional traffic steering (canary, blue-green) |
 | [`proxy-mirror`](proxy-mirror.md) | Fire-and-forget clone of requests to a shadow upstream |
-| [`proxy-cache`](proxy-cache.md) | Cache upstream responses (lookup/store node pair) |
+| [`proxy-cache`](proxy-cache.md) | Cache upstream responses (lookup/store node pair, plus a purge phase) |
 | [`fault-injection`](fault-injection.md) | Inject delays and abort responses (percentage + vars gated) |
 | [`workflow`](workflow.md) | Ordered rules — reject or rate-limit the first matching case |
 | [`traffic-label`](traffic-label.md) | Tag matching requests with headers and context labels |

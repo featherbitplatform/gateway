@@ -315,7 +315,7 @@ pub(crate) fn plugin_catalog() -> Vec<serde_json::Value> {
         ("proxy-mirror", "Fire-and-forget clone to a shadow upstream"),
         (
             "proxy-cache",
-            "Cache upstream responses (lookup/store pair)",
+            "Cache upstream responses (lookup/store pair, plus a purge phase)",
         ),
         ("fault-injection", "Inject delays and abort responses"),
         (
