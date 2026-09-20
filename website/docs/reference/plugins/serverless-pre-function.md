@@ -55,7 +55,7 @@ The functions run on the shared Lua runtime, so a failure in any of them propaga
 
 Returning a second value from `execute` other than `"success"` is an error (`LUA_BAD_PORT`): these nodes have no `respond` port; a script that must answer the request belongs in a [`script`](script.md) node.
 
-:::caution Behavior change in 0.11.0
+:::caution[Behavior change in 0.11.0]
 Before 0.11.0 a second return value from `execute` was silently ignored. A function that returned `ctx, "respond"` (or any other named port) ran to completion as if it had returned `ctx` alone. It now fails with `LUA_BAD_PORT` instead.
 :::
 
