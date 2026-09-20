@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 use crate::traffic::{CachedResponse, ResponseCache};
 use crate::vars::template::Template;
 
@@ -65,6 +65,8 @@ enum Role {
     Lookup,
     /// Runs after `upstream`: stores a fresh response.
     Store,
+    /// Runs on a write path: invalidates everything its pair cached.
+    Purge,
 }
 
 /// One node of a `proxy-cache` lookup/store pair.
@@ -151,25 +153,26 @@ impl ProxyCachePlugin {
         config: &HashMap<String, serde_json::Value>,
         resources: &Arc<PluginResources>,
     ) -> Result<Self, String> {
-        let role = match config
-            .get("phase")
-            .or_else(|| config.get("role"))
-            .and_then(|v| v.as_str())
-        {
-            Some("lookup") => Role::Lookup,
-            Some("store") => Role::Store,
-            Some(other) => {
-                return Err(format!(
-                    "proxy-cache: unknown phase/role '{}' (expected 'lookup' or 'store')",
+        let role =
+            match config
+                .get("phase")
+                .or_else(|| config.get("role"))
+                .and_then(|v| v.as_str())
+            {
+                Some("lookup") => Role::Lookup,
+                Some("store") => Role::Store,
+                Some("purge") => Role::Purge,
+                Some(other) => {
+                    return Err(format!(
+                    "proxy-cache: unknown phase/role '{}' (expected 'lookup', 'store' or 'purge')",
                     other
                 ))
-            }
-            None => {
-                return Err(
-                    "proxy-cache: 'phase' (or 'role') is required: 'lookup' or 'store'".to_string(),
-                )
-            }
-        };
+                }
+                None => return Err(
+                    "proxy-cache: 'phase' (or 'role') is required: 'lookup', 'store' or 'purge'"
+                        .to_string(),
+                ),
+            };
 
         let id = config
             .get("id")
@@ -452,6 +455,36 @@ impl Plugin for ProxyCachePlugin {
                     .insert(CACHE_STATUS_HEADER.to_string(), vec!["MISS".to_string()]);
                 Ok(PluginOutput::success(ctx))
             }
+            Role::Purge => {
+                // Reads degrade, purges report. A lookup that cannot reach its
+                // backend becomes a miss, because a cache exists to save latency.
+                // A purge is different in kind: the caller asked for state to
+                // change, and silently continuing would leave the cache stale
+                // in exactly the situation invalidation exists to fix.
+                match self.cache.purge(&self.id).await {
+                    Ok(removed) => {
+                        tracing::info!(id = %self.id, removed, "proxy-cache purged pair");
+                        self.record("purge");
+                        Ok(PluginOutput::success(ctx))
+                    }
+                    Err(e) => {
+                        tracing::warn!(id = %self.id, "proxy-cache purge failed: {e}");
+                        self.record("error");
+                        Err(PluginExecutionError {
+                            context: ctx,
+                            error: crate::context::GatewayError {
+                                node_id: String::new(),
+                                code: "CACHE_PURGE_FAILED".to_string(),
+                                message: format!(
+                                    "proxy-cache: purging pair '{}' failed: {e}",
+                                    self.id
+                                ),
+                                metadata: HashMap::new(),
+                            },
+                        })
+                    }
+                }
+            }
         }
     }
 }
@@ -531,6 +564,20 @@ mod tests {
 
     fn lookup_plugin_with_cache(cache: Arc<dyn ResponseCache>) -> ProxyCachePlugin {
         let mut plugin = lookup(&PluginResources::empty());
+        plugin.cache = cache;
+        plugin
+    }
+
+    /// A purge-phase plugin around a given cache backend.
+    fn purge_plugin_with_cache(cache: Arc<dyn ResponseCache>) -> ProxyCachePlugin {
+        let mut plugin = ProxyCachePlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("purge")),
+                ("id", serde_json::json!("cat")),
+            ]),
+            &PluginResources::empty(),
+        )
+        .unwrap();
         plugin.cache = cache;
         plugin
     }
@@ -785,6 +832,39 @@ mod tests {
             1,
             "a backend error must be visible in metrics"
         );
+    }
+
+    /// A write route that ends in a purge half clears what the read route's
+    /// pair cached, so the next read misses instead of serving the old value.
+    #[tokio::test]
+    async fn test_purge_phase_clears_its_pair() {
+        let cache = Arc::new(crate::traffic::LocalResponseCache::default());
+        let entry = crate::traffic::CachedResponse {
+            status: 200,
+            headers: HashMap::new(),
+            body: bytes::Bytes::from_static(b"x"),
+        };
+        cache
+            .put("cat\u{1}/x", &entry, std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        let plugin = purge_plugin_with_cache(cache.clone());
+
+        let out = plugin.execute(test_context()).await.unwrap();
+
+        assert_eq!(out.port, None, "a completed purge continues on success");
+        assert!(cache.get("cat\u{1}/x").await.unwrap().is_none());
+    }
+
+    /// Reads degrade, purges report. A purge that could not reach its backend
+    /// leaves the cache stale in exactly the situation invalidation exists to
+    /// fix, so it takes the error port rather than continuing silently.
+    #[tokio::test]
+    async fn test_purge_phase_against_a_failing_backend_exits_error() {
+        let plugin = purge_plugin_with_cache(Arc::new(BrokenCache));
+        let result = plugin.execute(test_context()).await;
+        assert!(result.is_err(), "a failed purge must not read as success");
+        assert_eq!(result.unwrap_err().error.code, "CACHE_PURGE_FAILED");
     }
 
     /// One large response must not be able to fill a store that sessions,

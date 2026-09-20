@@ -517,8 +517,8 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'max_breaker_sec', label: 'Max cooldown (s)', type: 'number', default: 300 },
   ],
   'proxy-cache': [
-    { key: 'phase', label: 'Phase', type: 'radio', options: ['lookup', 'store'], default: 'lookup', hint: 'lookup before upstream, store after' },
-    { key: 'id', label: 'Cache id', type: 'text', placeholder: 'catalog', hint: 'lookup and store nodes must share this id' },
+    { key: 'phase', label: 'Phase', type: 'radio', options: ['lookup', 'store', 'purge'], default: 'lookup', hint: 'lookup before upstream, store after, purge on a write route' },
+    { key: 'id', label: 'Cache id', type: 'text', placeholder: 'catalog', hint: 'lookup, store, and purge nodes of a pair must share this id' },
     { key: 'cache_key', label: 'Cache key', type: 'list', addLabel: 'Component', item: { type: 'text', placeholder: '$uri', template: 'full', legacyDollar: true }, hint: 'defaults to $request_method + $host + $uri' },
     { key: 'cache_ttl', label: 'Cache TTL (s)', type: 'number', default: 300 },
     { key: 'cache_http_statuses', label: 'Cacheable statuses', type: 'list', addLabel: 'Status', item: { type: 'number' }, hint: 'defaults to 200, 301, 404' },

@@ -633,18 +633,20 @@ fn validate_cache_pairs(policy_nodes: &[NodeConfig]) -> Result<Vec<CachePairWarn
             }
         }
 
-        // A half with no counterpart: report, do not refuse.
+        // A half with no counterpart: report, do not refuse. A group is
+        // complete only once it has both a lookup and a store -- a purge
+        // alone (nothing to purge for) is a lone half too.
         let has_lookup = group.iter().any(|h| h.role == "lookup");
         let has_store = group.iter().any(|h| h.role == "store");
-        if has_lookup != has_store {
-            let present = group
-                .iter()
-                .find(|h| h.role == if has_lookup { "lookup" } else { "store" })
-                .expect("the present half exists");
+        if !(has_lookup && has_store) {
+            // Whatever IS present (a lone lookup, a lone store, or a purge
+            // with nothing to purge for) is reported; the first missing role
+            // names what would complete it.
+            let present = group.first().expect("groups are non-empty");
             warnings.push(CachePairWarning {
                 cache_id: cache_id.to_string(),
                 present_node_id: present.node_id.to_string(),
-                missing_role: if has_lookup { "store" } else { "lookup" }.to_string(),
+                missing_role: if !has_lookup { "lookup" } else { "store" }.to_string(),
             });
         }
     }
@@ -2435,5 +2437,57 @@ mod tests {
         assert_eq!(warnings[0].cache_id, "orphan");
         assert_eq!(warnings[0].present_node_id, "look");
         assert_eq!(warnings[0].missing_role, "store");
+    }
+
+    /// A purge half is held to the same agreement rule as the other two: a
+    /// purge pointed at a different backend than its pair clears nothing.
+    #[tokio::test]
+    async fn test_a_purge_half_split_from_its_pair_is_rejected() {
+        let err = compile_test_policy_err(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "look", "type": "proxy-cache",
+                  "config": { "phase": "lookup", "id": "products", "policy": "local" } },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "drop", "type": "proxy-cache",
+                  "config": { "phase": "purge", "id": "products", "policy": "redis", "store": "s" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "look.in" },
+                { "from": "look.success", "to": "up.in" },
+                { "from": "look.hit", "to": "client.in" },
+                { "from": "up.success", "to": "drop.in" },
+                { "from": "drop.success", "to": "client.in" },
+                { "from": "drop.hit", "to": "client.in" }
+            ]
+        }));
+        assert!(err.contains("products") && err.contains("drop"), "{err}");
+    }
+
+    /// A purge with nothing to purge for is useless but not wrong -- reported
+    /// like any other lone half.
+    #[tokio::test]
+    async fn test_a_lone_purge_half_is_reported() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "drop", "type": "proxy-cache",
+                  "config": { "phase": "purge", "id": "orphan", "policy": "local" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "drop.in" },
+                { "from": "drop.success", "to": "client.in" },
+                { "from": "drop.hit", "to": "client.in" }
+            ]
+        }));
+        let w = graph.cache_pair_warnings();
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].present_node_id, "drop");
     }
 }
