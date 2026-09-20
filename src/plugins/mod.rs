@@ -88,7 +88,7 @@ pub trait Plugin: Send + Sync {
     ///   `success` port, and [`PluginOutput::on_port`] takes a named
     ///   **outcome** port — the node did its job and chose a deliberate
     ///   alternate route (`denied`, `redirect`, `limited`, `broken`,
-    ///   `preflight`, `abort`, `routed`, `hit`, `true`/`false`), normally with the
+    ///   `preflight`, `abort`, `routed`, `hit`, `respond`, `true`/`false`), normally with the
     ///   client-facing response already prepared. The named port must be one
     ///   this type declares in its `PortSpec`, or the policy would not have
     ///   compiled; nothing is appended to `ctx.errors`.

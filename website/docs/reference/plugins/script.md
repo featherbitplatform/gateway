@@ -7,6 +7,10 @@ description: Runs a user-provided Lua script as a graph node, with full read/wri
 
 Runs a user-provided script as a graph node behind the same plugin contract as native plugins. The script receives the full Context (`request`, `response`, `message`) and returns a possibly modified copy; anything it writes into `ctx.message` is visible to downstream nodes. It can sit anywhere in the request or response pipeline. Only the Lua (Luau) runtime is currently supported. The [Lua scripting guide](../../guides/lua-scripting.md) has the worked examples, `require` sandboxing and hot-reload rules (agents: `featherbit://docs/guides/lua-scripting`).
 
+:::danger Breaking change
+Since 0.11.0 `script` declares a `respond` outcome port, and outcome ports are mandatory wiring: **every existing `script` node must add an edge from `<id>.respond`** (to `client`, usually) or the policy fails to compile with `output port 'respond' of node '<id>' (type 'script') must be wired`. A gateway whose config fails to compile exits at startup.
+:::
+
 ## The `ctx` table
 
 Define a global `execute(ctx)`, mutate what you need, and **return the same table** — a fresh table of your own will not have the fields the gateway expects.

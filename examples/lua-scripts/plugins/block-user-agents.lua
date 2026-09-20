@@ -27,7 +27,7 @@ function execute(ctx)
             ctx.response.status_code = 403
             ctx.response.body = '{"error": "forbidden", "message": "Blocked user agent"}'
             ctx.response.headers["content-type"] = { "application/json" }
-            ctx.message.blocked_ua = ua
+            ctx.message.blocked_ua = ua -- for traces and loggers; nothing branches on it
             return ctx, "respond"
         end
     end
