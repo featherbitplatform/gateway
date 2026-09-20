@@ -21,8 +21,9 @@ them by that path.
     runtime: lua
     source: /etc/gateway/plugins/add-request-id.lua
     timeout_ms: 5000        # optional; a runaway script is interrupted, not left pinning a worker
-    # wire <id>.respond → client.in as well as <id>.success
 ```
+
+The node's `respond` port is **required wiring** — the policy does not compile without an edge from `<id>.respond` — even for a script that never takes it.
 
 ## Writing your own
 

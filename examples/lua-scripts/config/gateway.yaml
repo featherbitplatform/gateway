@@ -76,6 +76,7 @@ policies:
     edges:
       - from: listener.out
         to: request-id.in
+      # mandatory on every script node; this script never takes it
       - from: request-id.respond
         to: client.in
       - from: request-id.success
@@ -84,6 +85,7 @@ policies:
         to: client.in
       - from: block-bots.success
         to: timer-start.in
+      # mandatory on every script node; this script never takes it
       - from: timer-start.respond
         to: client.in
       - from: timer-start.success
@@ -92,6 +94,7 @@ policies:
         to: backend.in
       - from: backend.success
         to: timer-end.in
+      # mandatory on every script node; this script never takes it
       - from: timer-end.respond
         to: client.in
       - from: timer-end.success
