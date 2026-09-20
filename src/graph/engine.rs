@@ -688,11 +688,19 @@ fn validate_cache_pairs(policy_nodes: &[NodeConfig]) -> Result<Vec<CachePairWarn
 ///   that can run downstream of a stream-capable `upstream` without forcing
 ///   it to buffer: `client`, `opentelemetry`, `prometheus`, `proxy-rewrite`,
 ///   `request-id`, `response-rewrite`, `skywalking`, `traffic-label`,
-///   `zipkin`) ever returns `Err` from `execute` — every `return Err` in
-///   those nine plugins' source is in `from_config` (construction-time
-///   validation), never in `execute`. If a future change to any of them
-///   starts erroring from `execute`, this walk would not catch it, and
-///   nothing else currently enforces it either.
+///   `zipkin`, and `proxy-cache` in its `lookup` role only) ever returns
+///   `Err` from `execute` — every `return Err` in the first nine plugins'
+///   source is in `from_config` (construction-time validation), never in
+///   `execute`; `proxy-cache`'s `lookup` role does call a fallible backend
+///   (`ResponseCache::get`) from `execute`, but matches on the result and
+///   degrades a failure to a miss rather than propagating `Err`. This is
+///   exactly why `proxy-cache`'s `store` and `purge` roles do **not** opt
+///   out despite neither reading the response body: `store` because it
+///   reads it to cache it, and `purge` because it *can* return `Err` from
+///   `execute` on a failed backend, which this invariant forbids for an
+///   opt-out node. If a future change to any of these plugins starts
+///   erroring from `execute` where it previously didn't, this walk would
+///   not catch it, and nothing else currently enforces it either.
 ///
 /// Iterates `policy_nodes` (a `Vec`), not the `nodes` map, and visits each
 /// node's outgoing ports in sorted-name order: the same precedent as the
@@ -1962,14 +1970,18 @@ mod tests {
         assert_eq!(reasons[0].node_type, "response-rewrite");
     }
 
-    /// A `proxy-cache` purge node on the success path must not force
-    /// buffering: `Role::Purge` never reads the response body it passes
-    /// through untouched. Both `success` and `hit` are mandatory wiring on
-    /// every `proxy-cache` node regardless of phase (the same `PortSpec` as
+    /// A `proxy-cache` purge node on the success path must force buffering,
+    /// even though `Role::Purge` reads nothing from the response it passes
+    /// through: it *can* return `Err` from `execute` on a failed backend, and
+    /// `infer_stream_capability`'s doc comment explains why that disqualifies
+    /// it from opting out — an error edge from it could route to a node that
+    /// writes `response.body` directly while a stream from the upstream is
+    /// still live. Both `success` and `hit` are mandatory wiring on every
+    /// `proxy-cache` node regardless of phase (the same `PortSpec` as
     /// lookup/store), even though a purge never emits `hit`, so both are
     /// wired to `client.in` here.
     #[test]
-    fn test_proxy_cache_purge_node_does_not_force_buffering() {
+    fn test_proxy_cache_purge_node_forces_buffering_because_it_can_fail() {
         let graph = compile_test_policy(serde_json::json!({
             "nodes": [
                 { "id": "listener", "type": "listener", "config": {} },
@@ -1984,6 +1996,39 @@ mod tests {
                 { "from": "up.success", "to": "purge.in" },
                 { "from": "purge.success", "to": "client.in" },
                 { "from": "purge.hit", "to": "client.in" }
+            ]
+        }));
+
+        assert!(!graph.is_stream_capable("up"));
+        let reasons = graph.buffering_reasons();
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].upstream_node_id, "up");
+        assert_eq!(reasons[0].blocked_by_node_id, "purge");
+        assert_eq!(reasons[0].node_type, "proxy-cache");
+    }
+
+    /// A `proxy-cache` `lookup` node is normally placed *before* `upstream`,
+    /// but nothing stops it from being wired after one too (unusual, but
+    /// legal). Placed there, it must NOT force buffering: this pins the
+    /// `Lookup`-only opt-out from `test_proxy_cache_purge_node_forces_
+    /// buffering_because_it_can_fail`'s sibling case, proving it is the role
+    /// -- not just the node type -- that decides.
+    #[test]
+    fn test_proxy_cache_lookup_node_after_upstream_does_not_force_buffering() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "look", "type": "proxy-cache",
+                  "config": { "phase": "lookup", "id": "products", "policy": "local" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "look.in" },
+                { "from": "look.success", "to": "client.in" },
+                { "from": "look.hit", "to": "client.in" }
             ]
         }));
 

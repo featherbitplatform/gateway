@@ -149,6 +149,13 @@ reach its backend becomes a miss, because a cache only saves latency. A purge is
 different: you asked for state to change, and continuing silently would leave the
 cache stale in exactly the case invalidation exists to fix.
 
+A `phase: purge` node placed on an upstream's success path buffers that
+upstream's response (the same as `phase: store`) — because a failed purge can
+exit `error`, and an error response cannot be produced mid-stream once bytes
+have already gone out. Write responses are usually small, so this rarely
+matters in practice; `POST /api/policies/validate` reports it as a buffering
+reason if it does.
+
 **A `policy: redis` purge scans the whole store, not just the pair.** It
 `SCAN`s the store's entire keyspace incrementally, so its cost grows with the
 store's total key count, not with the number of entries the pair actually
