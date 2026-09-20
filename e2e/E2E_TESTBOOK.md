@@ -450,14 +450,18 @@ store → client` pair with its own route and its own mock response body
 (`from-a` / `from-b`), but configured with the same proxy-cache `id` and the
 same `cache_key` (rendered from an `x-probe` request header only, not from
 path or method) over the same `store` — so the two policies land on the same
-redis key. All three scenarios are gated: they skip themselves when
-`FEATHERBIT_TEST_REDIS_URL` is unset.
+redis key. A third policy, `e2e-cache-purge` (route `/e2e-cache/purge`), is a
+write path ending in a `proxy-cache` `phase: purge` node over that same
+`id`/`policy`/`store`, for the invalidation scenarios. All five scenarios are
+gated: they skip themselves when `FEATHERBIT_TEST_REDIS_URL` is unset.
 
 | ID | Scenario | Expected |
 |---|---|---|
 | E2E-CACHE-01 | *Gated.* Two requests to `/e2e-cache/a` with the same `x-probe` header | First: `200`, `featherbit-cache-status: MISS`, body `from-a`. Second: `200`, `featherbit-cache-status: HIT`, same body — served from redis without asking the mock "upstream" again |
 | E2E-CACHE-02 | *Gated.* A request to `/e2e-cache/a` (populates the shared key), then a request to `/e2e-cache/b` with the same `x-probe` header | The second request also gets `featherbit-cache-status: HIT` with body `from-a` — policy B's own mock body (`from-b`) is never reached, proving the two policies share one cache entry via `store` + `id` + `cache_key`, not just per-policy state |
 | E2E-CACHE-03 | *Gated.* `POST /api/policies/validate` on a `proxy-cache` lookup node with `policy: redis` and no `store` | `valid: false`; `errors` contains a message naming the missing `store` requirement |
+| E2E-CACHE-04 | *Gated.* Populate `/e2e-cache/a` to a `HIT`, then `DELETE /api/cache/{id}` via the admin API, then repeat the request; also `DELETE /api/cache/no-such-pair` | The purge returns `200` with a non-empty `purged` array naming the id; the next request is `featherbit-cache-status: MISS` again; the unknown id is `404` |
+| E2E-CACHE-05 | *Gated.* Populate `/e2e-cache/a` to a `HIT`, hit `/e2e-cache/purge` once (a write route ending in a `proxy-cache` `phase: purge` node over the same id/policy/store), then repeat the `/e2e-cache/a` request | The purge route returns `200`; the following `/e2e-cache/a` request is `featherbit-cache-status: MISS` again — write-through invalidation, the case a TTL cannot cover |
 
 ## Notifications — `tests/notifications.spec.ts`
 
