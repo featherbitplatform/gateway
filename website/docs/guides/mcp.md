@@ -23,7 +23,7 @@ admin:
 
 Restart-gated like everything in `system.yaml`. Rules enforced at load: `enabled: true` needs at least one token; tokens are at least 16 characters (use 32+ random bytes: `openssl rand -base64 32`); duplicates are rejected; `path` must be absolute and outside `/api`, and outside the reserved `/`, `/healthz`, `/readyz`, `/metrics` paths. Disabled (the default), the path answers `404 {"error":"not_found"}` — indistinguishable from a route that was never mounted. The gateway names the config key to set at startup, and warns again the first time the path is hit — but only that once per process, so a stream of unauthenticated requests can't be used to spam the log.
 
-::::warning Restart required
+:::warning[Restart required]
 `system.yaml` is read once at startup and never hot-reloaded, so **enabling/disabling the MCP endpoint, its tokens, and its path all require a restart**. Nothing here is hot-reloadable, unlike `gateway.yaml`.
 :::
 
