@@ -77,7 +77,8 @@ impl LuaRuntime {
 
     /// Runs the script's `execute(ctx)` against the given context in a fresh
     /// VM and returns the context rebuilt from the table the script returned,
-    /// and the port the script named, if any.
+    /// and the port the script named, if any (`"respond"` or the implicit
+    /// `success`).
     ///
     /// Every failure mode (load, marshalling either way, missing `execute`,
     /// a runtime error raised by the script, or an unrecognized second
@@ -90,6 +91,10 @@ impl LuaRuntime {
     ///
     /// `timeout_ms` is a single budget covering both loading the source and
     /// the `execute(ctx)` call.
+    ///
+    /// Shares the load/marshal/call core with [`execute_without_port`](Self::execute_without_port)
+    /// via [`call_execute`](Self::call_execute); only the judgment of the
+    /// second return value differs between the two.
     pub fn execute(
         &self,
         ctx: Context,
@@ -97,20 +102,109 @@ impl LuaRuntime {
         let lua = Lua::new();
         let timed_out = install_deadline(&lua, self.timeout_ms);
         setup_module_loader(&lua, &self.modules_path);
+        let (ctx, result_table, second) = self.call_execute(&lua, &timed_out, ctx)?;
 
+        // The optional second value names the port the node leaves on. It is
+        // a decision the script states, never something inferred from the
+        // response it left behind: a script that set status 403 and returned
+        // one value continues on success, exactly as before this existed.
+        let port = match second {
+            None | Some(LuaValue::Nil) => None,
+            Some(LuaValue::String(s)) if s.to_str().map(|s| s == RESPOND_PORT).unwrap_or(false) => {
+                Some(RESPOND_PORT)
+            }
+            Some(LuaValue::String(s)) if s.to_str().map(|s| s == "success").unwrap_or(false) => {
+                None
+            }
+            Some(other) => {
+                return Err(PluginExecutionError {
+                    context: ctx,
+                    error: GatewayError {
+                        node_id: String::new(),
+                        code: "LUA_BAD_PORT".to_string(),
+                        message: format!(
+                            "execute(ctx) returned {} as the port; expected \"respond\" or \"success\" (or no second value)",
+                            shown_lua_value(&other)
+                        ),
+                        metadata: HashMap::new(),
+                    },
+                });
+            }
+        };
+
+        self.finish_unmarshal(ctx, &result_table)
+            .map(|new_ctx| (new_ctx, port))
+    }
+
+    /// `execute` for node types that declare no outcome port: any named port
+    /// other than `"success"` is a `LUA_BAD_PORT` failure with the ORIGINAL
+    /// context, and the message says so without pointing at `respond`.
+    ///
+    /// Used by `serverless-pre-function`/`serverless-post-function`, which
+    /// share this Lua runtime with `script` but have no `respond` port (or
+    /// any outcome port) to leave on — a function that names one anyway is
+    /// rejected here, at the point the original `ctx` is still in hand,
+    /// rather than one layer up with a serverless-specific message.
+    pub fn execute_without_port(&self, ctx: Context) -> Result<Context, PluginExecutionError> {
+        let lua = Lua::new();
+        let timed_out = install_deadline(&lua, self.timeout_ms);
+        setup_module_loader(&lua, &self.modules_path);
+        let (ctx, result_table, second) = self.call_execute(&lua, &timed_out, ctx)?;
+
+        match second {
+            None | Some(LuaValue::Nil) => {}
+            Some(LuaValue::String(s)) if s.to_str().map(|s| s == "success").unwrap_or(false) => {}
+            Some(other) => {
+                return Err(PluginExecutionError {
+                    context: ctx,
+                    error: GatewayError {
+                        node_id: String::new(),
+                        code: "LUA_BAD_PORT".to_string(),
+                        message: format!(
+                            "execute(ctx) returned port {}; this node type declares no outcome port — only a `script` node can answer with \"respond\"",
+                            shown_lua_value(&other)
+                        ),
+                        metadata: HashMap::new(),
+                    },
+                });
+            }
+        }
+
+        self.finish_unmarshal(ctx, &result_table)
+    }
+
+    /// Shared core of [`execute`](Self::execute) and
+    /// [`execute_without_port`](Self::execute_without_port): loads the
+    /// script, marshals `ctx`, calls `execute(ctx)`, and returns the table it
+    /// returned together with the raw second return value, still unjudged,
+    /// and the original `ctx` — untouched, since it was only ever borrowed
+    /// to build the Lua table. This lets a caller that rejects the second
+    /// value still hand back the pristine original context, never the one
+    /// rebuilt from what the script returned.
+    ///
+    /// Takes `lua` and `timed_out` by reference rather than creating them
+    /// itself: the returned `LuaTable`/`LuaValue` are only valid as long as
+    /// the `Lua` instance that produced them is alive, so it must live in
+    /// the caller's stack frame, not be dropped when this function returns.
+    fn call_execute(
+        &self,
+        lua: &Lua,
+        timed_out: &Arc<AtomicBool>,
+        ctx: Context,
+    ) -> Result<(Context, LuaTable, Option<LuaValue>), PluginExecutionError> {
         if let Err(e) = lua.load(&self.source).exec() {
             return Err(PluginExecutionError {
                 context: ctx,
                 error: GatewayError {
                     node_id: String::new(),
-                    code: failure_code(&timed_out, "LUA_LOAD_ERROR"),
+                    code: failure_code(timed_out, "LUA_LOAD_ERROR"),
                     message: format!("Failed to load Lua script: {}", e),
                     metadata: HashMap::new(),
                 },
             });
         }
 
-        let ctx_table = match context_to_lua(&lua, &ctx) {
+        let ctx_table = match context_to_lua(lua, &ctx) {
             Ok(t) => t,
             Err(e) => {
                 return Err(PluginExecutionError {
@@ -147,7 +241,7 @@ impl LuaRuntime {
                     context: ctx,
                     error: GatewayError {
                         node_id: String::new(),
-                        code: failure_code(&timed_out, "LUA_EXECUTION_ERROR"),
+                        code: failure_code(timed_out, "LUA_EXECUTION_ERROR"),
                         message: format!("Lua execution error: {}", e),
                         metadata: HashMap::new(),
                     },
@@ -174,44 +268,23 @@ impl LuaRuntime {
             }
         };
 
-        // The optional second value names the port the node leaves on. It is
-        // a decision the script states, never something inferred from the
-        // response it left behind: a script that set status 403 and returned
-        // one value continues on success, exactly as before this existed.
-        let port = match returned.next() {
-            None | Some(LuaValue::Nil) => None,
-            Some(LuaValue::String(s)) if s.to_str().map(|s| s == RESPOND_PORT).unwrap_or(false) => {
-                Some(RESPOND_PORT)
-            }
-            Some(LuaValue::String(s)) if s.to_str().map(|s| s == "success").unwrap_or(false) => {
-                None
-            }
-            Some(other) => {
-                let shown = match &other {
-                    LuaValue::String(s) => format!("\"{}\"", s.to_string_lossy()),
-                    v => v.type_name().to_string(),
-                };
-                return Err(PluginExecutionError {
-                    context: ctx,
-                    error: GatewayError {
-                        node_id: String::new(),
-                        code: "LUA_BAD_PORT".to_string(),
-                        message: format!(
-                            "execute(ctx) returned {} as the port; expected \"respond\" or \"success\" (or no second value)",
-                            shown
-                        ),
-                        metadata: HashMap::new(),
-                    },
-                });
-            }
-        };
+        let second = returned.next();
+        Ok((ctx, result_table, second))
+    }
 
-        // Carry over the fields scripts never see: the wire protocol and the
-        // errors accumulated by earlier nodes must survive a script node.
+    /// Rebuilds the `Context` from `result_table`, carrying over the fields
+    /// scripts never see (the wire protocol and the errors accumulated by
+    /// earlier nodes) from `ctx`. On failure the ORIGINAL `ctx` travels with
+    /// the error, not a partially-rebuilt one.
+    fn finish_unmarshal(
+        &self,
+        ctx: Context,
+        result_table: &LuaTable,
+    ) -> Result<Context, PluginExecutionError> {
         let protocol = ctx.request.protocol.clone();
         let errors = ctx.errors.clone();
-        match lua_to_context(&result_table, protocol, errors) {
-            Ok(new_ctx) => Ok((new_ctx, port)),
+        match lua_to_context(result_table, protocol, errors) {
+            Ok(new_ctx) => Ok(new_ctx),
             Err(e) => Err(PluginExecutionError {
                 context: ctx,
                 error: GatewayError {
@@ -222,6 +295,16 @@ impl LuaRuntime {
                 },
             }),
         }
+    }
+}
+
+/// Renders a Lua value for an error message: a string quoted (lossily, so a
+/// non-UTF-8 second return value renders instead of panicking), anything
+/// else by its Lua type name.
+fn shown_lua_value(value: &LuaValue) -> String {
+    match value {
+        LuaValue::String(s) => format!("\"{}\"", s.to_string_lossy()),
+        v => v.type_name().to_string(),
     }
 }
 
@@ -853,6 +936,34 @@ mod tests {
     #[test]
     fn test_lua_non_string_port_is_lua_bad_port() {
         let rt = LuaRuntime::new("function execute(ctx) return ctx, 42 end", 5000, None).unwrap();
+        let err = rt.execute(test_context()).unwrap_err();
+        assert_eq!(err.error.code, "LUA_BAD_PORT");
+    }
+
+    /// Port names are matched exactly; a script that gets the case wrong
+    /// does not get coerced into the port it probably meant.
+    #[test]
+    fn test_lua_port_name_is_case_sensitive() {
+        let rt = LuaRuntime::new(
+            "function execute(ctx) return ctx, \"Respond\" end",
+            5000,
+            None,
+        )
+        .unwrap();
+        let err = rt.execute(test_context()).unwrap_err();
+        assert_eq!(err.error.code, "LUA_BAD_PORT");
+    }
+
+    /// A non-UTF-8 second value must be reported as a bad port, not panic
+    /// while rendering it into the error message.
+    #[test]
+    fn test_lua_non_utf8_port_is_lua_bad_port_without_panicking() {
+        let rt = LuaRuntime::new(
+            "function execute(ctx) return ctx, \"\\255\\254\" end",
+            5000,
+            None,
+        )
+        .unwrap();
         let err = rt.execute(test_context()).unwrap_err();
         assert_eq!(err.error.code, "LUA_BAD_PORT");
     }
