@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use crate::context::Context;
 use crate::plugins::resources::PluginResources;
-use crate::plugins::{Plugin, PluginOutput, PluginResult};
+use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 use crate::traffic::{CachedResponse, ResponseCache};
 use crate::vars::template::Template;
 
@@ -65,6 +65,8 @@ enum Role {
     Lookup,
     /// Runs after `upstream`: stores a fresh response.
     Store,
+    /// Runs on a write path: invalidates everything its pair cached.
+    Purge,
 }
 
 /// One node of a `proxy-cache` lookup/store pair.
@@ -151,25 +153,26 @@ impl ProxyCachePlugin {
         config: &HashMap<String, serde_json::Value>,
         resources: &Arc<PluginResources>,
     ) -> Result<Self, String> {
-        let role = match config
-            .get("phase")
-            .or_else(|| config.get("role"))
-            .and_then(|v| v.as_str())
-        {
-            Some("lookup") => Role::Lookup,
-            Some("store") => Role::Store,
-            Some(other) => {
-                return Err(format!(
-                    "proxy-cache: unknown phase/role '{}' (expected 'lookup' or 'store')",
+        let role =
+            match config
+                .get("phase")
+                .or_else(|| config.get("role"))
+                .and_then(|v| v.as_str())
+            {
+                Some("lookup") => Role::Lookup,
+                Some("store") => Role::Store,
+                Some("purge") => Role::Purge,
+                Some(other) => {
+                    return Err(format!(
+                    "proxy-cache: unknown phase/role '{}' (expected 'lookup', 'store' or 'purge')",
                     other
                 ))
-            }
-            None => {
-                return Err(
-                    "proxy-cache: 'phase' (or 'role') is required: 'lookup' or 'store'".to_string(),
-                )
-            }
-        };
+                }
+                None => return Err(
+                    "proxy-cache: 'phase' (or 'role') is required: 'lookup', 'store' or 'purge'"
+                        .to_string(),
+                ),
+            };
 
         let id = config
             .get("id")
@@ -177,6 +180,18 @@ impl ProxyCachePlugin {
             .filter(|s| !s.trim().is_empty())
             .ok_or("proxy-cache: 'id' is required (links the lookup/store pair)")?
             .to_string();
+
+        // The `\u{1}` separator is the prefix boundary that purging a pair
+        // relies on: an `id` containing it would produce keys another pair's
+        // prefix also matches. Refuse it -- and every other control character,
+        // which have no business in a cache namespace -- at compile time
+        // rather than trust config never to contain one.
+        if id.chars().any(char::is_control) {
+            return Err(format!(
+                "proxy-cache: 'id' must not contain control characters (got {:?})",
+                id
+            ));
+        }
 
         let cache_key: Vec<String> = match config.get("cache_key") {
             None => vec![
@@ -364,8 +379,54 @@ impl Plugin for ProxyCachePlugin {
         "proxy-cache"
     }
 
+    /// A purge-only policy still names a real backend for its `id`: dedup in
+    /// `collect_targets` makes a duplicate target (from a paired lookup/store
+    /// half also naming it) harmless, and the alternative -- `None` here --
+    /// would make `DELETE /api/cache/{id}` 404 for an id only a purge half
+    /// names, which is worse than the actual consequence: it 200s with
+    /// `removed: 0` when nothing else has ever cached under that id.
+    fn cache_target(&self) -> Option<crate::traffic::CacheTarget> {
+        Some(crate::traffic::CacheTarget {
+            id: self.id.clone(),
+            backend: self.cache.clone(),
+            backend_label: self.backend_label,
+            store: self.store_label.clone(),
+        })
+    }
+
+    /// Only `Lookup` opts out of buffering. It never reads the existing
+    /// response body -- on a hit it replaces `ctx.response` outright with the
+    /// cached entry, on a miss it passes the context through untouched -- and
+    /// it never returns `Err` from `execute`: its only fallible call
+    /// (`self.cache.get`) is matched and degraded to a miss, not propagated.
+    ///
+    /// `Store` reads `ctx.response.body` to cache it, so it must buffer.
+    ///
+    /// `Purge` reads nothing from the response either, but is deliberately
+    /// kept buffering anyway: it *can* return `Err` from `execute`
+    /// (`run_purge`, on a failed backend), and the engine's forward
+    /// streaming walk (`infer_stream_capability` in `src/graph/engine.rs`)
+    /// is only sound for opt-out nodes that never do that -- see the safety
+    /// argument in its doc comment. Opting `Purge` out too would let a
+    /// stream-capable upstream's response stay live past a purge node that
+    /// then routes to `error`, exactly the stale-`response.stream`-beside-a-
+    /// generated-body case that invariant exists to rule out.
+    fn reads_response_body(&self) -> bool {
+        !matches!(self.role, Role::Lookup)
+    }
+
     async fn execute(&self, mut ctx: Context) -> PluginResult {
-        // Non-cacheable methods bypass the cache entirely in both phases.
+        // A purge neither produces nor consumes a cached representation: it
+        // doesn't read or write an entry keyed to this request, so the
+        // method gate and key derivation below -- both about matching one
+        // request to one cached entry -- do not apply to it. Handle it
+        // before either runs, independent of the lookup/store gate.
+        if self.role == Role::Purge {
+            return self.run_purge(ctx).await;
+        }
+
+        // Non-cacheable methods bypass the cache entirely in the lookup and
+        // store phases.
         if !self.method_cacheable(&ctx) {
             return Ok(PluginOutput::success(ctx));
         }
@@ -439,6 +500,42 @@ impl Plugin for ProxyCachePlugin {
                     .headers
                     .insert(CACHE_STATUS_HEADER.to_string(), vec!["MISS".to_string()]);
                 Ok(PluginOutput::success(ctx))
+            }
+            // Handled unconditionally at the top of `execute`, before the
+            // method gate and key derivation that only apply to lookup/store.
+            Role::Purge => unreachable!("Role::Purge returns early in execute"),
+        }
+    }
+}
+
+impl ProxyCachePlugin {
+    /// Invalidates this node's pair, independent of request method or cache
+    /// key -- a purge acts on the shared `id` namespace, not on one derived
+    /// key, so neither concept applies here.
+    async fn run_purge(&self, ctx: Context) -> PluginResult {
+        // Reads degrade, purges report. A lookup that cannot reach its
+        // backend becomes a miss, because a cache exists to save latency.
+        // A purge is different in kind: the caller asked for state to
+        // change, and silently continuing would leave the cache stale
+        // in exactly the situation invalidation exists to fix.
+        match self.cache.purge(&self.id).await {
+            Ok(removed) => {
+                tracing::info!(id = %self.id, removed, "proxy-cache purged pair");
+                self.record("purge");
+                Ok(PluginOutput::success(ctx))
+            }
+            Err(e) => {
+                tracing::warn!(id = %self.id, "proxy-cache purge failed: {e}");
+                self.record("error");
+                Err(PluginExecutionError {
+                    context: ctx,
+                    error: crate::context::GatewayError {
+                        node_id: String::new(),
+                        code: "CACHE_PURGE_FAILED".to_string(),
+                        message: format!("proxy-cache: purging pair '{}' failed: {e}", self.id),
+                        metadata: HashMap::new(),
+                    },
+                })
             }
         }
     }
@@ -523,6 +620,20 @@ mod tests {
         plugin
     }
 
+    /// A purge-phase plugin around a given cache backend.
+    fn purge_plugin_with_cache(cache: Arc<dyn ResponseCache>) -> ProxyCachePlugin {
+        let mut plugin = ProxyCachePlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("purge")),
+                ("id", serde_json::json!("cat")),
+            ]),
+            &PluginResources::empty(),
+        )
+        .unwrap();
+        plugin.cache = cache;
+        plugin
+    }
+
     /// A lookup-phase plugin around a given cache backend and metrics registry.
     fn lookup_plugin_with_cache_and_metrics(
         cache: Arc<dyn ResponseCache>,
@@ -591,6 +702,28 @@ mod tests {
             &r
         )
         .is_err());
+    }
+
+    /// The separator is the prefix boundary purge relies on. An `id` that
+    /// contains it would produce keys another pair's prefix also matches, so
+    /// it is refused at policy-compile time rather than trusted not to happen.
+    #[test]
+    fn test_an_id_containing_the_separator_is_rejected() {
+        let r = PluginResources::empty();
+        // `ProxyCachePlugin` holds an `Arc<dyn ResponseCache>`, so it has no
+        // `Debug` impl and can't go through `unwrap_err()`; match instead,
+        // as `test_unknown_policy_names_only_what_this_build_supports` does.
+        let err = match ProxyCachePlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("lookup")),
+                ("id", serde_json::json!("products\u{1}x")),
+            ]),
+            &r,
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("an id containing the separator must fail from_config"),
+        };
+        assert!(err.contains("control character"), "{err}");
     }
 
     /// An unknown `policy` must name only the policies this build actually
@@ -712,6 +845,11 @@ mod tests {
                 "backend down".to_string(),
             ))
         }
+        async fn purge(&self, _id: &str) -> Result<u64, crate::traffic::cache::CacheError> {
+            Err(crate::traffic::cache::CacheError(
+                "backend down".to_string(),
+            ))
+        }
     }
 
     /// The load-bearing behaviour: an outage costs latency, not availability.
@@ -745,6 +883,67 @@ mod tests {
                 .get(),
             1,
             "a backend error must be visible in metrics"
+        );
+    }
+
+    /// A write route that ends in a purge half clears what the read route's
+    /// pair cached, so the next read misses instead of serving the old value.
+    #[tokio::test]
+    async fn test_purge_phase_clears_its_pair() {
+        let cache = Arc::new(crate::traffic::LocalResponseCache::default());
+        let entry = crate::traffic::CachedResponse {
+            status: 200,
+            headers: HashMap::new(),
+            body: bytes::Bytes::from_static(b"x"),
+        };
+        cache
+            .put("cat\u{1}/x", &entry, std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        let plugin = purge_plugin_with_cache(cache.clone());
+
+        let out = plugin.execute(test_context()).await.unwrap();
+
+        assert_eq!(out.port, None, "a completed purge continues on success");
+        assert!(cache.get("cat\u{1}/x").await.unwrap().is_none());
+    }
+
+    /// Reads degrade, purges report. A purge that could not reach its backend
+    /// leaves the cache stale in exactly the situation invalidation exists to
+    /// fix, so it takes the error port rather than continuing silently.
+    #[tokio::test]
+    async fn test_purge_phase_against_a_failing_backend_exits_error() {
+        let plugin = purge_plugin_with_cache(Arc::new(BrokenCache));
+        let result = plugin.execute(test_context()).await;
+        assert!(result.is_err(), "a failed purge must not read as success");
+        assert_eq!(result.unwrap_err().error.code, "CACHE_PURGE_FAILED");
+    }
+
+    /// The documented use case is a purge node on a write route -- POST, PUT,
+    /// DELETE -- none of which are in the default `cache_method` (GET/HEAD).
+    /// A purge that only fires for cacheable methods would silently no-op on
+    /// every write it was placed there to invalidate: exactly the silent
+    /// no-op "reads degrade, purges report" forbids.
+    #[tokio::test]
+    async fn test_purge_phase_fires_on_a_write_method_the_cache_would_ignore() {
+        let cache = Arc::new(crate::traffic::LocalResponseCache::default());
+        let entry = crate::traffic::CachedResponse {
+            status: 200,
+            headers: HashMap::new(),
+            body: bytes::Bytes::from_static(b"x"),
+        };
+        cache
+            .put("cat\u{1}/x", &entry, std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        let plugin = purge_plugin_with_cache(cache.clone());
+
+        let out = plugin.execute(ctx("POST")).await.unwrap();
+
+        assert_eq!(out.port, None, "a completed purge continues on success");
+        assert!(
+            cache.get("cat\u{1}/x").await.unwrap().is_none(),
+            "a purge on a write method must still clear its pair"
         );
     }
 

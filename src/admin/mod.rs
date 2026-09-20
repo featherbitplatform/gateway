@@ -8,6 +8,7 @@
 
 mod acme;
 mod auth;
+mod cache;
 mod consumers;
 mod debug;
 mod env_vars;
@@ -145,6 +146,7 @@ pub(crate) fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) 
         // API routes (with auth)
         .merge(routes::router())
         .merge(acme::router())
+        .merge(cache::router())
         .merge(policies::router())
         .merge(plugin_configs::router())
         .merge(supernodes::router())
