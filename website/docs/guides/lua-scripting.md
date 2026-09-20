@@ -61,11 +61,11 @@ A fresh Lua VM is created for every execution — only the source text is retain
 | `runtime` | string | `lua` | Scripting runtime; any other value is a config error |
 | `source` | string | — | Path to a script file, read at policy-compile time |
 | `inline` | string | — | Script text embedded in the config. One of `source` or `inline` is required; `source` wins if both are set |
-| `timeout_ms` | integer | `5000` | Script execution timeout — see warning below |
+| `timeout_ms` | integer | `5000` | Wall-clock budget for one execution, enforced by a Luau VM interrupt — see note below |
 | `modules_path` | string | the `source` script's parent directory (none for `inline`) | Directory the sandboxed `require` resolves modules from |
 
-:::warning[timeout_ms is not enforced yet]
-`timeout_ms` is parsed and stored by the Lua runtime but **not currently enforced** by the VM. A long-running script is not interrupted. Treat the key as forward-looking configuration.
+:::note[What `timeout_ms` stops]
+The budget is enforced by a Luau VM interrupt: a runaway loop is stopped and the node fails on its `error` port with code `LUA_TIMEOUT` (distinct from `LUA_EXECUTION_ERROR`). Time spent *outside* the VM — a Rust callback, the file IO of a `require` — is not interrupted. The same budget bounds the validation run at policy-compile time, so a top-level infinite loop is rejected by `PUT /api/policies` instead of hanging the Admin API. `0` disables enforcement. Details on the [`script` reference page](../reference/plugins/script.md#configuration).
 :::
 
 ### Validation at policy-compile time
