@@ -1,0 +1,43 @@
+# featherbit with the MCP endpoint enabled, for connecting an agent.
+#
+#   cp examples/mcp/.env.example examples/mcp/.env   # then set two tokens
+#   docker compose -f examples/mcp/compose.yaml up
+#   claude mcp add --transport http featherbit http://localhost:9090/mcp \
+#     --header "Authorization: Bearer $FEATHERBIT_MCP_READ_TOKEN"
+#
+# The MCP endpoint is mounted on the admin listener at /mcp, outside Basic
+# Auth, behind scoped bearer tokens: `read` inspects config, traces and the
+# sandbox; `write` also creates/replaces/deletes routes, policies, supernodes,
+# plugin configs and stores. The tokens come from .env (gitignored) -- the
+# gateway config only ever holds the ${...} placeholders, so nothing secret is
+# served back by the Admin API or the web UI.
+#
+# Compose reads .env from this directory. Without it the two `:?` lines below
+# refuse to start rather than run with an empty token.
+
+services:
+  gateway:
+    image: featherbit/featherbit:${FEATHERBIT_TAG:-latest}
+    command:
+      - --system-config=/etc/gateway/system.yaml
+      - --gateway-config=/etc/gateway/gateway.yaml
+    ports:
+      - "8080:8080" # data plane
+      - "9090:9090" # admin API + web UI (admin/admin) + /mcp
+    volumes:
+      - ./config:/etc/gateway:ro
+    environment:
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: admin
+      UPSTREAM_HOST: whoami
+      UPSTREAM_PORT: "80"
+      LOG_LEVEL: info
+      FEATHERBIT_MCP_ENABLED: "true"
+      FEATHERBIT_MCP_READ_TOKEN: ${FEATHERBIT_MCP_READ_TOKEN:?copy .env.example to .env and set the tokens}
+      FEATHERBIT_MCP_WRITE_TOKEN: ${FEATHERBIT_MCP_WRITE_TOKEN:?copy .env.example to .env and set the tokens}
+    depends_on:
+      - whoami
+
+  # Stand-in for your own service: echoes the request it received.
+  whoami:
+    image: traefik/whoami:v1.10

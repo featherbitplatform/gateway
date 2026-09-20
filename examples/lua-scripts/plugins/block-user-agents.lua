@@ -1,11 +1,16 @@
 -- block-user-agents.lua
--- Blocks requests from specific User-Agent patterns (e.g., scrapers, bots).
+-- Flags requests from specific User-Agent patterns (scrapers, bots) by
+-- setting ctx.message.blocked_ua. The policy branches on it with a
+-- `condition` node and answers 403 from a `response-rewrite` node.
+--
+-- A script cannot reject a request by writing ctx.response before the
+-- upstream: the upstream node replaces the response. Branch instead.
 
 local blocked_patterns = {
-    "curl",
     "python%-requests",
     "scrapy",
     "wget",
+    "go%-http%-client",
 }
 
 function execute(ctx)
@@ -19,9 +24,6 @@ function execute(ctx)
 
     for _, pattern in ipairs(blocked_patterns) do
         if string.find(ua_lower, pattern) then
-            ctx.response.status_code = 403
-            ctx.response.body = '{"error": "forbidden", "message": "Blocked user agent"}'
-            ctx.response.headers["content-type"] = { "application/json" }
             ctx.message.blocked_ua = ua
             return ctx
         end

@@ -1,0 +1,217 @@
+# Routes and policies. Hot-reloaded: edit this file on the host and the running
+# gateway picks the change up without a restart.
+
+# A store is a named redis/valkey connection, declared once and referenced by
+# name from plugin config. Secrets stay as ${ENV} placeholders in this file.
+stores:
+  - name: cache-store
+    type: redis
+    description: "Shared response cache and counters"
+    url: ${REDIS_URL:-redis://redis:6379}
+    key_prefix: fb
+
+routes:
+  # Reads: served from the shared cache after the first request.
+  - name: api
+    match:
+      path: /api/*
+      methods: [GET, HEAD]
+    policy: cached-api
+
+  # Writes: whatever changes the resource also clears the cache on the way out.
+  - name: purge
+    match:
+      path: /purge
+      methods: [POST]
+    policy: purge-api-cache
+
+  # A counter shared by every instance that points at the same store.
+  - name: visits
+    match:
+      path: /visits
+      methods: [GET]
+    policy: count-visits
+
+policies:
+  - name: cached-api
+    error_handler: on-error
+    nodes:
+      - id: listener
+        type: listener
+
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /api
+
+      # The lookup half. A hit leaves on `hit` and skips the upstream; a miss
+      # continues on `success`. A backend it cannot reach counts as a miss --
+      # a cache protects latency, not correctness.
+      - id: cache-lookup
+        type: proxy-cache
+        config:
+          phase: lookup
+          id: api
+          policy: redis
+          store: cache-store
+          cache_ttl: 300
+
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: ${UPSTREAM_HOST:-whoami}
+              port: ${UPSTREAM_PORT:-80}
+
+      # The store half: same id, policy and store as the lookup, or the policy
+      # is rejected at compile time.
+      - id: cache-write
+        type: proxy-cache
+        config:
+          phase: store
+          id: api
+          policy: redis
+          store: cache-store
+          cache_ttl: 300
+
+      - id: on-error
+        type: error-handler
+        config:
+          status_code: 502
+          body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+
+      - id: client
+        type: client
+
+    edges:
+      - from: listener.out
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: cache-lookup.in
+      - from: cache-lookup.hit
+        to: client.in
+      - from: cache-lookup.success
+        to: backend.in
+      - from: backend.success
+        to: cache-write.in
+      - from: backend.error
+        to: on-error.in
+      - from: cache-write.success
+        to: client.in
+      # Port specs are per node type, so the store half declares `hit` too,
+      # even though it never fires.
+      - from: cache-write.hit
+        to: client.in
+      - from: on-error.success
+        to: client.in
+
+  - name: purge-api-cache
+    error_handler: on-error
+    nodes:
+      - id: listener
+        type: listener
+
+      # The purge half clears everything the `api` pair has cached. A failed
+      # purge exits `error` -- unlike a failed lookup, which becomes a miss --
+      # because continuing silently would leave the cache stale in exactly the
+      # case invalidation exists to fix. Not gated by `cache_method`, so it
+      # fires on this POST.
+      - id: drop-cache
+        type: proxy-cache
+        config:
+          phase: purge
+          id: api
+          policy: redis
+          store: cache-store
+
+      - id: respond
+        type: response-rewrite
+        config:
+          status_code: 200
+          body: '{"purged": "api"}'
+          headers:
+            set:
+              content-type: application/json
+
+      - id: on-error
+        type: error-handler
+        config:
+          status_code: 502
+          body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+
+      - id: client
+        type: client
+
+    edges:
+      - from: listener.out
+        to: drop-cache.in
+      - from: drop-cache.success
+        to: respond.in
+      - from: drop-cache.hit
+        to: client.in
+      - from: drop-cache.error
+        to: on-error.in
+      - from: respond.success
+        to: client.in
+      - from: on-error.success
+        to: client.in
+
+  - name: count-visits
+    error_handler: on-error
+    nodes:
+      - id: listener
+        type: listener
+
+      # Atomic increment in the store; the new value lands in context.message
+      # as `visits`, readable downstream as $msg_visits. The TTL applies when
+      # the key is created and is not refreshed, so the counter expires an hour
+      # after the first visit no matter how many follow.
+      - id: count
+        type: store-incr
+        config:
+          store: cache-store
+          key: "visits:total"
+          ttl_seconds: 3600
+          name: visits
+
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: ${UPSTREAM_HOST:-whoami}
+              port: ${UPSTREAM_PORT:-80}
+
+      - id: expose-count
+        type: response-rewrite
+        config:
+          headers:
+            set:
+              x-visit-count: "$msg_visits"
+
+      # A store outage is a 503 here, not a silently missing header: the
+      # store-* nodes fail closed because losing the store loses correctness.
+      - id: on-error
+        type: error-handler
+        config:
+          status_code: 503
+          body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+
+      - id: client
+        type: client
+
+    edges:
+      - from: listener.out
+        to: count.in
+      - from: count.success
+        to: backend.in
+      - from: count.error
+        to: on-error.in
+      - from: backend.success
+        to: expose-count.in
+      - from: backend.error
+        to: on-error.in
+      - from: expose-count.success
+        to: client.in
+      - from: on-error.success
+        to: client.in
