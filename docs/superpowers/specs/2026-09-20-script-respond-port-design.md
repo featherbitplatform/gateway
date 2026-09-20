@@ -88,7 +88,7 @@ Precedent: `dingtalk-auth`/`feishu-auth` gained a mandatory `redirect` port in t
 | `ports` | `test_every_known_type_has_a_valid_spec` (existing) covers the new spec's shape. |
 | `graph::engine` | a policy with a `script` node and no `respond` edge fails to compile naming `respond` — the breaking change is deliberate and stays visible; the same policy with the edge compiles and, executed with a blocking script, the request leaves the node on `respond`. |
 | `script` plugin | `execute` on a script returning `ctx, "respond"` yields `PluginOutput.port == Some("respond")`. |
-| e2e `E2E-SCRIPT-01` | a data-plane route with a `script` node: `User-Agent: scrapy/2.0` → `403` from the script's own body; a browser UA → `200` proxied. New `e2e/tests/script.spec.ts`; the script source is written to a temp dir the test owns and referenced by absolute path. |
+| e2e `E2E-SCRIPT-01` | a data-plane route with a `script` node: `User-Agent: scrapy/2.0` → `403` from the script's own body; a browser UA → `200` proxied. New `e2e/tests/script.spec.ts`; the script is passed `inline`, so the test owns nothing on disk. |
 
 Mutation check: with `respond` mapped to `success` in `ScriptPlugin::execute`, the engine and e2e tests must fail (the upstream overwrites the 403).
 
