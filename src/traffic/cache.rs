@@ -29,6 +29,14 @@ pub struct CachedResponse {
 #[derive(Debug)]
 pub struct CacheError(pub String);
 
+/// The key prefix shared by every entry a `proxy-cache` pair writes.
+///
+/// `proxy-cache` derives keys as `{id}\u{1}{component}\u{1}…`, so this prefix
+/// selects a pair exactly: `products\u{1}` matches nothing of `products-v2`.
+pub(crate) fn pair_prefix(id: &str) -> String {
+    format!("{id}\u{1}")
+}
+
 impl std::fmt::Display for CacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "response cache error: {}", self.0)
@@ -47,6 +55,12 @@ pub trait ResponseCache: Send + Sync {
     async fn get(&self, key: &str) -> Result<Option<CachedResponse>, CacheError>;
     async fn put(&self, key: &str, entry: &CachedResponse, ttl: Duration)
         -> Result<(), CacheError>;
+
+    /// Removes every entry belonging to the pair `id` and returns how many.
+    ///
+    /// "Belonging to" means the key begins with [`pair_prefix`]. `Ok(0)` is a
+    /// normal answer: the pair had nothing cached.
+    async fn purge(&self, id: &str) -> Result<u64, CacheError>;
 }
 
 /// Entries the local cache keeps before it starts evicting.
@@ -190,6 +204,13 @@ impl ResponseCache for LocalResponseCache {
         self.entries
             .insert(key.to_string(), (entry.clone(), Instant::now() + ttl));
         Ok(())
+    }
+
+    async fn purge(&self, id: &str) -> Result<u64, CacheError> {
+        let prefix = pair_prefix(id);
+        let before = self.entries.len();
+        self.entries.retain(|key, _| !key.starts_with(&prefix));
+        Ok((before - self.entries.len()) as u64)
     }
 }
 
@@ -358,6 +379,44 @@ mod tests {
                 >= 1,
             "a live-entry eviction at capacity must be counted"
         );
+    }
+
+    /// The prefix boundary is the whole safety argument: purging `products`
+    /// must not touch `products-v2`, whose keys share every byte up to the
+    /// separator.
+    #[tokio::test]
+    async fn test_local_purge_removes_only_the_named_pair() {
+        let cache = LocalResponseCache::default();
+        let ttl = Duration::from_secs(60);
+        cache
+            .put("products\u{1}/a", &response("a"), ttl)
+            .await
+            .unwrap();
+        cache
+            .put("products\u{1}/b", &response("b"), ttl)
+            .await
+            .unwrap();
+        cache
+            .put("products-v2\u{1}/a", &response("v2"), ttl)
+            .await
+            .unwrap();
+
+        let removed = cache.purge("products").await.unwrap();
+
+        assert_eq!(removed, 2);
+        assert!(cache.get("products\u{1}/a").await.unwrap().is_none());
+        assert!(cache.get("products\u{1}/b").await.unwrap().is_none());
+        assert!(
+            cache.get("products-v2\u{1}/a").await.unwrap().is_some(),
+            "a sibling pair sharing a textual prefix must survive"
+        );
+    }
+
+    /// Purging a pair that cached nothing is a normal answer, not a failure.
+    #[tokio::test]
+    async fn test_local_purge_of_an_empty_pair_is_zero_not_an_error() {
+        let cache = LocalResponseCache::default();
+        assert_eq!(cache.purge("nothing-here").await.unwrap(), 0);
     }
 
     #[tokio::test]

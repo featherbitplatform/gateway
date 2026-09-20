@@ -178,6 +178,18 @@ impl ProxyCachePlugin {
             .ok_or("proxy-cache: 'id' is required (links the lookup/store pair)")?
             .to_string();
 
+        // The `\u{1}` separator is the prefix boundary that purging a pair
+        // relies on: an `id` containing it would produce keys another pair's
+        // prefix also matches. Refuse it -- and every other control character,
+        // which have no business in a cache namespace -- at compile time
+        // rather than trust config never to contain one.
+        if id.chars().any(char::is_control) {
+            return Err(format!(
+                "proxy-cache: 'id' must not contain control characters (got {:?})",
+                id
+            ));
+        }
+
         let cache_key: Vec<String> = match config.get("cache_key") {
             None => vec![
                 "$request_method".to_string(),
@@ -593,6 +605,28 @@ mod tests {
         .is_err());
     }
 
+    /// The separator is the prefix boundary purge relies on. An `id` that
+    /// contains it would produce keys another pair's prefix also matches, so
+    /// it is refused at policy-compile time rather than trusted not to happen.
+    #[test]
+    fn test_an_id_containing_the_separator_is_rejected() {
+        let r = PluginResources::empty();
+        // `ProxyCachePlugin` holds an `Arc<dyn ResponseCache>`, so it has no
+        // `Debug` impl and can't go through `unwrap_err()`; match instead,
+        // as `test_unknown_policy_names_only_what_this_build_supports` does.
+        let err = match ProxyCachePlugin::from_config(
+            &cfg(&[
+                ("phase", serde_json::json!("lookup")),
+                ("id", serde_json::json!("products\u{1}x")),
+            ]),
+            &r,
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("an id containing the separator must fail from_config"),
+        };
+        assert!(err.contains("control character"), "{err}");
+    }
+
     /// An unknown `policy` must name only the policies this build actually
     /// supports — `redis` on a headless build describes an option that
     /// cannot work.
@@ -708,6 +742,11 @@ mod tests {
             _entry: &crate::traffic::CachedResponse,
             _ttl: std::time::Duration,
         ) -> Result<(), crate::traffic::cache::CacheError> {
+            Err(crate::traffic::cache::CacheError(
+                "backend down".to_string(),
+            ))
+        }
+        async fn purge(&self, _id: &str) -> Result<u64, crate::traffic::cache::CacheError> {
             Err(crate::traffic::cache::CacheError(
                 "backend down".to_string(),
             ))
