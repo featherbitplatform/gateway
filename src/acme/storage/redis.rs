@@ -112,7 +112,7 @@ impl RedisCertStorage {
     /// whatever the registry holds right now.
     async fn conn(
         &self,
-    ) -> Result<(Arc<RedisStoreClient>, redis::aio::ConnectionManager), AcmeError> {
+    ) -> Result<(Arc<RedisStoreClient>, crate::stores::redis_store::StoreConn), AcmeError> {
         let client = self.client()?;
         let conn = client.conn().await.map_err(AcmeError::Storage)?;
         Ok((client, conn))
