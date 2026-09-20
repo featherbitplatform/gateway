@@ -43,7 +43,7 @@ The `upstream` node replaces `context.response.headers` with the upstream's head
 
 `base64(json{random, expires, sign})` where `random` is 16 random bytes hex-encoded, `expires` is the issuance unix timestamp, and `sign = hex(HMAC-SHA256(key, random || expires))`. Validation checks `now - expires <= <configured expires>` (skipped when `expires` is `0`) and verifies the signature in constant time.
 
-:::note Behavior notes
+:::note[Behavior notes]
 Validation and cookie issuance are split by the `phase` option (see pipeline placement above). The token signature is HMAC-SHA256 over `random || expires`, with `random` a hex string — tokens round-trip against featherbit only. The cookie uses `Max-Age` rather than an `Expires` date.
 :::
 

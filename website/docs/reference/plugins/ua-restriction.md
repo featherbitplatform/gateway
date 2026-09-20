@@ -39,7 +39,7 @@ Each `User-Agent` value (requests may carry several) is trimmed of surrounding w
 
 A rejection writes `rejected_code` with a JSON body `{"message": rejected_msg}` (`content-type: application/json`) onto `context.response` and exits through the `denied` port. Permitted requests pass through the `success` port untouched; the plugin does not write to `context.message`.
 
-:::note Behavior notes
+:::note[Behavior notes]
 The rejection status is configurable via `rejected_code` and the message via `rejected_msg`, for consistency with `uri-blocker`. Patterns use Rust `regex` syntax, not PCRE (no backreferences or lookarounds).
 :::
 

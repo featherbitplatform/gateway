@@ -53,7 +53,7 @@ Disallowed origins simply pass through on `success` with no CORS headers added â
 
 This plugin never errors: it never exits through the `error` port, emits no error codes, and does not write to `context.message` or `context.errors`.
 
-:::note Legacy configs
+:::note[Legacy configs]
 Older UI builds saved the keys `allow_origins`, `allow_methods`, and `max_age_s`, which the plugin ignores - nodes saved with them run with the defaults above. Re-save the node (the editor now uses the plugin's keys, including `allowed_headers`) or update the YAML to the keys in the table.
 :::
 

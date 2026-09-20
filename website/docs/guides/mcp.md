@@ -36,7 +36,7 @@ Restart-gated like everything in `system.yaml`. Rules enforced at load: `enabled
 
 Read tokens never see write tools in `tools/list`; a write call with a read token returns a `forbidden` tool error. Use a read token against production and a write token only where an agent should be allowed to change config.
 
-:::warning run_sandbox is real plugin execution, even at read scope
+:::warning[run_sandbox is real plugin execution, even at read scope]
 `run_sandbox` sits at `read` scope by design, but with `debug.enabled: true` that means a *read* token can execute plugins for real: an ad-hoc `nodes:` list can include `script` (Lua) and any node that makes outbound calls, and shared rate-limit/circuit-breaker state is mutated — see [the sandbox's own warning](./debugging.md) about live resources. Set `debug.sandbox: false` to keep tracing while removing that capability. Do not hand read tokens to untrusted agents on a gateway with the sandbox enabled.
 :::
 
