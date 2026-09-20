@@ -28,7 +28,7 @@ config:
 
 The plugin always routes through the `success` port; it never rejects and never writes to `context.response`.
 
-:::note Behavior notes
+:::note[Behavior notes]
 The plugin takes a single `header_prefix` and copies *all* of the consumer's labels — there is no per-label header mapping. This matches featherbit's consumer model, where labels are a flat string→string map.
 :::
 

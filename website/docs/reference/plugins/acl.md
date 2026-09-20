@@ -36,7 +36,7 @@ Checks run in order:
 
 Every rejection writes a JSON body (`{"message": ...}` with `content-type: application/json`) onto `context.response`, sets the status, and exits through the `denied` port. Admitted requests pass through the `success` port unchanged.
 
-:::note Limitations
+:::note[Limitations]
 Matching is by consumer group only. featherbit models a consumer's membership as a single `consumer.group`, so this plugin implements the classic group-allowlist form with `allowed_by` / `denied_by` lists of group names; arbitrary consumer labels and external-user JWT claims are not matched.
 :::
 

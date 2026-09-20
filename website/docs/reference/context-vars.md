@@ -3,7 +3,7 @@ title: Context vars
 description: Every $var name plugin config templates can interpolate, the ${...} syntax rules, and the web UI's autocomplete + live value preview.
 ---
 
-:::info New syntax available — see Templates
+:::info[New syntax available — see Templates]
 The legacy `$var`/`${var}` syntax documented on this page only ever worked in a fixed
 set of ~15 plugin config fields. The gateway now also renders **`{{namespace.path}}`**
 templates — the same request/response/message/client data, unambiguous syntax, and
@@ -76,7 +76,7 @@ for the exhaustive, per-plugin list. Every one of the 15 also accepts the new
 `{{namespace.path}}` syntax — the two compose safely (see
 [Templates → legacy interop](./templates.md#legacy-var-interop)).
 
-:::note Some interpolating fields are raw JSON/YAML, not schema-form fields
+:::note[Some interpolating fields are raw JSON/YAML, not schema-form fields]
 A handful of config values that genuinely interpolate `$var`/`${var}` (and now also
 `{{namespace.path}}`) templates aren't backed by a schema-form field the popover can attach
 to, because they're edited as a raw JSON/YAML blob instead — the [`logging`](./plugins/logging.md)

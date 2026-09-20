@@ -36,7 +36,7 @@ Checks run in order:
 
 Either rejection writes a 403 JSON response onto `context.response` (`{"error": "forbidden", ...}` with `content-type: application/json`) and exits through the `denied` port. Permitted requests pass through the `success` port with the Context untouched. The plugin does not write to `context.message`.
 
-:::note Legacy configs
+:::note[Legacy configs]
 Older UI builds saved the keys `mode` and `rules`, which the plugin ignores - nodes saved with them apply no restriction. Re-save the node (the editor now uses `allow` and `deny` lists) or update the YAML.
 :::
 

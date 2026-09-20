@@ -26,7 +26,7 @@ Ten metric families are recorded — per-route metrics by the data plane, per-no
 
 The per-node families let you pinpoint which node inside a routing policy is slow or failing, not just which route.
 
-:::info Errors are failures, not rejections
+:::info[Errors are failures, not rejections]
 `gateway_request_errors_total` and `gateway_node_errors_total` count only cases where a node **could not do its job** — an unreachable upstream, a failed IdP callout, a counter store that is down, input the node cannot parse. A deliberate rejection leaves its node through an [outcome port](../concepts/policies-and-graphs.md#outcome-ports-and-the-mandatory-wiring-rule) (`denied`, `limited`, `broken`, `abort`, `redirect`, `preflight`, `routed`, `hit`) and appends **no** error record, so it does not increment either counter.
 
 Alert on genuine faults with the error counters; measure denials and throttles from `gateway_requests_total`'s `status` label (`status="401"`, `status="429"`, ...) instead.
