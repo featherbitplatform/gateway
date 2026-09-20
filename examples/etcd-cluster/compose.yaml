@@ -1,6 +1,6 @@
 # Two featherbit replicas sharing one etcd — the convergence demo.
 #
-#   docker compose -f examples/compose/etcd-cluster/compose.yaml up
+#   docker compose -f examples/etcd-cluster/compose.yaml up
 #
 # Same etcd-backed setup as ../etcd-single, with a second gateway pointed at the
 # same prefix. What it shows: a config change made on one replica's Admin API

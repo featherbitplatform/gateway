@@ -1,0 +1,35 @@
+# Global settings. Not hot-reloaded — changes here need a container restart.
+
+listener:
+  bind: "0.0.0.0"
+  port: ${GATEWAY_PORT:-8080}
+
+logging:
+  level: ${LOG_LEVEL:-info}
+  format: text
+
+admin:
+  bind: "0.0.0.0"
+  port: ${ADMIN_PORT:-9090}
+  username: ${ADMIN_USER:-admin}
+  password: ${ADMIN_PASSWORD:-admin}
+  ui_enabled: true
+
+  # The MCP endpoint for agents, on this listener at /mcp, outside Basic Auth.
+  # Tokens are scoped: `read` inspects config, traces and the sandbox; `write`
+  # also creates/replaces/deletes routes, policies, supernodes, plugin configs
+  # and stores. The values come from the environment (compose reads .env);
+  # only the placeholders live in this file.
+  mcp:
+    enabled: ${FEATHERBIT_MCP_ENABLED:-false}
+    path: /mcp
+    tokens:
+      - token: ${FEATHERBIT_MCP_READ_TOKEN}
+        scope: read
+        name: agent-read
+      - token: ${FEATHERBIT_MCP_WRITE_TOKEN}
+        scope: write
+        name: agent-write
+    # Browser clients must come from one of these origins; the embedded web UI
+    # is same-origin and always allowed, so an empty list is fine here.
+    allowed_origins: []

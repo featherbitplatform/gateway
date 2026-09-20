@@ -153,6 +153,23 @@ jobs:
       # Clippy must stay clean on the headless combo too (-D warnings).
       - run: cargo clippy --all-targets --no-default-features --locked -- -D warnings
 
+  # Every directory under examples/ is a self-contained compose stack. `config`
+  # interpolates and validates without a daemon, so a renamed file, a missing
+  # env default or a YAML slip fails here instead of on a reader's machine.
+  examples:
+    name: compose config (examples)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: |
+          set -eu
+          cp examples/mcp/.env.example examples/mcp/.env
+          for f in examples/*/compose.yaml; do
+            echo "== $f"
+            docker compose -f "$f" config -q
+          done
+
   # ESLint + vitest over the admin UI. The tree is eslint-clean (errors and
   # warnings); keep it that way.
   ui-lint:

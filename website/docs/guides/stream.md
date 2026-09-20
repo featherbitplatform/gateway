@@ -71,10 +71,10 @@ stream:
 ## Try it
 
 ```bash
-featherbit --system-config examples/system-stream.yaml --gateway-config config/gateway.yaml
+docker compose -f examples/stream/compose.yaml up
 
-# TCP:  redis-cli -p 6379 ping         (through the proxy)
-# UDP:  dig @127.0.0.1 -p 53 example.com
+curl http://localhost:8081/api/users   # a TCP stream in front of the whoami container: bytes relayed untouched
+curl http://localhost:8080/api/users   # the HTTP plane next to it, for comparison
 ```
 
 ## Not covered (yet)
