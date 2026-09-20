@@ -1962,6 +1962,35 @@ mod tests {
         assert_eq!(reasons[0].node_type, "response-rewrite");
     }
 
+    /// A `proxy-cache` purge node on the success path must not force
+    /// buffering: `Role::Purge` never reads the response body it passes
+    /// through untouched. Both `success` and `hit` are mandatory wiring on
+    /// every `proxy-cache` node regardless of phase (the same `PortSpec` as
+    /// lookup/store), even though a purge never emits `hit`, so both are
+    /// wired to `client.in` here.
+    #[test]
+    fn test_proxy_cache_purge_node_does_not_force_buffering() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "purge", "type": "proxy-cache",
+                  "config": { "phase": "purge", "id": "products", "policy": "local" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "purge.in" },
+                { "from": "purge.success", "to": "client.in" },
+                { "from": "purge.hit", "to": "client.in" }
+            ]
+        }));
+
+        assert!(graph.is_stream_capable("up"));
+        assert!(graph.buffering_reasons().is_empty());
+    }
+
     /// Two independent policies worth of `upstream` in one graph (a
     /// `condition` node routes to one or the other), one capable and one
     /// blocked — proving each upstream is judged on its own success path,

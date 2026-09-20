@@ -136,6 +136,74 @@ mod tests {
         assert!(collect_targets(&[g], "prodcuts").is_empty());
     }
 
+    /// A backend that never answers -- every call fails. Stands in for an
+    /// outage so the partial-failure branch is testable without a live store.
+    struct BrokenCache;
+
+    #[async_trait::async_trait]
+    impl ResponseCache for BrokenCache {
+        async fn get(
+            &self,
+            _key: &str,
+        ) -> Result<Option<crate::traffic::CachedResponse>, CacheError> {
+            Err(CacheError("backend down".to_string()))
+        }
+        async fn put(
+            &self,
+            _key: &str,
+            _entry: &crate::traffic::CachedResponse,
+            _ttl: std::time::Duration,
+        ) -> Result<(), CacheError> {
+            Err(CacheError("backend down".to_string()))
+        }
+        async fn purge(&self, _id: &str) -> Result<u64, CacheError> {
+            Err(CacheError("backend down".to_string()))
+        }
+    }
+
+    /// A half-completed purge is worth knowing about: when a later target
+    /// fails, `purge_targets` must return what succeeded before it, not just
+    /// the error.
+    #[tokio::test]
+    async fn test_purge_targets_returns_what_succeeded_before_a_failure() {
+        let local = Arc::new(crate::traffic::LocalResponseCache::default());
+        local
+            .put(
+                "products\u{1}/x",
+                &crate::traffic::CachedResponse {
+                    status: 200,
+                    headers: Default::default(),
+                    body: bytes::Bytes::from_static(b"x"),
+                },
+                std::time::Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+
+        let targets = vec![
+            CacheTarget {
+                id: "products".to_string(),
+                backend: local.clone(),
+                backend_label: "local",
+                store: String::new(),
+            },
+            CacheTarget {
+                id: "products".to_string(),
+                backend: Arc::new(BrokenCache),
+                backend_label: "redis",
+                store: "s".to_string(),
+            },
+        ];
+
+        let Err((done, e)) = purge_targets(&targets).await else {
+            panic!("a failing second target must return Err, not Ok");
+        };
+
+        assert_eq!(done.len(), 1, "the first target's success must be reported");
+        assert_eq!(done[0].removed, 1);
+        assert!(e.to_string().contains("backend down"), "{e}");
+    }
+
     /// The whole point: a purge through the collected target removes what
     /// the pair cached.
     #[tokio::test]

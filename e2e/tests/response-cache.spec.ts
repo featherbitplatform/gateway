@@ -238,8 +238,8 @@ test.describe('Response cache', () => {
       purged: {backend: string; store?: string; removed: number}[];
     };
     expect(body.id).toBe(CACHE_ID);
-    expect(Array.isArray(body.purged)).toBeTruthy();
-    expect(body.purged.length).toBeGreaterThan(0);
+    expect(body.purged[0]).toMatchObject({backend: 'redis', store: STORE});
+    expect(body.purged[0].removed).toBeGreaterThanOrEqual(1);
 
     const missing = await api.delete('/api/cache/no-such-pair');
     expect(missing.status()).toBe(404);
