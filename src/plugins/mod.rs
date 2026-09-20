@@ -111,6 +111,17 @@ pub trait Plugin: Send + Sync {
     fn reads_response_body(&self) -> bool {
         true
     }
+
+    /// The cache backend this node writes to, if it is a `proxy-cache` half.
+    ///
+    /// Consulted at policy-compile time so an invalidation request can find
+    /// every backend that holds entries for a pair `id` -- the same shape as
+    /// `reads_response_body`: the node describes itself, the compiler
+    /// collects the answers, and there is no process-wide registry that would
+    /// have to survive hot-reloads.
+    fn cache_target(&self) -> Option<crate::traffic::CacheTarget> {
+        None
+    }
 }
 
 /// Every plugin type [`create_plugin`] can build, for save-time validation of
