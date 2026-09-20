@@ -7,7 +7,7 @@ description: Ships request metrics to a Datadog agent over DogStatsD (UDP) in ba
 
 Emits DogStatsD metrics (`request.counter`, `request.latency`, `ingress.size`, `egress.size`) for each request and ships accumulated batches to a Datadog agent over UDP. Place this node in the response pipeline, **after the upstream node**, so latency and status are captured.
 
-:::note Deviation from other loggers
+:::note[Deviation from other loggers]
 Unlike the HTTP loggers, `datadog` does **not** ship JSON logs to an HTTP endpoint. It renders each buffered entry into DogStatsD metric lines and sends them as UDP datagrams via a `tokio::net::UdpSocket` (not the shared outbound HTTP client). Agent settings (`host`, `port`, `namespace`, `constant_tags`) live directly in this node's config. Because featherbit's shared log entry carries no route/service identifiers, `prefer_name` is accepted but has no effect and no `route_name`/`service_name` tags are emitted.
 :::
 

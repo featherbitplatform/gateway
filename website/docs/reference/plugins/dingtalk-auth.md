@@ -14,7 +14,7 @@ The node runs in one of two modes:
 - **Stateless token validation (default).** With no `session.secret` configured, every request must carry a code, which is validated against DingTalk on each request. No cookie is read or set. This is the pre-existing behavior and is unchanged.
 - **Session (opt-in).** Setting `session.secret` (or `session_secret`) restores APISIX's original session flow: the first request exchanges the code and establishes a session; later requests authenticate straight from the session, skipping the DingTalk callout; a request with neither a valid session nor a code is `302`-redirected to `redirect_uri`.
 
-:::danger Breaking change
+:::danger[Breaking change]
 Because session mode adds a `302` browser move, `dingtalk-auth` moved onto the same port spec as `cas-auth`/`openid-connect`/`authz-casdoor`: it now declares a **`redirect`** output port, and — like `denied` — the policy compiler requires it to be wired, even when session mode is off and `redirect` is never actually taken. **Existing policies using this node must add a `redirect` edge (typically straight to `client.in`) or they will fail to compile.**
 :::
 
