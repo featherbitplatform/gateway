@@ -2,7 +2,7 @@
 #
 #   docker compose -f examples/lua-scripts/compose.yaml up
 #   curl -si http://localhost:8080/api/users | grep -iE 'x-request-id|x-response-time'
-#   curl -si -A 'scrapy/2.0' http://localhost:8080/api/users | head -1      # 403: flagged by block-user-agents.lua
+#   curl -si -A 'scrapy/2.0' http://localhost:8080/api/users | head -1      # 403 from block-user-agents.lua (the script answers on its `respond` port)
 #
 # `plugins/` is mounted at /etc/gateway/plugins, which is where the `script`
 # nodes in config/gateway.yaml point (`source: /etc/gateway/plugins/<file>.lua`).

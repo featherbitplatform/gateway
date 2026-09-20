@@ -1,10 +1,10 @@
 -- block-user-agents.lua
--- Flags requests from specific User-Agent patterns (scrapers, bots) by
--- setting ctx.message.blocked_ua. The policy branches on it with a
--- `condition` node and answers 403 from a `response-rewrite` node.
+-- Rejects requests from known scraper/bot User-Agent patterns with a 403.
 --
--- A script cannot reject a request by writing ctx.response before the
--- upstream: the upstream node replaces the response. Branch instead.
+-- The script prepares the response and returns it with "respond", so the
+-- node leaves on its `respond` port (wired to client) and the upstream never
+-- runs. Setting ctx.response alone would not stop the request: the upstream
+-- replaces the response. The port is named, never inferred.
 
 local blocked_patterns = {
     "python%-requests",
@@ -24,8 +24,11 @@ function execute(ctx)
 
     for _, pattern in ipairs(blocked_patterns) do
         if string.find(ua_lower, pattern) then
-            ctx.message.blocked_ua = ua
-            return ctx
+            ctx.response.status_code = 403
+            ctx.response.body = '{"error": "forbidden", "message": "Blocked user agent"}'
+            ctx.response.headers["content-type"] = { "application/json" }
+            ctx.message.blocked_ua = ua -- for traces and loggers; nothing branches on it
+            return ctx, "respond"
         end
     end
 

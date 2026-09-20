@@ -202,6 +202,21 @@ Configure a script node in your policy:
     #   function execute(ctx) ... end
 ```
 
+A script can also answer the request itself, instead of letting it continue to the upstream, by preparing `ctx.response` and returning a second value naming the `respond` port:
+
+```lua
+function execute(ctx)
+    if blocked(ctx) then
+        ctx.response.status_code = 403
+        ctx.response.body = '{"error": "forbidden"}'
+        return ctx, "respond"     -- answer now; the upstream never runs
+    end
+    return ctx                    -- same as `return ctx, "success"`
+end
+```
+
+`respond` is a mandatory-wired outcome port like any other: every `script` node's policy must add an edge from `<id>.respond` (typically to `client`), even one that never takes it, or the policy fails to compile.
+
 Scripts are validated at startup and support hot-reload when the source file changes.
 
 ## Admin API

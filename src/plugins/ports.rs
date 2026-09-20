@@ -115,6 +115,23 @@ pub const FAULT_INJECTION_SPEC: PortSpec = PortSpec {
     ],
 };
 
+/// `script`: a script that prepared `ctx.response` and asked to answer with
+/// it (`return ctx, "respond"`) exits on `respond`. It is the same shape as
+/// `abort`/`denied`/`redirect`: a deliberate short-circuit on a declared
+/// port, never inferred from the response the script left behind.
+pub const SCRIPT_SPEC: PortSpec = PortSpec {
+    input: Some("Request context from the previous node."),
+    outputs: &[
+        SUCCESS,
+        PortDecl {
+            name: "respond",
+            kind: PortKind::Outcome,
+            description: "The script prepared ctx.response and returned it with \"respond\"; wire to client (or a custom handler).",
+        },
+        ERROR,
+    ],
+};
+
 /// Credential-auth plugins: deliberate 401/403 rejections exit on `denied`.
 /// Genuine infrastructure failures (consumer store unavailable, LDAP
 /// unreachable, IdP HTTP errors) remain on `error`.
