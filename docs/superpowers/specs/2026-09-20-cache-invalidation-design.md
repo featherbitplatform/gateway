@@ -212,6 +212,15 @@ any other lone half.
 
 `reads_response_body()` is `false`: the node reads nothing from the response.
 
+**Implementation note (post-review):** the shipped `reads_response_body()` actually
+returns `true` for the purge role, despite it reading nothing. `infer_stream_capability`
+in `src/graph/engine.rs` only allows a node to opt out of buffering if it can never
+return `Err` from `execute` — otherwise an error edge from it could route to a node that
+writes `response.body` directly while a stream from the upstream is still live. The
+purge role *can* return `Err` from `execute` (a failed backend exits `error`), so it is
+kept buffering despite touching nothing; only the `lookup` role, whose one fallible call
+degrades to a miss rather than erroring, actually opts out.
+
 **Ports and the per-type spec.** `PortSpec` is declared per node *type*, so a `phase: purge`
 node — like a `phase: store` node today — must wire a `hit` port that can never fire. That
 is a pre-existing awkwardness of the shared spec, not something this design introduces, but

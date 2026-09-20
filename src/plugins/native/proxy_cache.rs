@@ -394,14 +394,25 @@ impl Plugin for ProxyCachePlugin {
         })
     }
 
-    /// Only `Store` reads the response body it caches (`ctx.response.body`,
-    /// in `execute` below). `Lookup` never reads the existing response body —
-    /// on a hit it replaces `ctx.response` outright with the cached entry,
-    /// and on a miss it passes the context through untouched. `Purge` never
-    /// touches the response at all. So only `Store` should force an
-    /// upstream's response to buffer.
+    /// Only `Lookup` opts out of buffering. It never reads the existing
+    /// response body -- on a hit it replaces `ctx.response` outright with the
+    /// cached entry, on a miss it passes the context through untouched -- and
+    /// it never returns `Err` from `execute`: its only fallible call
+    /// (`self.cache.get`) is matched and degraded to a miss, not propagated.
+    ///
+    /// `Store` reads `ctx.response.body` to cache it, so it must buffer.
+    ///
+    /// `Purge` reads nothing from the response either, but is deliberately
+    /// kept buffering anyway: it *can* return `Err` from `execute`
+    /// (`run_purge`, on a failed backend), and the engine's forward
+    /// streaming walk (`infer_stream_capability` in `src/graph/engine.rs`)
+    /// is only sound for opt-out nodes that never do that -- see the safety
+    /// argument in its doc comment. Opting `Purge` out too would let a
+    /// stream-capable upstream's response stay live past a purge node that
+    /// then routes to `error`, exactly the stale-`response.stream`-beside-a-
+    /// generated-body case that invariant exists to rule out.
     fn reads_response_body(&self) -> bool {
-        matches!(self.role, Role::Store)
+        !matches!(self.role, Role::Lookup)
     }
 
     async fn execute(&self, mut ctx: Context) -> PluginResult {
