@@ -42,6 +42,8 @@ pub struct CompiledGraph {
     /// Why each non-capable upstream must buffer, for operator-visible reporting.
     buffering_reasons: Vec<BufferingReason>,
     cache_pair_warnings: Vec<CachePairWarning>,
+    /// Every `proxy-cache` half's backend, for invalidation by pair `id`.
+    cache_targets: Vec<crate::traffic::CacheTarget>,
 }
 
 /// Records that one node on an upstream's success path forces buffering.
@@ -359,6 +361,11 @@ impl CompiledGraph {
         &self.cache_pair_warnings
     }
 
+    /// Every `proxy-cache` half's backend, for invalidation by pair `id`.
+    pub fn cache_targets(&self) -> &[crate::traffic::CacheTarget] {
+        &self.cache_targets
+    }
+
     pub fn buffering_reasons(&self) -> &[BufferingReason] {
         &self.buffering_reasons
     }
@@ -549,6 +556,8 @@ pub fn compile_policy(
         );
     }
 
+    let cache_targets: Vec<_> = nodes.values().filter_map(|n| n.cache_target()).collect();
+
     Ok(CompiledGraph {
         nodes,
         edges,
@@ -560,6 +569,7 @@ pub fn compile_policy(
         stream_capable,
         buffering_reasons,
         cache_pair_warnings,
+        cache_targets,
     })
 }
 
@@ -1134,6 +1144,7 @@ mod tests {
             stream_capable: HashSet::new(),
             buffering_reasons: Vec::new(),
             cache_pair_warnings: Vec::new(),
+            cache_targets: Vec::new(),
         }
     }
 
@@ -1343,6 +1354,7 @@ mod tests {
             stream_capable: HashSet::new(),
             buffering_reasons: Vec::new(),
             cache_pair_warnings: Vec::new(),
+            cache_targets: Vec::new(),
         };
         let mut ctx = test_context("/x");
         let boxed = Full::new(Bytes::from_static(b"partial-stream-bytes"))
@@ -1443,6 +1455,7 @@ mod tests {
             stream_capable: HashSet::new(),
             buffering_reasons: Vec::new(),
             cache_pair_warnings: Vec::new(),
+            cache_targets: Vec::new(),
         }
     }
 

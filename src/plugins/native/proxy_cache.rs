@@ -379,6 +379,15 @@ impl Plugin for ProxyCachePlugin {
         "proxy-cache"
     }
 
+    fn cache_target(&self) -> Option<crate::traffic::CacheTarget> {
+        Some(crate::traffic::CacheTarget {
+            id: self.id.clone(),
+            backend: self.cache.clone(),
+            backend_label: self.backend_label,
+            store: self.store_label.clone(),
+        })
+    }
+
     async fn execute(&self, mut ctx: Context) -> PluginResult {
         // A purge neither produces nor consumes a cached representation: it
         // doesn't read or write an entry keyed to this request, so the
