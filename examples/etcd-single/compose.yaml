@@ -1,6 +1,6 @@
 # featherbit with etcd-backed config on a persistent volume.
 #
-#   docker compose -f examples/compose/etcd-single/compose.yaml up
+#   docker compose -f examples/etcd-single/compose.yaml up
 #
 # The difference from ../minimal is where configuration *lives*. Here the
 # gateway runs `config.source: etcd`, so routes, policies and consumers are

@@ -76,15 +76,22 @@ Scripts are loaded and validated when the policy is compiled (at startup, on hot
 
 ## Worked example
 
-`examples/plugins/block-user-agents.lua` rejects known bot/scraper user agents by writing a response directly:
+`examples/lua-scripts/plugins/block-user-agents.lua` flags known bot/scraper user agents in `ctx.message`. It does not write the rejection itself: a script that sets `ctx.response` before the upstream sees that response replaced when the upstream runs, so the policy branches on the flag with a `condition` node and answers from a `response-rewrite` node:
 
 ```lua
 -- block-user-agents.lua
+-- Flags requests from specific User-Agent patterns (scrapers, bots) by
+-- setting ctx.message.blocked_ua. The policy branches on it with a
+-- `condition` node and answers 403 from a `response-rewrite` node.
+--
+-- A script cannot reject a request by writing ctx.response before the
+-- upstream: the upstream node replaces the response. Branch instead.
+
 local blocked_patterns = {
-    "curl",
     "python%-requests",
     "scrapy",
     "wget",
+    "go%-http%-client",
 }
 
 function execute(ctx)
@@ -98,9 +105,6 @@ function execute(ctx)
 
     for _, pattern in ipairs(blocked_patterns) do
         if string.find(ua_lower, pattern) then
-            ctx.response.status_code = 403
-            ctx.response.body = '{"error": "forbidden", "message": "Blocked user agent"}'
-            ctx.response.headers["content-type"] = { "application/json" }
             ctx.message.blocked_ua = ua
             return ctx
         end
@@ -110,7 +114,7 @@ function execute(ctx)
 end
 ```
 
-Wired into a policy (from `examples/gateway-with-scripts.yaml`, abridged):
+Wired into a policy (from `examples/lua-scripts/config/gateway.yaml`, abridged):
 
 ```yaml
 policies:
@@ -124,24 +128,42 @@ policies:
         config:
           runtime: lua
           source: /etc/gateway/plugins/block-user-agents.lua
+      - id: is-bot
+        type: condition
+        config:
+          conditions:
+            - ["msg_blocked_ua", "!=", ""]
+      - id: reject
+        type: response-rewrite
+        config:
+          status_code: 403
+          body: '{"error": "forbidden", "message": "Blocked user agent"}'
       - id: backend
         type: upstream
         config:
           targets:
-            - host: ${ECHO_BACKEND_HOST:-localhost}
-              port: ${ECHO_BACKEND_PORT:-3000}
+            - host: ${UPSTREAM_HOST:-whoami}
+              port: ${UPSTREAM_PORT:-80}
       - id: client
         type: client
     edges:
       - from: listener.out
         to: block-bots.in
       - from: block-bots.success
+        to: is-bot.in
+      - from: is-bot.true
+        to: reject.in
+      - from: reject.success
+        to: client.in
+      - from: is-bot.false
         to: backend.in
       - from: backend.success
         to: client.in
 ```
 
-The `examples/plugins/` directory also ships `add-request-id.lua` (injects an `X-Request-Id` header) and `response-timer.lua` (two instances of the same script, before and after the upstream, add an `X-Response-Time` header via `ctx.message`).
+Run it with `docker compose -f examples/lua-scripts/compose.yaml up`, then `curl -A scrapy/2.0 -i http://localhost:8080/api/users` for the 403 and a plain `curl` for the proxied response.
+
+The `examples/lua-scripts/plugins/` directory also ships `add-request-id.lua` (injects an `X-Request-Id` header) and `response-timer.lua` (two instances of the same script, before and after the upstream, add an `X-Response-Time` header via `ctx.message`).
 
 ## Sandboxed `require` and shared modules
 
@@ -151,7 +173,7 @@ Scripts can import shared modules with `require("name")`, resolved as `<modules_
 - When no `modules_path` applies (e.g. `inline` scripts without an explicit `modules_path`), `require` is not installed at all.
 - Modules are re-evaluated on every `require`; results are **not cached**.
 
-A shared module returns a table (`examples/plugins/helpers.lua`):
+A shared module returns a table (`examples/lua-scripts/plugins/helpers.lua`):
 
 ```lua
 -- helpers.lua
@@ -170,7 +192,7 @@ end
 return M
 ```
 
-And a script imports it (`examples/plugins/with-require-example.lua`, abridged):
+And a script imports it (`examples/lua-scripts/plugins/with-require-example.lua`, abridged):
 
 ```lua
 local helpers = require("helpers")
@@ -202,7 +224,7 @@ Every script failure mode returns a plugin error carrying the original context, 
 Script sources referenced by `source` are read when the policy is compiled. Any configuration reload — file-watcher trigger, `POST /api/config/reload`, or a policy save from the Web UI — re-reads and re-validates the script files. Because the file watcher monitors the config file's parent directory recursively, editing a script file that lives under that directory also triggers a reload (see [Configuration](./configuration.md)).
 
 :::note Planned
-A Python scripting runtime (pyo3) is planned but not implemented; `runtime: lua` is the only supported value today. The `examples/plugins/` directory contains Python examples showing the target API.
+A Python scripting runtime (pyo3) is planned but not implemented; `runtime: lua` is the only supported value today.
 :::
 
 For the full config-key reference, see the [script plugin reference](../reference/plugins/script.md).

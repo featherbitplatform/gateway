@@ -1,3 +1,9 @@
+# Routes and policies. Hot-reloaded: edit this file on the host and the running
+# gateway picks the change up without a restart.
+#
+# The `script` nodes point at /etc/gateway/plugins, where compose.yaml mounts
+# ../plugins. See ../plugins/README.md for what each script does.
+
 routes:
   - name: scripted-api
     match:
@@ -19,12 +25,29 @@ policies:
           runtime: lua
           source: /etc/gateway/plugins/add-request-id.lua
 
-      # Lua: block known bot user agents
+      # Lua: flag known bot user agents in ctx.message.blocked_ua. A script
+      # cannot reject by writing the response -- the upstream would replace
+      # it -- so the next two nodes branch on the flag and answer 403.
       - id: block-bots
         type: script
         config:
           runtime: lua
           source: /etc/gateway/plugins/block-user-agents.lua
+
+      - id: is-bot
+        type: condition
+        config:
+          conditions:
+            - ["msg_blocked_ua", "!=", ""]
+
+      - id: reject
+        type: response-rewrite
+        config:
+          status_code: 403
+          body: '{"error": "forbidden", "message": "Blocked user agent"}'
+          headers:
+            set:
+              content-type: application/json
 
       # Lua: start the response timer
       - id: timer-start
@@ -45,8 +68,8 @@ policies:
         type: upstream
         config:
           targets:
-            - host: ${ECHO_BACKEND_HOST:-localhost}
-              port: ${ECHO_BACKEND_PORT:-3000}
+            - host: ${UPSTREAM_HOST:-whoami}
+              port: ${UPSTREAM_PORT:-80}
 
       # Lua: stop the response timer, add X-Response-Time header
       - id: timer-end
@@ -55,13 +78,6 @@ policies:
           runtime: lua
           source: /etc/gateway/plugins/response-timer.lua
 
-      # Python: inject security headers and wrap response in envelope
-      # (uncomment when Python runtime is available)
-      # - id: transform-response
-      #   type: script
-      #   config:
-      #     runtime: python
-      #     source: /etc/gateway/plugins/response_transformer.py
 
       - id: error-handler
         type: error-handler
@@ -78,6 +94,12 @@ policies:
       - from: request-id.success
         to: block-bots.in
       - from: block-bots.success
+        to: is-bot.in
+      - from: is-bot.true
+        to: reject.in
+      - from: reject.success
+        to: client.in
+      - from: is-bot.false
         to: timer-start.in
       - from: timer-start.success
         to: rewrite.in

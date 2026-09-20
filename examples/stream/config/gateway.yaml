@@ -1,0 +1,52 @@
+# Routes and policies. Hot-reloaded: edit this file on the host and the running
+# gateway picks the change up without a restart.
+
+routes:
+  - name: api
+    match:
+      path: /api/*
+      methods: [GET, POST, PUT, DELETE]
+    policy: api-policy
+
+policies:
+  - name: api-policy
+    error_handler: on-error
+    nodes:
+      - id: listener
+        type: listener
+
+      # Strip the /api prefix before forwarding: the upstream sees /users, not
+      # /api/users.
+      - id: strip-prefix
+        type: proxy-rewrite
+        config:
+          phase: request
+          strip_path_prefix: /api
+
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: ${UPSTREAM_HOST:-whoami}
+              port: ${UPSTREAM_PORT:-80}
+
+      - id: on-error
+        type: error-handler
+        config:
+          status_code: 502
+          body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+
+      - id: client
+        type: client
+
+    edges:
+      - from: listener.out
+        to: strip-prefix.in
+      - from: strip-prefix.success
+        to: backend.in
+      - from: backend.success
+        to: client.in
+      - from: backend.error
+        to: on-error.in
+      - from: on-error.success
+        to: client.in

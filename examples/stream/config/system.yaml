@@ -1,0 +1,30 @@
+# Global settings. Not hot-reloaded — changes here need a container restart.
+
+listener:
+  bind: "0.0.0.0"
+  port: ${GATEWAY_PORT:-8080}
+
+# L4 stream listeners: each binds a port at startup and relays raw bytes to an
+# upstream pool, independent of the HTTP data plane above. `protocol` is `tcp`
+# or `udp`; `load_balancing` (round_robin | least_connections | ip_hash) is the
+# same set the HTTP `upstream` node offers.
+stream:
+  - protocol: tcp
+    bind: "0.0.0.0"
+    port: ${STREAM_PORT:-8081}
+    upstream:
+      load_balancing: round_robin
+      targets:
+        - host: ${UPSTREAM_HOST:-whoami}
+          port: ${UPSTREAM_PORT:-80}
+
+logging:
+  level: ${LOG_LEVEL:-info}
+  format: text
+
+admin:
+  bind: "0.0.0.0"
+  port: ${ADMIN_PORT:-9090}
+  username: ${ADMIN_USER:-admin}
+  password: ${ADMIN_PASSWORD:-admin}
+  ui_enabled: true

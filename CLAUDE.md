@@ -25,7 +25,7 @@ cargo build                # debug build
 cargo test                 # all tests (unit + integration, inline in src/)
 cargo test test_lua_       # run Lua-related tests
 docker compose up          # dev stack: gateway + echo-backend, built from source
-docker compose -f examples/compose/minimal/compose.yaml up   # published-image examples
+docker compose -f examples/minimal/compose.yaml up   # published-image examples, one dir per scenario
 ```
 
 Run a single test:
