@@ -69,6 +69,7 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `GET` | `/api/debug/traces/:id` | One trace with per-step context changes | `404` unknown/evicted, or debug off |
 | `DELETE` | `/api/debug/traces` | Clears the trace buffer | `404` debug mode off |
 | `POST` | `/api/debug/sandbox` | Runs plugins or a policy against a synthetic context | `400` bad request/config; `404` unknown policy or debug off; `504` timeout |
+| `DELETE` | `/api/cache/:id` | Purge a `proxy-cache` pair by its `id` on every backend that holds it (`{"id": ..., "purged": [{"backend": ..., "store": ..., "removed": N}, ...]}`) | `404` no pair with that id in any policy; `502` a backend could not be reached (lists what succeeded first) |
 | `GET` | `/api/acme/certs` | Every [ACME](./tls.md#automatic-certificates-acme)-managed certificate with state, domains, validity and last error; `{"enabled": false, "certs": []}` when `acme:` is not configured. Never includes key material | — |
 | `POST` | `/api/acme/certs/:id/renew` | Nudge the renewal manager for one certificate (`?force=true` to ignore the renewal window). `202 {"scheduled": true}`, or `200 {"scheduled": false, "reason": "not_due"}` | `404` unknown certificate id; `409` `{"error":"in_progress"}`; `501` ACME not configured |
 | `GET` | `/api/mcp/status` | Whether the [MCP server](./mcp.md) is compiled in and enabled, its path, token count and distinct scopes — **never token values** | — |
