@@ -1890,7 +1890,8 @@ mod tests {
             "edges": [
                 { "from": "listener.out", "to": "up.in" },
                 { "from": "up.success", "to": "s.in" },
-                { "from": "s.success", "to": "client.in" }
+                { "from": "s.success", "to": "client.in" },
+                { "from": "s.respond", "to": "client.in" }
             ]
         }));
 
@@ -2061,7 +2062,8 @@ mod tests {
                 { "from": "cond.false", "to": "up2.in" },
                 { "from": "up1.success", "to": "client.in" },
                 { "from": "up2.success", "to": "s.in" },
-                { "from": "s.success", "to": "client.in" }
+                { "from": "s.success", "to": "client.in" },
+                { "from": "s.respond", "to": "client.in" }
             ]
         }));
 
