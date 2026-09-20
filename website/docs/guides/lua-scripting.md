@@ -37,6 +37,8 @@ Two context fields are **not** exposed to scripts: the wire `protocol` and the `
 
 The returned table must keep `request` and `response` (including their `headers` and bodies) well-formed — malformed shapes fail unmarshalling; `query_params` and `message` are optional.
 
+`execute` may return a second value naming the port to leave on: `"respond"` or `"success"`. Anything else fails the node with `LUA_BAD_PORT`, and the request takes the `error` port with the context as it was before the script ran.
+
 ### Fresh VM per execution
 
 A fresh Lua VM is created for every execution — only the source text is retained between calls. Scripts cannot leak or persist state between requests; use `ctx.message` to pass data along the chain within a single request.
@@ -76,16 +78,16 @@ Scripts are loaded and validated when the policy is compiled (at startup, on hot
 
 ## Worked example
 
-`examples/lua-scripts/plugins/block-user-agents.lua` flags known bot/scraper user agents in `ctx.message`. It does not write the rejection itself: a script that sets `ctx.response` before the upstream sees that response replaced when the upstream runs, so the policy branches on the flag with a `condition` node and answers from a `response-rewrite` node:
+`examples/lua-scripts/plugins/block-user-agents.lua` rejects known bot/scraper user agents from the script itself: it prepares the 403 in `ctx.response` and returns `ctx, "respond"`, so the node leaves on its `respond` port and the upstream never runs. A script that only sets `ctx.response` and returns one value does **not** stop the request — the upstream replaces that response — which is why the port is named explicitly.
 
 ```lua
 -- block-user-agents.lua
--- Flags requests from specific User-Agent patterns (scrapers, bots) by
--- setting ctx.message.blocked_ua. The policy branches on it with a
--- `condition` node and answers 403 from a `response-rewrite` node.
+-- Rejects requests from known scraper/bot User-Agent patterns with a 403.
 --
--- A script cannot reject a request by writing ctx.response before the
--- upstream: the upstream node replaces the response. Branch instead.
+-- The script prepares the response and returns it with "respond", so the
+-- node leaves on its `respond` port (wired to client) and the upstream never
+-- runs. Setting ctx.response alone would not stop the request: the upstream
+-- replaces the response. The port is named, never inferred.
 
 local blocked_patterns = {
     "python%-requests",
@@ -105,8 +107,11 @@ function execute(ctx)
 
     for _, pattern in ipairs(blocked_patterns) do
         if string.find(ua_lower, pattern) then
+            ctx.response.status_code = 403
+            ctx.response.body = '{"error": "forbidden", "message": "Blocked user agent"}'
+            ctx.response.headers["content-type"] = { "application/json" }
             ctx.message.blocked_ua = ua
-            return ctx
+            return ctx, "respond"
         end
     end
 
@@ -128,16 +133,6 @@ policies:
         config:
           runtime: lua
           source: /etc/gateway/plugins/block-user-agents.lua
-      - id: is-bot
-        type: condition
-        config:
-          conditions:
-            - ["msg_blocked_ua", "!=", ""]
-      - id: reject
-        type: response-rewrite
-        config:
-          status_code: 403
-          body: '{"error": "forbidden", "message": "Blocked user agent"}'
       - id: backend
         type: upstream
         config:
@@ -149,13 +144,9 @@ policies:
     edges:
       - from: listener.out
         to: block-bots.in
-      - from: block-bots.success
-        to: is-bot.in
-      - from: is-bot.true
-        to: reject.in
-      - from: reject.success
+      - from: block-bots.respond   # the script answered; straight to the client
         to: client.in
-      - from: is-bot.false
+      - from: block-bots.success   # not a bot; on to the upstream
         to: backend.in
       - from: backend.success
         to: client.in
