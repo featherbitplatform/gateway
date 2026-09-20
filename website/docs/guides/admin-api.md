@@ -80,6 +80,18 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `GET` | `/readyz` | Readiness probe (auth-exempt) | `503` while the route table is empty |
 | `GET` | `/metrics` | Prometheus metrics in text exposition format | — |
 
+### Cache purge
+
+`DELETE /api/cache/:id` purges every backend holding a [`proxy-cache`](../reference/plugins/proxy-cache.md) pair with that `id` — the same action the MCP `purge_cache` tool triggers on demand, and a `phase: purge` node triggers automatically on a write path. A successful purge returns the id and what each backend reported:
+
+```json
+{"id": "checkout-cache", "purged": [{"backend": "redis", "store": "cache-store", "removed": 12}]}
+```
+
+`store` is omitted from a `local` backend entry — there is no named store to report. `404` means no compiled policy has a pair with that `id`: a typo must not read as a successful flush of nothing. `502` means a backend could not be reached; the response body still lists what succeeded first (`{"error": "cache_purge_failed", ...}`).
+
+A `policy: local` purge clears the instance that received the request only; `policy: redis` purges are cluster-wide because the store is shared.
+
 Notes on mutation semantics:
 
 - **Upsert asymmetry**: `PUT /api/policies/:name`, `PUT /api/supernodes/:name`, `PUT /api/plugin-configs/:name`, and `PUT /api/consumers/:name` create the resource if it does not exist, while `PUT /api/routes/:name` returns `404` for an unknown route — routes are created only via `POST /api/routes`.

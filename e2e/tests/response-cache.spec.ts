@@ -71,14 +71,47 @@ const cachePolicy = (name: string, backendBody: string): Policy => ({
   ],
 });
 
+/**
+ * A write-path policy ending in a `phase: purge` node over the same
+ * `id`/`policy`/`store` as `cachePolicy` above -- the case a TTL cannot
+ * cover, since it clears the pair the instant something changes instead of
+ * waiting for the entry to expire. `purge` never hits, but `hit` is still a
+ * mandatory port on every `proxy-cache` node regardless of phase.
+ */
+const purgePolicy: Policy = {
+  name: 'e2e-cache-purge',
+  nodes: [
+    {id: 'listener', type: 'listener'},
+    {
+      id: 'backend',
+      type: 'mocking',
+      config: {response_status: 200, response_example: 'purged'},
+    },
+    {
+      id: 'purge',
+      type: 'proxy-cache',
+      config: {phase: 'purge', id: CACHE_ID, policy: 'redis', store: STORE},
+    },
+    {id: 'client', type: 'client'},
+  ],
+  edges: [
+    {from: 'listener.out', to: 'backend.in'},
+    {from: 'backend.success', to: 'purge.in'},
+    {from: 'purge.success', to: 'client.in'},
+    {from: 'purge.hit', to: 'client.in'}, // never taken by a purge node; still mandatory wiring
+  ],
+};
+
 const policies: Policy[] = [
   cachePolicy('e2e-cache-a', 'from-a'),
   cachePolicy('e2e-cache-b', 'from-b'),
+  purgePolicy,
 ];
 
 const routes = [
   {name: 'e2e-cache-a', match: {path: '/e2e-cache/a'}, policy: 'e2e-cache-a'},
   {name: 'e2e-cache-b', match: {path: '/e2e-cache/b'}, policy: 'e2e-cache-b'},
+  {name: 'e2e-cache-purge', match: {path: '/e2e-cache/purge'}, policy: 'e2e-cache-purge'},
 ];
 
 test.describe('Response cache', () => {
@@ -182,5 +215,68 @@ test.describe('Response cache', () => {
     ).toBeTruthy();
 
     await api.dispose();
+  });
+
+  test('E2E-CACHE-04: DELETE /api/cache/{id} purges a pair, and an unknown id is 404', async () => {
+    const traffic = await request.newContext({baseURL: GATEWAY_URL});
+    const probe = {'x-probe': `${RUN}-04`};
+
+    const first = await traffic.get('/e2e-cache/a', {headers: probe});
+    expect(first.headers()[CACHE_STATUS_HEADER]).toBe('MISS');
+    expect(await first.text()).toBe('from-a');
+
+    const second = await traffic.get('/e2e-cache/a', {headers: probe});
+    expect(second.headers()[CACHE_STATUS_HEADER]).toBe('HIT');
+    expect(await second.text()).toBe('from-a');
+
+    const api = await adminApi();
+
+    const purge = await api.delete(`/api/cache/${CACHE_ID}`);
+    expect(purge.status(), await purge.text()).toBe(200);
+    const body = (await purge.json()) as {
+      id: string;
+      purged: {backend: string; store?: string; removed: number}[];
+    };
+    expect(body.id).toBe(CACHE_ID);
+    expect(Array.isArray(body.purged)).toBeTruthy();
+    expect(body.purged.length).toBeGreaterThan(0);
+
+    const missing = await api.delete('/api/cache/no-such-pair');
+    expect(missing.status()).toBe(404);
+
+    await api.dispose();
+
+    // The purge cleared the whole pair, so the same key that just HIT is a
+    // MISS again -- not merely re-fetched from an untouched cache.
+    const third = await traffic.get('/e2e-cache/a', {headers: probe});
+    expect(third.headers()[CACHE_STATUS_HEADER]).toBe('MISS');
+    expect(await third.text()).toBe('from-a');
+
+    await traffic.dispose();
+  });
+
+  test("E2E-CACHE-05: a phase: purge node on a write route invalidates the read route's cache", async () => {
+    const traffic = await request.newContext({baseURL: GATEWAY_URL});
+    const probe = {'x-probe': `${RUN}-05`};
+
+    const first = await traffic.get('/e2e-cache/a', {headers: probe});
+    expect(first.headers()[CACHE_STATUS_HEADER]).toBe('MISS');
+
+    const second = await traffic.get('/e2e-cache/a', {headers: probe});
+    expect(second.headers()[CACHE_STATUS_HEADER]).toBe('HIT');
+    expect(await second.text()).toBe('from-a');
+
+    // A single hit on the purge route -- no `cache_method` gate applies to
+    // `phase: purge`, so a plain GET is enough to trigger it.
+    const purge = await traffic.get('/e2e-cache/purge');
+    expect(purge.status()).toBe(200);
+
+    // The write route's purge node cleared the same id/policy/store the read
+    // route caches under, with no TTL to wait out.
+    const third = await traffic.get('/e2e-cache/a', {headers: probe});
+    expect(third.headers()[CACHE_STATUS_HEADER]).toBe('MISS');
+    expect(await third.text()).toBe('from-a');
+
+    await traffic.dispose();
   });
 });
