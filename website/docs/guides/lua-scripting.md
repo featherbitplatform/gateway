@@ -208,7 +208,8 @@ Every script failure mode returns a plugin error carrying the original context, 
 | `LUA_MARSHAL_ERROR` | The context could not be marshalled into a Lua table |
 | `LUA_MISSING_EXECUTE` | No global `execute` function was found |
 | `LUA_EXECUTION_ERROR` | The script raised a runtime error (e.g. `error(...)`) |
-| `LUA_UNMARSHAL_ERROR` | The returned table could not be rebuilt into a context |
+| `LUA_UNMARSHAL_ERROR` | The returned table did not fit the `ctx` shape (the message names the field), or `execute` returned something that is not a table. |
+| `LUA_BAD_PORT` | The second return value was not `"respond"` or `"success"`; the request takes `error` with the context as it was before the script ran. |
 
 ## Hot-reload of scripts
 
