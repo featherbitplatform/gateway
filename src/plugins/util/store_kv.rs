@@ -35,7 +35,7 @@ pub struct StoreHandle {
 impl StoreHandle {
     /// A pooled connection to the store.
     #[cfg(feature = "redis-store")]
-    pub async fn conn(&self) -> Result<redis::aio::ConnectionManager, String> {
+    pub async fn conn(&self) -> Result<crate::stores::redis_store::StoreConn, String> {
         self.client.conn().await
     }
 
