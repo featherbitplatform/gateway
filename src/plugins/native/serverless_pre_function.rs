@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::context::Context;
+use crate::context::{Context, GatewayError};
 use crate::plugins::script::lua_runtime::LuaRuntime;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 
@@ -111,12 +111,33 @@ impl ServerlessRunner {
     ///
     /// Neither `serverless-pre-function` nor `serverless-post-function`
     /// declares a `respond` port (or any outcome port) — they use the
-    /// default success/error pair — so a function's optional second return
-    /// value is discarded here rather than surfaced: it is a `script`-node
-    /// concept, not part of this node type's port contract.
+    /// default success/error pair. A function that names a port via a
+    /// second return value (`return ctx, "respond"`, or any other name) has
+    /// no such port to leave on here, so it is rejected as `LUA_BAD_PORT`
+    /// rather than silently dropped: silently dropping it would let someone
+    /// copy the `script` node's respond idiom into a serverless function
+    /// and get neither a response nor an error. The context reported on the
+    /// error is the one that went *into* that function's `execute` call
+    /// (not the mutated table it returned), matching the `script` node's
+    /// rule that a function which did not finish making a decision keeps
+    /// nothing it wrote.
     pub fn run(&self, mut ctx: Context) -> Result<Context, PluginExecutionError> {
         for func in &self.functions {
-            let (new_ctx, _port) = func.execute(ctx)?;
+            let original = ctx.clone();
+            let (new_ctx, port) = func.execute(ctx)?;
+            if let Some(port) = port {
+                return Err(PluginExecutionError {
+                    context: original,
+                    error: GatewayError {
+                        node_id: String::new(),
+                        code: "LUA_BAD_PORT".to_string(),
+                        message: format!(
+                            "serverless function returned port \"{port}\"; serverless-pre-function/serverless-post-function have no respond port — use a `script` node to answer a request from Lua"
+                        ),
+                        metadata: HashMap::new(),
+                    },
+                });
+            }
             ctx = new_ctx;
         }
         Ok(ctx)
@@ -267,5 +288,25 @@ mod tests {
         .unwrap();
         let err = p.execute(test_context()).await.unwrap_err();
         assert_eq!(err.error.code, "LUA_EXECUTION_ERROR");
+    }
+
+    /// Neither serverless node declares a `respond` port: a function that
+    /// names one (the `script` node's idiom) must fail loudly, not be
+    /// silently dropped -- silently dropping it would give a script author
+    /// who copied that idiom into a serverless function no response and no
+    /// error. The mutated header must not survive onto the error context,
+    /// same rule as the `script` node's own bad-port case.
+    #[tokio::test]
+    async fn test_serverless_pre_function_named_port_is_lua_bad_port() {
+        let p = ServerlessPreFunctionPlugin::from_config(&cfg(serde_json::json!([
+            "function execute(ctx)\n  ctx.request.headers[\"x-mutated\"] = {\"yes\"}\n  return ctx, \"respond\"\nend"
+        ])))
+        .unwrap();
+        let err = p.execute(test_context()).await.unwrap_err();
+        assert_eq!(err.error.code, "LUA_BAD_PORT");
+        assert!(
+            !err.context.request.headers.contains_key("x-mutated"),
+            "the mutated table must be discarded on a bad port"
+        );
     }
 }

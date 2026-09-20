@@ -857,6 +857,36 @@ mod tests {
         assert_eq!(err.error.code, "LUA_BAD_PORT");
     }
 
+    /// A first return value that is not the ctx table at all is an
+    /// unmarshal failure, not an execution failure -- pinning a behavior
+    /// change from reading `execute`'s return as a `LuaMultiValue`: before,
+    /// `execute_fn.call::<LuaTable>(..)` made mlua itself reject a
+    /// non-table return as `LUA_EXECUTION_ERROR` (a `FromLua` conversion
+    /// error surfaced through the call); now the call always succeeds (it
+    /// no longer asks mlua to convert anything), and the first returned
+    /// value is inspected by hand, so a non-table first value is reported
+    /// as `LUA_UNMARSHAL_ERROR` instead.
+    #[test]
+    fn test_lua_non_table_return_is_unmarshal_error() {
+        let rt = LuaRuntime::new("function execute(ctx) return 5 end", 5000, None).unwrap();
+        let err = rt.execute(test_context()).unwrap_err();
+        assert_eq!(err.error.code, "LUA_UNMARSHAL_ERROR");
+        assert!(
+            err.error.message.contains("must return the ctx table"),
+            "{}",
+            err.error.message
+        );
+
+        let rt = LuaRuntime::new("function execute(ctx) return end", 5000, None).unwrap();
+        let err = rt.execute(test_context()).unwrap_err();
+        assert_eq!(err.error.code, "LUA_UNMARSHAL_ERROR");
+        assert!(
+            err.error.message.contains("nothing"),
+            "{}",
+            err.error.message
+        );
+    }
+
     /// Runs `body` as the whole of `execute`, returning the result context
     /// (the port is not interesting to these tests, so it is discarded here).
     fn run(body: &str) -> Result<Context, PluginExecutionError> {
