@@ -85,7 +85,7 @@ script and the `execute(ctx)` contract.
 
 ```bash
 curl -si http://localhost:8080/api/users | grep -iE 'x-request-id|x-response-time'
-curl -si -A 'scrapy/2.0' http://localhost:8080/api/users | head -1       # HTTP/1.1 403 Forbidden
+curl -si -A 'scrapy/2.0' http://localhost:8080/api/users | head -1       # HTTP/1.1 403 Forbidden (the script answers on its `respond` port)
 ```
 
 ## Streams (`stream/`)
