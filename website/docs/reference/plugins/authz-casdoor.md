@@ -10,7 +10,7 @@ Authenticates requests against [Casdoor](https://casdoor.org/). The node runs in
 - **Stateless bearer-token validation (default).** A Casdoor-issued access token presented in the `Authorization` header is validated by calling Casdoor's OAuth **token introspection** endpoint (RFC 7662). An `active: true` response allows the request; anything else denies it. This is the pre-existing behavior and is unchanged.
 - **Interactive SSO login (opt-in).** Configure a session secret to enable the full **OAuth Authorization Code** flow: unauthenticated browsers are redirected to Casdoor's authorize URL, the callback exchanges the `code` for an access token, and the token (plus decoded claims) is sealed into an **encrypted client-side session cookie**. Subsequent requests authenticate straight from the cookie — no server-side session store is required.
 
-:::info Interactive mode is off by default
+:::info[Interactive mode is off by default]
 With **no** session secret configured the node behaves exactly as the stateless bearer-token validator described above. Setting `session_secret` (or `session.secret`) switches on the interactive flow, and `callback_url` then becomes required.
 :::
 
@@ -74,7 +74,7 @@ The token is read from the `Authorization` header (a `Bearer ` prefix is strippe
 - An inactive token, a non-`200` status, or a missing token → deliberate rejection, exits on the **`denied`** port with `context.response.status_code = 403`, body `{"error":"access_denied"}`.
 - A genuine introspection-callout failure (unreachable, timed out, or otherwise untransportable) → the node could not do its job, so it exits on the ordinary **error** port instead (a `502` `{"error": "provider_error", "message": "<reason>"}` response — not the `403` `denied` shape — error code `AUTHZ_CASDOOR_ERROR`).
 
-:::caution Breaking change
+:::caution[Breaking change]
 Before v0.8 this provider-failure response reused the `denied` shape (`403` `{"error": "access_denied"}`), so an unreachable Casdoor was indistinguishable from a denied token. It is now the shared `502 {"error": "provider_error", "message": "<reason>"}` response with no challenge header, the same shape every provider-backed auth plugin prepares (`openid-connect`, `cas-auth`, `ldap-auth`, `authz-keycloak`, `authz-casdoor`). Match on the `error` port / the error code, or on the `502`, instead of the old status.
 :::
 

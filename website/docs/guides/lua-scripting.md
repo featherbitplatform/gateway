@@ -64,7 +64,7 @@ A fresh Lua VM is created for every execution — only the source text is retain
 | `timeout_ms` | integer | `5000` | Script execution timeout — see warning below |
 | `modules_path` | string | the `source` script's parent directory (none for `inline`) | Directory the sandboxed `require` resolves modules from |
 
-:::warning timeout_ms is not enforced yet
+:::warning[timeout_ms is not enforced yet]
 `timeout_ms` is parsed and stored by the Lua runtime but **not currently enforced** by the VM. A long-running script is not interrupted. Treat the key as forward-looking configuration.
 :::
 
@@ -215,7 +215,7 @@ Every script failure mode returns a plugin error carrying the original context, 
 
 Script sources referenced by `source` are read when the policy is compiled. Any configuration reload — file-watcher trigger, `POST /api/config/reload`, or a policy save from the Web UI — re-reads and re-validates the script files. Because the file watcher monitors the config file's parent directory recursively, editing a script file that lives under that directory also triggers a reload (see [Configuration](./configuration.md)).
 
-:::note Planned
+:::note[Planned]
 A Python scripting runtime (pyo3) is planned but not implemented; `runtime: lua` is the only supported value today.
 :::
 

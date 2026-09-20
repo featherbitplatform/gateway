@@ -36,7 +36,7 @@ Each bucket starts full at `burst` tokens and is refilled continuously based on 
 
 Buckets live in process memory: counts are per gateway instance and are lost on restart. The plugin does not write to `context.message`.
 
-:::note Legacy configs
+:::note[Legacy configs]
 Older UI builds saved the keys `limit`, `window_s`, `strategy`, and `key_by`, which the plugin ignores — nodes saved with them run with the defaults above. Re-save the node (the editor now uses the correct keys) or update the YAML to `requests_per_second`/`burst`/`key_from`.
 :::
 

@@ -114,7 +114,7 @@ A **genuine provider failure** — the discovery document, JWKS endpoint, or int
 
 This applies in both modes. In interactive mode it is what a browser user sees when the IdP cannot even be reached to start the login: a `502`, not a `401` and not a redirect loop.
 
-:::caution Breaking change
+:::caution[Breaking change]
 Before v0.8, provider failures reused the `denied` response shape (`401`, `WWW-Authenticate: Bearer`, `{"error": "unauthorized"}`). Clients that keyed on that `401` to distinguish "IdP down" from "token rejected" could not, and browser users saw an "unauthorized" JSON body instead of a login redirect. Match on the `error` port / `OIDC_PROVIDER_ERROR`, or on the `502`, instead.
 :::
 
@@ -192,7 +192,7 @@ Two `openid-connect` nodes on different routes can hold separate browser session
         lifetime: 3600
 ```
 
-:::note Limitations
+:::note[Limitations]
 In the default `session.storage: cookie` mode, sessions live entirely in the encrypted cookie: there is **no server-side revocation** before the cookie's `lifetime` expires (use short lifetimes) and **no token refresh** — an expired session triggers a fresh, fast redirect round-trip. `session.storage: redis` lifts both limits (revocation via `/api/sessions`, refresh via `session.refresh`) at the cost of requiring a declared `stores:` entry. Only the Authorization Code grant is implemented.
 :::
 
