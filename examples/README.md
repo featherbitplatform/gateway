@@ -35,7 +35,7 @@ node in `config/gateway.yaml` at it.
 Every stack defaults to the `latest` image tag. Override it to pin a release:
 
 ```bash
-FEATHERBIT_TAG=0.10.0 docker compose -f examples/minimal/compose.yaml up
+FEATHERBIT_TAG=0.11.0 docker compose -f examples/minimal/compose.yaml up
 ```
 
 Add `-headless` to any tag for the build without the embedded web UI.
@@ -102,8 +102,7 @@ curl http://localhost:8081/api/users   # via the stream: the upstream sees /api/
 ## Stores (`redis-stores/`)
 
 This scenario needs an image with `phase: purge` and `DELETE /api/cache/{id}`
-(0.11.0 or later). Until that tag is published, build one locally:
-`docker build -t featherbit/featherbit:dev . && FEATHERBIT_TAG=dev docker compose -f examples/redis-stores/compose.yaml up`.
+(0.11.0 or later; the default `latest` tag qualifies).
 
 Everything here references one declared `stores:` entry by name; a second
 gateway replica pointed at the same redis would share the cache and the counter.
