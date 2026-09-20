@@ -137,12 +137,69 @@ impl Plugin for ScriptPlugin {
     async fn execute(&self, ctx: Context) -> PluginResult {
         match &self.runtime {
             ScriptRuntime::Lua(rt) => match rt.execute(ctx) {
-                Ok(new_ctx) => Ok(PluginOutput::success(new_ctx)),
+                Ok((new_ctx, Some(port))) => Ok(PluginOutput::on_port(new_ctx, port)),
+                Ok((new_ctx, None)) => Ok(PluginOutput::success(new_ctx)),
                 Err(e) => Err(PluginExecutionError {
                     context: e.context,
                     error: e.error,
                 }),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{Context, GatewayRequest, GatewayResponse, Protocol};
+
+    fn plugin(inline: &str) -> ScriptPlugin {
+        let mut cfg = HashMap::new();
+        cfg.insert("runtime".to_string(), serde_json::json!("lua"));
+        cfg.insert("inline".to_string(), serde_json::json!(inline));
+        ScriptPlugin::from_config(&cfg).unwrap()
+    }
+
+    fn ctx() -> Context {
+        Context {
+            request: GatewayRequest {
+                method: "GET".to_string(),
+                path: "/".to_string(),
+                host: "localhost".to_string(),
+                scheme: "http".to_string(),
+                headers: HashMap::new(),
+                query_params: HashMap::new(),
+                body: bytes::Bytes::new(),
+                remote_addr: "127.0.0.1:1".to_string(),
+                protocol: Protocol::Http1,
+            },
+            response: GatewayResponse {
+                status_code: 0,
+                headers: HashMap::new(),
+                body: bytes::Bytes::new(),
+                stream: None,
+            },
+            message: HashMap::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    /// The plugin is where the runtime's answer becomes a graph port.
+    #[tokio::test]
+    async fn test_respond_becomes_the_respond_port() {
+        let out = plugin("function execute(ctx) return ctx, \"respond\" end")
+            .execute(ctx())
+            .await
+            .unwrap();
+        assert_eq!(out.port, Some("respond"));
+    }
+
+    #[tokio::test]
+    async fn test_plain_return_is_success() {
+        let out = plugin("function execute(ctx) return ctx end")
+            .execute(ctx())
+            .await
+            .unwrap();
+        assert_eq!(out.port, None);
     }
 }

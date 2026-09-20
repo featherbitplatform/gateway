@@ -108,9 +108,16 @@ impl ServerlessRunner {
 
     /// Runs each function in order, threading the Context. Propagates the first
     /// error encountered.
+    ///
+    /// Neither `serverless-pre-function` nor `serverless-post-function`
+    /// declares a `respond` port (or any outcome port) — they use the
+    /// default success/error pair — so a function's optional second return
+    /// value is discarded here rather than surfaced: it is a `script`-node
+    /// concept, not part of this node type's port contract.
     pub fn run(&self, mut ctx: Context) -> Result<Context, PluginExecutionError> {
         for func in &self.functions {
-            ctx = func.execute(ctx)?;
+            let (new_ctx, _port) = func.execute(ctx)?;
+            ctx = new_ctx;
         }
         Ok(ctx)
     }
