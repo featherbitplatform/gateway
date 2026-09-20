@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-20-script-respond-port-design.md`
 
-**Ordering constraint:** Tasks 1–2 touch only `src/` and `website/docs`. **Task 3 edits `examples/lua-scripts/…`, which PR #64 creates** — before dispatching Task 3, confirm #64 is merged into `develop` and `git rebase develop` this branch (or merge develop in). If #64 is not merged yet, stop after Task 2 and wait.
+**Ordering:** PR #64 (the `examples/` reorganisation) is merged and this branch is rebased on it, so `examples/lua-scripts/` exists with the `is-bot`/`reject` detour that Task 3 removes. No external wait.
 
 ## Global Constraints
 
@@ -534,8 +534,6 @@ browser UA still gets the upstream's body."
 ---
 
 ### Task 3: The runnable example and E2E-SCRIPT-01
-
-**Precondition:** PR #64 merged into `develop`; this branch rebased on it (`git fetch origin && git rebase origin/develop`). `examples/lua-scripts/` must exist with the `is-bot`/`reject` nodes from #64.
 
 **Files:**
 - Modify: `examples/lua-scripts/plugins/block-user-agents.lua`, `examples/lua-scripts/config/gateway.yaml`, `examples/lua-scripts/plugins/README.md`, `examples/lua-scripts/compose.yaml` (header comment), `examples/README.md` (Scripts section)
