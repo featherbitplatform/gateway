@@ -1890,7 +1890,8 @@ mod tests {
             "edges": [
                 { "from": "listener.out", "to": "up.in" },
                 { "from": "up.success", "to": "s.in" },
-                { "from": "s.success", "to": "client.in" }
+                { "from": "s.success", "to": "client.in" },
+                { "from": "s.respond", "to": "client.in" }
             ]
         }));
 
@@ -2061,7 +2062,8 @@ mod tests {
                 { "from": "cond.false", "to": "up2.in" },
                 { "from": "up1.success", "to": "client.in" },
                 { "from": "up2.success", "to": "s.in" },
-                { "from": "s.success", "to": "client.in" }
+                { "from": "s.success", "to": "client.in" },
+                { "from": "s.respond", "to": "client.in" }
             ]
         }));
 
@@ -2524,6 +2526,66 @@ mod tests {
         assert_eq!(warnings[0].cache_id, "orphan");
         assert_eq!(warnings[0].present_node_id, "look");
         assert_eq!(warnings[0].missing_role, "store");
+    }
+
+    /// The breaking change, kept visible: PortSpec is per node type, so a
+    /// script node with no `respond` edge no longer compiles. The message
+    /// names the port so the fix is obvious.
+    #[tokio::test]
+    async fn test_a_script_node_must_wire_respond() {
+        let err = compile_test_policy_err(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "s", "type": "script",
+                  "config": { "runtime": "lua", "inline": "function execute(ctx) return ctx end" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "s.in" },
+                { "from": "s.success", "to": "client.in" }
+            ]
+        }));
+        assert!(err.contains("respond") && err.contains("'s'"), "{err}");
+    }
+
+    /// End to end through the graph: the script's own 403 reaches the
+    /// client because the node left on `respond`, skipping the upstream
+    /// that would otherwise have replaced it. A browser UA takes success and
+    /// gets the upstream's body -- the control that proves the branch.
+    #[tokio::test]
+    async fn test_a_script_taking_respond_short_circuits_the_upstream() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "block", "type": "script", "config": { "runtime": "lua", "inline":
+                    "function execute(ctx)\n  local ua = (ctx.request.headers[\"user-agent\"] or {})[1] or \"\"\n  if string.find(string.lower(ua), \"scrapy\") then\n    ctx.response.status_code = 403\n    ctx.response.body = \"blocked\"\n    return ctx, \"respond\"\n  end\n  return ctx\nend" } },
+                { "id": "up", "type": "mocking", "config": { "response_status": 200, "response_example": "proxied" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "block.in" },
+                { "from": "block.respond", "to": "client.in" },
+                { "from": "block.success", "to": "up.in" },
+                { "from": "up.success", "to": "client.in" }
+            ]
+        }));
+
+        let mut bot = test_context("/x");
+        bot.request
+            .headers
+            .insert("user-agent".to_string(), vec!["scrapy/2.0".to_string()]);
+        let out = graph.execute(bot).await;
+        assert_eq!(out.response.status_code, 403);
+        assert_eq!(out.response.body, bytes::Bytes::from_static(b"blocked"));
+
+        let mut browser = test_context("/x");
+        browser
+            .request
+            .headers
+            .insert("user-agent".to_string(), vec!["Mozilla/5.0".to_string()]);
+        let out = graph.execute(browser).await;
+        assert_eq!(out.response.status_code, 200);
+        assert_eq!(out.response.body, bytes::Bytes::from_static(b"proxied"));
     }
 
     /// A purge half is held to the same agreement rule as the other two: a

@@ -43,6 +43,12 @@ See [`serverless-pre-function` → Behavior notes](./serverless-pre-function.md#
 
 The functions run on the shared Lua runtime, so a failure in any of them propagates immediately — later functions do not run. The node returns the Context with the error, so the graph engine routes through the `error` port and appends the error to `context.errors`; it prepares no response of its own, so what the caller sees is decided by the policy's `error` wiring, an [`error-handler`](error-handler.md), or the gateway's default 500.
 
+Returning a second value from `execute` other than `"success"` is an error (`LUA_BAD_PORT`): these nodes have no `respond` port; a script that must answer the request belongs in a [`script`](script.md) node.
+
+:::caution[Behavior change in 0.11.0]
+Before 0.11.0 a second return value from `execute` was silently ignored. A function that returned `ctx, "respond"` (or any other named port) ran to completion as if it had returned `ctx` alone. It now fails with `LUA_BAD_PORT` instead.
+:::
+
 | Code | Status | When |
 |---|---|---|
 | `LUA_EXECUTION_ERROR` | — | A function raised a runtime error. |
@@ -50,5 +56,6 @@ The functions run on the shared Lua runtime, so a failure in any of them propaga
 | `LUA_MARSHAL_ERROR` | — | The Context could not be converted to a Lua table. |
 | `LUA_MISSING_EXECUTE` | — | A function defined no global `execute`. |
 | `LUA_UNMARSHAL_ERROR` | — | A returned table did not fit the `ctx` shape; the message names the field. |
+| `LUA_BAD_PORT` | — | A function returned a second value (e.g. `return ctx, "respond"`); this node type has no such port. |
 
 Load, missing-`execute` and syntax failures are normally caught at policy-compile time — they reach a live request only if the source changed underneath a compiled policy. The `ctx` table shape is documented on [`script`](script.md).

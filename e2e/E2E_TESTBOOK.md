@@ -463,6 +463,12 @@ gated: they skip themselves when `FEATHERBIT_TEST_REDIS_URL` is unset.
 | E2E-CACHE-04 | *Gated.* Populate `/e2e-cache/a` to a `HIT`, then `DELETE /api/cache/{id}` via the admin API, then repeat the request; also `DELETE /api/cache/no-such-pair` | The purge returns `200` with a non-empty `purged` array naming the id; the next request is `featherbit-cache-status: MISS` again; the unknown id is `404` |
 | E2E-CACHE-05 | *Gated.* Populate `/e2e-cache/a` to a `HIT`, hit `/e2e-cache/purge` once (a write route ending in a `proxy-cache` `phase: purge` node over the same id/policy/store), then repeat the `/e2e-cache/a` request | The purge route returns `200`; the following `/e2e-cache/a` request is `featherbit-cache-status: MISS` again — write-through invalidation, the case a TTL cannot cover |
 
+## Scripts — `tests/script.spec.ts`
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-SCRIPT-01 | A route whose `script` node prepares a 403 for `User-Agent: scrapy/*` and returns `ctx, "respond"`, with `respond` wired to `client` and `success` to a `mocking` upstream | `scrapy/2.0` gets the script's own `403` JSON body — the upstream never ran; `Mozilla/5.0` gets `200 proxied` from the upstream |
+
 ## Notifications — `tests/notifications.spec.ts`
 
 Every toast the UI raises is also appended to a persistent notification log

@@ -88,7 +88,7 @@ pub trait Plugin: Send + Sync {
     ///   `success` port, and [`PluginOutput::on_port`] takes a named
     ///   **outcome** port — the node did its job and chose a deliberate
     ///   alternate route (`denied`, `redirect`, `limited`, `broken`,
-    ///   `preflight`, `abort`, `routed`, `hit`, `true`/`false`), normally with the
+    ///   `preflight`, `abort`, `routed`, `hit`, `respond`, `true`/`false`), normally with the
     ///   client-facing response already prepared. The named port must be one
     ///   this type declares in its `PortSpec`, or the policy would not have
     ///   compiled; nothing is appended to `ctx.errors`.
@@ -511,6 +511,7 @@ pub fn port_spec(plugin_type: &str) -> Option<&'static PortSpec> {
         "cors" => Some(&ports::CORS_SPEC),
         "redirect" => Some(&ports::REDIRECT_SPEC),
         "fault-injection" => Some(&ports::FAULT_INJECTION_SPEC),
+        "script" => Some(&ports::SCRIPT_SPEC),
         "key-auth" | "basic-auth" | "jwt-auth" | "hmac-auth" | "jwe-decrypt" | "multi-auth"
         | "ldap-auth" | "forward-auth" | "opa" | "wolf-rbac" => Some(&ports::AUTH_SPEC),
         "cas-auth" | "openid-connect" | "authz-casdoor" | "dingtalk-auth" | "feishu-auth" => {
