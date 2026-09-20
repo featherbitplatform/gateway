@@ -90,6 +90,8 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 
 `store` is omitted from a `local` backend entry — there is no named store to report. `404` means no compiled policy has a pair with that `id`: a typo must not read as a successful flush of nothing. `502` means a backend could not be reached; the response body still lists what succeeded first (`{"error": "cache_purge_failed", ...}`).
 
+A `redis` backend purge `SCAN`s the store's whole keyspace incrementally, so its cost grows with the store's total key count, not with the pair's own entry count; `UNLINK` frees the matched keys' memory off-thread. Avoid wiring a purge to a high-rate write path on a large shared store, and note that entries written concurrently during a purge may survive it — it is best-effort under concurrent writes, not a snapshot.
+
 A `policy: local` purge clears the instance that received the request only; `policy: redis` purges are cluster-wide because the store is shared.
 
 Notes on mutation semantics:

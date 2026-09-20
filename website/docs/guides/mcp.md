@@ -93,7 +93,7 @@ Threads live under `featherbit.chat.threads` (50 newest kept, tool results trunc
 
 ## Tools, resources, prompts
 
-22 read tools and 12 write tools return JSON; failures come back as tool errors `{code, message, errors?, hint?}` with codes `not_found`, `invalid_input`, `invalid_config` (with the compiler's error list), `debug_disabled`, `sandbox_disabled`, `forbidden`, `store_error`, `internal`.
+22 read tools and 12 write tools return JSON; failures come back as tool errors `{code, message, errors?, hint?}` with codes `not_found`, `invalid_input`, `invalid_config` (with the compiler's error list), `debug_disabled`, `sandbox_disabled`, `forbidden`, `store_error`, `internal`, `cache_purge_failed` (a backend could not be reached during `purge_cache`; `errors` carries the backend message and `hint` says how many backends were purged first).
 
 Resources: every plugin/concept/reference documentation page is embedded in the binary (`featherbit://docs/plugins/{type}`, `featherbit://docs/concepts/{name}`, `featherbit://docs/reference/{name}`) — `get_node_type` returns the page too — plus `featherbit://routes/{name}`, `featherbit://policies/{name}`, `featherbit://supernodes/{name}` (YAML) and `featherbit://traces/{id}`.
 

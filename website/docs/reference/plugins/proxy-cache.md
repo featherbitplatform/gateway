@@ -27,7 +27,7 @@ and the request, and share one namespace via `id`, so they always agree.
 | `cache_key` | array of string templates (or a single string) | `["$request_method", "$host", "$uri"]` | Components interpolated and joined to form the key. **Both nodes must configure it identically.** |
 | `cache_ttl` | integer (seconds) | `300` | Freshness lifetime for stored entries. |
 | `cache_http_statuses` | array | `[200, 301, 404]` | Response statuses eligible for caching. (The singular spelling `cache_http_status` is also accepted for config compatibility.) |
-| `cache_method` | array | `["GET", "HEAD"]` | Cacheable request methods; other methods bypass the cache. |
+| `cache_method` | array | `["GET", "HEAD"]` | Cacheable request methods; other methods bypass the cache in the lookup and store phases. |
 | `hide_cache_headers` | bool | `false` | Strip `cache-control` / `expires` from served cache hits. |
 | `policy` | string | `local` | `local` (an in-memory, per-instance cache) or `redis` (a shared cache over a declared [store](../../concepts/stores.md)). Both nodes of a pair must use the same policy and, for `redis`, the same `store`. |
 | `store` | string | — (required when `policy: redis`) | Name of a declared `stores:` entry. |
@@ -63,8 +63,8 @@ edges:
 
 ## Behavior
 
-Requests whose method is not in `cache_method` bypass the cache in both phases
-(pass through untouched).
+Requests whose method is not in `cache_method` bypass the cache in the lookup
+and store phases (pass through untouched).
 
 The **lookup** node derives the key and queries the cache. On a **hit** it
 replaces `context.response` with the cached status, headers, and body, adds
@@ -117,7 +117,8 @@ There is no configuration for which that is correct, so the compiler now
 rejects it and names both nodes.
 
 A half with **no counterpart** is reported rather than rejected: a lookup with
-no store caches nothing, and a store with no lookup is never read, but both are
+no store caches nothing, a store with no lookup is never read, and a purge
+with nothing to purge for is a no-op every time it fires — but all three are
 also what a policy looks like halfway through being built. They appear in the
 `cache_pairs` array of `POST /api/policies/validate` and the MCP
 `validate_policy` tool, alongside `buffering`.
@@ -131,17 +132,30 @@ route that changes the resource, after the upstream:
 ```yaml
 - id: drop-cache
   type: proxy-cache
-  config: { phase: purge, id: products, policy: redis, store: sessions }
+  config: { phase: purge, id: products, policy: redis, store: cache-store }
 ```
 
 wired `forward-write.success → drop-cache.in`. Gating on the upstream's status
 is yours to decide — a `condition` on `status` before it, if only a `2xx` should
 purge.
 
+**`cache_method` does not gate `phase: purge`** — a purge acts on the pair's
+namespace, not on one request's cached representation, so it fires on
+`POST`/`PUT`/`DELETE` too (the default `cache_method` for lookup/store is only
+`GET`/`HEAD`).
+
 **A failed purge takes `error`, unlike a failed lookup.** A lookup that cannot
 reach its backend becomes a miss, because a cache only saves latency. A purge is
 different: you asked for state to change, and continuing silently would leave the
 cache stale in exactly the case invalidation exists to fix.
+
+**A `policy: redis` purge scans the whole store, not just the pair.** It
+`SCAN`s the store's entire keyspace incrementally, so its cost grows with the
+store's total key count, not with the number of entries the pair actually
+cached; `UNLINK` frees the matched keys' memory off-thread rather than
+blocking on it. Do not wire a purge to a high-rate write path on a large
+shared store. Entries written concurrently during a purge may survive it —
+invalidation here is best-effort under concurrent writes, not a snapshot.
 
 **A `policy: local` purge clears this instance only.** No message reaches other
 instances. `policy: redis` purges are cluster-wide because the store is shared.
