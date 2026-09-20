@@ -380,7 +380,17 @@ impl Plugin for ProxyCachePlugin {
     }
 
     async fn execute(&self, mut ctx: Context) -> PluginResult {
-        // Non-cacheable methods bypass the cache entirely in both phases.
+        // A purge neither produces nor consumes a cached representation: it
+        // doesn't read or write an entry keyed to this request, so the
+        // method gate and key derivation below -- both about matching one
+        // request to one cached entry -- do not apply to it. Handle it
+        // before either runs, independent of the lookup/store gate.
+        if self.role == Role::Purge {
+            return self.run_purge(ctx).await;
+        }
+
+        // Non-cacheable methods bypass the cache entirely in the lookup and
+        // store phases.
         if !self.method_cacheable(&ctx) {
             return Ok(PluginOutput::success(ctx));
         }
@@ -455,35 +465,41 @@ impl Plugin for ProxyCachePlugin {
                     .insert(CACHE_STATUS_HEADER.to_string(), vec!["MISS".to_string()]);
                 Ok(PluginOutput::success(ctx))
             }
-            Role::Purge => {
-                // Reads degrade, purges report. A lookup that cannot reach its
-                // backend becomes a miss, because a cache exists to save latency.
-                // A purge is different in kind: the caller asked for state to
-                // change, and silently continuing would leave the cache stale
-                // in exactly the situation invalidation exists to fix.
-                match self.cache.purge(&self.id).await {
-                    Ok(removed) => {
-                        tracing::info!(id = %self.id, removed, "proxy-cache purged pair");
-                        self.record("purge");
-                        Ok(PluginOutput::success(ctx))
-                    }
-                    Err(e) => {
-                        tracing::warn!(id = %self.id, "proxy-cache purge failed: {e}");
-                        self.record("error");
-                        Err(PluginExecutionError {
-                            context: ctx,
-                            error: crate::context::GatewayError {
-                                node_id: String::new(),
-                                code: "CACHE_PURGE_FAILED".to_string(),
-                                message: format!(
-                                    "proxy-cache: purging pair '{}' failed: {e}",
-                                    self.id
-                                ),
-                                metadata: HashMap::new(),
-                            },
-                        })
-                    }
-                }
+            // Handled unconditionally at the top of `execute`, before the
+            // method gate and key derivation that only apply to lookup/store.
+            Role::Purge => unreachable!("Role::Purge returns early in execute"),
+        }
+    }
+}
+
+impl ProxyCachePlugin {
+    /// Invalidates this node's pair, independent of request method or cache
+    /// key -- a purge acts on the shared `id` namespace, not on one derived
+    /// key, so neither concept applies here.
+    async fn run_purge(&self, ctx: Context) -> PluginResult {
+        // Reads degrade, purges report. A lookup that cannot reach its
+        // backend becomes a miss, because a cache exists to save latency.
+        // A purge is different in kind: the caller asked for state to
+        // change, and silently continuing would leave the cache stale
+        // in exactly the situation invalidation exists to fix.
+        match self.cache.purge(&self.id).await {
+            Ok(removed) => {
+                tracing::info!(id = %self.id, removed, "proxy-cache purged pair");
+                self.record("purge");
+                Ok(PluginOutput::success(ctx))
+            }
+            Err(e) => {
+                tracing::warn!(id = %self.id, "proxy-cache purge failed: {e}");
+                self.record("error");
+                Err(PluginExecutionError {
+                    context: ctx,
+                    error: crate::context::GatewayError {
+                        node_id: String::new(),
+                        code: "CACHE_PURGE_FAILED".to_string(),
+                        message: format!("proxy-cache: purging pair '{}' failed: {e}", self.id),
+                        metadata: HashMap::new(),
+                    },
+                })
             }
         }
     }
@@ -865,6 +881,34 @@ mod tests {
         let result = plugin.execute(test_context()).await;
         assert!(result.is_err(), "a failed purge must not read as success");
         assert_eq!(result.unwrap_err().error.code, "CACHE_PURGE_FAILED");
+    }
+
+    /// The documented use case is a purge node on a write route -- POST, PUT,
+    /// DELETE -- none of which are in the default `cache_method` (GET/HEAD).
+    /// A purge that only fires for cacheable methods would silently no-op on
+    /// every write it was placed there to invalidate: exactly the silent
+    /// no-op "reads degrade, purges report" forbids.
+    #[tokio::test]
+    async fn test_purge_phase_fires_on_a_write_method_the_cache_would_ignore() {
+        let cache = Arc::new(crate::traffic::LocalResponseCache::default());
+        let entry = crate::traffic::CachedResponse {
+            status: 200,
+            headers: HashMap::new(),
+            body: bytes::Bytes::from_static(b"x"),
+        };
+        cache
+            .put("cat\u{1}/x", &entry, std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        let plugin = purge_plugin_with_cache(cache.clone());
+
+        let out = plugin.execute(ctx("POST")).await.unwrap();
+
+        assert_eq!(out.port, None, "a completed purge continues on success");
+        assert!(
+            cache.get("cat\u{1}/x").await.unwrap().is_none(),
+            "a purge on a write method must still clear its pair"
+        );
     }
 
     /// One large response must not be able to fill a store that sessions,
