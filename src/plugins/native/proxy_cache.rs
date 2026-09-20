@@ -379,6 +379,12 @@ impl Plugin for ProxyCachePlugin {
         "proxy-cache"
     }
 
+    /// A purge-only policy still names a real backend for its `id`: dedup in
+    /// `collect_targets` makes a duplicate target (from a paired lookup/store
+    /// half also naming it) harmless, and the alternative -- `None` here --
+    /// would make `DELETE /api/cache/{id}` 404 for an id only a purge half
+    /// names, which is worse than the actual consequence: it 200s with
+    /// `removed: 0` when nothing else has ever cached under that id.
     fn cache_target(&self) -> Option<crate::traffic::CacheTarget> {
         Some(crate::traffic::CacheTarget {
             id: self.id.clone(),
@@ -386,6 +392,16 @@ impl Plugin for ProxyCachePlugin {
             backend_label: self.backend_label,
             store: self.store_label.clone(),
         })
+    }
+
+    /// Only `Store` reads the response body it caches (`ctx.response.body`,
+    /// in `execute` below). `Lookup` never reads the existing response body —
+    /// on a hit it replaces `ctx.response` outright with the cached entry,
+    /// and on a miss it passes the context through untouched. `Purge` never
+    /// touches the response at all. So only `Store` should force an
+    /// upstream's response to buffer.
+    fn reads_response_body(&self) -> bool {
+        matches!(self.role, Role::Store)
     }
 
     async fn execute(&self, mut ctx: Context) -> PluginResult {

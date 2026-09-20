@@ -117,10 +117,13 @@ impl ResponseCache for RedisResponseCache {
 
     async fn purge(&self, id: &str) -> Result<u64, CacheError> {
         let mut conn = self.client.conn().await.map_err(CacheError)?;
-        let pattern = format!(
-            "{}*",
-            self.redis_key(&crate::traffic::cache::pair_prefix(&escape_glob(id)))
-        );
+        // Escape the whole computed literal once, not just `id`: the
+        // store's `key_prefix` is also free-form config text, and a glob
+        // metacharacter in it must not widen the SCAN MATCH either.
+        // `\u{1}` and `:` are not glob metacharacters, so this leaves the
+        // pattern for a clean prefix unchanged.
+        let literal = self.redis_key(&crate::traffic::cache::pair_prefix(id));
+        let pattern = format!("{}*", escape_glob(&literal));
 
         // SCAN driven by hand rather than through `redis::AsyncIter`: that
         // type is deprecated without the `safe_iterators` feature and fails

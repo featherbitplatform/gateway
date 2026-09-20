@@ -95,7 +95,7 @@ policies:
       - { from: keep.hit, to: client.in }
 "#;
 
-    async fn state_with_local_cache_pair(_id: &str) -> Arc<SharedState> {
+    async fn state_with_local_cache_pair() -> Arc<SharedState> {
         state("{}", LOCAL_PAIR_GATEWAY)
     }
 
@@ -135,7 +135,7 @@ policies:
     /// should be able to see the blast radius before committing to it.
     #[tokio::test]
     async fn purge_cache_dry_run_lists_targets_and_removes_nothing() {
-        let s = state_with_local_cache_pair("products").await;
+        let s = state_with_local_cache_pair().await;
         seed(&s, "products\u{1}/x").await;
 
         let v = call(
@@ -159,7 +159,7 @@ policies:
 
     #[tokio::test]
     async fn purge_cache_removes_and_counts() {
-        let s = state_with_local_cache_pair("products").await;
+        let s = state_with_local_cache_pair().await;
         seed(&s, "products\u{1}/x").await;
 
         let v = call(
@@ -177,7 +177,7 @@ policies:
     /// The same 404 the Admin API gives: a typo is not a successful flush.
     #[tokio::test]
     async fn purge_cache_unknown_id_is_not_found() {
-        let s = state_with_local_cache_pair("products").await;
+        let s = state_with_local_cache_pair().await;
         let err = call(
             &s,
             "purge_cache",
@@ -185,6 +185,7 @@ policies:
         )
         .await
         .unwrap_err();
+        assert_eq!(err.code, "not_found");
         assert!(err.message.contains("prodcuts"), "{}", err.message);
     }
 }
