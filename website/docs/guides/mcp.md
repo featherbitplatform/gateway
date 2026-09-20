@@ -42,6 +42,8 @@ Read tokens never see write tools in `tools/list`; a write call with a read toke
 
 ## Connecting a client
 
+The [`mcp` example](https://github.com/featherbitplatform/gateway/tree/main/examples/mcp) is a runnable stack with the endpoint enabled, tokens read from a gitignored `.env`, and a `.mcp.json` to copy into your project.
+
 Claude Code:
 
 ```bash

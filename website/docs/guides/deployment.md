@@ -5,16 +5,20 @@ description: Docker Compose development setup, the scratch container image, and 
 
 ## Example stacks
 
-Ready-to-run Compose stacks live in [`examples/compose/`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose). Each is self-contained — its own `config/`, the published image, no repository-relative paths — so you can copy a directory into your own project and run it:
+Ready-to-run Compose stacks live in [`examples/`](https://github.com/featherbitplatform/gateway/tree/main/examples), one directory per scenario. Each is self-contained — its own `config/`, the published image, no repository-relative paths — so you can copy a directory into your own project and run it:
 
 | Stack | What it shows | Run it |
 |---|---|---|
-| [`minimal`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/minimal) | One gateway, one upstream, file-based config. The baseline to copy. | `docker compose -f examples/compose/minimal/compose.yaml up` |
-| [`etcd-single`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/etcd-single) | Config in etcd on a persistent volume — Admin API and UI edits survive a restart. | `docker compose -f examples/compose/etcd-single/compose.yaml up` |
-| [`etcd-cluster`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/etcd-cluster) | Two replicas sharing one etcd; a change on one converges to the other. | `docker compose -f examples/compose/etcd-cluster/compose.yaml up` |
-| [`tls`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/tls) | TLS termination with a self-signed cert generated at startup, owned by the gateway's uid. | `docker compose -f examples/compose/tls/compose.yaml up` |
+| [`minimal`](https://github.com/featherbitplatform/gateway/tree/main/examples/minimal) | One gateway, one upstream, file-based config. The baseline to copy. | `docker compose -f examples/minimal/compose.yaml up` |
+| [`etcd-single`](https://github.com/featherbitplatform/gateway/tree/main/examples/etcd-single) | Config in etcd on a persistent volume — Admin API and UI edits survive a restart. | `docker compose -f examples/etcd-single/compose.yaml up` |
+| [`etcd-cluster`](https://github.com/featherbitplatform/gateway/tree/main/examples/etcd-cluster) | Two replicas sharing one etcd; a change on one converges to the other. | `docker compose -f examples/etcd-cluster/compose.yaml up` |
+| [`tls`](https://github.com/featherbitplatform/gateway/tree/main/examples/tls) | TLS termination with a self-signed cert generated at startup, owned by the gateway's uid. | `docker compose -f examples/tls/compose.yaml up` |
+| [`mcp`](https://github.com/featherbitplatform/gateway/tree/main/examples/mcp) | The MCP endpoint behind scoped tokens, with a ready-to-copy Claude Code `.mcp.json`. | `docker compose -f examples/mcp/compose.yaml up` (after `cp .env.example .env`) |
+| [`lua-scripts`](https://github.com/featherbitplatform/gateway/tree/main/examples/lua-scripts) | Lua `script` nodes chained in one policy, scripts mounted from `plugins/`. | `docker compose -f examples/lua-scripts/compose.yaml up` |
+| [`stream`](https://github.com/featherbitplatform/gateway/tree/main/examples/stream) | An L4 TCP stream on `:8081` next to the HTTP plane on `:8080`. | `docker compose -f examples/stream/compose.yaml up` |
+| [`redis-stores`](https://github.com/featherbitplatform/gateway/tree/main/examples/redis-stores) | A shared `proxy-cache` pair over redis, a `phase: purge` route, a `store-incr` counter. | `docker compose -f examples/redis-stores/compose.yaml up` |
 
-Each serves the Admin API and web UI on `:9090` (`admin` / `admin`) and the data plane on `:8080` — except `tls`, which serves HTTPS on `:8443`. All four pin the image with `FEATHERBIT_TAG` (default `latest`).
+Each serves the Admin API and web UI on `:9090` (`admin` / `admin`) and the data plane on `:8080` — except `tls`, which serves HTTPS on `:8443`. All of them pin the image with `FEATHERBIT_TAG` (default `latest`).
 
 The stack described in the rest of this section is different: it is the **development** compose file at the repository root, which builds the gateway from source.
 
@@ -31,7 +35,7 @@ services:
       - "9090:9090"      # admin API + UI
     volumes:
       - ./config:/etc/gateway
-      - ./examples/plugins:/etc/gateway/plugins
+      - ./examples/lua-scripts/plugins:/etc/gateway/plugins
     environment:
       - GATEWAY_PORT=8080
       - ADMIN_PORT=9090
@@ -145,10 +149,10 @@ config:
 
 Route precedence in etcd mode follows **key (name) order**, not file declaration order — name routes accordingly when match precedence matters.
 
-Try it locally with the [`etcd-cluster`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/etcd-cluster) example (one etcd + two gateway replicas):
+Try it locally with the [`etcd-cluster`](https://github.com/featherbitplatform/gateway/tree/main/examples/etcd-cluster) example (one etcd + two gateway replicas):
 
 ```bash
-docker compose -f examples/compose/etcd-cluster/compose.yaml up
+docker compose -f examples/etcd-cluster/compose.yaml up
 
 # create a route on replica A
 curl -u admin:admin -X POST localhost:9090/api/routes   -H 'content-type: application/json'   -d '{"name":"demo","match":{"path":"/demo/*"},"policy":"api-policy"}'
@@ -157,6 +161,6 @@ curl -u admin:admin -X POST localhost:9090/api/routes   -H 'content-type: applic
 curl localhost:8081/demo/anything
 ```
 
-For a single instance whose configuration simply has to outlive the container, [`etcd-single`](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/etcd-single) is the smaller shape: one etcd node with its data directory on a named volume, one gateway. Note that a single etcd node is durable but not itself highly available — a production cluster wants a three-node etcd quorum, with the gateway-side configuration unchanged.
+For a single instance whose configuration simply has to outlive the container, [`etcd-single`](https://github.com/featherbitplatform/gateway/tree/main/examples/etcd-single) is the smaller shape: one etcd node with its data directory on a named volume, one gateway. Note that a single etcd node is durable but not itself highly available — a production cluster wants a three-node etcd quorum, with the gateway-side configuration unchanged.
 
 File mode remains the default; nothing requires etcd unless you opt in.

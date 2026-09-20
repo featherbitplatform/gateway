@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "featherbit": {
+      "type": "http",
+      "url": "http://localhost:9090/mcp",
+      "headers": {
+        "Authorization": "Bearer ${FEATHERBIT_MCP_READ_TOKEN}"
+      }
+    }
+  }
+}
