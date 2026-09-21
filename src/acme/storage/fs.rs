@@ -300,14 +300,55 @@ impl Drop for TakeoverGuard {
     }
 }
 
+/// How many times an exclusive create that comes back `PermissionDenied` is
+/// retried, and the pause between attempts.
+///
+/// On Windows, `CREATE_NEW` on a name whose previous file is in the middle of
+/// being deleted -- the winner's guard dropping the marker while the next
+/// contender creates it -- can answer `ACCESS_DENIED` instead of
+/// `ALREADY_EXISTS` for a moment. Under eight contenders it surfaced as a
+/// storage error in 2 of 25 runs on a loaded machine and never in isolation.
+/// The window is microseconds wide; twenty millisecond-spaced attempts cover
+/// it with room to spare, and a *real* permission problem still comes back
+/// as the error it is once they are spent.
+const MARKER_CREATE_RETRIES: u32 = 20;
+const MARKER_CREATE_RETRY_PAUSE: Duration = Duration::from_millis(1);
+
 /// Exclusive create; the content is only ever read by a human debugging.
 fn create_marker(marker: &Path, owner: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(marker)
-        .and_then(|mut f| f.write_all(owner.as_bytes()))
+    retry_transient_denied(
+        || {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(marker)
+                .and_then(|mut f| f.write_all(owner.as_bytes()))
+        },
+        MARKER_CREATE_RETRIES,
+        |_attempt| std::thread::sleep(MARKER_CREATE_RETRY_PAUSE),
+    )
+}
+
+/// Runs `attempt`, repeating it after `pause` while it fails with
+/// `PermissionDenied`, at most `retries` more times. Every other outcome --
+/// success, `AlreadyExists`, any other error -- is returned on the spot: only
+/// the one kind the filesystem is known to answer transiently is retried.
+fn retry_transient_denied(
+    mut attempt: impl FnMut() -> std::io::Result<()>,
+    retries: u32,
+    mut pause: impl FnMut(u32),
+) -> std::io::Result<()> {
+    let mut retried = 0;
+    loop {
+        match attempt() {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && retried < retries => {
+                retried += 1;
+                pause(retried);
+            }
+            other => return other,
+        }
+    }
 }
 
 #[async_trait]
@@ -615,5 +656,77 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn denied() -> std::io::Error {
+        std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+    }
+
+    /// The transient the filesystem is known to produce: a few `ACCESS_DENIED`
+    /// answers while a concurrent delete completes, then the real answer. The
+    /// real answer here is `AlreadyExists` -- another contender holds the
+    /// marker -- which the caller turns into a conceded round, exactly as if
+    /// the transient had never happened.
+    #[test]
+    fn retry_transient_denied_waits_out_a_transient_then_returns_the_real_answer() {
+        let mut answers = vec![
+            Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists)),
+            Err(denied()),
+            Err(denied()),
+            Err(denied()),
+        ];
+        let mut pauses = 0;
+        let result = retry_transient_denied(|| answers.pop().unwrap(), 20, |_| pauses += 1);
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            pauses, 3,
+            "one pause per transient, none after the real answer"
+        );
+        assert!(answers.is_empty());
+    }
+
+    /// A permission problem that does not clear is a permission problem: it
+    /// comes back as itself once the retries are spent, never masked as a
+    /// conceded round.
+    #[test]
+    fn retry_transient_denied_gives_up_after_the_budget() {
+        let mut attempts = 0;
+        let result = retry_transient_denied(
+            || {
+                attempts += 1;
+                Err(denied())
+            },
+            5,
+            |_| {},
+        );
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(attempts, 6, "the first attempt plus five retries");
+    }
+
+    /// Only `PermissionDenied` is retried. Anything else is an answer.
+    #[test]
+    fn retry_transient_denied_returns_other_errors_and_success_immediately() {
+        let mut pauses = 0;
+        let ok = retry_transient_denied(|| Ok(()), 20, |_| pauses += 1);
+        assert!(ok.is_ok());
+
+        let mut attempts = 0;
+        let not_found = retry_transient_denied(
+            || {
+                attempts += 1;
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            },
+            20,
+            |_| pauses += 1,
+        );
+        assert_eq!(not_found.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(attempts, 1);
+        assert_eq!(pauses, 0);
     }
 }
