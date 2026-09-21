@@ -73,7 +73,7 @@ release node runs.
 The release node decrements the counter, floored at zero so a stray release can
 never drive it negative.
 
-:::caution Keep the pair in sync
+:::caution[Keep the pair in sync]
 The acquire and release nodes share state **only** when their `key` (and
 `conn`/`burst`) match. Use a stable key such as `$remote_addr` that resolves
 identically before and after the upstream call. Counters live in process memory

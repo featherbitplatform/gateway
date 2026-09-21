@@ -1,6 +1,6 @@
 # Minimal featherbit deployment: one gateway, one upstream.
 #
-#   docker compose -f examples/compose/minimal/compose.yaml up
+#   docker compose -f examples/minimal/compose.yaml up
 #
 # Nothing here is repo-specific — copy this directory anywhere and it runs.
 # The gateway comes from the published image, and `config/` is bind-mounted, so

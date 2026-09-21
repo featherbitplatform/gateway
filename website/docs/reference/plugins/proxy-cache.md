@@ -22,12 +22,12 @@ and the request, and share one namespace via `id`, so they always agree.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `phase` (or `role`) | string | — (**required**) | `lookup` (before upstream) or `store` (after upstream). |
+| `phase` (or `role`) | string | — (**required**) | `lookup` (before upstream), `store` (after upstream), or `purge` (on a write route; see [Invalidating on a write](#invalidating-on-a-write)). |
 | `id` | string | — (**required**) | Shared cache namespace; the lookup and store nodes of one pair must match. |
 | `cache_key` | array of string templates (or a single string) | `["$request_method", "$host", "$uri"]` | Components interpolated and joined to form the key. **Both nodes must configure it identically.** |
 | `cache_ttl` | integer (seconds) | `300` | Freshness lifetime for stored entries. |
 | `cache_http_statuses` | array | `[200, 301, 404]` | Response statuses eligible for caching. (The singular spelling `cache_http_status` is also accepted for config compatibility.) |
-| `cache_method` | array | `["GET", "HEAD"]` | Cacheable request methods; other methods bypass the cache. |
+| `cache_method` | array | `["GET", "HEAD"]` | Cacheable request methods; other methods bypass the cache in the lookup and store phases. |
 | `hide_cache_headers` | bool | `false` | Strip `cache-control` / `expires` from served cache hits. |
 | `policy` | string | `local` | `local` (an in-memory, per-instance cache) or `redis` (a shared cache over a declared [store](../../concepts/stores.md)). Both nodes of a pair must use the same policy and, for `redis`, the same `store`. |
 | `store` | string | — (required when `policy: redis`) | Name of a declared `stores:` entry. |
@@ -63,8 +63,8 @@ edges:
 
 ## Behavior
 
-Requests whose method is not in `cache_method` bypass the cache in both phases
-(pass through untouched).
+Requests whose method is not in `cache_method` bypass the cache in the lookup
+and store phases (pass through untouched).
 
 The **lookup** node derives the key and queries the cache. On a **hit** it
 replaces `context.response` with the cached status, headers, and body, adds
@@ -117,16 +117,66 @@ There is no configuration for which that is correct, so the compiler now
 rejects it and names both nodes.
 
 A half with **no counterpart** is reported rather than rejected: a lookup with
-no store caches nothing, and a store with no lookup is never read, but both are
+no store caches nothing, a store with no lookup is never read, and a purge
+with nothing to purge for is a no-op every time it fires — but all three are
 also what a policy looks like halfway through being built. They appear in the
 `cache_pairs` array of `POST /api/policies/validate` and the MCP
 `validate_policy` tool, alongside `buffering`.
 :::
 
+## Invalidating on a write
+
+A third phase, `purge`, clears everything its pair has cached. Put it on the
+route that changes the resource, after the upstream:
+
+```yaml
+- id: drop-cache
+  type: proxy-cache
+  config: { phase: purge, id: products, policy: redis, store: cache-store }
+```
+
+wired `forward-write.success → drop-cache.in`. Gating on the upstream's status
+is yours to decide — a `condition` on `status` before it, if only a `2xx` should
+purge.
+
+**`cache_method` does not gate `phase: purge`** — a purge acts on the pair's
+namespace, not on one request's cached representation, so it fires on
+`POST`/`PUT`/`DELETE` too (the default `cache_method` for lookup/store is only
+`GET`/`HEAD`).
+
+**A failed purge takes `error`, unlike a failed lookup.** A lookup that cannot
+reach its backend becomes a miss, because a cache only saves latency. A purge is
+different: you asked for state to change, and continuing silently would leave the
+cache stale in exactly the case invalidation exists to fix.
+
+A `phase: purge` node placed on an upstream's success path buffers that
+upstream's response (the same as `phase: store`) — because a failed purge can
+exit `error`, and an error response cannot be produced mid-stream once bytes
+have already gone out. Write responses are usually small, so this rarely
+matters in practice; `POST /api/policies/validate` reports it as a buffering
+reason if it does.
+
+**A `policy: redis` purge scans the whole store, not just the pair.** It
+`SCAN`s the store's entire keyspace incrementally, so its cost grows with the
+store's total key count, not with the number of entries the pair actually
+cached; `UNLINK` frees the matched keys' memory off-thread rather than
+blocking on it. Do not wire a purge to a high-rate write path on a large
+shared store. Entries written concurrently during a purge may survive it —
+invalidation here is best-effort under concurrent writes, not a snapshot.
+
+**A `policy: local` purge clears this instance only.** No message reaches other
+instances. `policy: redis` purges are cluster-wide because the store is shared.
+
+The purge half is held to the same agreement rule as the other two: it must use
+the same `policy` and `store` as its pair, or the compiler rejects the policy.
+
+`PortSpec` is per node *type*, so a `phase: purge` node — like `phase: store` —
+must wire a `hit` port that never fires.
+
 ## Ports
 
-`proxy-cache` declares three output ports: `success` (a cache miss, or a non-cacheable method — the request continues), `hit` (the response was served from cache; wire straight to `client`), and `error` (never actually used — a backend outage or an oversized response degrades to a miss or a skipped write, not a routed error). `success` and `hit` are mandatory on both the lookup and store nodes — the policy compiler rejects any policy that leaves either unwired, even on the store node where `hit` is never actually emitted. See [Wiring](#wiring) above.
+`proxy-cache` declares three output ports: `success` (a cache miss, a non-cacheable method, or a completed purge — the request continues), `hit` (the response was served from cache; wire straight to `client`), and `error` (taken only by a failed **purge** — a lookup or store backend outage degrades to a miss or a skipped write, not a routed error). `success` and `hit` are mandatory on all three phases — the policy compiler rejects any policy that leaves either unwired, even on the store and purge nodes where `hit` is never actually emitted. See [Wiring](#wiring) above.
 
 ## Errors
 
-This node never fails at execution time: it always returns through `success` or `hit`, so its `error` port is never taken — see the fail-open note above.
+The lookup and store phases never fail at execution time: they always return through `success` or `hit`, so `error` is never taken for them — see the fail-open note above. The **purge** phase is the exception: a purge that cannot reach its backend exits `error` with `CACHE_PURGE_FAILED`, because silently continuing would leave the cache stale in exactly the situation invalidation exists to fix. See [Invalidating on a write](#invalidating-on-a-write).

@@ -17,7 +17,7 @@ debug:
   capture_bodies: ${FEATHERBIT_DEBUG_BODIES:-false}
 ```
 
-:::warning Restart required
+:::warning[Restart required]
 `system.yaml` is read once at startup and never hot-reloaded, so **toggling debug mode requires a restart**. That is deliberate: it means someone who obtains an Admin API credential cannot switch on request-context capture in a running gateway.
 :::
 
@@ -33,7 +33,7 @@ debug:
 
 The variable names are yours to choose — only what you write in `system.yaml` matters, the gateway does not look for any fixed set.
 
-:::caution Keep the `:-` default
+:::caution[Keep the `:-` default]
 `${FEATHERBIT_DEBUG}` with the variable unset expands to empty text, which YAML reads as null — serde then rejects that for a boolean or number. Always write a default: `${FEATHERBIT_DEBUG:-false}`, `${FEATHERBIT_DEBUG_MAX_TRACES:-1000}`. And a value you *do* set must be valid for the field (`max_traces: abc` will fail to parse).
 :::
 
@@ -65,7 +65,7 @@ HTTP/1.1 200 OK
 x-featherbit-trace-id: 9f1c3b2e-...
 ```
 
-:::note The trace-id header is harness-added and cannot be removed by a policy
+:::note[The trace-id header is harness-added and cannot be removed by a policy]
 `x-featherbit-trace-id` is stamped by the gateway **after** the whole policy graph has run, so it is not in `context.response.headers` while any node executes — a `response-rewrite` or `proxy-rewrite` node cannot remove it (and pre-seeding it would not survive, since `upstream` replaces the response header map wholesale). It is only returned for requests that **carried the trigger header**: a request swept up by `trace_all` is captured silently, with no header stamped on the response the client sees. So under `trace_all` there is no `x-featherbit-trace-id` to strip — find those traces in the panel or via `GET /api/debug/traces` instead.
 :::
 
@@ -89,7 +89,7 @@ curl -u admin:admin http://localhost:9090/api/debug/traces/9f1c3b2e-... \
 
 Each step records the node id and type, the outcome, the duration, the **edge the engine followed**, and the full context *after* that node. The `changes` list is derived by comparing consecutive snapshots, so it answers "what did this plugin actually do" directly.
 
-:::note The trigger header is not stripped
+:::note[The trigger header is not stripped]
 It stays on the request and is therefore **forwarded to the upstream**, and visible in the trace. That is deliberate — removing it would mean the request you traced is not the request you are debugging — but it does mean a traced request carries one extra header that an ordinary one does not. If an upstream is sensitive to unknown headers, account for that, or use a [`proxy-rewrite`](../reference/plugins/proxy-rewrite.md) node to drop it before proxying.
 :::
 
@@ -145,7 +145,7 @@ The web UI's **Traces** tab shows the same list with a policy filter, and refres
 
 Requests that match **no route** (a `404`) are captured too, under the policy label `(no route matched)` — so "I sent a request but nothing showed up" holds even for a path that never reaches a policy. Filter them out by picking a real policy if the 404 noise is in your way.
 
-:::note One shared, bounded buffer
+:::note[One shared, bounded buffer]
 ### Knowing when a trace aged out
 
 Every trace listing — `GET /api/debug/traces` and the MCP `list_traces` tool — carries a
@@ -223,11 +223,11 @@ Every field is optional; `{}` yields a valid `GET /` run.
 
 Unknown fields are **rejected**, so a typo fails loudly instead of silently defaulting.
 
-:::tip Replay a request you saw in a trace
+:::tip[Replay a request you saw in a trace]
 `context` also accepts the **trace snapshot shape** — the nested `{request, response, message, errors}` object you get from `GET /api/debug/traces/{id}`. Paste a step's `after` (or the trace's `initial`) straight in and it is flattened automatically; display-only fields (`errors`, body `len`/`truncated`/`binary`) are ignored. The web UI's **Copy to sandbox** button on a trace does this in one click. Caveat: snapshots are **redacted** — a header shown as `<redacted>` replays as that literal string, and a truncated or binary body cannot be reconstructed, so replace those with real values before relying on the run.
 :::
 
-:::note Response-phase plugins need a seeded response
+:::note[Response-phase plugins need a seeded response]
 The synthetic response starts empty. A `proxy-rewrite` with `phase: response` and `remove_headers: [x-powered-by]` will therefore report **no change** in the sandbox — there was no `x-powered-by` header to remove. Seed one and the removal shows up:
 
 ```json
@@ -246,7 +246,7 @@ The web UI's Sandbox tab has an **add a response** shortcut for exactly this.
 | `stop` (default) | Error ports left unwired, so a failing node records `edge: "unhandled"` — showing you exactly what an unwired error port does to a request. |
 | `client` | Wires every node's error port to `client`, preserving the plugin's own status code. |
 
-:::danger Plugins execute for real
+:::danger[Plugins execute for real]
 The sandbox runs against the gateway's live resources. Outbound calls are made, rate-limit counters decrement, circuit breakers trip, loggers fire, and FaaS invocations are billed. Recompiling a policy gives fresh plugin *instances*, but they resolve into the same shared registries, so counters are **not** isolated. Set `debug.sandbox: false` to allow tracing without plugin execution.
 :::
 
@@ -262,7 +262,7 @@ Always redacted, case-insensitively:
 
 The `redact_*` config lists extend these; they never replace them.
 
-:::danger What is not redacted
+:::danger[What is not redacted]
 **Captured bodies are not redacted at all** — there is no general way to find a secret in an arbitrary payload. That is why `capture_bodies` is a separate flag and defaults off. A plugin or Lua script that copies a token into an unmatched `context.message` key will also leak it. Debug mode is a development and staging tool; do not run it against production traffic.
 :::
 

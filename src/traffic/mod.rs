@@ -21,12 +21,14 @@ use dashmap::DashMap;
 use tokio::sync::Mutex;
 
 pub mod cache;
+pub mod purge;
 // `CacheError` joins the re-export now that the redis backend (`redis_cache.rs`)
 // is a real non-test caller that needs to name it — but that caller only
 // exists under `redis-store`, so a headless build still has no user for it.
 #[cfg(feature = "redis-store")]
 pub use cache::CacheError;
 pub use cache::{CachedResponse, LocalResponseCache, ResponseCache};
+pub use purge::{collect_targets, purge_targets, CacheTarget, PurgeOutcome};
 
 /// Per-key in-flight request counters for `limit-conn`.
 ///

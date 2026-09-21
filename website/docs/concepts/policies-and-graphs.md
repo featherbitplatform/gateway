@@ -224,6 +224,6 @@ Each node has at most one edge per output port. At runtime the engine follows th
 
 One compiled graph instance serves all requests for the routes that reference its policy; it is shared read-only across requests.
 
-:::note Planned
+:::note[Planned]
 The specification also describes an `unpack` node for extracting typed values out of the Context and wiring them into named input ports of other nodes. This node type is not implemented; the only input port in use today is `in`, carrying the Context.
 :::

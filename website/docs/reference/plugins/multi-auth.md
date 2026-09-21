@@ -39,7 +39,7 @@ The sub-plugins run in the listed order, threading the context from one attempt 
 
 A later sub-plugin sees the context as left by prior *failed* attempts. Auth plugins generally mutate the context only on success (leaving `request`/`message` untouched when they reject), so ordering is safe. As an extra safeguard, the `response` is reset between attempts, so a losing sub-plugin's rejection body never leaks onto the request when a later attempt succeeds.
 
-:::note Any plugin type is accepted
+:::note[Any plugin type is accepted]
 Only auth-type plugins are meaningful here, but the set is not hard-restricted — any registered node type may be listed. A non-auth plugin simply runs as an ordinary node, and its success ends the chain.
 :::
 

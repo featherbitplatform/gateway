@@ -261,7 +261,7 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
           onChange={(e) => setDraft((d) => ({ ...d, autoApprove: e.target.checked }))}
           aria-label="Auto-run writes (settings)"
         />
-        Auto-run writes: execute put_*/delete_*/reload_config and run_sandbox without the Run/Skip card
+        Auto-run writes: execute put_*/delete_*/purge_cache/reload_config and run_sandbox without the Run/Skip card
       </label>
       <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }} data-testid="chat-connection">{connectionLabel(connection)}</div>
       <div className="flex justify-between">

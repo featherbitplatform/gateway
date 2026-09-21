@@ -7,7 +7,7 @@ description: An error-only access logger that ships entries to a remote TCP sink
 
 An **error-only access logger**: it builds the shared access-log entry and ships it to a remote **TCP** sink **only when the request accumulated errors** (`context.errors` is non-empty). Requests that did not fail produce nothing.
 
-:::caution Denials and throttles are not errors
+:::caution[Denials and throttles are not errors]
 `context.errors` holds one record per node that **could not do its job** — upstream unreachable, an IdP callout that failed, a counter store that is down, input the node cannot parse. Deliberate responses are not in it. A request that exits on an [outcome port](../../concepts/policies-and-graphs.md#outcome-ports-and-the-mandatory-wiring-rule) — an auth denial (`denied`), a throttle (`limited`), an open circuit breaker (`broken`), an injected abort (`abort`), a redirect (`redirect`) — carries **no** error record, so **this node emits nothing for it**. That is by design: those are the gateway working as configured.
 
 To ship a record of denials or throttles, place a regular access logger (`logging`, `http-logger`, ...) on the path those outcome ports take.

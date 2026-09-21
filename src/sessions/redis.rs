@@ -82,7 +82,7 @@ impl RedisSessionStore {
         StoreError(msg)
     }
 
-    async fn conn(&self) -> Result<redis::aio::ConnectionManager, StoreError> {
+    async fn conn(&self) -> Result<crate::stores::redis_store::StoreConn, StoreError> {
         self.client.conn().await.map_err(|e| self.err(e))
     }
 }

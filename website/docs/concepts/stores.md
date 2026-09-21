@@ -30,7 +30,7 @@ stores:
 | `password` | string | — | Optional; overrides any password embedded in `url`. Same raw-`${ENV}` treatment. |
 | `key_prefix` | string | `fb` | Namespace prefix applied to every key the store writes. |
 | `connect_timeout_ms` | integer | `2000` | Bounds a **single** connection attempt, and `ping`. |
-| `connect_budget_ms` | integer | `5000` | Bounds establishing the first connection **in total** — every retry and the backoff between them. See below. |
+| `connect_budget_ms` | integer | `5000` | Bounds **every wait for the store in total** — the first connection with all its retries and backoff, and any later command that finds the store gone and waits on the reconnect. See below. |
 | `tls.ca_cert_path` | string | — | PEM CA bundle for a `rediss://` store with a private CA. |
 
 :::note[Why there are two timeouts]
@@ -45,6 +45,15 @@ exactly when a gateway should shed load fastest rather than hold requests open.
 `connect_budget_ms` bounds the whole thing: attempts, retries, and the waits
 between them. When it expires the store's node exits its `error` port with the
 usual `503`, promptly instead of eventually.
+
+The same budget bounds every **later** command too. A store that goes away
+mid-life makes the connection manager reconnect on the same six-attempt
+schedule, and every command issued meanwhile waits on it — measured against a
+stopped container, the second request after the outage began held its worker
+for ~55 seconds. Since 0.11.0 a command that cannot get a connection inside
+`connect_budget_ms` fails with `store operation gave up`, and the reconnect
+carries on in the background so the request after a successful reconnect
+succeeds normally.
 
 A failed connect is **not** cached, so the next request tries again — one
 outage cannot poison a store for the life of the process.

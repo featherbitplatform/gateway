@@ -22,6 +22,25 @@ pub(crate) fn cache_key(prefix: &str, key: &str) -> String {
     format!("{}:{}:{}", prefix, namespaces::CACHE, key)
 }
 
+/// Backslash-escapes every glob metacharacter Redis's `MATCH` understands.
+///
+/// An `id` is free-form config text. Without this, a pair named `a*` would
+/// purge every pair beginning with `a`.
+pub(crate) fn escape_glob(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '*' | '?' | '[' | ']' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Keys per `UNLINK`. Small enough that no single round trip holds the
+/// server long; large enough that a big purge is not thousands of them.
+const UNLINK_BATCH: usize = 200;
+
 pub struct RedisResponseCache {
     pub(crate) client: Arc<RedisStoreClient>,
 }
@@ -95,11 +114,63 @@ impl ResponseCache for RedisResponseCache {
             .await
             .map_err(|e| CacheError(e.to_string()))
     }
+
+    async fn purge(&self, id: &str) -> Result<u64, CacheError> {
+        let mut conn = self.client.conn().await.map_err(CacheError)?;
+        // Escape the whole computed literal once, not just `id`: the
+        // store's `key_prefix` is also free-form config text, and a glob
+        // metacharacter in it must not widen the SCAN MATCH either.
+        // `\u{1}` and `:` are not glob metacharacters, so this leaves the
+        // pattern for a clean prefix unchanged.
+        let literal = self.redis_key(&crate::traffic::cache::pair_prefix(id));
+        let pattern = format!("{}*", escape_glob(&literal));
+
+        // SCAN driven by hand rather than through `redis::AsyncIter`: that
+        // type is deprecated without the `safe_iterators` feature and fails
+        // `-D warnings`. The explicit loop also makes the batching visible.
+        let mut cursor: u64 = 0;
+        let mut removed: u64 = 0;
+        loop {
+            let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(UNLINK_BATCH)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| CacheError(e.to_string()))?;
+
+            for chunk in keys.chunks(UNLINK_BATCH) {
+                let n: u64 = redis::cmd("UNLINK")
+                    .arg(chunk)
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(|e| CacheError(e.to_string()))?;
+                removed += n;
+            }
+
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+        }
+        Ok(removed)
+    }
 }
 
 #[cfg(all(test, feature = "redis-store"))]
 mod tests {
     use super::*;
+
+    /// An `id` is free-form config text. Glob metacharacters in it must not
+    /// widen a SCAN MATCH: purging the pair literally named `a*` must not
+    /// match every pair beginning with `a`.
+    #[test]
+    fn test_escape_glob_neutralises_every_metacharacter() {
+        assert_eq!(escape_glob("plain"), "plain");
+        assert_eq!(escape_glob("a*b?c[d]e\\f"), "a\\*b\\?c\\[d\\]e\\\\f");
+    }
 
     fn store_url() -> Option<String> {
         std::env::var("FEATHERBIT_TEST_REDIS_URL")
@@ -206,6 +277,50 @@ mod tests {
         assert!(
             ttl > 0,
             "the entry must expire on redis's clock, not ours: {ttl}"
+        );
+    }
+
+    /// More entries than one SCAN page, so the cursor loop and the UNLINK
+    /// batching are actually exercised, and a sibling pair to prove the
+    /// boundary holds on the shared backend too.
+    #[tokio::test]
+    async fn test_redis_purge_removes_only_the_named_pair_across_scan_pages() {
+        let Some(url) = store_url() else { return };
+        let cache = RedisResponseCache::new(client(&url));
+        let run = uuid::Uuid::new_v4();
+        let target = format!("purge-{run}");
+        let sibling = format!("purge-{run}-v2");
+        let ttl = Duration::from_secs(60);
+
+        for i in 0..250 {
+            cache
+                .put(&format!("{target}\u{1}/{i}"), &response(b"x"), ttl)
+                .await
+                .unwrap();
+        }
+        cache
+            .put(&format!("{sibling}\u{1}/0"), &response(b"keep"), ttl)
+            .await
+            .unwrap();
+
+        let removed = cache.purge(&target).await.unwrap();
+
+        assert_eq!(
+            removed, 250,
+            "every entry of the pair, across more than one SCAN page"
+        );
+        assert!(cache
+            .get(&format!("{target}\u{1}/0"))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(
+            cache
+                .get(&format!("{sibling}\u{1}/0"))
+                .await
+                .unwrap()
+                .is_some(),
+            "the sibling pair must be untouched"
         );
     }
 }
