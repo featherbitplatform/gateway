@@ -43,7 +43,7 @@ Checks run in order:
 
 Every rejection writes a JSON body (`{"message": ...}` with `content-type: application/json`) onto `context.response`, sets the status, and exits through the `denied` port. Permitted requests pass through the `success` port unchanged.
 
-:::note Limitations
+:::note[Limitations]
 `type: service_id` and `route_id` are not supported — featherbit has no service/route object on the context, so those values are rejected at config load; use `consumer_name` or `consumer_group_id`.
 :::
 

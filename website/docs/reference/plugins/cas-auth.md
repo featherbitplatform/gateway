@@ -10,7 +10,7 @@ Authenticates requests against a [CAS](https://apereo.github.io/cas/) (Central A
 - **Stateless ticket validation (default).** When a request carries a CAS `ticket` query parameter, the plugin validates it against the CAS server's `/serviceValidate` endpoint and, on success, attaches the authenticated user to the request. This is the pre-existing behavior and is unchanged.
 - **Interactive SSO login (opt-in).** Configure a session secret to enable the full browser login flow: unauthenticated browsers are redirected to the CAS `/login` endpoint, the returned ticket is consumed at the callback, and the authenticated user is sealed into an **encrypted client-side session cookie**. Subsequent requests authenticate straight from the cookie — no server-side session store is required.
 
-:::info Interactive mode is off by default
+:::info[Interactive mode is off by default]
 With **no** session secret configured the node behaves exactly as the stateless ticket validator described above. Setting `session.secret` (or `session_secret`) switches on the interactive flow.
 :::
 
@@ -78,7 +78,7 @@ Otherwise the outcome depends on whether CAS gave a verdict:
 - **Missing ticket**, or an authentication-failure (or unparseable) `/serviceValidate` body — CAS said no, so this is a deliberate rejection: the **`denied`** port, with `context.response.status_code = 401` and body `{"error": "unauthorized", "message": "<reason>"}`.
 - **Callout failure** (CAS unreachable, timed out) or a **non-200** `/serviceValidate` reply — no verdict was obtained, so this is an infrastructure failure: the **`error`** port, error code `CAS_AUTH_PROVIDER_ERROR`. The prepared response is a `502` `{"error": "provider_error", "message": "<reason>"}` with no challenge header — a CAS outage must not read as a refused ticket.
 
-:::caution Breaking change
+:::caution[Breaking change]
 Before v0.8 this provider-failure response reused the `denied` shape (`401` `{"error": "unauthorized"}`), so an unreachable CAS server was indistinguishable from a refused ticket. It is now the shared `502 {"error": "provider_error", "message": "<reason>"}` response with no challenge header, the same shape every provider-backed auth plugin prepares (`openid-connect`, `cas-auth`, `ldap-auth`, `authz-keycloak`, `authz-casdoor`). Match on the `error` port / the error code, or on the `502`, instead of the old status.
 :::
 

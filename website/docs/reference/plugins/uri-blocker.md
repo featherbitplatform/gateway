@@ -34,7 +34,7 @@ The subject is the request path plus `?query` when query parameters exist, so a 
 
 A blocked request writes `rejected_code` onto `context.response` — with a JSON body `{"error_msg": rejected_msg}` (`content-type: application/json`) when `rejected_msg` is set, otherwise an empty body — and exits through the `denied` port. Non-matching requests pass through the `success` port untouched; the plugin does not write to `context.message`.
 
-:::note Behavior notes
+:::note[Behavior notes]
 featherbit compiles each rule separately and tests them in order, giving clear per-rule config errors. The query string is rebuilt from parsed parameters (sorted `key=value` pairs) rather than the raw wire bytes, and patterns use Rust `regex` syntax, not PCRE.
 :::
 

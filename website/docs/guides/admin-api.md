@@ -69,6 +69,7 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `GET` | `/api/debug/traces/:id` | One trace with per-step context changes | `404` unknown/evicted, or debug off |
 | `DELETE` | `/api/debug/traces` | Clears the trace buffer | `404` debug mode off |
 | `POST` | `/api/debug/sandbox` | Runs plugins or a policy against a synthetic context | `400` bad request/config; `404` unknown policy or debug off; `504` timeout |
+| `DELETE` | `/api/cache/:id` | Purge a `proxy-cache` pair by its `id` on every backend that holds it (`{"id": ..., "purged": [{"backend": ..., "store": ..., "removed": N}, ...]}`) | `404` no pair with that id in any policy; `502` a backend could not be reached (lists what succeeded first) |
 | `GET` | `/api/acme/certs` | Every [ACME](./tls.md#automatic-certificates-acme)-managed certificate with state, domains, validity and last error; `{"enabled": false, "certs": []}` when `acme:` is not configured. Never includes key material | — |
 | `POST` | `/api/acme/certs/:id/renew` | Nudge the renewal manager for one certificate (`?force=true` to ignore the renewal window). `202 {"scheduled": true}`, or `200 {"scheduled": false, "reason": "not_due"}` | `404` unknown certificate id; `409` `{"error":"in_progress"}`; `501` ACME not configured |
 | `GET` | `/api/mcp/status` | Whether the [MCP server](./mcp.md) is compiled in and enabled, its path, token count and distinct scopes — **never token values** | — |
@@ -78,6 +79,20 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `GET` | `/healthz` | Liveness probe (auth-exempt) | — |
 | `GET` | `/readyz` | Readiness probe (auth-exempt) | `503` while the route table is empty |
 | `GET` | `/metrics` | Prometheus metrics in text exposition format | — |
+
+### Cache purge
+
+`DELETE /api/cache/:id` purges every backend holding a [`proxy-cache`](../reference/plugins/proxy-cache.md) pair with that `id` — the same action the MCP `purge_cache` tool triggers on demand, and a `phase: purge` node triggers automatically on a write path. A successful purge returns the id and what each backend reported:
+
+```json
+{"id": "checkout-cache", "purged": [{"backend": "redis", "store": "cache-store", "removed": 12}]}
+```
+
+`store` is omitted from a `local` backend entry — there is no named store to report. `404` means no compiled policy has a pair with that `id`: a typo must not read as a successful flush of nothing. `502` means a backend could not be reached; the response body still lists what succeeded first (`{"error": "cache_purge_failed", ...}`).
+
+A `redis` backend purge `SCAN`s the store's whole keyspace incrementally, so its cost grows with the store's total key count, not with the pair's own entry count; `UNLINK` frees the matched keys' memory off-thread. Avoid wiring a purge to a high-rate write path on a large shared store, and note that entries written concurrently during a purge may survive it — it is best-effort under concurrent writes, not a snapshot.
+
+A `policy: local` purge clears the instance that received the request only; `policy: redis` purges are cluster-wide because the store is shared.
 
 Notes on mutation semantics:
 

@@ -5,7 +5,7 @@ description: Thin parity node that adds a per-consumer request counter on top of
 
 <span className="plugin-chip" style={{'--chip-color': '#e6522c'}}>prometheus</span>
 
-:::note featherbit already exposes Prometheus metrics
+:::note[featherbit already exposes Prometheus metrics]
 You do **not** need this node to get Prometheus metrics. featherbit records per-route request counters, request-latency histograms, and per-node execution metrics **out of the box** — the graph engine and the data-plane listener feed them on every request with no plugin involved, and they are rendered at the Admin API's **`/metrics`** endpoint. This node only *adds a dimension* on top of the always-on core metrics.
 :::
 
@@ -34,7 +34,7 @@ These are recorded without any plugin and served at `/metrics` on the Admin API 
 | `gateway_node_errors_total` | `policy`, `node_id`, `error_code` | Node failures (same criterion). |
 | `gateway_consumer_requests_total` | `consumer`, `route` | **Added by this node** — per-consumer request count. |
 
-:::info Errors are failures, not rejections
+:::info[Errors are failures, not rejections]
 Both error counters record only cases where a node **could not do its job** (unreachable upstream, failed IdP callout, counter store down, unparseable input). A deliberate rejection exits on an [outcome port](../../concepts/policies-and-graphs.md#outcome-ports-and-the-mandatory-wiring-rule) — `denied`, `limited`, `broken`, `abort`, `redirect`, `preflight`, `routed`, `hit` — and appends **no** error record, so it increments neither. Count denials and throttles from `gateway_requests_total`'s `status` label instead.
 :::
 

@@ -2,6 +2,7 @@
 //! the server advertises. Transport-agnostic — the `rmcp` adapter in
 //! `server.rs` and the Admin API's prompt renderer both call into here.
 
+pub mod cache;
 pub mod catalog;
 pub mod config;
 pub mod debug;
@@ -210,6 +211,7 @@ pub async fn call(state: &SharedState, name: &str, a: JsonObject) -> Result<Valu
         "delete_plugin_config" => writes::delete_plugin_config(state, args(a)?).await,
         "put_store" => writes::put_store(state, args(a)?).await,
         "delete_store" => writes::delete_store(state, args(a)?).await,
+        "purge_cache" => cache::purge_cache(state, args(a)?).await,
         "reload_config" => writes::reload_config(state, args(a)?).await,
         _ => Err(ToolError::unknown_tool(name)),
     }
@@ -219,7 +221,7 @@ use McpScope::Read;
 use McpScope::Write;
 
 #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
-static TOOLS: [ToolDef; 33] = [
+static TOOLS: [ToolDef; 34] = [
     ToolDef { name: "list_node_types", scope: Read, description: "List every node (plugin) type with its description and declared ports. Start here when designing a policy.", input_schema: schema_of::<catalog::NoArgs> },
     ToolDef { name: "get_node_type", scope: Read, description: "Full reference for one node type: description, input/output ports (which must be wired), and its documentation page with every config key and a YAML example.", input_schema: schema_of::<catalog::TypeArgs> },
     ToolDef { name: "list_vars", scope: Read, description: "How to reference request data inside plugin config: the `$var` catalog ($uri, $http_<header>, $arg_<query>, $cookie_<name>, $msg_<key>, …), the `{{namespace.path}}` template namespaces (request.*, response.*, message.*, client.*, env.*), which config fields accept them and which do not, and how to derive new variables with `set-vars`. Call this before writing any config value that should change per request.", input_schema: schema_of::<catalog::NoArgs> },
@@ -252,6 +254,7 @@ static TOOLS: [ToolDef; 33] = [
     ToolDef { name: "delete_plugin_config", scope: Write, description: "Delete a plugin config profile by name; fails while referenced (dry_run supported).", input_schema: schema_of::<writes::DeleteArgs> },
     ToolDef { name: "put_store", scope: Write, description: "Create or replace a redis/valkey store. Args: {\"name\": \"<store>\", \"definition\": {\"type\": \"redis\", \"url\": \"redis://host:6379\", \"password\"?: \"${ENV_VAR}\", \"key_prefix\"?: \"...\", \"tls\"?: {...}}, \"dry_run\": false}. Keep secrets as ${ENV_VAR} placeholders. Live immediately on success.", input_schema: schema_of::<writes::PutArgs> },
     ToolDef { name: "delete_store", scope: Write, description: "Delete a store by name; fails with the list of referrers while in use (dry_run supported).", input_schema: schema_of::<writes::DeleteArgs> },
+    ToolDef { name: "purge_cache", scope: Write, description: "Purge everything a proxy-cache pair has cached, by its id, on every backend that holds it. A policy: local purge clears this instance only. dry_run lists the backends without deleting.", input_schema: schema_of::<cache::PurgeCacheArgs> },
     ToolDef { name: "reload_config", scope: Write, description: "Re-read gateway.yaml from disk and apply it (file config source only). NOT needed after put_*/delete_* — those are live immediately. Use it only when the file was edited by hand: it DISCARDS every API/MCP edit that was never written to the file, so it refuses with `unsaved_changes` (listing what would be lost) unless discard_unsaved=true.", input_schema: schema_of::<writes::ReloadArgs> },
 ];
 
@@ -313,6 +316,7 @@ mod tests {
             assert!(seen.insert(t.name), "duplicate tool {}", t.name);
             let mutating = t.name.starts_with("put_")
                 || t.name.starts_with("delete_")
+                || t.name.starts_with("purge_")
                 || t.name == "reload_config";
             assert_eq!(
                 t.scope == Write,

@@ -7,6 +7,10 @@ description: Runs a user-provided Lua script as a graph node, with full read/wri
 
 Runs a user-provided script as a graph node behind the same plugin contract as native plugins. The script receives the full Context (`request`, `response`, `message`) and returns a possibly modified copy; anything it writes into `ctx.message` is visible to downstream nodes. It can sit anywhere in the request or response pipeline. Only the Lua (Luau) runtime is currently supported. The [Lua scripting guide](../../guides/lua-scripting.md) has the worked examples, `require` sandboxing and hot-reload rules (agents: `featherbit://docs/guides/lua-scripting`).
 
+:::danger[Breaking change]
+Since 0.11.0 `script` declares a `respond` outcome port, and outcome ports are mandatory wiring: **every existing `script` node must add an edge from `<id>.respond`** (to `client`, usually) or the policy fails to compile with `output port 'respond' of node '<id>' (type 'script') must be wired`. A gateway whose config fails to compile exits at startup.
+:::
+
 ## The `ctx` table
 
 Define a global `execute(ctx)`, mutate what you need, and **return the same table** — a fresh table of your own will not have the fields the gateway expects.
@@ -87,7 +91,30 @@ Scripts are loaded and validated once at policy-compile time, not per request: s
 
 `require` is sandboxed to `modules_path`: module names containing `..`, `/`, or `\` are rejected, and modules resolve as `<modules_path>/<name>.lua`. Modules are re-evaluated on every `require` (no caching). With no `modules_path` (e.g. `inline` without an explicit setting), `require` is unavailable.
 
-On success the context rebuilt from the script's return value flows through the **success** port. `context.errors` and the wire protocol are not exposed to scripts and are carried over unchanged. Any failure routes the *original* context through the **error** port with one of these codes appended to `context.errors` — see [Errors](#errors).
+The context rebuilt from the script's return value flows through the **success** port, or through **respond** when the script returned `ctx, "respond"` (see [Ports](#ports)). `context.errors` and the wire protocol are not exposed to scripts and are carried over unchanged. Any failure routes the *original* context through the **error** port with one of these codes appended to `context.errors` — see [Errors](#errors).
+
+## Ports
+
+| Port | Kind | Meaning |
+|---|---|---|
+| `success` | success | The script returned the context; the request continues. |
+| `respond` | outcome | The script prepared `ctx.response` and asked to answer with it — `return ctx, "respond"`. Wire to `client` (or a custom handler). **Mandatory wiring**, like every outcome port. |
+| `error` | error | Load, marshal, execution, timeout or unmarshal failure, or an unknown port name; the *original* context, unchanged. |
+
+A script names the port it leaves on with an optional second return value:
+
+```lua
+function execute(ctx)
+    if blocked(ctx) then
+        ctx.response.status_code = 403
+        ctx.response.body = '{"error": "forbidden"}'
+        return ctx, "respond"     -- answer now; the upstream never runs
+    end
+    return ctx                    -- same as `return ctx, "success"`
+end
+```
+
+Nothing is inferred: a script that sets `ctx.response.status_code` and returns one value continues on `success`, and the upstream replaces that response. `respond` places no constraint on `ctx.response` either — returning it with nothing prepared answers with whatever the response holds. Only `"respond"` and `"success"` are accepted names; anything else is `LUA_BAD_PORT` (below).
 
 ## Errors
 
@@ -99,6 +126,7 @@ The node returns the Context with an error, so the graph engine routes through t
 | `LUA_MARSHAL_ERROR` | — | The Context could not be converted to a Lua table. |
 | `LUA_MISSING_EXECUTE` | — | No global `execute` function was found. |
 | `LUA_EXECUTION_ERROR` | — | The script raised a runtime error. |
-| `LUA_UNMARSHAL_ERROR` | — | The returned table did not fit the `ctx` shape; the message names the field. |
+| `LUA_UNMARSHAL_ERROR` | — | The returned table did not fit the `ctx` shape (the message names the field), or `execute` returned something that is not a table. |
+| `LUA_BAD_PORT` | — | The second return value was not `"respond"` or `"success"`; the message shows what was returned. The mutated context is discarded. |
 
 Syntax errors, a failing top level and a missing `execute` are caught at policy-compile time, not per request.

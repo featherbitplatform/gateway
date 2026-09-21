@@ -46,7 +46,7 @@ featherbit is a good fit when you want:
 - custom logic without recompiling, via Lua script nodes;
 - configuration changes that take effect without restarts (file watcher or `POST /api/config/reload`).
 
-:::note Planned
+:::note[Planned]
 Two capabilities from the project specification are not implemented yet and should not be relied on: the **Python scripting runtime** (Lua is the supported scripting runtime today) and the **`unpack` node**. See the [roadmap](../reference/roadmap.md).
 :::
 

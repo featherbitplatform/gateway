@@ -7,7 +7,7 @@ description: Ships access logs to SolarWinds Loggly in batches via the HTTP bulk
 
 Builds a JSON access-log entry for each request/response and ships accumulated batches to SolarWinds Loggly. Each batch is POSTed as newline-delimited JSON to `https://<host>/bulk/<customer_token>/tag/<tags>/`. Place this node in the response pipeline, **after the upstream node**.
 
-:::note Limitations
+:::note[Limitations]
 Only the HTTP/S bulk path is implemented; RFC5424 syslog framing, `severity`/`severity_map`, and a syslog-over-UDP transport are not. `severity` is accepted for config compatibility but ignored.
 :::
 

@@ -42,6 +42,8 @@ pub struct CompiledGraph {
     /// Why each non-capable upstream must buffer, for operator-visible reporting.
     buffering_reasons: Vec<BufferingReason>,
     cache_pair_warnings: Vec<CachePairWarning>,
+    /// Every `proxy-cache` half's backend, for invalidation by pair `id`.
+    cache_targets: Vec<crate::traffic::CacheTarget>,
 }
 
 /// Records that one node on an upstream's success path forces buffering.
@@ -359,6 +361,11 @@ impl CompiledGraph {
         &self.cache_pair_warnings
     }
 
+    /// Every `proxy-cache` half's backend, for invalidation by pair `id`.
+    pub fn cache_targets(&self) -> &[crate::traffic::CacheTarget] {
+        &self.cache_targets
+    }
+
     pub fn buffering_reasons(&self) -> &[BufferingReason] {
         &self.buffering_reasons
     }
@@ -549,6 +556,8 @@ pub fn compile_policy(
         );
     }
 
+    let cache_targets: Vec<_> = nodes.values().filter_map(|n| n.cache_target()).collect();
+
     Ok(CompiledGraph {
         nodes,
         edges,
@@ -560,6 +569,7 @@ pub fn compile_policy(
         stream_capable,
         buffering_reasons,
         cache_pair_warnings,
+        cache_targets,
     })
 }
 
@@ -633,18 +643,20 @@ fn validate_cache_pairs(policy_nodes: &[NodeConfig]) -> Result<Vec<CachePairWarn
             }
         }
 
-        // A half with no counterpart: report, do not refuse.
+        // A half with no counterpart: report, do not refuse. A group is
+        // complete only once it has both a lookup and a store -- a purge
+        // alone (nothing to purge for) is a lone half too.
         let has_lookup = group.iter().any(|h| h.role == "lookup");
         let has_store = group.iter().any(|h| h.role == "store");
-        if has_lookup != has_store {
-            let present = group
-                .iter()
-                .find(|h| h.role == if has_lookup { "lookup" } else { "store" })
-                .expect("the present half exists");
+        if !(has_lookup && has_store) {
+            // Whatever IS present (a lone lookup, a lone store, or a purge
+            // with nothing to purge for) is reported; the first missing role
+            // names what would complete it.
+            let present = group.first().expect("groups are non-empty");
             warnings.push(CachePairWarning {
                 cache_id: cache_id.to_string(),
                 present_node_id: present.node_id.to_string(),
-                missing_role: if has_lookup { "store" } else { "lookup" }.to_string(),
+                missing_role: if !has_lookup { "lookup" } else { "store" }.to_string(),
             });
         }
     }
@@ -676,11 +688,19 @@ fn validate_cache_pairs(policy_nodes: &[NodeConfig]) -> Result<Vec<CachePairWarn
 ///   that can run downstream of a stream-capable `upstream` without forcing
 ///   it to buffer: `client`, `opentelemetry`, `prometheus`, `proxy-rewrite`,
 ///   `request-id`, `response-rewrite`, `skywalking`, `traffic-label`,
-///   `zipkin`) ever returns `Err` from `execute` — every `return Err` in
-///   those nine plugins' source is in `from_config` (construction-time
-///   validation), never in `execute`. If a future change to any of them
-///   starts erroring from `execute`, this walk would not catch it, and
-///   nothing else currently enforces it either.
+///   `zipkin`, and `proxy-cache` in its `lookup` role only) ever returns
+///   `Err` from `execute` — every `return Err` in the first nine plugins'
+///   source is in `from_config` (construction-time validation), never in
+///   `execute`; `proxy-cache`'s `lookup` role does call a fallible backend
+///   (`ResponseCache::get`) from `execute`, but matches on the result and
+///   degrades a failure to a miss rather than propagating `Err`. This is
+///   exactly why `proxy-cache`'s `store` and `purge` roles do **not** opt
+///   out despite neither reading the response body: `store` because it
+///   reads it to cache it, and `purge` because it *can* return `Err` from
+///   `execute` on a failed backend, which this invariant forbids for an
+///   opt-out node. If a future change to any of these plugins starts
+///   erroring from `execute` where it previously didn't, this walk would
+///   not catch it, and nothing else currently enforces it either.
 ///
 /// Iterates `policy_nodes` (a `Vec`), not the `nodes` map, and visits each
 /// node's outgoing ports in sorted-name order: the same precedent as the
@@ -1132,6 +1152,7 @@ mod tests {
             stream_capable: HashSet::new(),
             buffering_reasons: Vec::new(),
             cache_pair_warnings: Vec::new(),
+            cache_targets: Vec::new(),
         }
     }
 
@@ -1341,6 +1362,7 @@ mod tests {
             stream_capable: HashSet::new(),
             buffering_reasons: Vec::new(),
             cache_pair_warnings: Vec::new(),
+            cache_targets: Vec::new(),
         };
         let mut ctx = test_context("/x");
         let boxed = Full::new(Bytes::from_static(b"partial-stream-bytes"))
@@ -1441,6 +1463,7 @@ mod tests {
             stream_capable: HashSet::new(),
             buffering_reasons: Vec::new(),
             cache_pair_warnings: Vec::new(),
+            cache_targets: Vec::new(),
         }
     }
 
@@ -1867,7 +1890,8 @@ mod tests {
             "edges": [
                 { "from": "listener.out", "to": "up.in" },
                 { "from": "up.success", "to": "s.in" },
-                { "from": "s.success", "to": "client.in" }
+                { "from": "s.success", "to": "client.in" },
+                { "from": "s.respond", "to": "client.in" }
             ]
         }));
 
@@ -1947,6 +1971,72 @@ mod tests {
         assert_eq!(reasons[0].node_type, "response-rewrite");
     }
 
+    /// A `proxy-cache` purge node on the success path must force buffering,
+    /// even though `Role::Purge` reads nothing from the response it passes
+    /// through: it *can* return `Err` from `execute` on a failed backend, and
+    /// `infer_stream_capability`'s doc comment explains why that disqualifies
+    /// it from opting out — an error edge from it could route to a node that
+    /// writes `response.body` directly while a stream from the upstream is
+    /// still live. Both `success` and `hit` are mandatory wiring on every
+    /// `proxy-cache` node regardless of phase (the same `PortSpec` as
+    /// lookup/store), even though a purge never emits `hit`, so both are
+    /// wired to `client.in` here.
+    #[test]
+    fn test_proxy_cache_purge_node_forces_buffering_because_it_can_fail() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "purge", "type": "proxy-cache",
+                  "config": { "phase": "purge", "id": "products", "policy": "local" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "purge.in" },
+                { "from": "purge.success", "to": "client.in" },
+                { "from": "purge.hit", "to": "client.in" }
+            ]
+        }));
+
+        assert!(!graph.is_stream_capable("up"));
+        let reasons = graph.buffering_reasons();
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].upstream_node_id, "up");
+        assert_eq!(reasons[0].blocked_by_node_id, "purge");
+        assert_eq!(reasons[0].node_type, "proxy-cache");
+    }
+
+    /// A `proxy-cache` `lookup` node is normally placed *before* `upstream`,
+    /// but nothing stops it from being wired after one too (unusual, but
+    /// legal). Placed there, it must NOT force buffering: this pins the
+    /// `Lookup`-only opt-out from `test_proxy_cache_purge_node_forces_
+    /// buffering_because_it_can_fail`'s sibling case, proving it is the role
+    /// -- not just the node type -- that decides.
+    #[test]
+    fn test_proxy_cache_lookup_node_after_upstream_does_not_force_buffering() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "look", "type": "proxy-cache",
+                  "config": { "phase": "lookup", "id": "products", "policy": "local" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "look.in" },
+                { "from": "look.success", "to": "client.in" },
+                { "from": "look.hit", "to": "client.in" }
+            ]
+        }));
+
+        assert!(graph.is_stream_capable("up"));
+        assert!(graph.buffering_reasons().is_empty());
+    }
+
     /// Two independent policies worth of `upstream` in one graph (a
     /// `condition` node routes to one or the other), one capable and one
     /// blocked — proving each upstream is judged on its own success path,
@@ -1972,7 +2062,8 @@ mod tests {
                 { "from": "cond.false", "to": "up2.in" },
                 { "from": "up1.success", "to": "client.in" },
                 { "from": "up2.success", "to": "s.in" },
-                { "from": "s.success", "to": "client.in" }
+                { "from": "s.success", "to": "client.in" },
+                { "from": "s.respond", "to": "client.in" }
             ]
         }));
 
@@ -2435,5 +2526,117 @@ mod tests {
         assert_eq!(warnings[0].cache_id, "orphan");
         assert_eq!(warnings[0].present_node_id, "look");
         assert_eq!(warnings[0].missing_role, "store");
+    }
+
+    /// The breaking change, kept visible: PortSpec is per node type, so a
+    /// script node with no `respond` edge no longer compiles. The message
+    /// names the port so the fix is obvious.
+    #[tokio::test]
+    async fn test_a_script_node_must_wire_respond() {
+        let err = compile_test_policy_err(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "s", "type": "script",
+                  "config": { "runtime": "lua", "inline": "function execute(ctx) return ctx end" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "s.in" },
+                { "from": "s.success", "to": "client.in" }
+            ]
+        }));
+        assert!(err.contains("respond") && err.contains("'s'"), "{err}");
+    }
+
+    /// End to end through the graph: the script's own 403 reaches the
+    /// client because the node left on `respond`, skipping the upstream
+    /// that would otherwise have replaced it. A browser UA takes success and
+    /// gets the upstream's body -- the control that proves the branch.
+    #[tokio::test]
+    async fn test_a_script_taking_respond_short_circuits_the_upstream() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "block", "type": "script", "config": { "runtime": "lua", "inline":
+                    "function execute(ctx)\n  local ua = (ctx.request.headers[\"user-agent\"] or {})[1] or \"\"\n  if string.find(string.lower(ua), \"scrapy\") then\n    ctx.response.status_code = 403\n    ctx.response.body = \"blocked\"\n    return ctx, \"respond\"\n  end\n  return ctx\nend" } },
+                { "id": "up", "type": "mocking", "config": { "response_status": 200, "response_example": "proxied" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "block.in" },
+                { "from": "block.respond", "to": "client.in" },
+                { "from": "block.success", "to": "up.in" },
+                { "from": "up.success", "to": "client.in" }
+            ]
+        }));
+
+        let mut bot = test_context("/x");
+        bot.request
+            .headers
+            .insert("user-agent".to_string(), vec!["scrapy/2.0".to_string()]);
+        let out = graph.execute(bot).await;
+        assert_eq!(out.response.status_code, 403);
+        assert_eq!(out.response.body, bytes::Bytes::from_static(b"blocked"));
+
+        let mut browser = test_context("/x");
+        browser
+            .request
+            .headers
+            .insert("user-agent".to_string(), vec!["Mozilla/5.0".to_string()]);
+        let out = graph.execute(browser).await;
+        assert_eq!(out.response.status_code, 200);
+        assert_eq!(out.response.body, bytes::Bytes::from_static(b"proxied"));
+    }
+
+    /// A purge half is held to the same agreement rule as the other two: a
+    /// purge pointed at a different backend than its pair clears nothing.
+    #[tokio::test]
+    async fn test_a_purge_half_split_from_its_pair_is_rejected() {
+        let err = compile_test_policy_err(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "look", "type": "proxy-cache",
+                  "config": { "phase": "lookup", "id": "products", "policy": "local" } },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "drop", "type": "proxy-cache",
+                  "config": { "phase": "purge", "id": "products", "policy": "redis", "store": "s" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "look.in" },
+                { "from": "look.success", "to": "up.in" },
+                { "from": "look.hit", "to": "client.in" },
+                { "from": "up.success", "to": "drop.in" },
+                { "from": "drop.success", "to": "client.in" },
+                { "from": "drop.hit", "to": "client.in" }
+            ]
+        }));
+        assert!(err.contains("products") && err.contains("drop"), "{err}");
+    }
+
+    /// A purge with nothing to purge for is useless but not wrong -- reported
+    /// like any other lone half.
+    #[tokio::test]
+    async fn test_a_lone_purge_half_is_reported() {
+        let graph = compile_test_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "h", "port": 80 }] } },
+                { "id": "drop", "type": "proxy-cache",
+                  "config": { "phase": "purge", "id": "orphan", "policy": "local" } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "up.in" },
+                { "from": "up.success", "to": "drop.in" },
+                { "from": "drop.success", "to": "client.in" },
+                { "from": "drop.hit", "to": "client.in" }
+            ]
+        }));
+        let w = graph.cache_pair_warnings();
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].present_node_id, "drop");
     }
 }

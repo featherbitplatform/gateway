@@ -1,0 +1,43 @@
+# Policies that remember things: a shared response cache, write-through
+# invalidation and a counter, all over one declared redis store.
+#
+#   docker compose -f examples/redis-stores/compose.yaml up
+#   curl -si http://localhost:8080/api/users | grep -i featherbit-cache-status  # MISS
+#   curl -si http://localhost:8080/api/users | grep -i featherbit-cache-status  # HIT
+#   curl -X POST http://localhost:8080/purge                                    # phase: purge
+#   curl -si http://localhost:8080/api/users | grep -i featherbit-cache-status  # MISS again
+#   curl -u admin:admin -X DELETE http://localhost:9090/api/cache/api          # the same, from the Admin API
+#   curl -si http://localhost:8080/visits | grep -i x-visit-count               # 1, 2, 3, ...
+#
+# Every node references the store by name; a second gateway replica pointed at
+# the same redis would share the cache and the counter.
+
+services:
+  gateway:
+    image: featherbit/featherbit:${FEATHERBIT_TAG:-latest}
+    command:
+      - --system-config=/etc/gateway/system.yaml
+      - --gateway-config=/etc/gateway/gateway.yaml
+    ports:
+      - "8080:8080" # data plane
+      - "9090:9090" # admin API + web UI (admin/admin)
+    volumes:
+      - ./config:/etc/gateway:ro
+    environment:
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: admin
+      UPSTREAM_HOST: whoami
+      UPSTREAM_PORT: "80"
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: info
+    depends_on:
+      - whoami
+      - redis
+
+  whoami:
+    image: traefik/whoami:v1.10
+
+  # Swap for valkey/valkey:8 if you prefer; the store's `type: valkey` is an
+  # alias for the same client.
+  redis:
+    image: redis:7

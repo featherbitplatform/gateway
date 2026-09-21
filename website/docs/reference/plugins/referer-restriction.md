@@ -37,7 +37,7 @@ The Referer value must be an `http://` or `https://` URL; the host part is extra
 
 A rejection writes a 403 JSON response (`{"message": ...}`, `content-type: application/json`) onto `context.response` and exits through the `denied` port. Permitted requests pass through the `success` port untouched; the plugin does not write to `context.message`.
 
-:::note Behavior notes
+:::note[Behavior notes]
 The Referer URL parser is a small built-in (scheme + host extraction); it does not accept IPv6 literal hosts.
 :::
 

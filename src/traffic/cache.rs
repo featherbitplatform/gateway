@@ -29,6 +29,14 @@ pub struct CachedResponse {
 #[derive(Debug)]
 pub struct CacheError(pub String);
 
+/// The key prefix shared by every entry a `proxy-cache` pair writes.
+///
+/// `proxy-cache` derives keys as `{id}\u{1}{component}\u{1}…`, so this prefix
+/// selects a pair exactly: `products\u{1}` matches nothing of `products-v2`.
+pub(crate) fn pair_prefix(id: &str) -> String {
+    format!("{id}\u{1}")
+}
+
 impl std::fmt::Display for CacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "response cache error: {}", self.0)
@@ -47,6 +55,12 @@ pub trait ResponseCache: Send + Sync {
     async fn get(&self, key: &str) -> Result<Option<CachedResponse>, CacheError>;
     async fn put(&self, key: &str, entry: &CachedResponse, ttl: Duration)
         -> Result<(), CacheError>;
+
+    /// Removes every entry belonging to the pair `id` and returns how many.
+    ///
+    /// "Belonging to" means the key begins with [`pair_prefix`]. `Ok(0)` is a
+    /// normal answer: the pair had nothing cached.
+    async fn purge(&self, id: &str) -> Result<u64, CacheError>;
 }
 
 /// Entries the local cache keeps before it starts evicting.
@@ -190,6 +204,20 @@ impl ResponseCache for LocalResponseCache {
         self.entries
             .insert(key.to_string(), (entry.clone(), Instant::now() + ttl));
         Ok(())
+    }
+
+    async fn purge(&self, id: &str) -> Result<u64, CacheError> {
+        let prefix = pair_prefix(id);
+        let mut removed = 0u64;
+        self.entries.retain(|key, _| {
+            if key.starts_with(&prefix) {
+                removed += 1;
+                false
+            } else {
+                true
+            }
+        });
+        Ok(removed)
     }
 }
 
@@ -358,6 +386,115 @@ mod tests {
                 >= 1,
             "a live-entry eviction at capacity must be counted"
         );
+    }
+
+    /// The prefix boundary is the whole safety argument: purging `products`
+    /// must not touch `products-v2`, whose keys share every byte up to the
+    /// separator.
+    #[tokio::test]
+    async fn test_local_purge_removes_only_the_named_pair() {
+        let cache = LocalResponseCache::default();
+        let ttl = Duration::from_secs(60);
+        cache
+            .put("products\u{1}/a", &response("a"), ttl)
+            .await
+            .unwrap();
+        cache
+            .put("products\u{1}/b", &response("b"), ttl)
+            .await
+            .unwrap();
+        cache
+            .put("products-v2\u{1}/a", &response("v2"), ttl)
+            .await
+            .unwrap();
+
+        let removed = cache.purge("products").await.unwrap();
+
+        assert_eq!(removed, 2);
+        assert!(cache.get("products\u{1}/a").await.unwrap().is_none());
+        assert!(cache.get("products\u{1}/b").await.unwrap().is_none());
+        assert!(
+            cache.get("products-v2\u{1}/a").await.unwrap().is_some(),
+            "a sibling pair sharing a textual prefix must survive"
+        );
+    }
+
+    /// The count must reflect exactly the entries removed, not a
+    /// `before - after` delta taken around the retain: a concurrent `put`
+    /// landing in a shard the shard-by-shard retain has not yet visited grows
+    /// `len()` mid-purge, so a before/after diff undercounts (or, given
+    /// enough concurrent insertions, underflows the `usize` subtraction
+    /// outright, panicking in debug and wrapping to a huge garbage count in
+    /// release). Counting inside the retain closure itself is immune: it only
+    /// ever sees the entries it actually drops.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn test_local_purge_counts_removed_entries_not_a_before_after_delta() {
+        let cache = std::sync::Arc::new(LocalResponseCache::default());
+        let ttl = Duration::from_secs(60);
+
+        // A large filler dataset -- inserted directly, bypassing `put`'s
+        // capacity bookkeeping, which is irrelevant here -- makes the
+        // retain's shard-by-shard scan below take long enough in real wall
+        // time for a concurrent writer to land insertions in shards it has
+        // not yet visited: the exact window the old before/after diff got
+        // wrong.
+        for i in 0..300_000u64 {
+            cache.entries.insert(
+                format!("filler\u{1}/{i}"),
+                (response("f"), Instant::now() + ttl),
+            );
+        }
+        for i in 0..3 {
+            cache.entries.insert(
+                format!("products\u{1}/{i}"),
+                (response("p"), Instant::now() + ttl),
+            );
+        }
+        for i in 0..2 {
+            cache.entries.insert(
+                format!("other\u{1}/{i}"),
+                (response("o"), Instant::now() + ttl),
+            );
+        }
+
+        // A real OS thread, writing straight into the map (bypassing the
+        // async `put` wrapper, which adds only overhead here), released at
+        // the same instant as the purge below via a barrier so it genuinely
+        // races the retain rather than merely interleaving at `.await`
+        // points on a cooperative scheduler.
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writer = {
+            let cache = cache.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                let entry = (response("c"), Instant::now() + Duration::from_secs(600));
+                for i in 0..100_000u64 {
+                    cache
+                        .entries
+                        .insert(format!("concurrent\u{1}/{i}"), entry.clone());
+                }
+            })
+        };
+
+        barrier.wait();
+        let removed = cache.purge("products").await.unwrap();
+        writer.join().unwrap();
+
+        assert_eq!(
+            removed, 3,
+            "must count exactly the 3 pair entries removed, regardless of \
+             concurrent unrelated writes racing the purge"
+        );
+        assert!(cache.get("other\u{1}/0").await.unwrap().is_some());
+        assert!(cache.get("other\u{1}/1").await.unwrap().is_some());
+    }
+
+    /// Purging a pair that cached nothing is a normal answer, not a failure.
+    #[tokio::test]
+    async fn test_local_purge_of_an_empty_pair_is_zero_not_an_error() {
+        let cache = LocalResponseCache::default();
+        assert_eq!(cache.purge("nothing-here").await.unwrap(), 0);
     }
 
     #[tokio::test]

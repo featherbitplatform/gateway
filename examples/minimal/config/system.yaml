@@ -1,0 +1,16 @@
+# Global settings. Not hot-reloaded — changes here need a container restart.
+
+listener:
+  bind: "0.0.0.0"
+  port: ${GATEWAY_PORT:-8080}
+
+logging:
+  level: ${LOG_LEVEL:-info}
+  format: text
+
+admin:
+  bind: "0.0.0.0"
+  port: ${ADMIN_PORT:-9090}
+  username: ${ADMIN_USER:-admin}
+  password: ${ADMIN_PASSWORD:-admin}
+  ui_enabled: true

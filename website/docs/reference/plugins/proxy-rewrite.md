@@ -11,7 +11,7 @@ Mutates either `context.request` or `context.response`, selected by `phase`: str
 
 All keys are optional.
 
-:::caution Not the same header keys as `response-rewrite`
+:::caution[Not the same header keys as `response-rewrite`]
 `proxy-rewrite` uses top-level `add_headers` / `remove_headers`. The sibling [`response-rewrite`](./response-rewrite.md) instead takes a single `headers` object with `add` / `set` / `remove`. Passing `headers` here (or `add_headers` there) is now **rejected at load** with a message pointing to the right shape, rather than being silently ignored.
 :::
 

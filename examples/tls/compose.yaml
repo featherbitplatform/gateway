@@ -1,6 +1,6 @@
 # TLS termination with a self-signed certificate generated at startup.
 #
-#   docker compose -f examples/compose/tls/compose.yaml up
+#   docker compose -f examples/tls/compose.yaml up
 #   curl -k https://localhost:8443/api/users
 #
 # The `certs` service generates the pair into a named volume on first run and

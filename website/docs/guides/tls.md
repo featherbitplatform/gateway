@@ -63,7 +63,7 @@ services:
 
 `chmod 644 key.pem` also works, but makes the private key readable by every user
 on the host — fine for a throwaway `CN=localhost` pair, not for anything else.
-The [`tls` compose example](https://github.com/featherbitplatform/gateway/tree/main/examples/compose/tls)
+The [`tls` compose example](https://github.com/featherbitplatform/gateway/tree/main/examples/tls)
 generates a correctly-owned pair for you.
 :::
 
@@ -123,7 +123,7 @@ Certificate revocation (CRL/OCSP) is not yet implemented.
 
 Certificates are **hot-reloaded** — no configuration or restart needed. Both the data-plane and Admin listeners watch their cert/key files (and their parent directory, so Kubernetes secret symlink swaps and cert-manager/Let's Encrypt renewals are picked up). When the files change, the new certificate is served on **new** connections within ~1 s; in-flight connections are unaffected. A bad or half-written cert during rotation is logged and the current certificate is kept — TLS is never dropped mid-rotation.
 
-See [`examples/system-tls.yaml`](https://github.com/) for a complete example.
+See the [`tls` example](https://github.com/featherbitplatform/gateway/tree/main/examples/tls) for a complete, runnable `system.yaml`.
 
 ## Automatic certificates (ACME)
 

@@ -3,9 +3,10 @@
 //! One [`RedisStoreClient`] per `stores:` entry: env placeholders in `url` /
 //! `password` resolve here (point of use — the stored config stays raw), the
 //! underlying connection is a single auto-reconnecting multiplexed
-//! `ConnectionManager` created lazily on first use, and a resolved-config
-//! fingerprint lets [`super::StoreRegistry::rebuild`] keep the connection
-//! across unrelated config reloads.
+//! `ConnectionManager` created lazily on first use and handed out as a
+//! [`StoreConn`] that bounds every command by `connect_budget`, and a
+//! resolved-config fingerprint lets [`super::StoreRegistry::rebuild`] keep
+//! the connection across unrelated config reloads.
 
 use std::time::Duration;
 
@@ -17,6 +18,75 @@ use tokio::sync::OnceCell;
 
 use crate::config::interpolate_env;
 use crate::config::StoreConfig;
+
+/// The connection handed to every store consumer.
+///
+/// A thin wrapper over the shared `ConnectionManager` whose every command is
+/// bounded by the store's `connect_budget`. The manager alone bounds only the
+/// *first* connection: once the store goes away mid-life, each command awaits
+/// the manager's shared reconnect future -- six exponentially backed-off
+/// attempts, each up to `connect_timeout` -- and nothing in the crate caps
+/// that total. Measured against a stopped container, the second request
+/// after an outage held its worker for ~55s before the `503` the design
+/// promises. The budget is the one figure an operator can reason about, so it
+/// bounds every wait for the store, not just the opening one.
+#[derive(Clone)]
+pub struct StoreConn {
+    inner: redis::aio::ConnectionManager,
+    budget: Duration,
+    name: String,
+}
+
+impl StoreConn {
+    fn gave_up(&self) -> redis::RedisError {
+        redis::RedisError::from((
+            redis::ErrorKind::IoError,
+            "store operation gave up",
+            format!(
+                "store '{}': no connection within {}ms (connect_budget_ms)",
+                self.name,
+                self.budget.as_millis()
+            ),
+        ))
+    }
+}
+
+impl redis::aio::ConnectionLike for StoreConn {
+    fn req_packed_command<'a>(
+        &'a mut self,
+        cmd: &'a redis::Cmd,
+    ) -> redis::RedisFuture<'a, redis::Value> {
+        Box::pin(async move {
+            match tokio::time::timeout(self.budget, self.inner.req_packed_command(cmd)).await {
+                Ok(result) => result,
+                Err(_) => Err(self.gave_up()),
+            }
+        })
+    }
+
+    fn req_packed_commands<'a>(
+        &'a mut self,
+        cmd: &'a redis::Pipeline,
+        offset: usize,
+        count: usize,
+    ) -> redis::RedisFuture<'a, Vec<redis::Value>> {
+        Box::pin(async move {
+            match tokio::time::timeout(
+                self.budget,
+                self.inner.req_packed_commands(cmd, offset, count),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(self.gave_up()),
+            }
+        })
+    }
+
+    fn get_db(&self) -> i64 {
+        self.inner.get_db()
+    }
+}
 
 /// Result of a connectivity check (`POST /api/stores/{name}/ping`).
 pub struct PingInfo {
@@ -125,8 +195,9 @@ impl RedisStoreClient {
     }
 
     /// The shared multiplexed connection; established on first use and
-    /// auto-reconnecting thereafter.
-    pub async fn conn(&self) -> Result<redis::aio::ConnectionManager, String> {
+    /// auto-reconnecting thereafter. Every command on it is bounded by
+    /// `connect_budget` -- see [`StoreConn`].
+    pub async fn conn(&self) -> Result<StoreConn, String> {
         let manager = self
             .conn
             .get_or_try_init(|| async {
@@ -159,7 +230,11 @@ impl RedisStoreClient {
             })
             .await
             .map_err(|e| format!("store '{}': connect: {}", self.name, e))?;
-        Ok(manager.clone())
+        Ok(StoreConn {
+            inner: manager.clone(),
+            budget: self.connect_budget,
+            name: self.name.clone(),
+        })
     }
 
     /// `PING` + server version, for the Admin API connectivity check.
@@ -329,5 +404,110 @@ type: redis
 url: redis://127.0.0.1:6379
 ");
         assert_eq!(c.connect_budget_ms, 5000);
+    }
+
+    /// A TCP relay in front of the live redis that the test can kill, so the
+    /// gateway's connection sees the store vanish mid-life -- the case
+    /// `test_connect_gives_up_inside_its_budget` cannot reach, because it
+    /// never gets a connection in the first place.
+    struct KillableProxy {
+        port: u16,
+        relays: std::sync::Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+        accept: tokio::task::JoinHandle<()>,
+    }
+
+    impl KillableProxy {
+        async fn start(target: String) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let relays = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let relays_for_accept = relays.clone();
+            let accept = tokio::spawn(async move {
+                loop {
+                    let Ok((mut inbound, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let target = target.clone();
+                    let task = tokio::spawn(async move {
+                        let Ok(mut outbound) = tokio::net::TcpStream::connect(target).await else {
+                            return;
+                        };
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                    });
+                    relays_for_accept.lock().unwrap().push(task);
+                }
+            });
+            Self {
+                port,
+                relays,
+                accept,
+            }
+        }
+
+        /// Stops accepting and aborts every relay, which drops both ends of
+        /// each relayed socket: from the client's side the store has gone
+        /// away and its port now refuses connections.
+        fn kill(self) {
+            self.accept.abort();
+            for t in self.relays.lock().unwrap().drain(..) {
+                t.abort();
+            }
+        }
+    }
+
+    /// The budget must bound every store operation, not just the first
+    /// connection. After an outage the connection manager reconnects with
+    /// six exponentially backed-off attempts; a command issued meanwhile
+    /// awaits that whole schedule -- measured at ~55s against a stopped
+    /// container -- long after `connect_budget_ms` says the store should
+    /// have been given up on.
+    ///
+    /// Live-backend test; skipped unless FEATHERBIT_TEST_REDIS_URL is set.
+    #[tokio::test]
+    async fn test_a_command_during_reconnect_gives_up_inside_its_budget() {
+        let Ok(url) = std::env::var("FEATHERBIT_TEST_REDIS_URL") else {
+            eprintln!("skipping: FEATHERBIT_TEST_REDIS_URL not set");
+            return;
+        };
+        let target = url
+            .trim_start_matches("redis://")
+            .trim_end_matches('/')
+            .to_string();
+        let proxy = KillableProxy::start(target).await;
+        let port = proxy.port;
+
+        let c = cfg(&format!(
+            "name: s1
+type: redis
+url: redis://127.0.0.1:{port}
+connect_timeout_ms: 200
+connect_budget_ms: 300
+"
+        ));
+        let client = RedisStoreClient::build(&c).unwrap();
+        let mut conn = client.conn().await.expect("connect through the relay");
+        let pong: String = redis::cmd("PING").query_async(&mut conn).await.unwrap();
+        assert_eq!(pong, "PONG");
+
+        proxy.kill();
+
+        // The first command after the outage fails fast on the dead socket
+        // and starts the reconnect; the second is the one that used to wait
+        // out the manager's entire retry schedule.
+        let _ = redis::cmd("PING")
+            .query_async::<String>(&mut conn)
+            .await
+            .expect_err("the socket is gone");
+        let started = std::time::Instant::now();
+        let err = redis::cmd("PING")
+            .query_async::<String>(&mut conn)
+            .await
+            .expect_err("nothing listens on the relay port any more");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "a command during reconnect must give up inside connect_budget_ms, not wait out the retry schedule: took {elapsed:?} ({err})"
+        );
     }
 }

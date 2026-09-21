@@ -1,3 +1,9 @@
+# Routes and policies. Hot-reloaded: edit this file on the host and the running
+# gateway picks the change up without a restart.
+#
+# The `script` nodes point at /etc/gateway/plugins, where compose.yaml mounts
+# ../plugins. See ../plugins/README.md for what each script does.
+
 routes:
   - name: scripted-api
     match:
@@ -19,7 +25,9 @@ policies:
           runtime: lua
           source: /etc/gateway/plugins/add-request-id.lua
 
-      # Lua: block known bot user agents
+      # Lua: reject known bot user agents. The script prepares the 403 and
+      # returns `ctx, "respond"`, so the node leaves on `respond` (wired to
+      # client below) and the upstream never runs.
       - id: block-bots
         type: script
         config:
@@ -45,8 +53,8 @@ policies:
         type: upstream
         config:
           targets:
-            - host: ${ECHO_BACKEND_HOST:-localhost}
-              port: ${ECHO_BACKEND_PORT:-3000}
+            - host: ${UPSTREAM_HOST:-whoami}
+              port: ${UPSTREAM_PORT:-80}
 
       # Lua: stop the response timer, add X-Response-Time header
       - id: timer-end
@@ -55,13 +63,6 @@ policies:
           runtime: lua
           source: /etc/gateway/plugins/response-timer.lua
 
-      # Python: inject security headers and wrap response in envelope
-      # (uncomment when Python runtime is available)
-      # - id: transform-response
-      #   type: script
-      #   config:
-      #     runtime: python
-      #     source: /etc/gateway/plugins/response_transformer.py
 
       - id: error-handler
         type: error-handler
@@ -75,16 +76,27 @@ policies:
     edges:
       - from: listener.out
         to: request-id.in
+      # mandatory on every script node; this script never takes it
+      - from: request-id.respond
+        to: client.in
       - from: request-id.success
         to: block-bots.in
+      - from: block-bots.respond
+        to: client.in
       - from: block-bots.success
         to: timer-start.in
+      # mandatory on every script node; this script never takes it
+      - from: timer-start.respond
+        to: client.in
       - from: timer-start.success
         to: rewrite.in
       - from: rewrite.success
         to: backend.in
       - from: backend.success
         to: timer-end.in
+      # mandatory on every script node; this script never takes it
+      - from: timer-end.respond
+        to: client.in
       - from: timer-end.success
         to: client.in
       - from: backend.error

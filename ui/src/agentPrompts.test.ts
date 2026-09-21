@@ -30,7 +30,7 @@ describe('scope tool lists', () => {
     expect(READ_TOOLS.length).toBeGreaterThan(10);
     expect(WRITE_TOOLS.length).toBeGreaterThan(5);
     for (const t of WRITE_TOOLS) expect(READ_TOOLS).not.toContain(t);
-    for (const t of WRITE_TOOLS) expect(/^(put_|delete_|reload_config$)/.test(t)).toBe(true);
+    for (const t of WRITE_TOOLS) expect(/^(put_|delete_|purge_|reload_config$)/.test(t)).toBe(true);
   });
 });
 

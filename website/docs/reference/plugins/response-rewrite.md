@@ -11,7 +11,7 @@ Rewrites `context.response` before it reaches the client: forces a status code, 
 
 All keys are optional.
 
-:::caution Not the same header keys as `proxy-rewrite`
+:::caution[Not the same header keys as `proxy-rewrite`]
 `response-rewrite` takes a single `headers` object with `add` / `set` / `remove` sub-keys. The sibling [`proxy-rewrite`](./proxy-rewrite.md) instead uses top-level `add_headers` / `remove_headers`. Passing `add_headers` here (or `headers` there) is now **rejected at load** with a message pointing to the right shape, rather than being silently ignored.
 :::
 
