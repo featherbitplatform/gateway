@@ -251,7 +251,7 @@ Changes via the API take effect immediately (hot-reload).
 
 ## Web UI
 
-Open `http://localhost:9090` to access the node-graph editor. The UI is embedded in the binary — no separate web server needed.
+Open `http://localhost:9090` and sign in with the admin credentials (`admin.username`/`admin.password`, default `admin`/`admin`) to access the node-graph editor. The UI is embedded in the binary — no separate web server needed.
 
 - Select a route from the sidebar to open its routing policy
 - Drag plugins from the drawer onto the canvas

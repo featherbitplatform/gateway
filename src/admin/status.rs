@@ -98,7 +98,7 @@ async fn readyz(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
 /// `GET /api/status` — gateway version plus route and policy counts.
 ///
 /// ```json
-/// { "version": "0.1.0", "routes": 3, "policies": 2 }
+/// { "version": "0.1.0", "routes": 3, "policies": 2, "default_credentials": false }
 /// ```
 async fn status(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let routes = state.routes.read().await;
@@ -107,6 +107,12 @@ async fn status(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
         "version": env!("CARGO_PKG_VERSION"),
         "routes": routes.len(),
         "policies": gw.policies.len(),
+        // The UI warns while the guessable shipped default is in use.
+        "default_credentials": state
+            .system
+            .admin
+            .as_ref()
+            .is_some_and(|a| a.username == "admin" && a.password == "admin"),
     }))
 }
 

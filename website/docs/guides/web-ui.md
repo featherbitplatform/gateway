@@ -21,7 +21,7 @@ open http://localhost:9090
 
 The UI is compiled into the binary at build time (`ui/dist/`, embedded via `rust-embed`) and served by the admin server as the fallback for any path not matched by the admin API. Unknown paths fall back to `index.html` so client-side routes resolve within the SPA.
 
-The static assets themselves are served **without** authentication; the SPA's own calls to the admin API carry HTTP Basic credentials (see [Admin API](./admin-api.md)).
+The static assets themselves are served **without** authentication, but the editor is not: opening the UI shows a **sign-in screen** that asks for the admin API credentials (`admin.username`/`admin.password`, see [Admin API](./admin-api.md)). They are checked against the gateway before being kept, then sent as HTTP Basic on every call. By default they last for the browser tab (`sessionStorage`); tick **Remember me on this browser** to keep them in `localStorage` instead. **Sign out** in the sidebar footer forgets them. If the gateway stops accepting them mid-session (the password was changed), the same form opens over the editor — unsaved canvas edits stay put, and after signing in again you retry the action that failed. The footer also warns while the gateway still runs on the default `admin`/`admin`.
 
 ## Editor workflow
 

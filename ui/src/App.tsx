@@ -30,6 +30,7 @@ import { parseApiError } from './apiError';
 import { writeToClipboard } from './clipboard';
 import { withMcpHint, mcpEndpoint } from './agentPrompts';
 import { useChat } from './chat/useChat';
+import { onSignedIn } from './auth';
 import type {
   Route,
   Policy,
@@ -218,7 +219,10 @@ export default function App() {
       setScripts(sc);
       setError(null);
     } catch (e) {
-      setError(`Failed to connect to gateway: ${e}`);
+      // A 401 is not a connection problem: the sign-in overlay (LoginGate)
+      // is already up, and replacing the editor with an error screen here
+      // would throw away unsaved canvas edits behind it.
+      if (!String(e).includes('401:')) setError(`Failed to connect to gateway: ${e}`);
     }
     // Debug settings are advisory: a failure here must not block the editor,
     // so this is fetched separately from the required data above.
@@ -250,6 +254,9 @@ export default function App() {
   useEffect(() => {
     Promise.resolve().then(loadData);
   }, [loadData]);
+
+  // Re-fetch after signing in again from the expired-session overlay.
+  useEffect(() => onSignedIn(() => void loadData()), [loadData]);
 
   const selectedPolicy = (() => {
     const route = routes.find((r) => r.name === selectedRoute);

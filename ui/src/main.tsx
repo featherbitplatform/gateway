@@ -1,7 +1,8 @@
 /**
  * Application entry point: resolves the color theme (dark-first, with a
  * `localStorage` override and an OS light-mode fallback) before first
- * paint, then mounts {@link App} into `#root` under React StrictMode.
+ * paint, then mounts {@link App} into `#root` under React StrictMode,
+ * behind {@link LoginGate} (the editor mounts only once signed in).
  *
  * {@link EditorActionsProvider} wraps `App` here (rather than inside it)
  * because `App` itself calls `useEditorActions()` to bridge the command
@@ -15,6 +16,7 @@ import { createRoot } from 'react-dom/client';
 import './index.css';
 import App from './App';
 import { EditorActionsProvider } from './components/EditorActionsProvider';
+import { LoginGate } from './components/LoginScreen';
 
 // Dark-first: dark is the default theme, light is opt-in
 const savedTheme = localStorage.getItem('theme');
@@ -24,8 +26,10 @@ if (savedTheme === 'light' || (!savedTheme && window.matchMedia('(prefers-color-
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <EditorActionsProvider>
-      <App />
-    </EditorActionsProvider>
+    <LoginGate>
+      <EditorActionsProvider>
+        <App />
+      </EditorActionsProvider>
+    </LoginGate>
   </StrictMode>
 );
