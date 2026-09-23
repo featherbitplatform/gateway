@@ -83,6 +83,13 @@ export default defineConfig({
   use: {
     baseURL: ADMIN_URL,
     httpCredentials: {username: ADMIN_USER, password: ADMIN_PASS},
+    // Every page starts signed in, as if "Remember me" had been ticked: the
+    // UI has no built-in credentials and would otherwise show its sign-in
+    // screen. tests/login.spec.ts clears this to exercise that screen.
+    storageState: {
+      cookies: [],
+      origins: [{origin: ADMIN_URL, localStorage: [{name: 'gw_credentials', value: `${ADMIN_USER}:${ADMIN_PASS}`}]}],
+    },
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

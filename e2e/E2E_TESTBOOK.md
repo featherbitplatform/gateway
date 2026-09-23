@@ -512,6 +512,19 @@ The fixture `system.yaml` enables `admin.mcp` for the whole run with a `read` an
 | E2E-MCP-02 | **Browser.** Footer → **Agent** | The dialog shows the endpoint `http://127.0.0.1:19091/mcp`, a Claude Code snippet with `<TOKEN>`, the prompt library (`why_this_port`), and a scope explainer listing every tool name returned by `tools/list` |
 | E2E-MCP-03 | **Browser.** Sandbox-run the first fixture policy, open the trace in Debug, check **Troubleshoot with AI** is offered, click **Copy prompt** | Toast "Copied to clipboard"; the clipboard text is the `troubleshoot_trace` prompt: it starts with `# Troubleshoot \`GET /\``, asks to validate with `validate_policy`, inlines the policy name, and ends with the MCP hint line |
 
+## Sign-in — `tests/login.spec.ts`
+
+Every other spec starts its pages signed in (`storageState` in
+`playwright.config.ts` seeds remembered credentials); these clear it.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-LOGIN-01 | Open the UI with nothing stored; request `/api/status` with and without `X-Featherbit-Client` | Sign-in form shown, no route list; the marked request gets a 401 **without** `WWW-Authenticate` (no browser dialog), the unmarked one keeps the Basic challenge |
+| E2E-LOGIN-02 | Sign in with a wrong password | "Wrong username or password.", still on the form, nothing stored |
+| E2E-LOGIN-03 | Sign in with the right credentials, then reload | Editor loads with "Signed in as admin" and the default-credentials warning; credentials in `sessionStorage` only; the reload stays signed in |
+| E2E-LOGIN-04 | Sign in with **Remember me**, then **Sign out** and reload | Credentials in `localStorage` only; Sign out returns to the form and clears both storages, and it stays signed out after reload |
+| E2E-LOGIN-05 | With a policy open, make the next call return 401, then sign in on the overlay | "Sign in again" overlays the editor with the username prefilled; the canvas stays mounted throughout and the overlay closes after signing in |
+
 ## Chat (`tests/chat.spec.ts`)
 
 The in-UI agent chat. The OpenAI-compatible provider is a `page.route` fake under the admin origin (`/fake-openai/v1`), scripted by the last message; the MCP tool calls are real (and prove the same-origin `Origin` rule, since the fixture lists no `allowed_origins`). Settings are pre-seeded into `localStorage` by an init script.

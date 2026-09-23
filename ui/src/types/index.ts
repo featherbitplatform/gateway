@@ -285,6 +285,8 @@ export interface GatewayStatus {
   routes: number;
   /** Number of configured policies. */
   policies: number;
+  /** True while the admin API still uses the shipped admin/admin credentials. */
+  default_credentials?: boolean;
 }
 
 /**

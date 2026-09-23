@@ -30,25 +30,38 @@ import type {
   RenderedPrompt,
 } from '../types';
 import { promptQuery } from '../agentPrompts';
+import { authHeaders, reportUnauthorized } from '../auth';
 
 const BASE = '';
 
 /**
- * Builds the default headers for every Admin API request.
- *
- * Reads Basic Auth credentials from `localStorage` under `gw_credentials`
- * (a `user:pass` string), falling back to `admin:admin`, and sends them
- * base64-encoded in the `Authorization` header.
+ * Builds the default headers for every Admin API request: JSON, the UI
+ * marker, and Basic Auth from the signed-in credentials (see ../auth.ts).
+ * With no credentials there is no `Authorization` header at all.
  *
  * @remarks
  * Verified server-side by the Basic Auth middleware in src/admin/auth.rs.
  */
-function authHeaders(): HeadersInit {
-  const creds = localStorage.getItem('gw_credentials') || 'admin:admin';
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Basic ${btoa(creds)}`,
-  };
+function defaultHeaders(): HeadersInit {
+  return { 'Content-Type': 'application/json', ...authHeaders() };
+}
+
+/** Raises the sign-in screen on a 401: the stored credentials are missing or no longer valid. */
+function checkAuth(res: Response): void {
+  if (res.status === 401) reportUnauthorized();
+}
+
+/**
+ * Checks a username/password against the Admin API without storing it.
+ *
+ * @returns true when accepted, false on 401.
+ * @throws Error when the gateway cannot be reached or answers anything else.
+ */
+export async function verifyCredentials(username: string, password: string): Promise<boolean> {
+  const res = await fetch(`${BASE}/api/status`, { headers: authHeaders(`${username}:${password}`) });
+  if (res.status === 401) return false;
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  return true;
 }
 
 /**
@@ -62,8 +75,9 @@ function authHeaders(): HeadersInit {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { ...authHeaders(), ...init?.headers },
+    headers: { ...defaultHeaders(), ...init?.headers },
   });
+  checkAuth(res);
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${res.status}: ${body}`);
@@ -84,8 +98,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 async function requestText(path: string, init?: RequestInit): Promise<string> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { ...authHeaders(), ...init?.headers },
+    headers: { ...defaultHeaders(), ...init?.headers },
   });
+  checkAuth(res);
   const body = await res.text();
   if (!res.ok) throw new Error(`${res.status}: ${body}`);
   return body;

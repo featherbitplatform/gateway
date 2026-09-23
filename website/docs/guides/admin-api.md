@@ -18,9 +18,11 @@ admin:
   password: ${ADMIN_PASSWORD:-admin}
 ```
 
-Requests without a matching `Authorization: Basic <base64(user:pass)>` header receive `401 Unauthorized` with a `WWW-Authenticate: Basic realm="featherbit admin"` challenge.
+Requests without a matching `Authorization: Basic <base64(user:pass)>` header receive `401 Unauthorized` with a `WWW-Authenticate: Basic realm="featherbit admin"` challenge. The one exception is a request carrying `X-Featherbit-Client` (the web UI sets it on every call): its 401 has no challenge, so the browser does not open its native login dialog on top of the UI's own sign-in screen. The credential check is constant-time.
 
-The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on the same port; its API calls carry the credentials. The UI can be disabled at runtime with `admin.ui_enabled: false` (restart required), and the `-headless` Docker image omits it at compile time.
+The shipped default is `admin`/`admin`. While it is in use the gateway logs a warning at startup, `GET /api/status` reports `"default_credentials": true`, and the web UI shows a warning in its sidebar — set `ADMIN_USER`/`ADMIN_PASSWORD` (or `admin.username`/`admin.password`) before exposing the admin port.
+
+The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on the same port. The UI itself holds no credentials: it asks for them on a sign-in screen and sends them with each API call. The UI can be disabled at runtime with `admin.ui_enabled: false` (restart required), and the `-headless` Docker image omits it at compile time.
 
 ## Endpoint reference
 

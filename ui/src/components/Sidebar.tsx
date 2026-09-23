@@ -26,6 +26,8 @@ import {
   Bell,
   Bot,
   MessageSquare,
+  LogOut,
+  TriangleAlert,
   Boxes,
   Puzzle,
   Database,
@@ -37,6 +39,7 @@ import {
 import type { Route, Supernode, PluginConfigDef, StoreConfig, GatewayStatus } from '../types';
 import { api } from '../api/client';
 import { moveBy, moveTo } from '../routeOrder';
+import { getUsername, signOut } from '../auth';
 
 /**
  * Shared style of the eight two-column footer buttons. The last four
@@ -956,6 +959,34 @@ export function Sidebar({
           >
             <RotateCw size={12} />
             Reload Config
+          </button>
+        </div>
+        {status?.default_credentials && (
+          <p
+            role="status"
+            className="flex items-start gap-1.5"
+            style={{ margin: '10px 0 0', fontSize: 'var(--text-2xs)', color: 'var(--warning, var(--error))' }}
+          >
+            <TriangleAlert size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+            The admin API still uses the default admin/admin credentials. Set admin.username and admin.password.
+          </p>
+        )}
+        <div
+          className="flex items-center justify-between"
+          style={{ marginTop: 10, fontSize: 'var(--text-2xs)', color: 'var(--text-muted)', gap: 8 }}
+        >
+          <span className="truncate" title={getUsername() ?? undefined}>
+            {getUsername() ? <>Signed in as <strong style={{ color: 'var(--text-secondary)' }}>{getUsername()}</strong></> : 'Signed in by the browser'}
+          </span>
+          <button
+            onClick={signOut}
+            className="flex items-center gap-1 transition-colors"
+            style={{ color: 'var(--text-secondary)', flexShrink: 0 }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
+          >
+            <LogOut size={12} />
+            Sign out
           </button>
         </div>
       </div>

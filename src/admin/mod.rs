@@ -70,6 +70,17 @@ pub async fn start_admin_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app = build_router(admin_config, state);
 
+    if (auth::AuthState {
+        username: admin_config.username.clone(),
+        password: admin_config.password.clone(),
+    })
+    .is_default()
+    {
+        warn!(
+            "admin API is using the default admin/admin credentials; set admin.username/admin.password (e.g. ADMIN_USER/ADMIN_PASSWORD) before exposing the admin port"
+        );
+    }
+
     // Fail-fast on a broken TLS setup before binding. Hot-reloadable — a
     // cert-file change swaps in for new admin connections without a restart.
     let tls_config: Option<tls::SharedTlsConfig> = match &admin_config.tls {
