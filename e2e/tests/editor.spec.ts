@@ -324,3 +324,69 @@ test.describe('The loop: browser -> admin API -> hot-swap -> live traffic', () =
     await traffic.dispose();
   });
 });
+
+test.describe('Route priority and refresh', () => {
+  /**
+   * Routes match top to bottom, first match wins. `ord-broad` (/ord/*, the
+   * failing dead-policy) is created before `ord-narrow` (/ord/narrow/*, the
+   * 200-answering echo-policy), so it shadows the narrow one until the UI
+   * moves `ord-narrow` above it.
+   */
+  test('E2E-UI-24: moving a route up in the sidebar changes which route matches', async ({page}) => {
+    const api = await adminApi();
+    const traffic = await dataPlane();
+    for (const name of ['ord-broad', 'ord-narrow']) await deleteRouteIfPresent(api, name);
+    for (const route of [
+      {name: 'ord-broad', match: {path: '/ord/*', methods: ['GET']}, policy: 'dead-policy'},
+      {name: 'ord-narrow', match: {path: '/ord/narrow/*', methods: ['GET']}, policy: 'echo-policy'},
+    ]) {
+      const res = await api.post('/api/routes', {data: route});
+      expect(res.ok(), `route creation failed: ${res.status()} ${await res.text()}`).toBeTruthy();
+    }
+    await waitForDataPlane(traffic, '/ord/narrow/x', (status) => status !== 200);
+
+    await page.goto('/');
+    const row = page.getByTestId('route-row-ord-narrow');
+    await row.hover(); // the arrows are revealed on hover
+    await page.getByRole('button', {name: 'Move route ord-narrow up'}).click();
+
+    // Only the two moved; everything else keeps its place.
+    await expect
+      .poll(async () => ((await (await api.get('/api/routes')).json()) as {name: string}[]).map((r) => r.name).slice(-2))
+      .toEqual(['ord-narrow', 'ord-broad']);
+    await waitForDataPlane(traffic, '/ord/narrow/x', (status) => status === 200);
+
+    // Dragging onto the top half of a row drops above it: broad shadows narrow again.
+    await page
+      .getByTestId('route-row-ord-broad')
+      .dragTo(page.getByTestId('route-row-ord-narrow'), {targetPosition: {x: 40, y: 4}});
+    await expect
+      .poll(async () => ((await (await api.get('/api/routes')).json()) as {name: string}[]).map((r) => r.name).slice(-2))
+      .toEqual(['ord-broad', 'ord-narrow']);
+    await waitForDataPlane(traffic, '/ord/narrow/x', (status) => status !== 200);
+
+    for (const name of ['ord-broad', 'ord-narrow']) await api.delete(`/api/routes/${name}`);
+    await api.dispose();
+    await traffic.dispose();
+  });
+
+  test('E2E-UI-25: the header Refresh button shows a route created behind the UI', async ({page}) => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'ui-refreshed');
+
+    await page.goto('/');
+    await expect(page.getByText('echo-api', {exact: true})).toBeVisible();
+
+    const res = await api.post('/api/routes', {
+      data: {name: 'ui-refreshed', match: {path: '/ui-refreshed/*', methods: ['GET']}, policy: 'echo-policy'},
+    });
+    expect(res.ok(), `route creation failed: ${res.status()} ${await res.text()}`).toBeTruthy();
+    await expect(page.getByText('ui-refreshed', {exact: true})).toHaveCount(0);
+
+    await page.getByRole('button', {name: 'Refresh', exact: true}).click();
+    await expect(page.getByTestId('route-row-ui-refreshed')).toBeVisible();
+
+    await api.delete('/api/routes/ui-refreshed');
+    await api.dispose();
+  });
+});

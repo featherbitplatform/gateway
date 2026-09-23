@@ -177,6 +177,22 @@ pub async fn delete_route(state: &SharedState, a: DeleteArgs) -> Result<Value, T
     .await
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RouteOrderArgs {
+    /// Every route name, exactly once, highest priority (matched first) first.
+    pub order: Vec<String>,
+    /// Validate the whole resulting config without applying it. Default false.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+pub async fn put_route_order(state: &SharedState, a: RouteOrderArgs) -> Result<Value, ToolError> {
+    commit_candidate(state, a.dry_run, vec!["routes:order".into()], |gw| {
+        crate::admin::apply_route_order(&mut gw.routes, &a.order).map_err(ToolError::invalid_input)
+    })
+    .await
+}
+
 pub async fn put_policy(state: &SharedState, a: PutArgs) -> Result<Value, ToolError> {
     let name = a.resolve_name("policy")?;
     let policy: PolicyConfig = parse_named(a.definition, &name, "policy")?;
@@ -718,5 +734,49 @@ mod tests {
 
         // Sanity: the original store is still functionally there afterwards.
         assert!(s.resources.stores.load().contains("st"));
+    }
+
+    #[tokio::test]
+    async fn put_route_order_reorders_and_rejects_partial_lists() {
+        let s = state("{}", ECHO_GATEWAY);
+        call(
+            &s,
+            "put_route",
+            obj(serde_json::json!({"name": "second", "definition": {"match": {"path": "/second"}, "policy": "echo-policy"}})),
+        )
+        .await
+        .unwrap();
+        let names = |s: &crate::state::SharedState| {
+            let gw = s.gateway.try_read().unwrap();
+            gw.routes.iter().map(|r| r.name.clone()).collect::<Vec<_>>()
+        };
+
+        call(
+            &s,
+            "put_route_order",
+            obj(serde_json::json!({"order": ["second", "hello"], "dry_run": true})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(names(&s), ["hello", "second"], "dry run applies nothing");
+
+        call(
+            &s,
+            "put_route_order",
+            obj(serde_json::json!({"order": ["second", "hello"]})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(names(&s), ["second", "hello"]);
+
+        let err = call(
+            &s,
+            "put_route_order",
+            obj(serde_json::json!({"order": ["hello"]})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "invalid_input");
+        assert_eq!(names(&s), ["second", "hello"]);
     }
 }

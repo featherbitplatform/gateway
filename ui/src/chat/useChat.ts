@@ -73,7 +73,12 @@ function newId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatController {
+export function useChat(opts: {
+  mcpUrl: string;
+  mcpEnabled: boolean;
+  /** Called after a write tool succeeds, so the editor can re-fetch what the agent changed. */
+  onConfigChanged?: () => void;
+}): ChatController {
   const [settings, setSettings] = useState<ChatSettings>(() => loadSettings(safeStorage()));
   const [threads, setThreads] = useState<Thread[]>(() => loadThreads(safeStorage()));
   const [activeId, setActiveId] = useState<string | null>(() => threads[0]?.id ?? null);
@@ -84,6 +89,11 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
   const [connectNonce, setConnectNonce] = useState(0);
 
   const mcpRef = useRef<McpClient | null>(null);
+  // A ref, so an inline callback from the caller does not churn runOn.
+  const onConfigChangedRef = useRef(opts.onConfigChanged);
+  useEffect(() => {
+    onConfigChangedRef.current = opts.onConfigChanged;
+  }, [opts.onConfigChanged]);
   const toolsRef = useRef<ToolDef[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const confirmRef = useRef<((ok: boolean) => void) | null>(null);
@@ -269,6 +279,7 @@ export function useChat(opts: { mcpUrl: string; mcpEnabled: boolean }): ChatCont
               tools: toolsRef.current,
               call: async (name, args, signal) => {
                 const r = await mcp.callTool(name, args, signal);
+                if (!r.isError && isWriteTool(name)) onConfigChangedRef.current?.();
                 return { text: resultText(r), isError: !!r.isError };
               },
             }

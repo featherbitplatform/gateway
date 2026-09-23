@@ -105,6 +105,9 @@ export const api = {
   // Routes
   /** `GET /api/routes` — returns all configured routes. */
   listRoutes: () => request<Route[]>('/api/routes'),
+  /** `PUT /api/routes` — reorders routes (match priority); `order` names every route exactly once, first = matched first. */
+  reorderRoutes: (order: string[]) =>
+    request('/api/routes', { method: 'PUT', body: JSON.stringify({ order }) }),
   /** `GET /api/routes/{name}` — returns the named route. */
   getRoute: (name: string) => request<Route>(`/api/routes/${name}`),
   /** `POST /api/routes` — creates a new route; returns the API's JSON acknowledgement. */

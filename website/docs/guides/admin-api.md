@@ -28,6 +28,7 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 |---|---|---|---|
 | `GET` | `/api/routes` | List all routes | — |
 | `POST` | `/api/routes` | Create a route (`201 Created`) | `409` name already exists; `400` validation/recompile failed |
+| `PUT` | `/api/routes` | Reorder routes — their match priority, since the first matching route wins. Body `{"order": ["a", "b", ...]}` naming every route exactly once, highest priority first | `400` not a permutation of the existing names (missing, duplicate or unknown); `400` recompile failed |
 | `GET` | `/api/routes/:name` | Get a route | `404` unknown route |
 | `PUT` | `/api/routes/:name` | Replace an existing route | `404` unknown route (**not** upserted); `400` recompile failed |
 | `DELETE` | `/api/routes/:name` | Delete a route | `404` unknown route; `400` recompile failed |
@@ -112,6 +113,14 @@ List routes:
 
 ```bash
 curl -u admin:admin http://localhost:9090/api/routes
+```
+
+Give `admin` priority over the broader `api` route (every route must be listed):
+
+```bash
+curl -u admin:admin -X PUT http://localhost:9090/api/routes \
+  -H 'Content-Type: application/json' \
+  -d '{"order": ["admin", "api", "catch-all"]}'
 ```
 
 Upsert a policy and trigger a config reload:

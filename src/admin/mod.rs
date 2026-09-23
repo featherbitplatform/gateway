@@ -16,6 +16,7 @@ mod mcp;
 mod plugin_configs;
 pub(crate) mod policies;
 mod routes;
+pub(crate) use routes::apply_route_order;
 mod sessions;
 mod status;
 pub(crate) mod stores;

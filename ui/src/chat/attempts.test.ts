@@ -88,3 +88,17 @@ describe('buildRenderItems', () => {
     expect(items.map((i) => (i.kind === 'tools' ? i.group.name : i.kind))).toEqual(['get_route', 'get_policy']);
   });
 });
+
+describe('buildRenderItems whitespace-only text', () => {
+  it('drops assistant messages whose text is only whitespace (no empty bubbles)', () => {
+    const items = buildRenderItems([
+      { role: 'user', content: 'list routes' },
+      { role: 'assistant', content: '\n\n', toolCalls: [call('c1', 'list_routes')] },
+      tool('c1', 'list_routes', 'done', '[]'),
+      { role: 'assistant', content: ' \n' },
+      { role: 'assistant', content: '\n', error: 'boom' },
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(['user', 'tools', 'assistant']);
+    expect(items[2]).toEqual({ kind: 'assistant', content: '', error: 'boom' });
+  });
+});

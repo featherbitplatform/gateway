@@ -48,8 +48,10 @@ export function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
       continue;
     }
     if (m.role === 'tool') continue;
-    if (m.content !== '' || m.error) {
-      const item: RenderItem = { kind: 'assistant', content: m.content };
+    // Whitespace-only text (models often stream a bare newline alongside
+    // tool calls) would render as an empty bubble, so it counts as no text.
+    if (m.content.trim() !== '' || m.error) {
+      const item: RenderItem = { kind: 'assistant', content: m.content.trim() === '' ? '' : m.content };
       if (m.error) item.error = m.error;
       items.push(item);
     }

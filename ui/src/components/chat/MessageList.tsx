@@ -91,5 +91,5 @@ export function MessageList({ thread, pendingConfirm, onResolveConfirm, busy }: 
 /** True while the last message is an assistant bubble that already has text (the stream is visible). */
 function streamingText(thread: Thread): boolean {
   const last = thread.messages.at(-1);
-  return last?.role === 'assistant' && last.content !== '' && !last.toolCalls?.length;
+  return last?.role === 'assistant' && last.content.trim() !== '' && !last.toolCalls?.length;
 }
