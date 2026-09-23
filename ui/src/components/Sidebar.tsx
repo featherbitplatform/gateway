@@ -1,7 +1,9 @@
 /**
  * Left navigation rail of the admin UI: featherbit branding with live gateway
  * status, the selectable route list, and the create-route / delete-route /
- * reload-config actions that back the gateway's admin API.
+ * reorder-route / reload-config actions that back the gateway's admin API.
+ * Routes are listed in match order (first match wins): each row can be
+ * dragged by its grip, or nudged with its up/down buttons, to change priority.
  *
  * The body shows one library at a time, chosen by the strip of buttons under
  * the header. Routes is the default and the common case, so it gets the whole
@@ -27,9 +29,14 @@ import {
   Boxes,
   Puzzle,
   Database,
+  GripVertical,
+  ChevronUp,
+  ChevronDown,
+  RefreshCw,
 } from 'lucide-react';
 import type { Route, Supernode, PluginConfigDef, StoreConfig, GatewayStatus } from '../types';
 import { api } from '../api/client';
+import { moveBy, moveTo } from '../routeOrder';
 
 /**
  * Shared style of the eight two-column footer buttons. The last four
@@ -82,6 +89,10 @@ interface SidebarProps {
   onCreateRoute: () => void;
   /** Called with the route's name when its hover-revealed delete button is clicked. */
   onDeleteRoute: (name: string) => void;
+  /** Called with every route name in the new match order after a drag or an up/down click. */
+  onReorderRoutes: (order: string[]) => void;
+  /** Re-fetches everything the UI shows from the admin API (no gateway-side reload). */
+  onRefresh: () => Promise<void>;
   /** Supernode library to list, as fetched from the admin API's GET /api/supernodes. */
   supernodes: Supernode[];
   /** Name of the currently selected supernode, or null when none is selected. */
@@ -158,6 +169,8 @@ export function Sidebar({
   onSelectRoute,
   onCreateRoute,
   onDeleteRoute,
+  onReorderRoutes,
+  onRefresh,
   supernodes,
   selectedSupernode,
   onSelectSupernode,
@@ -187,6 +200,31 @@ export function Sidebar({
 }: SidebarProps) {
   const [status, setStatus] = useState<GatewayStatus | null>(null);
   const [library, setLibrary] = useState<Library>('routes');
+  const [refreshing, setRefreshing] = useState(false);
+  // Route drag state: the row being dragged, and the gap it would drop into
+  // (0 = above the first row, routes.length = below the last).
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dropAt, setDropAt] = useState<number | null>(null);
+  const routeNames = routes.map((r) => r.name);
+  const reorder = (next: string[] | null) => {
+    if (next) onReorderRoutes(next);
+  };
+  const endDrag = () => {
+    setDragFrom(null);
+    setDropAt(null);
+  };
+  const refresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+      setStatus(await api.status());
+    } catch {
+      // onRefresh reports its own failure; a status miss just keeps the old line.
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   /**
    * Picking something from a library is the end of that errand, so the body
@@ -251,6 +289,18 @@ export function Sidebar({
             </p>
           )}
         </div>
+        <button
+          onClick={() => void refresh()}
+          disabled={refreshing}
+          aria-label="Refresh"
+          title="Refresh: re-fetch routes, policies and libraries from the gateway (unsaved canvas edits are kept)"
+          className="ml-auto flex items-center justify-center rounded transition-colors"
+          style={{ width: 26, height: 26, color: 'var(--text-muted)', flexShrink: 0 }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+        >
+          <RefreshCw size={14} className={refreshing ? 'animate-spin' : undefined} />
+        </button>
       </div>
 
       {/* Library strip: one button per library, each toggling the body. The
@@ -303,7 +353,12 @@ export function Sidebar({
       {library === 'routes' && (
       <div className="flex-1 overflow-y-auto min-h-40">
         <div className="p-3 flex items-center justify-between">
-          <span className="eyebrow">Routes</span>
+          <span
+            className="eyebrow"
+            title="Matched top to bottom: the first matching route wins. Drag a route by its grip, or use its arrows, to change priority."
+          >
+            Routes
+          </span>
           <button
             onClick={onCreateRoute}
             aria-label="New route"
@@ -323,63 +378,190 @@ export function Sidebar({
             New
           </button>
         </div>
-        {routes.map((route) => {
-          const isSelected = selectedRoute === route.name;
-          return (
-            <div
-              key={route.name}
-              onClick={() => onSelectRoute(route.name)}
-              className="mx-2 mb-1 cursor-pointer flex items-center justify-between group"
-              style={{
-                padding: '8px 10px',
-                borderRadius: 'var(--radius-sm)',
-                background: isSelected ? 'var(--surface-active)' : 'transparent',
-                boxShadow: isSelected ? 'inset 0 0 0 1px var(--accent-ring)' : 'none',
-                transition: 'background var(--dur-fast) var(--ease-out)',
-              }}
-              onMouseEnter={(e) => {
-                if (!isSelected) e.currentTarget.style.background = 'var(--surface-hover)';
-              }}
-              onMouseLeave={(e) => {
-                if (!isSelected) e.currentTarget.style.background = 'transparent';
-              }}
-            >
-              <div className="flex flex-col min-w-0">
-                <span
-                  className="truncate"
-                  style={{
-                    fontSize: 'var(--text-sm)',
-                    fontWeight: 'var(--weight-medium)' as never,
-                    color: 'var(--text-primary)',
-                  }}
-                >
-                  {route.name}
-                </span>
-                <span
-                  className="truncate"
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 'var(--text-xs)',
-                    color: 'var(--text-muted)',
-                  }}
-                >
-                  {route.match?.path || '/'}
-                </span>
-              </div>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDeleteRoute(route.name);
+        {routes.length > 1 && (
+          <p
+            style={{
+              margin: '-4px 12px 6px',
+              fontSize: 'var(--text-2xs)',
+              color: 'var(--text-muted)',
+            }}
+          >
+            Matched top to bottom &middot; drag to reorder
+          </p>
+        )}
+        <div
+          role="list"
+          aria-label="Routes in match order"
+          onDragOver={(e) => {
+            // The empty space below the last row counts as "drop at the end".
+            if (dragFrom !== null && e.target === e.currentTarget) {
+              e.preventDefault();
+              setDropAt(routes.length);
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            if (dragFrom !== null && dropAt !== null) reorder(moveTo(routeNames, dragFrom, dropAt));
+            endDrag();
+          }}
+          style={{ paddingBottom: 12 }}
+        >
+          {routes.map((route, index) => {
+            const isSelected = selectedRoute === route.name;
+            const isDragged = dragFrom === index;
+            // The drop indicator sits on the top edge of the row after the
+            // gap, or on the bottom edge of the last row for "drop at the end";
+            // gaps that would not move the dragged row show nothing.
+            const moves = (at: number) => dragFrom !== null && moveTo(routeNames, dragFrom, at) !== null;
+            const lineAbove = dropAt === index && moves(index);
+            const lineBelow = index === routes.length - 1 && dropAt === routes.length && moves(routes.length);
+            return (
+              <div
+                key={route.name}
+                role="listitem"
+                data-testid={`route-row-${route.name}`}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = 'move';
+                  e.dataTransfer.setData('text/plain', route.name);
+                  setDragFrom(index);
                 }}
-                className="opacity-0 group-hover:opacity-100 flex items-center justify-center rounded transition-all"
-                style={{ width: 22, height: 22, color: 'var(--error)' }}
-                aria-label={`Delete route ${route.name}`}
+                onDragEnd={endDrag}
+                onDragOver={(e) => {
+                  if (dragFrom === null) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setDropAt(e.clientY < rect.top + rect.height / 2 ? index : index + 1);
+                }}
+                onClick={() => onSelectRoute(route.name)}
+                className="mx-2 mb-1 cursor-pointer flex items-center justify-between group"
+                style={{
+                  position: 'relative',
+                  padding: '8px 6px 8px 2px',
+                  borderRadius: 'var(--radius-sm)',
+                  background: isSelected ? 'var(--surface-active)' : 'transparent',
+                  boxShadow: isSelected ? 'inset 0 0 0 1px var(--accent-ring)' : 'none',
+                  opacity: isDragged ? 0.45 : 1,
+                  transition: 'background var(--dur-fast) var(--ease-out)',
+                }}
+                onMouseEnter={(e) => {
+                  if (!isSelected) e.currentTarget.style.background = 'var(--surface-hover)';
+                }}
+                onMouseLeave={(e) => {
+                  if (!isSelected) e.currentTarget.style.background = 'transparent';
+                }}
               >
-                <X size={13} />
-              </button>
-            </div>
-          );
-        })}
+                {(lineAbove || lineBelow) && (
+                  <span
+                    aria-hidden
+                    style={{
+                      position: 'absolute',
+                      left: 4,
+                      right: 4,
+                      [lineAbove ? 'top' : 'bottom']: -3,
+                      height: 2,
+                      borderRadius: 1,
+                      background: 'var(--accent)',
+                      pointerEvents: 'none',
+                    }}
+                  />
+                )}
+                <div className="flex items-center min-w-0" style={{ gap: 4 }}>
+                  <span
+                    aria-hidden
+                    title="Drag to change priority"
+                    className="flex items-center opacity-40 group-hover:opacity-100 transition-opacity"
+                    style={{ cursor: 'grab', color: 'var(--text-muted)', flexShrink: 0 }}
+                  >
+                    <GripVertical size={13} />
+                  </span>
+                  <span
+                    title={`Priority ${index + 1}: matched ${index === 0 ? 'first' : `after ${index} other route${index === 1 ? '' : 's'}`}`}
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 'var(--text-2xs)',
+                      color: 'var(--text-muted)',
+                      minWidth: 14,
+                      textAlign: 'right',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {index + 1}
+                  </span>
+                  <div className="flex flex-col min-w-0" style={{ marginLeft: 4 }}>
+                    <span
+                      className="truncate"
+                      style={{
+                        fontSize: 'var(--text-sm)',
+                        fontWeight: 'var(--weight-medium)' as never,
+                        color: 'var(--text-primary)',
+                      }}
+                    >
+                      {route.name}
+                    </span>
+                    <span
+                      className="truncate"
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 'var(--text-xs)',
+                        color: 'var(--text-muted)',
+                      }}
+                    >
+                      {route.match?.path || '/'}
+                    </span>
+                  </div>
+                </div>
+                <div
+                  className="flex items-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-all"
+                  style={{ flexShrink: 0 }}
+                >
+                  {routes.length > 1 && (
+                    <>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          reorder(moveBy(routeNames, index, -1));
+                        }}
+                        disabled={index === 0}
+                        className="flex items-center justify-center rounded disabled:opacity-30"
+                        style={{ width: 20, height: 22, color: 'var(--text-secondary)' }}
+                        aria-label={`Move route ${route.name} up`}
+                        title="Higher priority"
+                      >
+                        <ChevronUp size={13} />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          reorder(moveBy(routeNames, index, 1));
+                        }}
+                        disabled={index === routes.length - 1}
+                        className="flex items-center justify-center rounded disabled:opacity-30"
+                        style={{ width: 20, height: 22, color: 'var(--text-secondary)' }}
+                        aria-label={`Move route ${route.name} down`}
+                        title="Lower priority"
+                      >
+                        <ChevronDown size={13} />
+                      </button>
+                    </>
+                  )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteRoute(route.name);
+                    }}
+                    className="flex items-center justify-center rounded"
+                    style={{ width: 22, height: 22, color: 'var(--error)' }}
+                    aria-label={`Delete route ${route.name}`}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       )}

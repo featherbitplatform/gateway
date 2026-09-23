@@ -167,6 +167,8 @@ compilation fails (every non-error output port is mandatory).
 | E2E-UI-06 | Create a route via the **New** dialog | Route appears in the sidebar **and** in `GET /api/routes` |
 | E2E-UI-07 | Delete a route | Gone from the sidebar and the API |
 | E2E-UI-08 | Toggle the theme | Theme flips and survives a reload (persisted) |
+| E2E-UI-24 | Create `ord-broad` (`/ord/*`, failing policy) then `ord-narrow` (`/ord/narrow/*`, echo); move `ord-narrow` up with its hover arrow, then drag `ord-broad` back above it | After the arrow click `GET /api/routes` ends `ord-narrow, ord-broad` and `/ord/narrow/x` answers `200`; after the drag the order flips back and the broad route shadows it again — sidebar order is match priority |
+| E2E-UI-25 | With the editor open, create a route through the API, then click the header **Refresh** button | The route is absent until Refresh, then listed — the UI re-fetches without a browser reload |
 | E2E-UI-15 | Open `echo-api`'s `cors` node, then delete its `preflight` edge and save | The node renders exactly three source handles (`success`/`preflight`/`error`, `[data-handleid]`) with distinct colors and a title mentioning `preflight`; after deleting that edge, Save Policy shows the client's "Unwired ports" warning **and** the server's `must be wired` rejection — the warning does not block the save attempt, it only precedes it |
 
 ## openid-connect — `tests/openid-connect.spec.ts`
