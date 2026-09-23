@@ -108,15 +108,15 @@ mod tests {
     use tower::ServiceExt;
 
     fn app() -> Router {
-        Router::new().route("/api/status", get(|| async { "ok" })).layer(
-            axum::middleware::from_fn_with_state(
+        Router::new()
+            .route("/api/status", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
                 Arc::new(AuthState {
                     username: "u".into(),
                     password: "p".into(),
                 }),
                 basic_auth_middleware,
-            ),
-        )
+            ))
     }
 
     async fn send(req: Request<Body>) -> Response {
