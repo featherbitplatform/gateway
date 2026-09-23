@@ -80,6 +80,12 @@ test.describe('ACME certificates', () => {
       expect((await api.get('/readyz')).status()).toBe(200);
 
       // UI: the row shows Issued; Renew now → not due → Force renew → new serial.
+      // playwright.config.ts seeds the sign-in only for the main admin origin;
+      // this gateway's admin UI is a different origin (another port).
+      await page.addInitScript(
+        (creds) => localStorage.setItem('gw_credentials', creds),
+        `${ADMIN_USER}:${ADMIN_PASS}`,
+      );
       await page.goto(`${ACME_ADMIN_URL}/`);
       await page.getByRole('button', {name: 'Certificates'}).click();
       const row = page.getByTestId('acme-cert-row').filter({has: page.getByText(id.split(',')[0])});
