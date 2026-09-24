@@ -68,6 +68,10 @@ pub async fn start_admin_server(
     mut shutdown_rx: watch::Receiver<bool>,
     drain_timeout: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(msg) = state.system.plaintext_admin_warning() {
+        warn!("{msg}");
+    }
+
     let app = build_router(admin_config, state);
 
     if (auth::AuthState {

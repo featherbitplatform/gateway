@@ -5,6 +5,7 @@ import {
   CREDENTIALS_KEY,
   getCredentials,
   getUsername,
+  isInsecureConnection,
   onSignedOut,
   onUnauthorized,
   reportUnauthorized,
@@ -85,5 +86,17 @@ describe('credentials', () => {
     off();
     reportUnauthorized();
     expect(l).toHaveBeenCalledOnce();
+  });
+});
+
+describe('isInsecureConnection', () => {
+  const at = (protocol: string, hostname: string) => isInsecureConnection({ protocol, hostname });
+  it('flags plain HTTP from another host only', () => {
+    expect(at('http:', 'gateway.internal')).toBe(true);
+    expect(at('http:', '10.0.0.5')).toBe(true);
+    expect(at('https:', 'gateway.internal')).toBe(false);
+    for (const local of ['localhost', 'admin.localhost', '127.0.0.1', '127.1.2.3', '[::1]', '::1']) {
+      expect(at('http:', local)).toBe(false);
+    }
   });
 });

@@ -22,6 +22,8 @@ Requests without a matching `Authorization: Basic <base64(user:pass)>` header re
 
 The shipped default is `admin`/`admin`. While it is in use the gateway logs a warning at startup, `GET /api/status` reports `"default_credentials": true`, and the web UI shows a warning in its sidebar — set `ADMIN_USER`/`ADMIN_PASSWORD` (or `admin.username`/`admin.password`) before exposing the admin port.
 
+Basic Auth sends the credentials with every request, so when the admin port is reachable from another machine serve it over HTTPS with `admin.tls`. `admin.tls: { inherit: true }` reuses the data plane's certificate (see [TLS → Admin API over TLS](./tls.md#admin-api-over-tls)). The gateway warns at startup when the data plane has TLS but the admin API is plain HTTP on a non-loopback address.
+
 The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on the same port. The UI itself holds no credentials: it asks for them on a sign-in screen and sends them with each API call. The UI can be disabled at runtime with `admin.ui_enabled: false` (restart required), and the `-headless` Docker image omits it at compile time.
 
 ## Endpoint reference

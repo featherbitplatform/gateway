@@ -28,6 +28,8 @@ test.describe('Sign-in', () => {
     await page.goto('/');
     await expect(page.getByRole('form', {name: 'Sign in'})).toBeVisible();
     await expect(page.getByText('echo-api', {exact: true})).toHaveCount(0);
+    // Plain HTTP, but loopback: nothing leaves the machine, so no warning.
+    await expect(page.getByTestId('insecure-connection')).toHaveCount(0);
 
     // The UI's requests get a bare 401 (no browser dialog); everyone else
     // still gets the Basic challenge.
