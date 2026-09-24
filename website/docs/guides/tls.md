@@ -265,18 +265,34 @@ The shared outbound client (used by the `upstream` node and callout plugins) adv
 
 ## Admin API over TLS
 
-The Admin API/UI listener can be TLS-terminated too, reusing the same `TlsConfig`:
+The admin listener does **not** pick up the data plane's `tls:` block on its own: without `admin.tls` it serves plain HTTP. Since the Admin API authenticates with HTTP Basic (the web UI sends the credentials on every call), serve it over HTTPS whenever the admin port is reachable from another machine.
+
+The shortest way is to reuse the data-plane certificate:
 
 ```yaml
+tls:
+  cert_path: /etc/gateway/tls/cert.pem
+  key_path: /etc/gateway/tls/key.pem
+
 admin:
   bind: 0.0.0.0
   port: 9090
   username: ${ADMIN_USER}
   password: ${ADMIN_PASSWORD}
   tls:
-    cert_path: /etc/gateway/tls/cert.pem
-    key_path: /etc/gateway/tls/key.pem
+    inherit: true
 ```
+
+`inherit: true` shares only the certificate and key, including [hot-reload](#certificate-hot-reload) when the files change. The rest stays the admin block's own: `min_version`, and mTLS (`client_ca_path`/`client_cert_required`), so a data-plane client CA never locks operators out of the admin API. It is refused at startup when there is no top-level `tls:`, when the data plane's default certificate is ACME-managed (ACME is not supported on the admin listener), or when `admin.tls` also sets `cert_path`/`key_path`/`sni_certs`/`acme`. The admin certificate has to cover the hostname operators use to reach the admin port; if that differs from the public names, give the admin listener its own certificate instead:
+
+```yaml
+admin:
+  tls:
+    cert_path: /etc/gateway/tls/admin-cert.pem
+    key_path: /etc/gateway/tls/admin-key.pem
+```
+
+While the data plane has TLS but the admin listener serves plain HTTP on a non-loopback address, the gateway logs a warning at startup. Binding admin to `127.0.0.1` (a local-only or sidecar setup) keeps it quiet. The web UI's sign-in screen also warns when it was loaded over plain HTTP from anywhere but localhost.
 
 ## Verifying
 

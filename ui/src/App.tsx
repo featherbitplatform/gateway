@@ -30,6 +30,7 @@ import { parseApiError } from './apiError';
 import { writeToClipboard } from './clipboard';
 import { withMcpHint, mcpEndpoint } from './agentPrompts';
 import { useChat } from './chat/useChat';
+import { onSignedIn } from './auth';
 import type {
   Route,
   Policy,
@@ -183,11 +184,6 @@ export default function App() {
   const [agentOpen, setAgentOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
-  const chat = useChat({
-    mcpUrl: mcpEndpoint(window.location.origin, mcpStatus?.path ?? '/mcp'),
-    mcpEnabled: mcpStatus?.enabled ?? false,
-  });
-
   // Generalized argument dialog for agent prompts that need input beyond what
   // can be auto-filled (the `design_*` prompts' `goal`, and any prompt copied
   // via the Agent panel's per-prompt Copy button). `review_policy` never
@@ -223,7 +219,10 @@ export default function App() {
       setScripts(sc);
       setError(null);
     } catch (e) {
-      setError(`Failed to connect to gateway: ${e}`);
+      // A 401 is not a connection problem: the sign-in overlay (LoginGate)
+      // is already up, and replacing the editor with an error screen here
+      // would throw away unsaved canvas edits behind it.
+      if (!String(e).includes('401:')) setError(`Failed to connect to gateway: ${e}`);
     }
     // Debug settings are advisory: a failure here must not block the editor,
     // so this is fetched separately from the required data above.
@@ -241,12 +240,23 @@ export default function App() {
     }
   }, []);
 
+  // Declared after loadData so a successful agent write (put_route, …) can
+  // re-fetch what it changed without the user reloading the page.
+  const chat = useChat({
+    mcpUrl: mcpEndpoint(window.location.origin, mcpStatus?.path ?? '/mcp'),
+    mcpEnabled: mcpStatus?.enabled ?? false,
+    onConfigChanged: loadData,
+  });
+
   // Initial fetch. Scheduled as a promise callback rather than called
   // directly: every setState in loadData already runs after an await, and
   // this keeps the effect body itself setState-free (react-hooks lint).
   useEffect(() => {
     Promise.resolve().then(loadData);
   }, [loadData]);
+
+  // Re-fetch after signing in again from the expired-session overlay.
+  useEffect(() => onSignedIn(() => void loadData()), [loadData]);
 
   const selectedPolicy = (() => {
     const route = routes.find((r) => r.name === selectedRoute);
@@ -589,6 +599,29 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  // Pulls fresh server state into the UI without asking the gateway to
+  // re-read gateway.yaml (that is handleReload). The canvas keeps unsaved
+  // edits across a refetch of the same policy.
+  const handleRefresh = useCallback(async () => {
+    await loadData();
+    notify({ tone: 'success', title: 'UI refreshed' });
+  }, [loadData, notify]);
+
+  // Optimistic: the list reorders at once, and the refetch afterwards
+  // restores the gateway's order if it rejected the change.
+  const handleReorderRoutes = useCallback(
+    async (order: string[]) => {
+      setRoutes((cur) => order.map((n) => cur.find((r) => r.name === n)).filter((r): r is Route => r !== undefined));
+      try {
+        await api.reorderRoutes(order);
+      } catch (e) {
+        notify({ tone: 'error', title: 'Reorder failed', message: `${e}` });
+      }
+      await loadData();
+    },
+    [loadData, notify],
+  );
+
   const handleReload = useCallback(async () => {
     try {
       await api.reload();
@@ -805,6 +838,7 @@ export default function App() {
       createPluginConfig: handleCreatePluginConfig,
       viewYaml: handleViewYaml,
       reloadConfig: handleReload,
+      refreshUi: () => void handleRefresh(),
       toggleTheme,
       openNotifications: () => openNotifications(),
       // Bridged to whatever GraphCanvas has registered (see editorActions.tsx).
@@ -826,6 +860,7 @@ export default function App() {
       handleCreatePluginConfig,
       handleViewYaml,
       handleReload,
+      handleRefresh,
       openNotifications,
       editorActions,
       agentPrompt,
@@ -960,6 +995,8 @@ export default function App() {
         onSelectRoute={handleSelectRoute}
         onCreateRoute={handleCreateRoute}
         onDeleteRoute={(name) => setDeleteTarget(name)}
+        onReorderRoutes={(order) => void handleReorderRoutes(order)}
+        onRefresh={handleRefresh}
         supernodes={supernodes}
         selectedSupernode={selectedSupernode}
         onSelectSupernode={handleSelectSupernode}

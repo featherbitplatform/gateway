@@ -20,6 +20,11 @@ admin:
   port: ${ADMIN_PORT:-9090}
   username: ${ADMIN_USER:-admin}
   password: ${ADMIN_PASSWORD:-admin}
+  # HTTPS for the admin API/UI (Basic Auth credentials travel with every
+  # request). `inherit: true` reuses the data-plane `tls:` certificate;
+  # or give admin its own cert_path/key_path.
+  # tls:
+  #   inherit: true
   # Serve the embedded web UI (node-graph editor). Set false for API-only
   # deployments; the -headless image never serves it regardless.
   ui_enabled: ${ADMIN_UI_ENABLED:-true}

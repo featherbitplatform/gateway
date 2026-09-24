@@ -82,7 +82,7 @@ async fn main() {
     let cli = Cli::parse();
 
     // Load system config
-    let system: SystemConfig = match config::load_yaml_with_env(&cli.system_config) {
+    let mut system: SystemConfig = match config::load_yaml_with_env(&cli.system_config) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to load system config: {}", e);
@@ -90,7 +90,10 @@ async fn main() {
         }
     };
 
-    if let Err(e) = system.validate() {
+    if let Err(e) = system
+        .resolve_inherited_tls()
+        .and_then(|()| system.validate())
+    {
         eprintln!("Invalid system config: {}", e);
         std::process::exit(1);
     }

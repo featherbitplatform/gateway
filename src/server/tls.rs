@@ -639,6 +639,7 @@ mod tests {
         std::fs::write(&cert_path, certified.cert.pem()).unwrap();
         std::fs::write(&key_path, certified.signing_key.serialize_pem()).unwrap();
         let tls = TlsConfig {
+            inherit: false,
             cert_path: Some(cert_path.to_string_lossy().into_owned()),
             key_path: Some(key_path.to_string_lossy().into_owned()),
             min_version: min_version.to_string(),
@@ -893,6 +894,7 @@ mod tests {
         let key = dir.join(format!("featherbit_reload_{}.key", pid));
         write_fresh_cert(&cert, &key);
         let tls = TlsConfig {
+            inherit: false,
             cert_path: Some(cert.to_string_lossy().into_owned()),
             key_path: Some(key.to_string_lossy().into_owned()),
             min_version: "1.2".to_string(),
@@ -931,6 +933,7 @@ mod tests {
         let key = dir.join(format!("featherbit_watch_{}.key", pid));
         write_fresh_cert(&cert, &key);
         let tls = TlsConfig {
+            inherit: false,
             cert_path: Some(cert.to_string_lossy().into_owned()),
             key_path: Some(key.to_string_lossy().into_owned()),
             min_version: "1.2".to_string(),
@@ -1025,6 +1028,7 @@ mod tests {
         std::fs::write(&skey, server.signing_key.serialize_pem()).unwrap();
         std::fs::write(&ca, ca_cert.pem()).unwrap();
         let tls = TlsConfig {
+            inherit: false,
             cert_path: Some(scert.to_string_lossy().into_owned()),
             key_path: Some(skey.to_string_lossy().into_owned()),
             min_version: "1.2".to_string(),
@@ -1253,6 +1257,7 @@ mod tests {
             write_named_cert("wild", vec!["x.tenant.example.com".to_string()]);
 
         let tls = TlsConfig {
+            inherit: false,
             cert_path: Some(def_cert.clone()),
             key_path: Some(def_key.clone()),
             min_version: "1.2".to_string(),
@@ -1310,6 +1315,7 @@ mod tests {
 
     fn managed_tls(domains: &[&str]) -> TlsConfig {
         TlsConfig {
+            inherit: false,
             cert_path: None,
             key_path: None,
             acme: Some(crate::config::AcmeSlot {

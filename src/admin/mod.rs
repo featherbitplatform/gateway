@@ -16,6 +16,7 @@ mod mcp;
 mod plugin_configs;
 pub(crate) mod policies;
 mod routes;
+pub(crate) use routes::apply_route_order;
 mod sessions;
 mod status;
 pub(crate) mod stores;
@@ -67,7 +68,22 @@ pub async fn start_admin_server(
     mut shutdown_rx: watch::Receiver<bool>,
     drain_timeout: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(msg) = state.system.plaintext_admin_warning() {
+        warn!("{msg}");
+    }
+
     let app = build_router(admin_config, state);
+
+    if (auth::AuthState {
+        username: admin_config.username.clone(),
+        password: admin_config.password.clone(),
+    })
+    .is_default()
+    {
+        warn!(
+            "admin API is using the default admin/admin credentials; set admin.username/admin.password (e.g. ADMIN_USER/ADMIN_PASSWORD) before exposing the admin port"
+        );
+    }
 
     // Fail-fast on a broken TLS setup before binding. Hot-reloadable — a
     // cert-file change swaps in for new admin connections without a restart.

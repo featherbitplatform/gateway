@@ -32,7 +32,7 @@ Restart-gated like everything in `system.yaml`. Rules enforced at load: `enabled
 | Scope | Unlocks |
 |---|---|
 | `read` | `list_node_types`, `get_node_type`, `list_vars`, `get_status`, `export_config` (whole-gateway YAML, consumer credentials masked, same as below), `list_/get_` for routes, policies, supernodes, plugin configs, stores, consumers (credentials masked), `validate_policy`, `validate_supernode`, `list_traces`, `get_trace`, `get_trace_step`, `run_sandbox` |
-| `write` | everything above plus `put_/delete_` for routes, policies, supernodes, plugin configs, stores, `purge_cache`, and `reload_config`. Every `put_`/`delete_` accepts `dry_run: true`. |
+| `write` | everything above plus `put_/delete_` for routes, policies, supernodes, plugin configs, stores, `put_route_order` (route match priority), `purge_cache`, and `reload_config`. Every `put_`/`delete_` accepts `dry_run: true`. |
 
 Read tokens never see write tools in `tools/list`; a write call with a read token returns a `forbidden` tool error. Use a read token against production and a write token only where an agent should be allowed to change config.
 

@@ -18,6 +18,8 @@ export interface CommandContext {
   createPluginConfig: () => void;
   viewYaml: () => void;
   reloadConfig: () => void;
+  /** Re-fetches the UI's data from the admin API (no gateway-side reload). */
+  refreshUi: () => void;
   toggleTheme: () => void;
   /** Opens the notification log (every toast, inspectable afterwards). */
   openNotifications: () => void;
@@ -83,6 +85,7 @@ export function buildCommands(): Command[] {
       run: (c) => c.invokeEditorAction('extract-supernode'),
     },
     { id: 'view-yaml', title: 'View YAML', shortcut: 'Y', when: (c) => c.hasSelection, run: (c) => c.viewYaml() },
+    { id: 'refresh-ui', title: 'Refresh UI data', run: (c) => c.refreshUi() },
     { id: 'reload-config', title: 'Reload gateway config', run: (c) => c.reloadConfig() },
     { id: 'show-notifications', title: 'Show notifications', shortcut: 'N', run: (c) => c.openNotifications() },
     { id: 'toggle-theme', title: 'Toggle theme', run: (c) => c.toggleTheme() },

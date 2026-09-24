@@ -18,9 +18,13 @@ admin:
   password: ${ADMIN_PASSWORD:-admin}
 ```
 
-Requests without a matching `Authorization: Basic <base64(user:pass)>` header receive `401 Unauthorized` with a `WWW-Authenticate: Basic realm="featherbit admin"` challenge.
+Requests without a matching `Authorization: Basic <base64(user:pass)>` header receive `401 Unauthorized` with a `WWW-Authenticate: Basic realm="featherbit admin"` challenge. The one exception is a request carrying `X-Featherbit-Client` (the web UI sets it on every call): its 401 has no challenge, so the browser does not open its native login dialog on top of the UI's own sign-in screen. The credential check is constant-time.
 
-The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on the same port; its API calls carry the credentials. The UI can be disabled at runtime with `admin.ui_enabled: false` (restart required), and the `-headless` Docker image omits it at compile time.
+The shipped default is `admin`/`admin`. While it is in use the gateway logs a warning at startup, `GET /api/status` reports `"default_credentials": true`, and the web UI shows a warning in its sidebar — set `ADMIN_USER`/`ADMIN_PASSWORD` (or `admin.username`/`admin.password`) before exposing the admin port.
+
+Basic Auth sends the credentials with every request, so when the admin port is reachable from another machine serve it over HTTPS with `admin.tls`. `admin.tls: { inherit: true }` reuses the data plane's certificate (see [TLS → Admin API over TLS](./tls.md#admin-api-over-tls)). The gateway warns at startup when the data plane has TLS but the admin API is plain HTTP on a non-loopback address.
+
+The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on the same port. The UI itself holds no credentials: it asks for them on a sign-in screen and sends them with each API call. The UI can be disabled at runtime with `admin.ui_enabled: false` (restart required), and the `-headless` Docker image omits it at compile time.
 
 ## Endpoint reference
 
@@ -28,6 +32,7 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 |---|---|---|---|
 | `GET` | `/api/routes` | List all routes | — |
 | `POST` | `/api/routes` | Create a route (`201 Created`) | `409` name already exists; `400` validation/recompile failed |
+| `PUT` | `/api/routes` | Reorder routes — their match priority, since the first matching route wins. Body `{"order": ["a", "b", ...]}` naming every route exactly once, highest priority first | `400` not a permutation of the existing names (missing, duplicate or unknown); `400` recompile failed |
 | `GET` | `/api/routes/:name` | Get a route | `404` unknown route |
 | `PUT` | `/api/routes/:name` | Replace an existing route | `404` unknown route (**not** upserted); `400` recompile failed |
 | `DELETE` | `/api/routes/:name` | Delete a route | `404` unknown route; `400` recompile failed |
@@ -112,6 +117,14 @@ List routes:
 
 ```bash
 curl -u admin:admin http://localhost:9090/api/routes
+```
+
+Give `admin` priority over the broader `api` route (every route must be listed):
+
+```bash
+curl -u admin:admin -X PUT http://localhost:9090/api/routes \
+  -H 'Content-Type: application/json' \
+  -d '{"order": ["admin", "api", "catch-all"]}'
 ```
 
 Upsert a policy and trigger a config reload:

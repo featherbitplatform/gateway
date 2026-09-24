@@ -167,6 +167,8 @@ compilation fails (every non-error output port is mandatory).
 | E2E-UI-06 | Create a route via the **New** dialog | Route appears in the sidebar **and** in `GET /api/routes` |
 | E2E-UI-07 | Delete a route | Gone from the sidebar and the API |
 | E2E-UI-08 | Toggle the theme | Theme flips and survives a reload (persisted) |
+| E2E-UI-24 | Create `ord-broad` (`/ord/*`, failing policy) then `ord-narrow` (`/ord/narrow/*`, echo); move `ord-narrow` up with its hover arrow, then drag `ord-broad` back above it | After the arrow click `GET /api/routes` ends `ord-narrow, ord-broad` and `/ord/narrow/x` answers `200`; after the drag the order flips back and the broad route shadows it again — sidebar order is match priority |
+| E2E-UI-25 | With the editor open, create a route through the API, then click the header **Refresh** button | The route is absent until Refresh, then listed — the UI re-fetches without a browser reload |
 | E2E-UI-15 | Open `echo-api`'s `cors` node, then delete its `preflight` edge and save | The node renders exactly three source handles (`success`/`preflight`/`error`, `[data-handleid]`) with distinct colors and a title mentioning `preflight`; after deleting that edge, Save Policy shows the client's "Unwired ports" warning **and** the server's `must be wired` rejection — the warning does not block the save attempt, it only precedes it |
 
 ## openid-connect — `tests/openid-connect.spec.ts`
@@ -509,6 +511,19 @@ The fixture `system.yaml` enables `admin.mcp` for the whole run with a `read` an
 | E2E-MCP-01 | `initialize` without a token and with Basic Auth; `tools/list` with the read and the write token; `tools/call put_policy` with the read token; `GET /api/policies` with an MCP token | `401` / `401`; the read list has `get_policy` and no `put_*`; the write list has `put_policy`; the read-token write call is a tool error `{"code":"forbidden"}`; the Admin API answers `401` |
 | E2E-MCP-02 | **Browser.** Footer → **Agent** | The dialog shows the endpoint `http://127.0.0.1:19091/mcp`, a Claude Code snippet with `<TOKEN>`, the prompt library (`why_this_port`), and a scope explainer listing every tool name returned by `tools/list` |
 | E2E-MCP-03 | **Browser.** Sandbox-run the first fixture policy, open the trace in Debug, check **Troubleshoot with AI** is offered, click **Copy prompt** | Toast "Copied to clipboard"; the clipboard text is the `troubleshoot_trace` prompt: it starts with `# Troubleshoot \`GET /\``, asks to validate with `validate_policy`, inlines the policy name, and ends with the MCP hint line |
+
+## Sign-in — `tests/login.spec.ts`
+
+Every other spec starts its pages signed in (`storageState` in
+`playwright.config.ts` seeds remembered credentials); these clear it.
+
+| ID | Scenario | Expected |
+|---|---|---|
+| E2E-LOGIN-01 | Open the UI with nothing stored; request `/api/status` with and without `X-Featherbit-Client` | Sign-in form shown, no route list; the marked request gets a 401 **without** `WWW-Authenticate` (no browser dialog), the unmarked one keeps the Basic challenge |
+| E2E-LOGIN-02 | Sign in with a wrong password | "Wrong username or password.", still on the form, nothing stored |
+| E2E-LOGIN-03 | Sign in with the right credentials, then reload | Editor loads with "Signed in as admin" and the default-credentials warning; credentials in `sessionStorage` only; the reload stays signed in |
+| E2E-LOGIN-04 | Sign in with **Remember me**, then **Sign out** and reload | Credentials in `localStorage` only; Sign out returns to the form and clears both storages, and it stays signed out after reload |
+| E2E-LOGIN-05 | With a policy open, make the next call return 401, then sign in on the overlay | "Sign in again" overlays the editor with the username prefilled; the canvas stays mounted throughout and the overlay closes after signing in |
 
 ## Chat (`tests/chat.spec.ts`)
 
