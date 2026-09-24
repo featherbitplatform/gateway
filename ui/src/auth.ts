@@ -118,6 +118,17 @@ export function basicAuth(credentials: string): string {
   return `Basic ${base64Utf8(credentials)}`;
 }
 
+/**
+ * True when the UI was loaded over plain HTTP from anywhere but this machine,
+ * so the Basic Auth credentials the sign-in form sends cross the network
+ * unencrypted. Loopback is exempt: that traffic never leaves the host.
+ */
+export function isInsecureConnection(loc: { protocol: string; hostname: string } = window.location): boolean {
+  if (loc.protocol !== 'http:') return false;
+  const host = loc.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return !(host === 'localhost' || host.endsWith('.localhost') || host === '::1' || /^127\./.test(host));
+}
+
 /** Headers every Admin API call carries: the UI marker, plus Basic auth when signed in. */
 export function authHeaders(credentials: string | null = getCredentials()): Record<string, string> {
   const h: Record<string, string> = { [UI_CLIENT_HEADER]: 'ui' };

@@ -307,6 +307,14 @@ pub struct TlsConfig {
     /// server name to infer from).
     #[serde(default)]
     pub acme: Option<AcmeSlot>,
+    /// `admin.tls` only: serve the admin listener with the data plane's
+    /// `tls.cert_path`/`key_path` (hot-reloaded like any file cert) instead of
+    /// its own. Only the certificate is shared: `min_version` and mTLS
+    /// (`client_ca_path`/`client_cert_required`) stay the admin block's own,
+    /// so a data-plane client CA never locks operators out. Resolved at load
+    /// by [`SystemConfig::resolve_inherited_tls`].
+    #[serde(default)]
+    pub inherit: bool,
 }
 
 /// One SNI-selected certificate for multi-domain TLS termination: an exact or
@@ -619,6 +627,71 @@ impl AcmeConfig {
 }
 
 impl SystemConfig {
+    /// Resolves `admin.tls.inherit` by copying the data plane's certificate
+    /// paths into `admin.tls`, so everything downstream (validation, the
+    /// acceptor, the cert-file watcher) sees an ordinary file-backed slot.
+    /// Run once after loading, before [`Self::validate`].
+    ///
+    /// Errors when `inherit` is set outside `admin.tls`, when there is no
+    /// data-plane `tls` to inherit, when the data plane's default certificate
+    /// is ACME-managed (ACME is not supported on the admin listener), or when
+    /// `admin.tls` also names its own certificate.
+    pub fn resolve_inherited_tls(&mut self) -> Result<(), String> {
+        if self.tls.as_ref().is_some_and(|t| t.inherit) {
+            return Err("tls.inherit is only valid under admin.tls".into());
+        }
+        let Some(admin_tls) = self.admin.as_mut().and_then(|a| a.tls.as_mut()) else {
+            return Ok(());
+        };
+        if !admin_tls.inherit {
+            return Ok(());
+        }
+        if admin_tls.cert_path.is_some()
+            || admin_tls.key_path.is_some()
+            || admin_tls.acme.is_some()
+            || !admin_tls.sni_certs.is_empty()
+        {
+            return Err(
+                "admin.tls.inherit reuses the data-plane certificate; remove admin.tls cert_path/key_path/sni_certs/acme"
+                    .into(),
+            );
+        }
+        let Some(data_tls) = &self.tls else {
+            return Err(
+                "admin.tls.inherit needs a top-level `tls:` block to inherit from; set admin.tls cert_path/key_path instead"
+                    .into(),
+            );
+        };
+        match (&data_tls.cert_path, &data_tls.key_path) {
+            (Some(cert), Some(key)) => {
+                admin_tls.cert_path = Some(cert.clone());
+                admin_tls.key_path = Some(key.clone());
+                Ok(())
+            }
+            _ => Err(
+                "admin.tls.inherit needs a file-based data-plane certificate (tls.cert_path/key_path); ACME is not supported on the admin listener"
+                    .into(),
+            ),
+        }
+    }
+
+    /// The startup warning for an admin listener that serves plain HTTP on a
+    /// reachable interface while the data plane already speaks TLS: Basic
+    /// Auth credentials (the web UI sends them on every call) and the whole
+    /// config would cross the network unencrypted. `None` when admin has TLS,
+    /// the data plane has none, or admin binds a loopback address (the usual
+    /// local or sidecar setup).
+    pub fn plaintext_admin_warning(&self) -> Option<String> {
+        let admin = self.admin.as_ref()?;
+        if admin.tls.is_some() || self.tls.is_none() || is_loopback_bind(&admin.bind) {
+            return None;
+        }
+        Some(format!(
+            "data-plane TLS is enabled but the admin API on {}:{} serves plain HTTP, so admin credentials and config cross the network unencrypted; set `admin.tls: {{ inherit: true }}` to reuse the data-plane certificate (or admin.tls cert_path/key_path), or bind admin to 127.0.0.1",
+            admin.bind, admin.port
+        ))
+    }
+
     /// Fail-fast structural validation, run once after loading `system.yaml`.
     pub fn validate(&self) -> Result<(), String> {
         if let Some(acme) = &self.acme {
@@ -856,6 +929,15 @@ fn default_listener() -> ListenerConfig {
         bind: default_bind(),
         port: default_port(),
     }
+}
+
+/// True for a bind address only reachable from the host itself.
+fn is_loopback_bind(bind: &str) -> bool {
+    let host = bind.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 fn default_bind() -> String {
@@ -1209,6 +1291,60 @@ mod acme_config_tests {
             err.contains("ecdsa-p256") && err.contains("ecdsa-p384"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn admin_tls_inherit_copies_the_data_plane_cert_only() {
+        let mut s = sys(
+            "tls:\n  cert_path: /c.pem\n  key_path: /k.pem\n  client_ca_path: /ca.pem\nadmin:\n  username: a\n  password: b\n  tls:\n    inherit: true\n    min_version: \"1.3\"\n",
+        );
+        s.resolve_inherited_tls().unwrap();
+        s.validate().unwrap();
+        let t = s.admin.unwrap().tls.unwrap();
+        assert_eq!(t.cert_path.as_deref(), Some("/c.pem"));
+        assert_eq!(t.key_path.as_deref(), Some("/k.pem"));
+        assert_eq!(t.min_version, "1.3", "admin keeps its own min_version");
+        assert!(
+            t.client_ca_path.is_none(),
+            "the data-plane client CA is not inherited"
+        );
+    }
+
+    #[test]
+    fn admin_tls_inherit_rejects_unusable_setups() {
+        let cases = [
+            // Nothing to inherit.
+            ("admin:\n  username: a\n  password: b\n  tls:\n    inherit: true\n", "top-level `tls:`"),
+            // Own cert alongside inherit.
+            ("tls:\n  cert_path: /c.pem\n  key_path: /k.pem\nadmin:\n  username: a\n  password: b\n  tls:\n    inherit: true\n    cert_path: /x.pem\n    key_path: /y.pem\n", "remove admin.tls"),
+            // ACME-managed data-plane default cert.
+            ("acme:\n  terms_of_service_agreed: true\ntls:\n  acme:\n    domains: [example.com]\nadmin:\n  username: a\n  password: b\n  tls:\n    inherit: true\n", "file-based"),
+            // inherit on the data plane itself.
+            ("tls:\n  inherit: true\n", "only valid under admin.tls"),
+        ];
+        for (yaml, needle) in cases {
+            let err = sys(yaml).resolve_inherited_tls().unwrap_err();
+            assert!(err.contains(needle), "{yaml}: {err}");
+        }
+    }
+
+    #[test]
+    fn plaintext_admin_warning_only_when_reachable_and_data_plane_has_tls() {
+        let tls = "tls:\n  cert_path: /c.pem\n  key_path: /k.pem\n";
+        let admin = |extra: &str| format!("admin:\n  username: a\n  password: b\n{extra}");
+        assert!(sys(&format!("{tls}{}", admin("")))
+            .plaintext_admin_warning()
+            .unwrap()
+            .contains("inherit: true"));
+        for quiet in [
+            format!("{tls}{}", admin("  bind: 127.0.0.1\n")),
+            format!("{tls}{}", admin("  bind: \"::1\"\n")),
+            format!("{tls}{}", admin("  bind: localhost\n")),
+            format!("{tls}{}", admin("  tls:\n    inherit: true\n")),
+            admin(""),
+        ] {
+            assert!(sys(&quiet).plaintext_admin_warning().is_none(), "{quiet}");
+        }
     }
 
     #[test]

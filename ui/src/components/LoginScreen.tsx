@@ -12,8 +12,16 @@
  * @module components/LoginScreen
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { LogIn } from 'lucide-react';
-import { getCredentials, getUsername, onSignedOut, onUnauthorized, reportSignedIn, saveCredentials } from '../auth';
+import { LogIn, TriangleAlert } from 'lucide-react';
+import {
+  getCredentials,
+  getUsername,
+  isInsecureConnection,
+  onSignedOut,
+  onUnauthorized,
+  reportSignedIn,
+  saveCredentials,
+} from '../auth';
 import { api, verifyCredentials } from '../api/client';
 
 type GateState = 'checking' | 'signed-out' | 'signed-in';
@@ -204,6 +212,18 @@ function LoginForm({
         <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
         Remember me on this browser
       </label>
+      {isInsecureConnection() && (
+        <p
+          role="note"
+          data-testid="insecure-connection"
+          className="flex items-start gap-1.5"
+          style={{ margin: 0, fontSize: 'var(--text-2xs)', color: 'var(--warning, var(--error))' }}
+        >
+          <TriangleAlert size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+          This connection is not encrypted — your password will be sent in clear text. Enable admin.tls (e.g.{' '}
+          <code>inherit: true</code>) to serve the admin API over HTTPS.
+        </p>
+      )}
       {error && (
         <p role="alert" style={{ margin: 0, fontSize: 'var(--text-xs)', color: 'var(--error)' }}>
           {error}
