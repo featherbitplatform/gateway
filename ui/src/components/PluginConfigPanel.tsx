@@ -20,6 +20,8 @@ import { getPluginMeta } from '../pluginMeta';
 import { getPluginConfigSchema } from '../pluginConfig';
 import type { FieldOption } from '../pluginConfig';
 import { SchemaForm } from './SchemaForm';
+import { VarLegend } from './VarLegend';
+import { useContextSuggestions } from '../varSuggestions';
 
 interface PluginConfigPanelProps {
   /** The shared config being edited (a copy; edits are local until Save). */
@@ -38,6 +40,17 @@ interface PluginConfigPanelProps {
 export function PluginConfigPanel({ def, onSave, storeOptions }: PluginConfigPanelProps) {
   const [description, setDescription] = useState(def.description ?? '');
   const [config, setConfig] = useState<Record<string, unknown>>(def.config ?? {});
+  // Same `{{`/`${` suggestions as the node inspector, names only: a shared
+  // config is not tied to one node, so there is no trace to preview from.
+  const [legendOpen, setLegendOpen] = useState(false);
+  const { suggestions, availability, catalog } = useContextSuggestions({
+    policyName: null,
+    nodeId: null,
+    predecessorId: null,
+    kind: 'shared-config',
+    debugEnabled: false,
+    captureBodies: false,
+  });
   // JSON-fallback buffer (schema-less types only). Seeded once from
   // `def.config`; kept in sync with the textarea on every keystroke so Save
   // reads exactly what is on screen.
@@ -133,6 +146,7 @@ export function PluginConfigPanel({ def, onSave, storeOptions }: PluginConfigPan
             schema={schema}
             value={config}
             onChange={setConfig}
+            varContext={{ suggestions, availability, onOpenLegend: () => setLegendOpen(true) }}
             dynamicOptions={{ stores: storeOptions }}
           />
         ) : (
@@ -197,6 +211,13 @@ export function PluginConfigPanel({ def, onSave, storeOptions }: PluginConfigPan
           Save Plugin Config
         </button>
       </div>
+      <VarLegend
+        open={legendOpen}
+        onClose={() => setLegendOpen(false)}
+        catalog={catalog}
+        suggestions={suggestions}
+        availability={availability}
+      />
     </div>
   );
 }

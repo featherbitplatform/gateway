@@ -4,6 +4,7 @@
 import {test, expect, type Page} from '@playwright/test';
 
 import {adminApi, dataPlane, deleteRouteIfPresent} from '../helpers/admin';
+import {openLibrary} from '../helpers/ui';
 
 /** Opens a route's policy on the canvas and waits for the graph to render. */
 async function openRoute(page: Page, route: string) {
@@ -291,6 +292,41 @@ test.describe('Plugin configs', () => {
     await api.delete('/api/routes/pc-ext');
     await api.delete('/api/policies/pc-ext-policy');
     await api.delete('/api/plugin-configs/e2e-extracted');
+    await api.dispose();
+  });
+
+  test('E2E-PC-04: the shared config editor offers env-var and template suggestions', async ({page}) => {
+    const api = await adminApi();
+    const def = {
+      name: 'e2e-tpl-shared',
+      type: 'error-handler',
+      config: {status_code: 502, content_type: 'application/json', body_template: '{"error": "{{error.code}}"}'},
+    };
+    expect((await api.put('/api/plugin-configs/e2e-tpl-shared', {data: def})).ok()).toBeTruthy();
+
+    await page.goto('/');
+    await openLibrary(page, 'Plugin configs');
+    await page.getByText('e2e-tpl-shared', {exact: true}).click();
+
+    // body_template is `template: 'env-only'`: `{{` offers environment names.
+    const body = page.locator('textarea').first();
+    await body.click();
+    await body.fill('{{env.LOG');
+    await body.press('End');
+    const popover = page.getByTestId('var-popover');
+    await expect(popover).toBeVisible();
+    // LOG_LEVEL is set on the gateway's launch env (playwright.config.ts).
+    await expect(popover.getByText('env.LOG_LEVEL', {exact: true})).toBeVisible();
+
+    // The numeric status code takes a placeholder as well.
+    const status = page.getByRole('textbox', {name: 'Status code'});
+    await status.fill('${E2E_STATUS:-503}');
+    await page.getByRole('button', {name: 'Save Plugin Config'}).click();
+    await expect
+      .poll(async () => ((await (await api.get('/api/plugin-configs/e2e-tpl-shared')).json()) as typeof def).config.status_code)
+      .toBe('${E2E_STATUS:-503}');
+
+    await api.delete('/api/plugin-configs/e2e-tpl-shared');
     await api.dispose();
   });
 });

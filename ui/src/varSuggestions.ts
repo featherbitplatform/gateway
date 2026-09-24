@@ -116,7 +116,8 @@ export type Availability =
   | 'debug-off'
   | 'no-incoming-edge'
   | 'no-trace'
-  | 'supernode-definition';
+  | 'supernode-definition'
+  | 'shared-config';
 
 /**
  * Exact copy for each non-`ok` {@link Availability}, shown in both
@@ -131,6 +132,7 @@ export const AVAILABILITY_MESSAGE: Record<Exclude<Availability, 'ok'>, string> =
   'no-incoming-edge': 'No incoming edge — connect this node to preview values',
   'no-trace': 'No trace yet — send a request through this route',
   'supernode-definition': 'Live values unavailable while editing a supernode definition',
+  'shared-config': 'Environment variables and template paths by name; request values need a node, so there is no live preview here',
 };
 
 /** One row offered by the autocomplete popover / var legend. */
@@ -816,7 +818,7 @@ export function useContextSuggestions(args: {
   policyName: string | null;
   nodeId: string | null;
   predecessorId: string | null | undefined;
-  kind: 'policy' | 'supernode';
+  kind: 'policy' | 'supernode' | 'shared-config';
   debugEnabled: boolean;
   captureBodies: boolean;
 }): { suggestions: Suggestion[]; availability: Availability; catalog: VarEntry[] } {
@@ -848,6 +850,12 @@ export function useContextSuggestions(args: {
 
       if (kind === 'supernode') {
         setAvailability('supernode-definition');
+        setSuggestions(namesOnly());
+        return;
+      }
+      // A shared config is not one node: there is no trace step to preview.
+      if (kind === 'shared-config') {
+        setAvailability('shared-config');
         setSuggestions(namesOnly());
         return;
       }
