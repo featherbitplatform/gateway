@@ -10,6 +10,7 @@ import { Plus, RotateCcw, X } from 'lucide-react';
 import type { FieldOption, FieldSchema } from '../pluginConfig';
 import type { Availability, Suggestion } from '../varSuggestions';
 import { applyEdit, classifyKey, displayValue } from '../configInheritance';
+import { NumberInput } from './NumberInput';
 import { VarInput } from './VarInput';
 import { ConditionBuilder } from './ConditionBuilder';
 
@@ -287,8 +288,12 @@ function Switch({
  *   appends a dynamically-supplied list (from the `dynamicOptions` prop)
  *   after any static `options`.
  * - `switch` — boolean toggle with optional inline `switchLabel`; serializes to a boolean.
+ * - `number` — {@link NumberInput}: a number, or one `${NAME}` /
+ *   `${NAME:-default}` env placeholder (stored as that string; the backend
+ *   resolves and types it at compile time); empty clears the key.
  * - `list` — add/remove rows of a single scalar input (`field.item.type` picks
- *   text or number); serializes to an array of strings or numbers
+ *   text or number); serializes to an array of strings or numbers (a number
+ *   row also accepts an env placeholder)
  *   (e.g. cors `allow_origins` → `["https://app.example.com"]`). New rows start
  *   as `''` (text) or `0` (number).
  * - `objects` — add/remove cards, each rendering the sub-inputs in `field.fields`;
@@ -358,13 +363,11 @@ export function SchemaForm({
 
       case 'number':
         return (
-          <input
-            type="number"
-            value={(current as number) ?? (field.default as number) ?? ''}
+          <NumberInput
+            value={current ?? field.default}
+            aria-label={field.label}
             placeholder={field.placeholder}
-            onChange={(e) =>
-              set(field.key, e.target.value === '' ? undefined : Number(e.target.value))
-            }
+            onChange={(v) => set(field.key, v)}
             style={inputStyle}
           />
         );
@@ -458,15 +461,26 @@ export function SchemaForm({
                     legacyDollar={field.item?.legacyDollar}
                     {...varContext}
                   />
+                ) : field.item?.type === 'number' ? (
+                  <NumberInput
+                    value={item}
+                    aria-label={`${field.addLabel ?? field.label} ${i + 1}`}
+                    placeholder={field.item?.placeholder}
+                    onChange={(v) => {
+                      const next = [...items];
+                      next[i] = v ?? 0;
+                      set(field.key, next);
+                    }}
+                    style={inputStyle}
+                  />
                 ) : (
                   <input
-                    type={field.item?.type === 'number' ? 'number' : 'text'}
-                    value={(item as string | number) ?? ''}
+                    type="text"
+                    value={(item as string) ?? ''}
                     placeholder={field.item?.placeholder}
                     onChange={(e) => {
                       const next = [...items];
-                      next[i] =
-                        field.item?.type === 'number' ? Number(e.target.value) : e.target.value;
+                      next[i] = e.target.value;
                       set(field.key, next);
                     }}
                     style={inputStyle}
@@ -536,24 +550,27 @@ export function SchemaForm({
                             legacyDollar={sub.legacyDollar}
                             {...varContext}
                           />
+                        ) : sub.type === 'number' ? (
+                          <NumberInput
+                            value={item[sub.key]}
+                            aria-label={`${field.itemLabel ?? field.label} ${i + 1} ${sub.label}`}
+                            placeholder={sub.placeholder}
+                            onChange={(v) => {
+                              const next = items.map((it, j) =>
+                                j === i ? { ...it, [sub.key]: v } : it
+                              );
+                              set(field.key, next);
+                            }}
+                            style={inputStyle}
+                          />
                         ) : (
                           <input
-                            type={sub.type === 'number' ? 'number' : 'text'}
-                            value={(item[sub.key] as string | number) ?? ''}
+                            type="text"
+                            value={(item[sub.key] as string) ?? ''}
                             placeholder={sub.placeholder}
                             onChange={(e) => {
                               const next = items.map((it, j) =>
-                                j === i
-                                  ? {
-                                      ...it,
-                                      [sub.key]:
-                                        sub.type === 'number'
-                                          ? e.target.value === ''
-                                            ? undefined
-                                            : Number(e.target.value)
-                                          : e.target.value,
-                                    }
-                                  : it
+                                j === i ? { ...it, [sub.key]: e.target.value } : it
                               );
                               set(field.key, next);
                             }}

@@ -10,7 +10,7 @@
  */
 import {test, expect, type Page, type APIRequestContext} from '@playwright/test';
 
-import {adminApi, dataPlane} from '../helpers/admin';
+import {adminApi, dataPlane, waitForDataPlane} from '../helpers/admin';
 
 type PolicyNode = {id: string; type: string; config?: Record<string, unknown>};
 type PolicyEdge = {from: string; to: string};
@@ -65,7 +65,7 @@ test.describe('Editor round-trip', () => {
     await openRt(page);
 
     await page.locator('.react-flow__node', {hasText: 'error-handler'}).first().click();
-    const statusField = page.locator('input[type="number"]').first();
+    const statusField = page.getByRole('textbox', {name: 'Status code'});
     await expect(statusField).toBeVisible();
     await statusField.fill('507');
     await save(page);
@@ -77,6 +77,34 @@ test.describe('Editor round-trip', () => {
     expect(typeof handler.config!.status_code).toBe('number');
 
     await api.dispose();
+  });
+
+  test('E2E-UI-26: a number field shows and accepts an env placeholder', async ({page}) => {
+    const api = await adminApi();
+    const traffic = await dataPlane();
+    await openRt(page);
+
+    await page.locator('.react-flow__node', {hasText: 'echo-backend'}).first().click();
+    const port = page.getByRole('textbox', {name: 'Target 1 Port'});
+    // The seed stores `port: ${ECHO_PORT:-3010}`; a number input showed it as empty.
+    await expect(port).toHaveValue('${ECHO_PORT:-3010}');
+
+    // A half-typed placeholder is flagged and never stored...
+    await port.fill('${ECHO_POR');
+    await expect(port).toHaveAttribute('aria-invalid', 'true');
+    // ...a whole one is stored as the string the backend resolves at compile time.
+    await port.fill('${ECHO_PORT}');
+    await expect(port).not.toHaveAttribute('aria-invalid', 'true');
+    await save(page);
+
+    const policy = await getPolicy(api, 'rt-policy');
+    const targets = policy.nodes.find((n) => n.id === 'echo-backend')!.config!.targets as {port: unknown}[];
+    expect(targets[0].port).toBe('${ECHO_PORT}');
+    // ECHO_PORT is set for the gateway process, so the placeholder resolves and routes.
+    await waitForDataPlane(traffic, '/rt/env-port', (status) => status === 200);
+
+    await api.dispose();
+    await traffic.dispose();
   });
 
   test('E2E-UI-10: a switch is saved as a JSON boolean', async ({page}) => {
