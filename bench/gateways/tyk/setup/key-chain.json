@@ -1,0 +1,23 @@
+{
+  "org_id": "default",
+  "rate": 1000000000,
+  "per": 1,
+  "quota_max": -1,
+  "expires": 0,
+  "access_rights": {
+    "bench": {
+      "api_id": "bench",
+      "api_name": "bench",
+      "versions": [
+        "Default"
+      ]
+    },
+    "limited": {
+      "api_id": "limited",
+      "api_name": "limited",
+      "versions": [
+        "Default"
+      ]
+    }
+  }
+}

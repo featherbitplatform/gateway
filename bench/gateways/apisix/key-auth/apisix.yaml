@@ -1,0 +1,19 @@
+upstreams:
+  - id: 1
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    nodes:
+      "@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@": 1
+consumers:
+  - username: bench
+    plugins:
+      key-auth:
+        key: "@@API_KEY@@"
+routes:
+  - id: bench
+    uri: /bench/*
+    upstream_id: 1
+    plugins:
+      key-auth: {}
+#END

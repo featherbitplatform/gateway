@@ -42,3 +42,7 @@ sast-out/
 
 # Superpowers SDD workspace (per-plan ledgers, briefs, review packages)
 .superpowers/
+
+# Benchmark suite run output (bench/README.md)
+bench/results/
+__pycache__/

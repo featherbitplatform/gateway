@@ -1,0 +1,28 @@
+# Standalone data plane: routes from conf/apisix.yaml, no etcd, no Admin API.
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml
+
+apisix:
+  node_listen:
+    - 8000
+  enable_admin: false
+  enable_http2: true   # APISIX >= 3.9: set here, not per ssl.listen entry
+  ssl:
+    enable: true
+    listen:
+      - port: 8443
+    ssl_protocols: TLSv1.3
+    fallback_sni: bench.local
+
+nginx_config:
+  worker_processes: @@CORES@@
+  error_log_level: warn
+  http:
+    enable_access_log: false
+    keepalive_timeout: 300s
+    upstream:
+      keepalive: 512
+      keepalive_requests: 1000000
+      keepalive_timeout: 300s

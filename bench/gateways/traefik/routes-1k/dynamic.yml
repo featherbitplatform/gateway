@@ -1,0 +1,13 @@
+http:
+  routers:
+@@REPEAT 1000@@
+    r@@I@@:
+      rule: "PathPrefix(`/r@@I@@/`)"
+      entryPoints: [web]
+      service: upstream
+@@END@@
+  services:
+    upstream:
+      loadBalancer:
+        servers:
+          - url: "http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@"

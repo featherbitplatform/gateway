@@ -1,0 +1,5 @@
+displayName: Bench script
+type: middleware
+import: github.com/featherbitplatform/benchscript
+summary: Benchmark scripting scenario - derives X-Bench-Script from X-Bench-In.
+testData: {}

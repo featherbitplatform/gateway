@@ -1,0 +1,47 @@
+upstreams:
+  - id: 1
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    nodes:
+      "@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@": 1
+consumers:
+  - username: bench
+    plugins:
+      key-auth:
+        key: "@@API_KEY@@"
+routes:
+  - id: bench
+    uri: /bench/*
+    upstream_id: 1
+    plugins:
+      key-auth: {}
+      limit-count:
+        count: 100000000
+        time_window: 60
+        key_type: var
+        key: remote_addr
+        policy: local
+        rejected_code: 429
+      proxy-rewrite:
+        headers:
+          set:
+            X-Bench-Added: "1"
+            X-Bench-Added2: "2"
+      response-rewrite:
+        headers:
+          remove:
+            - X-Bench-Remove
+  - id: limited
+    uri: /limited/*
+    upstream_id: 1
+    plugins:
+      key-auth: {}
+      limit-count:
+        count: 1
+        time_window: 60
+        key_type: var
+        key: remote_addr
+        policy: local
+        rejected_code: 429
+#END

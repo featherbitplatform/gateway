@@ -1,0 +1,198 @@
+# Scenario catalog for the competitive benchmark (spec §5, §6).
+# @@API_KEY@@ / @@JWT@@ / @@JWT_TAMPERED@@ are filled in at run time by
+# benchlib/tokens.py. Probes run before any measurement; a failing probe marks
+# the cell `invalid` and it is never measured.
+
+[params]
+slo_p99_ms = 10.0
+max_error_rate = 0.001
+connections = 64
+ceiling_seconds = 10
+warmup_seconds = 30
+warmup_fraction = 0.2
+search_step_seconds = 20
+search_low = 0.1
+search_high = 1.2
+search_tolerance = 0.02
+ladder_seconds = 60
+ladder = [1000, 5000, 10000, 25000, 50000, 100000, 200000]
+reps = 5
+saturation_threshold = 0.85
+boot_timeout_seconds = 60
+
+[[scenario]]
+id = "core.proxy"
+family = "core"
+tool = "wrk2"
+scheme = "http"
+path = "/bench/1k"
+body_bytes = 1024
+  [[scenario.probe]]
+  expect_headers = { "x-bench-remove" = "1" }
+  expect_body_bytes = 1024
+
+[[scenario]]
+id = "core.routes-1k"
+family = "core"
+tool = "wrk2"
+scheme = "http"
+path = "/r999/1k"
+body_bytes = 1024
+  [[scenario.probe]]
+  expect_body_bytes = 1024
+  [[scenario.probe]]
+  path = "/r000/1k"
+  expect_body_bytes = 1024
+  [[scenario.probe]]
+  path = "/r500/1k"
+  expect_body_bytes = 1024
+  [[scenario.probe]]
+  path = "/nomatch/1k"
+  expect_status = [404]
+
+[[scenario]]
+id = "plugin.key-auth"
+family = "plugins"
+tool = "wrk2"
+scheme = "http"
+path = "/bench/1k"
+body_bytes = 1024
+headers = { "apikey" = "@@API_KEY@@" }
+  [[scenario.probe]]
+  headers = { "apikey" = "@@API_KEY@@" }
+  expect_body_bytes = 1024
+  [[scenario.probe]]   # no credentials: any rejection (Tyk answers 400 "Authorization field missing")
+  expect_status = [400, 401, 403]
+  [[scenario.probe]]
+  headers = { "apikey" = "wrong-key" }
+  expect_status = [401, 403]
+
+[[scenario]]
+id = "plugin.jwt"
+family = "plugins"
+tool = "wrk2"
+scheme = "http"
+path = "/bench/1k"
+body_bytes = 1024
+headers = { "Authorization" = "Bearer @@JWT@@" }
+  [[scenario.probe]]
+  headers = { "Authorization" = "Bearer @@JWT@@" }
+  expect_body_bytes = 1024
+  [[scenario.probe]]   # no credentials: any rejection (Tyk answers 400 "Authorization field missing")
+  expect_status = [400, 401, 403]
+  [[scenario.probe]]
+  headers = { "Authorization" = "Bearer @@JWT_TAMPERED@@" }
+  expect_status = [401, 403]
+
+[[scenario]]
+id = "plugin.rate-limit"
+family = "plugins"
+tool = "wrk2"
+scheme = "http"
+path = "/bench/1k"
+body_bytes = 1024
+  [[scenario.probe]]
+  expect_body_bytes = 1024
+  [[scenario.probe]]
+  path = "/limited/1k"
+  expect_body_bytes = 1024
+  [[scenario.probe]]
+  path = "/limited/1k"
+  expect_status = [429]
+
+[[scenario]]
+id = "plugin.header-rewrite"
+family = "plugins"
+tool = "wrk2"
+scheme = "http"
+path = "/bench/1k"
+body_bytes = 1024
+  [[scenario.probe]]
+  expect_headers = { "x-bench-echo-added" = "1", "x-bench-echo-added2" = "2" }
+  expect_absent = ["x-bench-remove"]
+  expect_body_bytes = 1024
+
+[[scenario]]
+id = "plugin.chain"
+family = "plugins"
+tool = "wrk2"
+scheme = "http"
+path = "/bench/1k"
+body_bytes = 1024
+headers = { "apikey" = "@@API_KEY@@" }
+  [[scenario.probe]]
+  headers = { "apikey" = "@@API_KEY@@" }
+  expect_headers = { "x-bench-echo-added" = "1", "x-bench-echo-added2" = "2" }
+  expect_absent = ["x-bench-remove"]
+  expect_body_bytes = 1024
+  [[scenario.probe]]   # no credentials: any rejection (Tyk answers 400 "Authorization field missing")
+  expect_status = [400, 401, 403]
+  [[scenario.probe]]
+  path = "/limited/1k"
+  headers = { "apikey" = "@@API_KEY@@" }
+  expect_body_bytes = 1024
+  [[scenario.probe]]
+  path = "/limited/1k"
+  headers = { "apikey" = "@@API_KEY@@" }
+  expect_status = [429]
+
+[[scenario]]
+id = "payload.64k"
+family = "payload"
+tool = "wrk2"
+scheme = "http"
+path = "/bench/64k"
+body_bytes = 65536
+  [[scenario.probe]]
+  expect_body_bytes = 65536
+
+[[scenario]]
+id = "payload.1m"
+family = "payload"
+tool = "wrk2"
+scheme = "http"
+path = "/bench/1m"
+body_bytes = 1048576
+  [[scenario.probe]]
+  expect_body_bytes = 1048576
+
+[[scenario]]
+id = "proto.tls"
+family = "protocol"
+tool = "wrk2"
+scheme = "https"
+path = "/bench/1k"
+body_bytes = 1024
+  [[scenario.probe]]
+  kind = "tls13"
+  [[scenario.probe]]
+  expect_body_bytes = 1024
+
+[[scenario]]
+id = "proto.h2"
+family = "protocol"
+tool = "oha"
+scheme = "https"
+path = "/bench/1k"
+body_bytes = 1024
+  [[scenario.probe]]
+  kind = "alpn-h2"
+  [[scenario.probe]]
+  expect_body_bytes = 1024
+
+[[scenario]]
+id = "script.header"
+family = "scripting"
+tool = "wrk2"
+scheme = "http"
+path = "/bench/1k"
+body_bytes = 1024
+headers = { "X-Bench-In" = "abc" }
+  [[scenario.probe]]
+  headers = { "X-Bench-In" = "abc" }
+  expect_headers = { "x-bench-echo-script" = "ABC-3" }
+  expect_body_bytes = 1024
+  [[scenario.probe]]   # second input: a static header rewrite cannot pass both
+  headers = { "X-Bench-In" = "hello" }
+  expect_headers = { "x-bench-echo-script" = "HELLO-5" }
+  expect_body_bytes = 1024

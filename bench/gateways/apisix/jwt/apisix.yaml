@@ -1,0 +1,21 @@
+upstreams:
+  - id: 1
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    nodes:
+      "@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@": 1
+consumers:
+  - username: bench
+    plugins:
+      jwt-auth:
+        key: "@@JWT_ISSUER@@"
+        secret: "@@JWT_SECRET@@"
+        algorithm: HS256
+routes:
+  - id: bench
+    uri: /bench/*
+    upstream_id: 1
+    plugins:
+      jwt-auth: {}
+#END

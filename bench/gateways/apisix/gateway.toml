@@ -1,0 +1,24 @@
+name = "apisix"
+image = "apache/apisix:3.18.0-debian@sha256:84e6b5e787e9f889ebff88161cb9a16599bafcffa236c6b54c7f779a0655940d"
+config_dir = "/usr/local/apisix/conf"
+common = "common"
+ports = { plain = 8000, tls = 8443 }
+
+[env]
+APISIX_STAND_ALONE = "true"
+
+[configs]
+"core.proxy" = "proxy"
+"payload.64k" = "proxy"
+"payload.1m" = "proxy"
+"proto.tls" = "proxy"
+"proto.h2" = "proxy"
+"core.routes-1k" = "routes-1k"
+"plugin.key-auth" = "key-auth"
+"plugin.jwt" = "jwt"
+"plugin.rate-limit" = "rate-limit"
+"plugin.header-rewrite" = "header-rewrite"
+"plugin.chain" = "chain"
+"script.header" = "script"
+
+[na]

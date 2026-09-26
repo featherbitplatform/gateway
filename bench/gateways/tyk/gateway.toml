@@ -1,0 +1,45 @@
+name = "tyk"
+image = "tykio/tyk-gateway:v5.14.0@sha256:d44d8c9adef92a522f258828423a2bc2f2e08dbcdf65ad67452ffbab139c8f3d"
+config_dir = "/opt/tyk-gateway/bench"
+common = "common"
+command = ["--conf=/opt/tyk-gateway/bench/tyk.conf"]
+ports = { plain = 8000, tls = 8443 }
+
+[env]
+GOMAXPROCS = "@@CORES@@"
+
+[[dependency]]
+name = "redis"
+image = "redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499"
+port = 6379
+command = ["redis-server", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+
+[[setup]]
+method = "POST"
+path = "/tyk/keys/@@API_KEY@@"
+scenarios = ["plugin.key-auth"]
+headers = { "x-tyk-authorization" = "@@TYK_SECRET@@", "content-type" = "application/json" }
+body_file = "setup/key.json"
+
+[[setup]]
+method = "POST"
+path = "/tyk/keys/@@API_KEY@@"
+scenarios = ["plugin.chain"]
+headers = { "x-tyk-authorization" = "@@TYK_SECRET@@", "content-type" = "application/json" }
+body_file = "setup/key-chain.json"
+
+[configs]
+"core.proxy" = "proxy"
+"payload.64k" = "proxy"
+"payload.1m" = "proxy"
+"proto.tls" = "tls"
+"proto.h2" = "tls"
+"core.routes-1k" = "routes-1k"
+"plugin.key-auth" = "key-auth"
+"plugin.jwt" = "jwt"
+"plugin.rate-limit" = "rate-limit"
+"plugin.header-rewrite" = "header-rewrite"
+"plugin.chain" = "chain"
+"script.header" = "script"
+
+[na]

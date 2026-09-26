@@ -1,0 +1,14 @@
+upstreams:
+  - id: 1
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    nodes:
+      "@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@": 1
+routes:
+@@REPEAT 1000@@
+  - id: r@@I@@
+    uri: /r@@I@@/*
+    upstream_id: 1
+@@END@@
+#END

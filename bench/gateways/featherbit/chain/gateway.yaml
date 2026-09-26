@@ -1,0 +1,122 @@
+routes:
+  - name: bench
+    match:
+      path: /bench/*
+    policy: chain
+  - name: limited
+    match:
+      path: /limited/*
+    policy: chain-probe
+
+policies:
+  - name: chain
+    nodes:
+      - id: listener
+        type: listener
+      - id: auth
+        type: key-auth
+        config:
+          keys: ["@@API_KEY@@"]
+          header_name: apikey
+      - id: limit
+        type: limit-count
+        config:
+          count: 100000000
+          time_window: 60
+          key: "$remote_addr"
+          policy: local
+          group: bench
+          rejected_code: 429
+      - id: add-headers
+        type: proxy-rewrite
+        config:
+          phase: request
+          add_headers:
+            x-bench-added: "1"
+            x-bench-added2: "2"
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: "@@UPSTREAM_HOST@@"
+              port: @@UPSTREAM_PORT@@
+      - id: strip-header
+        type: proxy-rewrite
+        config:
+          phase: response
+          remove_headers: [x-bench-remove]
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: auth.in
+      - from: auth.success
+        to: limit.in
+      - from: auth.denied
+        to: client.in
+      - from: limit.success
+        to: add-headers.in
+      - from: limit.limited
+        to: client.in
+      - from: add-headers.success
+        to: backend.in
+      - from: backend.success
+        to: strip-header.in
+      - from: strip-header.success
+        to: client.in
+
+  - name: chain-probe
+    nodes:
+      - id: listener
+        type: listener
+      - id: auth
+        type: key-auth
+        config:
+          keys: ["@@API_KEY@@"]
+          header_name: apikey
+      - id: limit
+        type: limit-count
+        config:
+          count: 1
+          time_window: 60
+          key: "$remote_addr"
+          policy: local
+          group: probe
+          rejected_code: 429
+      - id: add-headers
+        type: proxy-rewrite
+        config:
+          phase: request
+          add_headers:
+            x-bench-added: "1"
+            x-bench-added2: "2"
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: "@@UPSTREAM_HOST@@"
+              port: @@UPSTREAM_PORT@@
+      - id: strip-header
+        type: proxy-rewrite
+        config:
+          phase: response
+          remove_headers: [x-bench-remove]
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: auth.in
+      - from: auth.success
+        to: limit.in
+      - from: auth.denied
+        to: client.in
+      - from: limit.success
+        to: add-headers.in
+      - from: limit.limited
+        to: client.in
+      - from: add-headers.success
+        to: backend.in
+      - from: backend.success
+        to: strip-header.in
+      - from: strip-header.success
+        to: client.in

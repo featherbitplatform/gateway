@@ -1,0 +1,31 @@
+upstreams:
+  - id: 1
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    nodes:
+      "@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@": 1
+routes:
+  - id: bench
+    uri: /bench/*
+    upstream_id: 1
+    plugins:
+      limit-count:
+        count: 100000000
+        time_window: 60
+        key_type: var
+        key: remote_addr
+        policy: local
+        rejected_code: 429
+  - id: limited
+    uri: /limited/*
+    upstream_id: 1
+    plugins:
+      limit-count:
+        count: 1
+        time_window: 60
+        key_type: var
+        key: remote_addr
+        policy: local
+        rejected_code: 429
+#END

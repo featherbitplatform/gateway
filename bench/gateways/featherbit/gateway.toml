@@ -1,0 +1,30 @@
+# Featherbit. Dev runs build the current checkout; publishable runs pass the
+# released image instead:  bench.py run --image featherbit=featherbit/featherbit:<tag>
+name = "featherbit"
+image = "featherbit-bench/featherbit:dev"
+build = "../../.."
+build_requires = ["ui/dist"]
+build_hint = "The Dockerfile copies ui/dist: run `npm --prefix ui ci && npm --prefix ui run build` first, or pass --image featherbit=featherbit/featherbit:<tag>."
+config_dir = "/etc/featherbit"
+common = "common"
+command = ["--system-config", "/etc/featherbit/system.yaml", "--gateway-config", "/etc/featherbit/gateway.yaml"]
+ports = { plain = 8000, tls = 8443 }
+
+[env]
+TOKIO_WORKER_THREADS = "@@CORES@@"
+
+[configs]
+"core.proxy" = "proxy"
+"payload.64k" = "proxy"
+"payload.1m" = "proxy"
+"proto.tls" = "tls"
+"proto.h2" = "tls"
+"core.routes-1k" = "routes-1k"
+"plugin.key-auth" = "key-auth"
+"plugin.jwt" = "jwt"
+"plugin.rate-limit" = "rate-limit"
+"plugin.header-rewrite" = "header-rewrite"
+"plugin.chain" = "chain"
+"script.header" = "script"
+
+[na]

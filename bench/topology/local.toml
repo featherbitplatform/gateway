@@ -1,0 +1,20 @@
+# One host (laptop or a single Linux box). Each role is pinned to disjoint CPUs
+# with `docker --cpuset-cpus`; on Docker Desktop the ids are the WSL2 VM's CPUs.
+# Results from this topology are never publishable (bench/README.md).
+kind = "local"
+network = "featherbit-bench"
+
+[published_ports]   # host ports the orchestrator probes through
+plain = 18000
+tls = 18443
+upstream = 18080
+
+[profiles.1]
+gateway = "0"
+upstream = "6-7"
+loadgen = "1-5"
+
+[profiles.4]
+gateway = "0-3"
+upstream = "4-5"
+loadgen = "6-7"

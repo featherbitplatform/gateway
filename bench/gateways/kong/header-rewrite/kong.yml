@@ -1,0 +1,17 @@
+_format_version: "3.0"
+services:
+  - name: bench
+    url: http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@
+    routes:
+      - name: bench
+        paths: ["/bench/"]
+        strip_path: false
+        plugins:
+          - name: request-transformer
+            config:
+              add:
+                headers: ["X-Bench-Added:1", "X-Bench-Added2:2"]
+          - name: response-transformer
+            config:
+              remove:
+                headers: ["X-Bench-Remove"]

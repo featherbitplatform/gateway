@@ -1,0 +1,22 @@
+# Baseline: the load generator hits the upstream directly, with no gateway in
+# between. It proves the upstream is not the bottleneck and anchors the
+# report's overhead view. Expect it to be flagged `upstream-bound`: its
+# ceiling IS the upstream.
+name = "direct"
+kind = "direct"
+
+[configs]
+"core.proxy" = ""
+"payload.64k" = ""
+"payload.1m" = ""
+
+[na]
+"core.routes-1k" = "Baseline: no gateway, no routing."
+"plugin.key-auth" = "Baseline: no gateway, no plugins."
+"plugin.jwt" = "Baseline: no gateway, no plugins."
+"plugin.rate-limit" = "Baseline: no gateway, no plugins."
+"plugin.header-rewrite" = "Baseline: no gateway, no plugins."
+"plugin.chain" = "Baseline: no gateway, no plugins."
+"proto.tls" = "Baseline: the upstream speaks plaintext only."
+"proto.h2" = "Baseline: the upstream speaks plaintext only."
+"script.header" = "Baseline: no gateway, no scripting."

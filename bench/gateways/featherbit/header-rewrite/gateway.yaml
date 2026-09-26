@@ -1,0 +1,40 @@
+routes:
+  - name: bench
+    match:
+      path: /bench/*
+    policy: headers
+
+policies:
+  - name: headers
+    nodes:
+      - id: listener
+        type: listener
+      - id: add-headers
+        type: proxy-rewrite
+        config:
+          phase: request
+          add_headers:
+            x-bench-added: "1"
+            x-bench-added2: "2"
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: "@@UPSTREAM_HOST@@"
+              port: @@UPSTREAM_PORT@@
+      - id: strip-header
+        type: proxy-rewrite
+        config:
+          phase: response
+          remove_headers: [x-bench-remove]
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: add-headers.in
+      - from: add-headers.success
+        to: backend.in
+      - from: backend.success
+        to: strip-header.in
+      - from: strip-header.success
+        to: client.in

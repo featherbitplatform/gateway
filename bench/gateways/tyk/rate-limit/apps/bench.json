@@ -1,0 +1,33 @@
+{
+  "name": "bench",
+  "api_id": "bench",
+  "org_id": "default",
+  "active": true,
+  "use_keyless": true,
+  "definition": {
+    "location": "header",
+    "key": "x-api-version"
+  },
+  "version_data": {
+    "not_versioned": true,
+    "default_version": "Default",
+    "versions": {
+      "Default": {
+        "name": "Default",
+        "use_extended_paths": true
+      }
+    }
+  },
+  "proxy": {
+    "listen_path": "/bench/",
+    "target_url": "http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@/bench/",
+    "strip_listen_path": true
+  },
+  "disable_rate_limit": false,
+  "disable_quota": true,
+  "do_not_track": true,
+  "global_rate_limit": {
+    "rate": 100000000,
+    "per": 60
+  }
+}

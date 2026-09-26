@@ -1,0 +1,2 @@
+# Configs are copied into Linux containers: keep LF even on Windows checkouts.
+* text=auto eol=lf

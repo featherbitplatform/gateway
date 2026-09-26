@@ -1,0 +1,19 @@
+entryPoints:
+  web:
+    address: ":8000"
+  websecure:
+    address: ":8443"
+providers:
+  file:
+    filename: /etc/traefik/bench/dynamic.yml
+log:
+  level: WARN
+serversTransport:
+  maxIdleConnsPerHost: 512
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+experimental:
+  localPlugins:
+    benchscript:
+      moduleName: github.com/featherbitplatform/benchscript
