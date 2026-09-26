@@ -1,0 +1,15 @@
+listener:
+  bind: "0.0.0.0"
+  port: 8443
+
+tls:
+  cert_path: @@CONFIG_DIR@@/tls/cert.pem
+  key_path: @@CONFIG_DIR@@/tls/key.pem
+  min_version: "1.3"
+
+http2:
+  enabled: true
+
+logging:
+  level: warn
+  format: json

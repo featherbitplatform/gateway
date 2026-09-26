@@ -1,0 +1,16 @@
+http:
+  routers:
+    bench:
+      rule: "PathPrefix(`/bench/`)"
+      entryPoints: [web]
+      service: upstream
+      middlewares: [script]
+  middlewares:
+    script:
+      plugin:
+        benchscript: {}
+  services:
+    upstream:
+      loadBalancer:
+        servers:
+          - url: "http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@"

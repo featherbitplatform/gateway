@@ -1,0 +1,7 @@
+{
+  "bench": {
+    "id": "bench", "name": "bench", "org_id": "default", "active": true,
+    "rate": 1000000000, "per": 1, "quota_max": -1,
+    "access_rights": { "bench": { "api_id": "bench", "api_name": "bench", "versions": ["Default"] } }
+  }
+}

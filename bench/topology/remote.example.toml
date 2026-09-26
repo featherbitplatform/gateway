@@ -1,0 +1,27 @@
+# Three Linux hosts, one per role, reached through docker contexts, e.g.
+#   docker context create bench-gateway --docker host=ssh://bench@10.0.0.11
+# All containers use host networking. Copy to remote.toml and edit. This is the
+# only topology `bench.py run --publish` accepts.
+kind = "remote"
+
+[roles.loadgen]
+context = "bench-loadgen"
+address = "10.0.0.10"
+
+[roles.gateway]
+context = "bench-gateway"
+address = "10.0.0.11"
+
+[roles.upstream]
+context = "bench-upstream"
+address = "10.0.0.12"
+
+[profiles.1]
+gateway = "0"
+upstream = "0-15"
+loadgen = "0-15"
+
+[profiles.4]
+gateway = "0-3"
+upstream = "0-15"
+loadgen = "0-15"

@@ -1,0 +1,10 @@
+_format_version: "3.0"
+services:
+  - name: bench
+    url: http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@
+    routes:
+@@REPEAT 1000@@
+      - name: r@@I@@
+        paths: ["/r@@I@@/"]
+        strip_path: false
+@@END@@

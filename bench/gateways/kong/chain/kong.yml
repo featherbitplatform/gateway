@@ -1,0 +1,31 @@
+_format_version: "3.0"
+services:
+  - name: bench
+    url: http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@
+    routes:
+      - name: bench
+        paths: ["/bench/"]
+        strip_path: false
+        plugins:
+          - name: key-auth
+          - name: rate-limiting
+            config: { minute: 100000000, policy: local, limit_by: ip }
+          - name: request-transformer
+            config:
+              add:
+                headers: ["X-Bench-Added:1", "X-Bench-Added2:2"]
+          - name: response-transformer
+            config:
+              remove:
+                headers: ["X-Bench-Remove"]
+      - name: limited
+        paths: ["/limited/"]
+        strip_path: false
+        plugins:
+          - name: key-auth
+          - name: rate-limiting
+            config: { minute: 1, policy: local, limit_by: ip }
+consumers:
+  - username: bench
+    keyauth_credentials:
+      - key: "@@API_KEY@@"

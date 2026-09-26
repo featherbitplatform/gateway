@@ -36,6 +36,19 @@ paths = [
 ]
 
 [[allowlists]]
+description = "Benchmark suite fixtures - throwaway per-run self-signed TLS keys and fake test vectors, never real credentials"
+paths = [
+    # Run output (gitignored): each run generates a fresh self-signed key that
+    # only ever lives inside that run's rendered configs.
+    '''bench/results/''',
+    # Two-line fake PEM stub for the certificate-splitting unit test.
+    '''bench/tests/test_runner\.py''',
+    '''bench/tests/__pycache__/''',
+    # Plan-execution scratch (gitignored): task briefs quote docs/superpowers/ verbatim.
+    '''\.superpowers/''',
+]
+
+[[allowlists]]
 description = "Inline unit-test fixtures in plugin sources (fake PEM/JWT/service-account material)"
 paths = [
     '''src/plugins/native/google_cloud_logging\.rs''',

@@ -1,0 +1,19 @@
+upstreams:
+  - id: 1
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    nodes:
+      "@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@": 1
+routes:
+  - id: bench
+    uri: /bench/*
+    upstream_id: 1
+ssls:
+  - id: bench
+    snis: ["bench.local"]
+    cert: |
+      @@TLS_CERT_PEM@@
+    key: |
+      @@TLS_KEY_PEM@@
+#END

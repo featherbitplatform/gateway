@@ -1,0 +1,13 @@
+Running 3s test @ http://upstream:8080/bench/1k
+  2 threads and 16 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   131.03us   71.83us   2.68ms   86.92%
+    Req/Sec    60.06k     7.51k   70.67k    72.58%
+  Latency Distribution
+     50%  123.00us
+     75%  157.00us
+     90%  196.00us
+     99%  301.00us
+  370033 requests in 3.10s, 457.70MB read
+Requests/sec: 119373.03
+Transfer/sec:    147.65MB

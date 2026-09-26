@@ -1,0 +1,26 @@
+routes:
+@@REPEAT 1000@@
+  - name: r@@I@@
+    match:
+      path: /r@@I@@/*
+    policy: proxy
+@@END@@
+
+policies:
+  - name: proxy
+    nodes:
+      - id: listener
+        type: listener
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: "@@UPSTREAM_HOST@@"
+              port: @@UPSTREAM_PORT@@
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: backend.in
+      - from: backend.success
+        to: client.in

@@ -1,0 +1,14 @@
+_format_version: "3.0"
+services:
+  - name: bench
+    url: http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@
+    routes:
+      - name: bench
+        paths: ["/bench/"]
+        strip_path: false
+        plugins:
+          - name: key-auth
+consumers:
+  - username: bench
+    keyauth_credentials:
+      - key: "@@API_KEY@@"

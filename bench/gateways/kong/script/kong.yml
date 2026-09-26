@@ -1,0 +1,13 @@
+_format_version: "3.0"
+services:
+  - name: bench
+    url: http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@
+    routes:
+      - name: bench
+        paths: ["/bench/"]
+        strip_path: false
+        plugins:
+          - name: pre-function
+            config:
+              access:
+                - "local v = kong.request.get_header('x-bench-in') or '' kong.service.request.set_header('X-Bench-Script', string.upper(v) .. '-' .. #v)"

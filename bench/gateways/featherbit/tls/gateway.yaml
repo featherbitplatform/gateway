@@ -1,0 +1,24 @@
+routes:
+  - name: bench
+    match:
+      path: /bench/*
+    policy: proxy
+
+policies:
+  - name: proxy
+    nodes:
+      - id: listener
+        type: listener
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: "@@UPSTREAM_HOST@@"
+              port: @@UPSTREAM_PORT@@
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: backend.in
+      - from: backend.success
+        to: client.in

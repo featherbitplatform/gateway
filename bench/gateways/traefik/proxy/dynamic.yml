@@ -1,0 +1,25 @@
+http:
+  routers:
+    bench:
+      rule: "PathPrefix(`/bench/`)"
+      entryPoints: [web]
+      service: upstream
+    bench-tls:
+      rule: "PathPrefix(`/bench/`)"
+      entryPoints: [websecure]
+      service: upstream
+      tls: {}
+  services:
+    upstream:
+      loadBalancer:
+        servers:
+          - url: "http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@"
+tls:
+  options:
+    default:
+      minVersion: VersionTLS13
+  stores:
+    default:
+      defaultCertificate:
+        certFile: "@@CONFIG_DIR@@/tls/cert.pem"
+        keyFile: "@@CONFIG_DIR@@/tls/key.pem"

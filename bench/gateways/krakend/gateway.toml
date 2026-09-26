@@ -1,0 +1,24 @@
+name = "krakend"
+image = "krakend:2.13.11@sha256:26eb32dbb0e679c62170b21b4efb0729dc00262afd98fe6210110dbbbdd6425f"
+config_dir = "/etc/krakend/bench"
+command = ["run", "-c", "/etc/krakend/bench/krakend.json"]
+ports = { plain = 8000, tls = 8443 }
+
+[env]
+GOMAXPROCS = "@@CORES@@"
+
+[configs]
+"core.proxy" = "proxy"
+"payload.64k" = "proxy"
+"payload.1m" = "proxy"
+"proto.tls" = "tls"
+"proto.h2" = "tls"
+"core.routes-1k" = "routes-1k"
+"plugin.jwt" = "jwt"
+"plugin.rate-limit" = "rate-limit"
+"plugin.header-rewrite" = "header-rewrite"
+"script.header" = "script"
+
+[na]
+"plugin.key-auth" = "API-key authentication (auth/api-keys) is KrakenD Enterprise only."
+"plugin.chain" = "Needs key-auth, which KrakenD CE lacks."

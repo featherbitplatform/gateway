@@ -1,0 +1,72 @@
+routes:
+  - name: bench
+    match:
+      path: /bench/*
+    policy: limit
+  - name: limited
+    match:
+      path: /limited/*
+    policy: limit-probe
+
+policies:
+  - name: limit
+    nodes:
+      - id: listener
+        type: listener
+      - id: limit
+        type: limit-count
+        config:
+          count: 100000000
+          time_window: 60
+          key: "$remote_addr"
+          policy: local
+          group: bench
+          rejected_code: 429
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: "@@UPSTREAM_HOST@@"
+              port: @@UPSTREAM_PORT@@
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: limit.in
+      - from: limit.success
+        to: backend.in
+      - from: limit.limited
+        to: client.in
+      - from: backend.success
+        to: client.in
+
+  - name: limit-probe
+    nodes:
+      - id: listener
+        type: listener
+      - id: limit
+        type: limit-count
+        config:
+          count: 1
+          time_window: 60
+          key: "$remote_addr"
+          policy: local
+          group: probe
+          rejected_code: 429
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: "@@UPSTREAM_HOST@@"
+              port: @@UPSTREAM_PORT@@
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: limit.in
+      - from: limit.success
+        to: backend.in
+      - from: limit.limited
+        to: client.in
+      - from: backend.success
+        to: client.in
