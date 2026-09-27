@@ -144,7 +144,7 @@ impl OutboundClient {
             .https_or_http()
             .enable_http1()
             .enable_http2()
-            .build();
+            .wrap_connector(http_connector());
         Self {
             verified: Client::builder(TokioExecutor::new()).build(https),
             insecure: OnceLock::new(),
@@ -276,7 +276,7 @@ impl OutboundClient {
             .https_or_http()
             .enable_http1()
             .enable_http2()
-            .build();
+            .wrap_connector(http_connector());
         let client = Client::builder(TokioExecutor::new()).build(https);
         // Race-safe: whoever loses uses the winner's client.
         Ok(self
@@ -287,6 +287,15 @@ impl OutboundClient {
             .or_insert(client)
             .clone())
     }
+}
+
+/// The TCP dialer under every outbound client: plain `http` allowed (TLS is
+/// layered on top by hyper-rustls), and Nagle off (see [`crate::net::tune_tcp`]).
+fn http_connector() -> HttpConnector {
+    let mut connector = HttpConnector::new();
+    connector.enforce_http(false);
+    connector.set_nodelay(true);
+    connector
 }
 
 impl Default for OutboundClient {
@@ -306,7 +315,7 @@ fn build_insecure_client() -> PooledClient {
         .with_tls_config(config)
         .https_or_http()
         .enable_http1()
-        .build();
+        .wrap_connector(http_connector());
     Client::builder(TokioExecutor::new()).build(https)
 }
 
@@ -432,6 +441,24 @@ impl rustls::client::danger::ServerCertVerifier for NoVerification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Upstream connections are dialed with Nagle off, like accepted ones.
+    #[tokio::test]
+    async fn test_outbound_connections_disable_nagle() {
+        use tower::Service;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _keep = listener.accept().await;
+        });
+        let uri: hyper::Uri = format!("http://{addr}").parse().unwrap();
+        let conn = http_connector().call(uri).await.unwrap();
+        assert!(
+            conn.inner().nodelay().unwrap(),
+            "TCP_NODELAY must be set on dialed upstream sockets"
+        );
+    }
 
     /// The streaming call's deadline covers connect + request + response
     /// headers only. A server that sends headers and then stalls must still

@@ -40,6 +40,7 @@ mod graph;
 mod hot_reload;
 mod mcp;
 mod metrics;
+mod net;
 mod outbound;
 mod plugins;
 mod ratelimit;

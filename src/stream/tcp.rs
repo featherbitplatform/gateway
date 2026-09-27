@@ -46,6 +46,7 @@ pub async fn spawn(
                 },
                 _ = shutdown_rx.changed() => break,
             };
+            crate::net::tune_tcp(&client);
             let router = router.clone();
             tokio::spawn(async move {
                 // Pick the backend pool. With SNI routes, peek the ClientHello
@@ -67,6 +68,7 @@ pub async fn spawn(
 
                 match tokio::time::timeout(connect_timeout, TcpStream::connect(dest)).await {
                     Ok(Ok(mut upstream)) => {
+                        crate::net::tune_tcp(&upstream);
                         // Replay the consumed ClientHello before relaying.
                         if !prebuffer.is_empty() {
                             if let Err(e) = upstream.write_all(&prebuffer).await {
