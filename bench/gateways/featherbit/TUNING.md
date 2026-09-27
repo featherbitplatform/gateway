@@ -9,7 +9,7 @@ or the released image via `--image featherbit=featherbit/featherbit:<tag>` for p
 | admin server | disabled (no `admin:` section) | Data plane only, like every competitor. |
 | `logging.level` | warn | No per-request logging; same rule for every gateway. |
 | TLS | `min_version: "1.3"`, ECDSA P-256, HTTP/2 enabled (default) | Same cert and protocol for every gateway. |
-| limit-count | `policy: local`, count 100,000,000 / 60 s, `group: bench` (probe route: count 1, `group: probe`) | Never trips at benchmark load. Distinct groups are required: without them every local limit-count node shares one counter per client key. |
+| limit-count | `policy: local`, count 100,000,000 / 60 s (probe route: count 1) | Never trips at benchmark load; each node counts on its own. |
 
 Deliberately **not** tuned: no custom allocator, no build-profile changes, no plugin shortcuts. The image is what users get.
 

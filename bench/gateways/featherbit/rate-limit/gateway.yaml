@@ -20,7 +20,6 @@ policies:
           time_window: 60
           key: "$remote_addr"
           policy: local
-          group: bench
           rejected_code: 429
       - id: backend
         type: upstream
@@ -51,7 +50,6 @@ policies:
           time_window: 60
           key: "$remote_addr"
           policy: local
-          group: probe
           rejected_code: 429
       - id: backend
         type: upstream

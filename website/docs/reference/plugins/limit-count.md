@@ -16,7 +16,7 @@ Counts requests per resolved key within a fixed time window and rejects those th
 | `key` | string | `"$remote_addr"` | A `$var` template resolved per request (e.g. `$remote_addr`, `$consumer_name`, `$http_x_api_key`). An empty resolved value falls back to the client remote address. |
 | `policy` | string | `local` | Counter backend. `local` = per-instance in-memory windows; `redis` = cluster-shared windows via a named `stores:` entry. Anything else is rejected at config load with the supported list. |
 | `store` | string | — | Required when `policy: redis`: the name of a declared `stores:` entry (redis or valkey). Unknown names fail policy compilation. |
-| `group` | string | — | Prefixes the counter key so multiple nodes share one counter. |
+| `group` | string | — | Share one counter between nodes: every `limit-count` node with the same `group` (and the same resolved key) counts against the same window. Without it, each node counts on its own. |
 | `rejected_code` | integer | `503` | Status for over-limit requests (200–599). |
 | `rejected_msg` | string | — | Message placed in the rejection body (`{"error_msg": ...}`). |
 | `show_limit_quota_header` | bool | `true` | Emit `X-RateLimit-Limit`/`-Remaining`/`-Reset` headers onto the response. |
@@ -35,7 +35,7 @@ config:
 
 ## Behavior
 
-The counter key is resolved by interpolating the `key` template against the request (supported `$var` names include `$remote_addr`, `$consumer_name`, `$http_<header>`, and `$arg_<query>`). When the template resolves to empty, the key falls back to the client remote address. With `group` set, the resolved key is prefixed with `group:` so several nodes count against one shared counter.
+The counter key is resolved by interpolating the `key` template against the request (supported `$var` names include `$remote_addr`, `$consumer_name`, `$http_<header>`, and `$arg_<query>`). When the template resolves to empty, the key falls back to the client remote address. Each node counts on its own: without `group`, the counter is namespaced by the policy name and node id (`<policy>/<node id>:<key>`), so two `limit-count` nodes — in the same policy or in different ones — never consume each other's quota, even though they share one counter backend. The namespace is the same on every gateway instance and across hot reloads, so `policy: redis` counters stay cluster-wide and a config reload keeps the current windows. A policy attached to several routes is one node, so those routes share its limit. To make separate nodes share one counter on purpose, give them the same `group`: the key is then `group:<key>` instead.
 
 On each request the key is counted against the fixed window:
 
