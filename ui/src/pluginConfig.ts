@@ -476,7 +476,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'key', label: 'Key', type: 'text', default: '$remote_addr', placeholder: '$remote_addr', hint: '$var template; empty falls back to client address', template: 'full', legacyDollar: true },
     { key: 'policy', label: 'Policy', type: 'select', options: ['local', 'redis'], default: 'local', hint: 'redis = cluster-shared counters via a named store' },
     { key: 'store', label: 'Store', type: 'select', options: [{ value: '', label: '(none)' }], optionsFrom: 'stores', hint: 'required when policy is redis: a declared stores: entry' },
-    { key: 'group', label: 'Group', type: 'text', placeholder: 'shared-counter', hint: 'prefixes the key so nodes share a counter' },
+    { key: 'group', label: 'Group', type: 'text', placeholder: 'shared-counter', hint: 'nodes with the same group share one counter; empty = this node counts alone' },
     { key: 'rejected_code', label: 'Rejected code', type: 'number', default: 503 },
     { key: 'rejected_msg', label: 'Rejected message', type: 'text', placeholder: 'Requests over the limit', template: 'full' },
     { key: 'show_limit_quota_header', label: 'Show quota headers', type: 'switch', switchLabel: 'Emit X-RateLimit-* headers', default: true },
