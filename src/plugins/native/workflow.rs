@@ -30,9 +30,12 @@ use crate::ratelimit::CounterStore;
 use crate::vars::template::Template;
 use crate::vars::Expr;
 
-/// Distinguishes counter namespaces between workflow node instances so two
-/// nodes with identical rules don't share windows (APISIX isolates with a
-/// per-conf `_vid`).
+/// Fallback counter namespace for an instance that is never bound to a policy
+/// node (the debug sandbox, unit tests), so it cannot share windows with real
+/// traffic. Compiled policies replace it with a deterministic per-node scope
+/// in [`Plugin::bind_node`]: a per-process sequence would give every gateway
+/// instance -- and every recompile -- different keys, breaking redis-backed
+/// counters and resetting local ones on each reload.
 static INSTANCE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Evaluates ordered rules; the first rule whose `case` matches applies its
@@ -67,7 +70,8 @@ struct LimitCount {
     /// references (no legacy `$var` interpolation — this field never
     /// supported it, so this sweep must not start).
     rejected_msg: Option<Template>,
-    /// Namespaces this action's counters: `workflow:<instance>:<rule idx>`.
+    /// Namespaces this action's counters: `workflow:<policy>/<node id>:<rule idx>`
+    /// once bound, `workflow:<instance>:<rule idx>` before that.
     counter_prefix: String,
     store: Arc<dyn CounterStore>,
 }
@@ -320,6 +324,14 @@ impl Plugin for WorkflowPlugin {
         "workflow"
     }
 
+    fn bind_node(&mut self, policy: &str, node_id: &str) {
+        for (idx, rule) in self.rules.iter_mut().enumerate() {
+            if let Action::LimitCount(lc) = &mut rule.action {
+                lc.counter_prefix = format!("workflow:{policy}/{node_id}:{idx}");
+            }
+        }
+    }
+
     async fn execute(&self, mut ctx: Context) -> PluginResult {
         for rule in &self.rules {
             let matched = rule.case.as_ref().is_none_or(|e| e.eval(&ctx));
@@ -548,6 +560,30 @@ mod tests {
         let mut other = test_ctx("/x");
         other.request.remote_addr = "192.168.9.9:1".to_string();
         assert!(p.execute(other).await.unwrap().port.is_none());
+    }
+
+    /// The counter prefix once bound to a policy node: deterministic, so every
+    /// gateway instance and every recompile count under the same key. Only
+    /// limit-count rules carry one; the rule index keeps a node's rules apart.
+    #[test]
+    fn test_bound_counter_prefix_is_policy_node_and_rule() {
+        let mut p = plugin(serde_json::json!({
+            "rules": [
+                { "case": [["uri", "==", "/admin"]], "actions": [["return", { "code": 403 }]] },
+                { "actions": [["limit-count", { "count": 1, "time_window": 60 }]] }
+            ]
+        }))
+        .unwrap();
+        p.bind_node("api", "flow");
+        let prefixes: Vec<&str> = p
+            .rules
+            .iter()
+            .filter_map(|r| match &r.action {
+                Action::LimitCount(lc) => Some(lc.counter_prefix.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(prefixes, ["workflow:api/flow:1"]);
     }
 
     #[test]

@@ -2726,4 +2726,61 @@ edges:
             "same policy/node keeps its window"
         );
     }
+
+    /// A workflow policy whose single rule rate-limits every request at `count`.
+    fn workflow_policy(name: &str, count: u64) -> PolicyConfig {
+        serde_yaml::from_str(&format!(
+            r#"
+name: {name}
+nodes:
+  - id: listener
+    type: listener
+  - id: flow
+    type: workflow
+    config:
+      rules:
+        - actions:
+            - ["limit-count", {{ "count": {count}, "time_window": 60, "rejected_code": 429 }}]
+  - id: client
+    type: client
+edges:
+  - from: listener.out
+    to: flow.in
+  - from: flow.success
+    to: client.in
+  - from: flow.denied
+    to: client.in
+  - from: flow.limited
+    to: client.in
+"#
+        ))
+        .unwrap()
+    }
+
+    /// Recompiling the same workflow policy -- a hot reload, or a second
+    /// gateway instance counting through the same redis store -- must keep
+    /// counting under the same key instead of starting fresh windows.
+    #[tokio::test]
+    async fn test_workflow_counters_survive_recompile() {
+        let resources = PluginResources::empty();
+        let first = compile_policy(&workflow_policy("wf", 1), resources.clone()).unwrap();
+        assert_ne!(status_through(&first).await, 429, "first request passes");
+        let reloaded = compile_policy(&workflow_policy("wf", 1), resources.clone()).unwrap();
+        assert_eq!(
+            status_through(&reloaded).await,
+            429,
+            "same policy/node keeps its window across a recompile"
+        );
+    }
+
+    /// Distinct workflow nodes still count separately.
+    #[tokio::test]
+    async fn test_workflow_nodes_do_not_share_counters() {
+        let resources = PluginResources::empty();
+        let a = compile_policy(&workflow_policy("wf-a", 1), resources.clone()).unwrap();
+        let b = compile_policy(&workflow_policy("wf-b", 1), resources.clone()).unwrap();
+        assert_ne!(status_through(&a).await, 429);
+        assert_eq!(status_through(&a).await, 429);
+        assert_ne!(status_through(&b).await, 429, "b has its own counter");
+    }
 }
