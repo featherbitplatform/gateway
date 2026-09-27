@@ -35,6 +35,8 @@ All expressions and action parameters are validated at config load; unsupported 
 | `policy` | string | `"local"` | Counter backend. `local` = per-instance in-memory windows; `redis` = cluster-shared windows via a named `stores:` entry. |
 | `store` | string | — | Required when `policy: redis`: the name of a declared `stores:` entry (redis or valkey). Unknown names fail policy compilation. |
 
+Each `limit-count` rule counts on its own: the counter is namespaced by the policy name, the workflow node's id, and the rule's position (`workflow:<policy>/<node id>:<rule index>:<key>`). The namespace is identical on every gateway instance and across hot reloads, so `policy: redis` counters are shared cluster-wide and a config change does not reset the current windows. There is no `group` option: to share one counter between nodes, use the standalone [`limit-count`](limit-count.md) plugin.
+
 ```yaml
 type: workflow
 config:
