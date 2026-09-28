@@ -76,7 +76,7 @@ docker pull featherbit/featherbit:edge        # tip of develop
 
 Every tag also exists with a `-headless` suffix — the same gateway compiled without the embedded web editor (`ui` cargo feature off): admin REST API, health/metrics, and the data plane are identical; only the UI is gone. Published by `.github/workflows/docker.yml` on release tags and on every push to `main`/`develop`.
 
-To build the image yourself: the gateway is a fully static binary (musl) shipped in a `FROM scratch` image — no OS, no shell, no extra attack surface. The final image contains only the binary, CA certificates, and the default config:
+To build the image yourself: the gateway is a fully static binary (musl) shipped in a `FROM scratch` image — no OS, no shell, no extra attack surface. The final image contains only the binary, CA certificates, and the default config. It is built with the `dist` Cargo profile (release plus fat LTO and a single codegen unit) and uses [mimalloc](https://github.com/microsoft/mimalloc) as its allocator, because musl's default allocator serializes under concurrent load:
 
 ```dockerfile
 FROM rust:alpine AS builder
@@ -85,11 +85,11 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
 COPY src/ src/
 COPY ui/dist/ ui/dist/
-RUN cargo build --release
+RUN cargo build --profile dist
 
 FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /app/target/release/featherbit /gateway
+COPY --from=builder /app/target/dist/featherbit /gateway
 COPY config/ /etc/gateway/
 EXPOSE 8080 9090
 ENTRYPOINT ["/gateway"]

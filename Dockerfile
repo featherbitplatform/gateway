@@ -21,12 +21,13 @@ COPY website/docs/ website/docs/
 # Headless variant: CARGO_FLAGS=--no-default-features compiles the UI out
 # (word-splitting of the flags is intentional).
 ARG CARGO_FLAGS=""
-RUN cargo auditable build --release ${CARGO_FLAGS}
+# `dist` = release + fat LTO + one codegen unit (Cargo.toml).
+RUN cargo auditable build --profile dist ${CARGO_FLAGS}
 
 FROM scratch
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /app/target/release/featherbit /gateway
+COPY --from=builder /app/target/dist/featherbit /gateway
 COPY config/ /etc/gateway/
 
 EXPOSE 8080 9090
