@@ -15,6 +15,6 @@ Deliberately **not** tuned: no custom allocator, no build-profile changes, no pl
 
 Known costs Featherbit always pays, disclosed so the numbers are read correctly:
 - Per-route and per-node Prometheus metrics are recorded on every request. They can't be disabled.
-- The published image is a static musl build (`FROM scratch`) that uses musl's default allocator.
+- The image is a static musl build (`FROM scratch`) using mimalloc as the allocator and the `dist` profile (fat LTO): the same build users get.
 - `script` runs every execution in a fresh Luau VM (docs: reference/plugins/script.md).
 - Responses pass through the node graph's buffered path unless a node permits streaming (docs: reference/plugins/upstream.md).

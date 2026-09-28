@@ -27,6 +27,12 @@
 // design; boxing it would ripple through the `Plugin` trait and every plugin.
 #![allow(clippy::result_large_err)]
 
+/// mimalloc instead of the platform allocator. The published image is a static
+/// musl build, and musl's malloc serializes under concurrency: the competitive
+/// benchmark measured ~2x throughput at 4 cores (~3x on 64 KiB payloads).
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod acme;
 mod admin;
 mod balancer;
