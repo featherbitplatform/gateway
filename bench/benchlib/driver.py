@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import http.client
+from urllib.parse import urlsplit
 import shutil
 import time
 from dataclasses import dataclass
@@ -99,6 +100,12 @@ class DockerDriver:
                            + (f", restarted {st['RestartCount']}x" if st.get("RestartCount") else ""))
         return True, "running"
 
+    def sni(self, cell: Cell) -> str:
+        """The TLS server name the load generator sends (its URL host): probes and the
+        health check present the same one, so a gateway that cannot serve it fails
+        validation instead of every TLS measurement."""
+        return urlsplit(self.load_url(cell)).hostname or ""
+
     def cores(self, cell: Cell, role: str) -> int:
         return cpuset_size(getattr(self.t.profiles[cell.profile], role))
 
@@ -183,7 +190,7 @@ class DockerDriver:
             except DockerError as e:
                 raise BootError(str(e)) from None
         host, port = self.probe_target(cell)
-        if not self.health(sc.scheme, host, port, "/", self.params.boot_timeout_seconds):
+        if not self.health(sc.scheme, host, port, "/", self.params.boot_timeout_seconds, sni=self.sni(cell)):
             raise BootError(f"{gw.name} not answering on {sc.scheme}://{host}:{port} "
                             f"within {self.params.boot_timeout_seconds}s")
 
@@ -200,7 +207,7 @@ class DockerDriver:
                     if call.body_file else None)
             headers = {k: render_text(v, values) for k, v in call.headers.items()}
             try:
-                status, _, _ = self.http(call.method, sc.scheme, host, port, path, headers, body)
+                status, _, _ = self.http(call.method, sc.scheme, host, port, path, headers, body, sni=self.sni(cell))
                 detail = f"setup {call.method} {path}: status {status}"
             except (OSError, http.client.HTTPException) as e:
                 status, detail = None, f"setup {call.method} {path}: {type(e).__name__}: {e}"
@@ -208,7 +215,7 @@ class DockerDriver:
             results.append(ProbeResult(Probe(path=path, kind="setup"), ok, detail))
             if not ok:
                 return results
-        return results + self.probes(sc.probes, sc.scheme, host, port, values)
+        return results + self.probes(sc.probes, sc.scheme, host, port, values, sni=self.sni(cell))
 
     def load(self, cell: Cell, rate: int | None, seconds: int) -> LoadResult:
         sc = self.scenarios[cell.scenario]

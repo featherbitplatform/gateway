@@ -29,11 +29,23 @@ def _ctx(alpn: list[str] | None = None) -> ssl.SSLContext:
     return ctx
 
 
+class _SniHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS to `host` (often an IP) while presenting `sni` as the TLS server name."""
+
+    def __init__(self, host: str, port: int, sni: str, timeout: float):
+        super().__init__(host, port, timeout=timeout, context=_ctx())
+        self._sni = sni
+
+    def connect(self) -> None:
+        http.client.HTTPConnection.connect(self)
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self._sni)
+
+
 def http_call(method: str, scheme: str, host: str, port: int, path: str,
               headers: dict[str, str] | None = None, body: bytes | None = None,
-              timeout: float = 5.0) -> tuple[int, dict[str, str], bytes]:
+              timeout: float = 5.0, sni: str = SNI) -> tuple[int, dict[str, str], bytes]:
     if scheme == "https":
-        conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=_ctx())
+        conn = _SniHTTPSConnection(host, port, sni, timeout)
     else:
         conn = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
@@ -46,23 +58,23 @@ def http_call(method: str, scheme: str, host: str, port: int, path: str,
 
 
 def tls_info(host: str, port: int, alpn: list[str] | None = None,
-             timeout: float = 5.0) -> tuple[str, str | None]:
+             timeout: float = 5.0, sni: str = SNI) -> tuple[str, str | None]:
     with socket.create_connection((host, port), timeout=timeout) as raw:
-        with _ctx(alpn).wrap_socket(raw, server_hostname=SNI) as s:
+        with _ctx(alpn).wrap_socket(raw, server_hostname=sni) as s:
             return s.version(), s.selected_alpn_protocol()
 
 
 def run_probe(probe: Probe, scheme: str, host: str, port: int, values: dict[str, str],
-              timeout: float = 5.0) -> ProbeResult:
+              timeout: float = 5.0, sni: str = SNI) -> ProbeResult:
     try:
         if probe.kind == "tls13":
-            version, _ = tls_info(host, port, timeout=timeout)
+            version, _ = tls_info(host, port, timeout=timeout, sni=sni)
             return ProbeResult(probe, version == "TLSv1.3", f"negotiated {version}")
         if probe.kind == "alpn-h2":
-            _, alpn = tls_info(host, port, alpn=["h2", "http/1.1"], timeout=timeout)
+            _, alpn = tls_info(host, port, alpn=["h2", "http/1.1"], timeout=timeout, sni=sni)
             return ProbeResult(probe, alpn == "h2", f"ALPN {alpn}")
         headers = {k: render_text(v, values) for k, v in probe.headers.items()}
-        status, got, body = http_call("GET", scheme, host, port, probe.path, headers, timeout=timeout)
+        status, got, body = http_call("GET", scheme, host, port, probe.path, headers, timeout=timeout, sni=sni)
     except (OSError, http.client.HTTPException) as e:
         return ProbeResult(probe, False, f"{type(e).__name__}: {e}")
     problems = []
@@ -79,17 +91,18 @@ def run_probe(probe: Probe, scheme: str, host: str, port: int, values: dict[str,
     return ProbeResult(probe, not problems, "; ".join(problems) or f"status {status}")
 
 
-def run_probes(probes, scheme: str, host: str, port: int, values: dict[str, str]) -> list[ProbeResult]:
-    return [run_probe(p, scheme, host, port, values) for p in probes]
+def run_probes(probes, scheme: str, host: str, port: int, values: dict[str, str],
+               sni: str = SNI) -> list[ProbeResult]:
+    return [run_probe(p, scheme, host, port, values, sni=sni) for p in probes]
 
 
 def wait_healthy(scheme: str, host: str, port: int, path: str, timeout_s: float,
-                 sleep=time.sleep, clock=time.monotonic) -> bool:
+                 sleep=time.sleep, clock=time.monotonic, sni: str = SNI) -> bool:
     """True once the listener answers anything below 500 (404 counts: the process is up)."""
     deadline = clock() + timeout_s
     while True:
         try:
-            status, _, _ = http_call("GET", scheme, host, port, path, timeout=2.0)
+            status, _, _ = http_call("GET", scheme, host, port, path, timeout=2.0, sni=sni)
             if status < 500:
                 return True
         except (OSError, http.client.HTTPException):
