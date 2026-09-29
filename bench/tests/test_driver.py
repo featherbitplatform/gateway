@@ -118,3 +118,14 @@ class HealthTests(DriverTests):
             self.assertEqual(self.driver.gateway_health(Cell("direct", "core.proxy", 1))[0], True)
         finally:
             del FakeDocker.state
+
+
+class SniTests(DriverTests):
+    def test_probes_and_health_use_the_load_generators_tls_server_name(self):
+        seen = {}
+        self.driver.health = lambda *a, **k: (seen.setdefault("health", k.get("sni")), True)[1]
+        self.driver.probes = lambda *a, **k: (seen.setdefault("probes", k.get("sni")), [])[1]
+        cell = Cell("nginx", "proto.tls", 1)
+        self.driver.boot(cell, 0)
+        self.driver.setup_and_probe(cell)
+        self.assertEqual(seen, {"health": "gateway", "probes": "gateway"})

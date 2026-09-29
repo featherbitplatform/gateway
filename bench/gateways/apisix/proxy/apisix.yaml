@@ -11,7 +11,7 @@ routes:
     upstream_id: 1
 ssls:
   - id: bench
-    snis: ["bench.local"]
+    snis: ["bench.local", "gateway"]   # load tools send the URL host (gateway) as SNI
     cert: |
       @@TLS_CERT_PEM@@
     key: |

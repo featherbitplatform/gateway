@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from benchlib.config import Probe
-from benchlib.probes import run_probe, tls_info, wait_healthy
+from benchlib.probes import http_call, run_probe, tls_info, wait_healthy
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -112,3 +112,38 @@ class TlsProbeTests(unittest.TestCase):
             self.assertEqual(tls_info("127.0.0.1", port)[0], "TLSv1.3")
             self.assertEqual(tls_info("127.0.0.1", port, alpn=["h2", "http/1.1"])[1], "h2")
             srv.close()
+
+    def test_probes_send_the_given_tls_server_name(self):
+        # The load generator sends the load URL's host as SNI; probes must send the same
+        # name, or a gateway that only serves the probe's name validates and then fails
+        # every TLS measurement (APISIX with snis: [bench.local], found in a real run).
+        with tempfile.TemporaryDirectory() as d:
+            cert, key = Path(d, "c.pem"), Path(d, "k.pem")
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt",
+                            "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", str(key), "-out", str(cert),
+                            "-days", "1", "-subj", "/CN=gateway"], check=True, capture_output=True)
+            seen = []
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(cert, key)
+            ctx.sni_callback = lambda sock, name, c: seen.append(name)
+            srv = socket.socket()
+            srv.bind(("127.0.0.1", 0))
+            srv.listen(4)
+            port = srv.getsockname()[1]
+
+            def serve():
+                for _ in range(2):
+                    conn, _ = srv.accept()
+                    try:
+                        with ctx.wrap_socket(conn, server_side=True) as s:
+                            s.recv(4096)
+                            s.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    except (ssl.SSLError, OSError):
+                        pass
+
+            threading.Thread(target=serve, daemon=True).start()
+            tls_info("127.0.0.1", port, sni="gateway")
+            status, _, _ = http_call("GET", "https", "127.0.0.1", port, "/", sni="gateway")
+            srv.close()
+            self.assertEqual(status, 200)
+            self.assertEqual(seen, ["gateway", "gateway"])
