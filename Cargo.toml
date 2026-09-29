@@ -1,6 +1,6 @@
 [package]
 name = "featherbit"
-version = "0.12.1"
+version = "0.13.0"
 edition = "2021"
 # Not published to crates.io; also lets cargo-deny's license check skip the
 # workspace crate (deny.toml: private = { ignore = true }).
@@ -20,6 +20,9 @@ redis-store = ["dep:redis"]
 mcp = ["dep:rmcp"]
 
 [dependencies]
+# Global allocator (src/main.rs). musl's default malloc serializes under
+# concurrency; the benchmark suite measured ~2-3x throughput at 4 cores.
+mimalloc = "0.1"
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", features = ["full"] }
@@ -124,3 +127,12 @@ tokio-tungstenite = "0.28"
 futures-util = "0.3"
 # MCP client for in-process server tests (plain http, no TLS feature needed).
 rmcp = { version = "3.1", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+
+# Shipping profile, used by the Dockerfile only: release + fat LTO and a
+# single codegen unit (+10-20% on small-payload single-core work, ~25%
+# smaller binary). `cargo build --release` stays fast for local work and
+# the e2e suite.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1

@@ -1,0 +1,39 @@
+routes:
+  - name: bench
+    match:
+      path: /bench/*
+    policy: script
+
+policies:
+  - name: script
+    nodes:
+      - id: listener
+        type: listener
+      - id: script
+        type: script
+        config:
+          runtime: lua
+          inline: |
+            function execute(ctx)
+              local v = ctx.request.headers["x-bench-in"]
+              v = v and v[1] or ""
+              ctx.request.headers["x-bench-script"] = string.upper(v) .. "-" .. #v
+              return ctx
+            end
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: "@@UPSTREAM_HOST@@"
+              port: @@UPSTREAM_PORT@@
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: script.in
+      - from: script.success
+        to: backend.in
+      - from: script.respond
+        to: client.in
+      - from: backend.success
+        to: client.in

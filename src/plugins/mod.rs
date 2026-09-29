@@ -122,6 +122,16 @@ pub trait Plugin: Send + Sync {
     fn cache_target(&self) -> Option<crate::traffic::CacheTarget> {
         None
     }
+
+    /// Tells the instance which policy node it is, right after construction.
+    ///
+    /// Called once by the policy compiler. A plugin that keeps state in a
+    /// process-wide or cluster-wide backend (counters, windows) uses it to
+    /// namespace that state per node, so two nodes never share it by
+    /// accident. The identity is deterministic -- the same policy name and
+    /// node id on every gateway instance and across hot reloads -- so state
+    /// shared through a cluster store (e.g. `policy: redis`) stays shared.
+    fn bind_node(&mut self, _policy: &str, _node_id: &str) {}
 }
 
 /// Every plugin type [`create_plugin`] can build, for save-time validation of

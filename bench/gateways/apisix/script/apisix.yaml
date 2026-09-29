@@ -1,0 +1,17 @@
+upstreams:
+  - id: 1
+    type: roundrobin
+    scheme: http
+    pass_host: pass
+    nodes:
+      "@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@": 1
+routes:
+  - id: bench
+    uri: /bench/*
+    upstream_id: 1
+    plugins:
+      serverless-pre-function:
+        phase: rewrite
+        functions:
+          - "return function(conf, ctx) local v = ngx.var.http_x_bench_in or '' ngx.req.set_header('X-Bench-Script', string.upper(v) .. '-' .. #v) end"
+#END

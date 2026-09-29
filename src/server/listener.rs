@@ -111,6 +111,7 @@ pub async fn start_server(
         tokio::select! {
             accepted = tcp_listener.accept() => {
                 let (stream, remote_addr) = accepted?;
+                crate::net::tune_tcp(&stream);
                 let state = state.clone();
                 let tls_config = tls_config.clone();
                 // Owned watcher moves into the task so TLS handshakes stay

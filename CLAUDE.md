@@ -57,6 +57,13 @@ tool configs at the repo root are the shared source of truth):
 ./dev/sast.ps1 image          # docker build + grype/trivy on the built image
 ```
 
+Competitive benchmark suite (Docker + Python >= 3.11, stdlib only; see `bench/README.md`):
+```bash
+python bench/bench.py validate                     # correctness probes, all gateways
+python bench/bench.py run --quick --gateways featherbit,nginx --scenarios core.proxy
+python -m unittest discover -s bench/tests -t bench   # harness unit tests
+```
+
 ## What This Project Is
 
 A high-performance API gateway delivered as a single Rust binary. (The original `REQUIREMENTS.md` specification no longer exists in the repo; the closest current equivalents are the docs site under `website/docs/` and the honest-state ledger at `website/docs/reference/roadmap.md`.)

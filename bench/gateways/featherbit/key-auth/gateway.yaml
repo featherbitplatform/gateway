@@ -1,0 +1,33 @@
+routes:
+  - name: bench
+    match:
+      path: /bench/*
+    policy: key-auth
+
+policies:
+  - name: key-auth
+    nodes:
+      - id: listener
+        type: listener
+      - id: auth
+        type: key-auth
+        config:
+          keys: ["@@API_KEY@@"]
+          header_name: apikey
+      - id: backend
+        type: upstream
+        config:
+          targets:
+            - host: "@@UPSTREAM_HOST@@"
+              port: @@UPSTREAM_PORT@@
+      - id: client
+        type: client
+    edges:
+      - from: listener.out
+        to: auth.in
+      - from: auth.success
+        to: backend.in
+      - from: auth.denied
+        to: client.in
+      - from: backend.success
+        to: client.in

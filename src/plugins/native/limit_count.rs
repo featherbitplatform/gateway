@@ -42,6 +42,10 @@ pub struct LimitCountPlugin {
     key_template: Template,
     /// Optional counter-key prefix so multiple nodes share one counter.
     group: Option<String>,
+    /// `<policy>/<node id>`, set by [`Plugin::bind_node`]: namespaces this
+    /// node's counters when no `group` is set, so separate nodes never share
+    /// a window through the process-wide (or cluster-wide) counter store.
+    scope: Option<String>,
     /// Status returned when a request is rejected.
     rejected_code: u16,
     /// Optional custom message used in the rejection body. Supports
@@ -74,8 +78,9 @@ impl LimitCountPlugin {
     ///   value is rejected at config load).
     /// - `store` (string, required iff `policy: redis`): name of a declared
     ///   `stores:` entry to use as the counter backend.
-    /// - `group` (string, optional): prefixes the counter key so multiple
-    ///   nodes share one counter.
+    /// - `group` (string, optional): nodes with the same `group` share one
+    ///   counter; without it each node counts separately (scoped by
+    ///   [`Plugin::bind_node`]).
     /// - `rejected_code` (integer 200-599, default `503`): status for
     ///   over-limit requests.
     /// - `rejected_msg` (string, optional): message placed in the rejection
@@ -178,6 +183,7 @@ impl LimitCountPlugin {
             window: Duration::from_secs(time_window),
             key_template,
             group,
+            scope: None,
             rejected_code,
             rejected_msg,
             show_limit_quota_header,
@@ -189,15 +195,17 @@ impl LimitCountPlugin {
     /// Resolves the per-request counter key: interpolates the `key` template
     /// and, when it resolves to empty, falls back to the remote address
     /// (matching APISIX). The `group` prefix, when set, is prepended so nodes
-    /// in the same group share one counter.
+    /// in the same group share one counter; otherwise the node's own scope is,
+    /// so each node counts separately (APISIX likewise scopes by plugin conf).
     fn resolve_key(&self, ctx: &Context) -> String {
         let mut key = self.key_template.render_with_legacy(ctx);
         if key.is_empty() {
             key = crate::vars::interpolate(ctx, "$remote_addr");
         }
-        match &self.group {
-            Some(group) => format!("{}:{}", group, key),
-            None => key,
+        match (&self.group, &self.scope) {
+            (Some(group), _) => format!("{}:{}", group, key),
+            (None, Some(scope)) => format!("{}:{}", scope, key),
+            (None, None) => key,
         }
     }
 
@@ -228,6 +236,10 @@ impl LimitCountPlugin {
 impl Plugin for LimitCountPlugin {
     fn plugin_type(&self) -> &str {
         "limit-count"
+    }
+
+    fn bind_node(&mut self, policy: &str, node_id: &str) {
+        self.scope = Some(format!("{policy}/{node_id}"));
     }
 
     async fn execute(&self, mut ctx: Context) -> PluginResult {
@@ -400,6 +412,23 @@ mod tests {
             "count": 10, "time_window": 60, "key": "$remote_addr", "group": "svc"
         }))
         .unwrap();
+        assert_eq!(p.resolve_key(&ctx), "svc:10.1.2.3");
+    }
+
+    /// Key shape once bound to a policy node — the exact string the local map
+    /// and the redis store count under. `group` wins over the node scope.
+    #[test]
+    fn test_key_is_scoped_to_the_bound_node_unless_grouped() {
+        let ctx = test_ctx();
+        let mut p = plugin(serde_json::json!({ "count": 10, "time_window": 60 })).unwrap();
+        p.bind_node("api-policy", "limit");
+        assert_eq!(p.resolve_key(&ctx), "api-policy/limit:10.1.2.3");
+
+        let mut p = plugin(serde_json::json!({
+            "count": 10, "time_window": 60, "group": "svc"
+        }))
+        .unwrap();
+        p.bind_node("api-policy", "limit");
         assert_eq!(p.resolve_key(&ctx), "svc:10.1.2.3");
     }
 

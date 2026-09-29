@@ -1,0 +1,64 @@
+{
+  "version": 3,
+  "port": 8000,
+  "timeout": "10s",
+  "output_encoding": "no-op",
+  "max_idle_connections_per_host": 512,
+  "idle_connection_timeout": "300s",
+  "extra_config": {
+    "router": {
+      "disable_access_log": true,
+      "return_error_msg": false
+    },
+    "telemetry/logging": {
+      "level": "WARNING",
+      "stdout": true
+    }
+  },
+  "endpoints": [
+    {
+      "endpoint": "/bench/{size}",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@"
+          ],
+          "url_pattern": "/bench/{size}",
+          "encoding": "no-op"
+        }
+      ],
+      "extra_config": {
+        "qos/ratelimit/router": {
+          "client_max_rate": 100000000,
+          "client_capacity": 100000000,
+          "every": "1m",
+          "strategy": "ip"
+        }
+      }
+    },
+    {
+      "endpoint": "/limited/{size}",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": [
+            "http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@"
+          ],
+          "url_pattern": "/limited/{size}",
+          "encoding": "no-op"
+        }
+      ],
+      "extra_config": {
+        "qos/ratelimit/router": {
+          "client_max_rate": 1,
+          "client_capacity": 1,
+          "every": "1m",
+          "strategy": "ip"
+        }
+      }
+    }
+  ]
+}

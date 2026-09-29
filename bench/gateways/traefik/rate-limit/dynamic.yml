@@ -1,0 +1,22 @@
+http:
+  routers:
+    bench:
+      rule: "PathPrefix(`/bench/`)"
+      entryPoints: [web]
+      service: upstream
+      middlewares: [limit]
+    limited:
+      rule: "PathPrefix(`/limited/`)"
+      entryPoints: [web]
+      service: upstream
+      middlewares: [limit-probe]
+  middlewares:
+    limit:
+      rateLimit: { average: 100000000, period: 1m, burst: 100000000 }
+    limit-probe:
+      rateLimit: { average: 1, period: 1m, burst: 1 }
+  services:
+    upstream:
+      loadBalancer:
+        servers:
+          - url: "http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@"

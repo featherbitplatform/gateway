@@ -117,6 +117,7 @@ pub async fn start_admin_server(
         tokio::select! {
             accepted = listener.accept() => {
                 let (stream, _peer) = accepted?;
+                crate::net::tune_tcp(&stream);
                 let app = app.clone();
                 let tls_config = tls_config.clone();
                 let watcher = graceful.watcher();

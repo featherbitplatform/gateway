@@ -1,0 +1,17 @@
+_format_version: "3.0"
+services:
+  - name: bench
+    url: http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@
+    routes:
+      - name: bench
+        paths: ["/bench/"]
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config: { minute: 100000000, policy: local, limit_by: ip }
+      - name: limited
+        paths: ["/limited/"]
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config: { minute: 1, policy: local, limit_by: ip }

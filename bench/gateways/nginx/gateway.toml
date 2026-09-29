@@ -1,0 +1,22 @@
+# Zero-feature ceiling: stock nginx as a plain reverse proxy.
+name = "nginx"
+image = "nginx:1.30.5-alpine@sha256:985220252f3863977e468f611ef118ebd01421289dd86ee1ae99cb068c3bce2b"
+config_dir = "/etc/nginx/bench"
+command = ["nginx", "-c", "/etc/nginx/bench/nginx.conf", "-g", "daemon off;"]
+ports = { plain = 8000, tls = 8443 }
+
+[configs]
+"core.proxy" = "proxy"
+"payload.64k" = "proxy"
+"payload.1m" = "proxy"
+"proto.tls" = "proxy"
+"proto.h2" = "proxy"
+"core.routes-1k" = "routes-1k"
+"plugin.rate-limit" = "rate-limit"
+"plugin.header-rewrite" = "header-rewrite"
+
+[na]
+"plugin.key-auth" = "Open-source nginx has no API-key authentication (only via njs/Lua scripting)."
+"plugin.jwt" = "JWT validation (auth_jwt) is NGINX Plus only."
+"plugin.chain" = "Needs key-auth, which open-source nginx lacks."
+"script.header" = "Kept a zero-feature ceiling: njs scripting is out of scope for the baseline."

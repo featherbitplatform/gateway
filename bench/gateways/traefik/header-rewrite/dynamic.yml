@@ -1,0 +1,20 @@
+http:
+  routers:
+    bench:
+      rule: "PathPrefix(`/bench/`)"
+      entryPoints: [web]
+      service: upstream
+      middlewares: [rewrite]
+  middlewares:
+    rewrite:
+      headers:
+        customRequestHeaders:
+          X-Bench-Added: "1"
+          X-Bench-Added2: "2"
+        customResponseHeaders:
+          X-Bench-Remove: ""
+  services:
+    upstream:
+      loadBalancer:
+        servers:
+          - url: "http://@@UPSTREAM_HOST@@:@@UPSTREAM_PORT@@"

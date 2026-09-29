@@ -428,7 +428,8 @@ pub fn compile_policy(
         for value in config.values_mut() {
             crate::config::interpolate_env_json(value);
         }
-        let plugin = plugins::create_plugin(&node_config.node_type, &config, &resources)?;
+        let mut plugin = plugins::create_plugin(&node_config.node_type, &config, &resources)?;
+        plugin.bind_node(&policy.name, &node_config.id);
         if node_config.node_type == "listener" {
             listener_node_id = Some(node_config.id.clone());
         }
@@ -2638,5 +2639,148 @@ mod tests {
         let w = graph.cache_pair_warnings();
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].present_node_id, "drop");
+    }
+
+    /// A two-node limit-count policy (`limit` at `count`, optional `group`) ending at `client`.
+    fn limit_policy(name: &str, count: u64, group: Option<&str>) -> PolicyConfig {
+        let group = group
+            .map(|g| format!("\n      group: {g}"))
+            .unwrap_or_default();
+        serde_yaml::from_str(&format!(
+            r#"
+name: {name}
+nodes:
+  - id: listener
+    type: listener
+  - id: limit
+    type: limit-count
+    config:
+      count: {count}
+      time_window: 60
+      rejected_code: 429{group}
+  - id: client
+    type: client
+edges:
+  - from: listener.out
+    to: limit.in
+  - from: limit.success
+    to: client.in
+  - from: limit.limited
+    to: client.in
+"#
+        ))
+        .unwrap()
+    }
+
+    async fn status_through(graph: &CompiledGraph) -> u16 {
+        graph.execute(test_context("/x")).await.response.status_code
+    }
+
+    /// Two limit-count nodes in different policies count separately by default,
+    /// even though every compile shares one process-wide counter store.
+    #[tokio::test]
+    async fn test_limit_count_nodes_do_not_share_counters_by_default() {
+        let resources = PluginResources::empty();
+        let a = compile_policy(&limit_policy("a", 1, None), resources.clone()).unwrap();
+        let b = compile_policy(&limit_policy("b", 1, None), resources.clone()).unwrap();
+
+        assert_ne!(status_through(&a).await, 429, "a: first request passes");
+        assert_eq!(
+            status_through(&a).await,
+            429,
+            "a: second request is limited"
+        );
+        assert_ne!(
+            status_through(&b).await,
+            429,
+            "b has its own counter: a's traffic must not use up b's allowance"
+        );
+    }
+
+    /// `group` is the documented opt-in for sharing one counter across nodes.
+    #[tokio::test]
+    async fn test_limit_count_nodes_share_counters_with_same_group() {
+        let resources = PluginResources::empty();
+        let a = compile_policy(&limit_policy("a", 1, Some("shared")), resources.clone()).unwrap();
+        let b = compile_policy(&limit_policy("b", 1, Some("shared")), resources.clone()).unwrap();
+
+        assert_ne!(status_through(&a).await, 429);
+        assert_eq!(
+            status_through(&b).await,
+            429,
+            "same group: b sees a's request"
+        );
+    }
+
+    /// Recompiling the same policy (a hot reload) keeps its counters: the scope
+    /// is derived from policy name + node id, not from a per-process sequence.
+    #[tokio::test]
+    async fn test_limit_count_scope_survives_recompile() {
+        let resources = PluginResources::empty();
+        let first = compile_policy(&limit_policy("a", 1, None), resources.clone()).unwrap();
+        assert_ne!(status_through(&first).await, 429);
+        let reloaded = compile_policy(&limit_policy("a", 1, None), resources.clone()).unwrap();
+        assert_eq!(
+            status_through(&reloaded).await,
+            429,
+            "same policy/node keeps its window"
+        );
+    }
+
+    /// A workflow policy whose single rule rate-limits every request at `count`.
+    fn workflow_policy(name: &str, count: u64) -> PolicyConfig {
+        serde_yaml::from_str(&format!(
+            r#"
+name: {name}
+nodes:
+  - id: listener
+    type: listener
+  - id: flow
+    type: workflow
+    config:
+      rules:
+        - actions:
+            - ["limit-count", {{ "count": {count}, "time_window": 60, "rejected_code": 429 }}]
+  - id: client
+    type: client
+edges:
+  - from: listener.out
+    to: flow.in
+  - from: flow.success
+    to: client.in
+  - from: flow.denied
+    to: client.in
+  - from: flow.limited
+    to: client.in
+"#
+        ))
+        .unwrap()
+    }
+
+    /// Recompiling the same workflow policy -- a hot reload, or a second
+    /// gateway instance counting through the same redis store -- must keep
+    /// counting under the same key instead of starting fresh windows.
+    #[tokio::test]
+    async fn test_workflow_counters_survive_recompile() {
+        let resources = PluginResources::empty();
+        let first = compile_policy(&workflow_policy("wf", 1), resources.clone()).unwrap();
+        assert_ne!(status_through(&first).await, 429, "first request passes");
+        let reloaded = compile_policy(&workflow_policy("wf", 1), resources.clone()).unwrap();
+        assert_eq!(
+            status_through(&reloaded).await,
+            429,
+            "same policy/node keeps its window across a recompile"
+        );
+    }
+
+    /// Distinct workflow nodes still count separately.
+    #[tokio::test]
+    async fn test_workflow_nodes_do_not_share_counters() {
+        let resources = PluginResources::empty();
+        let a = compile_policy(&workflow_policy("wf-a", 1), resources.clone()).unwrap();
+        let b = compile_policy(&workflow_policy("wf-b", 1), resources.clone()).unwrap();
+        assert_ne!(status_through(&a).await, 429);
+        assert_eq!(status_through(&a).await, 429);
+        assert_ne!(status_through(&b).await, 429, "b has its own counter");
     }
 }

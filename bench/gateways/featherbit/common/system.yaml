@@ -1,0 +1,9 @@
+# Benchmark profile: data plane only (no admin section = no admin server),
+# warn-level logs. HTTP/2 stays at its default (enabled).
+listener:
+  bind: "0.0.0.0"
+  port: 8000
+
+logging:
+  level: warn
+  format: json
