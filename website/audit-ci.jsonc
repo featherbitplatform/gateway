@@ -12,6 +12,14 @@
     // images from this repo at build time — not attacker-reachable. Remove
     // once image-size ships a fix and docusaurus picks it up.
     "GHSA-w3rx-r6r6-pgpr",
-    "GHSA-5p2g-fcmc-qvqq"
+    "GHSA-5p2g-fcmc-qvqq",
+    // GHSA-vfj7-8cjw-p6xm (braces stack-exhaustion DoS on deeply nested glob
+    // patterns): every published version is flagged (3.0.3 is latest), so no
+    // upgrade exists; pulled in via chokidar 3 (@docusaurus/core and
+    // webpack-dev-server), which only expands the file-watch globs written in
+    // this repo's docusaurus config at docs build/dev time — not
+    // attacker-reachable, never in the shipped binary/image. Remove once
+    // braces ships a fix (or docusaurus moves to chokidar 4+, which dropped it).
+    "GHSA-vfj7-8cjw-p6xm"
   ]
 }
