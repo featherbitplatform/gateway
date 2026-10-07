@@ -238,5 +238,46 @@ adminService:
   annotations: {}
   labels: {}
 
+# Expose the data plane through an existing Ingress controller.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: gateway.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: gateway-tls
+  #    hosts: [gateway.example.com]
+
+# Expose the admin API/UI. Off by default on purpose; put it behind your own
+# network policy / auth proxy if you turn it on.
+adminIngress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: gateway-admin.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Expose the data plane through a Gateway API implementation (HTTPRoute).
+# featherbit does not implement Gateway API itself; this attaches it as a
+# backend of a Gateway you already run.
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs: []
+  #  - name: my-gateway
+  #    namespace: gateway-system
+  #    sectionName: https
+  hostnames: []
+  # Defaults to one PathPrefix / rule to the data-plane Service when empty.
+  rules: []
+
 autoscaling:
   enabled: false
