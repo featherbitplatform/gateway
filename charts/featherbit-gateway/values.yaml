@@ -1,0 +1,22 @@
+# Default values for featherbit-gateway.
+#
+# Documentation: https://featherbitplatform.github.io/gateway/guides/deployment#kubernetes-helm
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: featherbit/featherbit
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # Pin by digest instead of tag (sha256:...). Takes precedence over tag.
+  digest: ""
+  # Use the -headless image variant (no embedded web UI).
+  headless: false
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Ports the gateway listens on inside the container. Rendered into system.yaml.
+containerPorts:
+  http: 8080
+  admin: 9090
