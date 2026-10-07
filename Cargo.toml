@@ -47,6 +47,12 @@ axum = { version = "0.8", features = ["ws"] }
 
 # Plugins
 dashmap = "6"
+# Pinned to 9: 10+ drops ring for aws-lc-rs or RustCrypto (rsa, with the
+# unpatched Marvin advisory), both off-limits for this ring-only tree.
+# GHSA-h395-gr6q-cpjc (medium, fixed in 10.3) does not apply here: it only
+# skips `exp`/`nbf` checks when the claim is malformed AND not required, and
+# both call sites keep `Validation::new`'s default `exp` requirement and never
+# enable `validate_nbf`. Keep that invariant if either site changes.
 jsonwebtoken = "9"
 
 # Hot reload
