@@ -120,3 +120,95 @@ Credentials are ${ENV} placeholders resolved by the gateway at load.
 {{ toYaml .Values.config.gateway }}
 {{- end -}}
 {{- end }}
+
+{{- define "featherbit-gateway.secretName" -}}
+{{- if .Values.admin.existingSecret -}}
+{{ .Values.admin.existingSecret }}
+{{- else -}}
+{{ include "featherbit-gateway.fullname" . }}-admin
+{{- end -}}
+{{- end }}
+
+{{/*
+The admin password the chart can know at render time: the explicit value, or
+the one a previous install stored (lookup is empty under `helm template`).
+Empty means "generate on first install" — see secret.yaml.
+*/}}
+{{- define "featherbit-gateway.adminPassword" -}}
+{{- if .Values.admin.password -}}
+{{ .Values.admin.password }}
+{{- else if not .Values.admin.existingSecret -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "featherbit-gateway.secretName" .) -}}
+{{- if and $existing $existing.data (hasKey $existing.data "password") -}}
+{{ index $existing.data "password" | b64dec }}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/* "Basic <b64>" for the HTTP probes, or empty when the password is unknown. */}}
+{{- define "featherbit-gateway.probeAuthHeader" -}}
+{{- if .Values.probes.authHeader -}}
+{{ .Values.probes.authHeader }}
+{{- else -}}
+{{- $pw := include "featherbit-gateway.adminPassword" . -}}
+{{- if $pw -}}
+Basic {{ printf "%s:%s" .Values.admin.username $pw | b64enc }}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/* Container env: every ${ENV} the rendered system.yaml references. */}}
+{{- define "featherbit-gateway.env" -}}
+- name: ADMIN_USER
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "featherbit-gateway.secretName" . }}
+      key: username
+- name: ADMIN_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "featherbit-gateway.secretName" . }}
+      key: password
+{{- range $i, $u := .Values.admin.users }}
+{{- $n := int (add1 $i) }}
+- name: ADMIN_USER_{{ $n }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "featherbit-gateway.secretName" $ }}
+      key: username-{{ $n }}
+- name: ADMIN_PASSWORD_{{ $n }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "featherbit-gateway.secretName" $ }}
+      key: password-{{ $n }}
+{{- end }}
+{{- if .Values.mcp.enabled }}
+{{- range .Values.mcp.tokens }}
+- name: {{ include "featherbit-gateway.mcpTokenEnv" .name }}
+  valueFrom:
+    secretKeyRef:
+      {{- if $.Values.mcp.existingSecret }}
+      name: {{ $.Values.mcp.existingSecret }}
+      key: {{ .name }}
+      {{- else }}
+      name: {{ include "featherbit-gateway.secretName" $ }}
+      key: mcp-{{ .name }}
+      {{- end }}
+{{- end }}
+{{- end }}
+{{- if and (eq .Values.config.source "etcd") .Values.config.etcd.existingSecret }}
+- name: ETCD_USER
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.config.etcd.existingSecret }}
+      key: user
+- name: ETCD_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.config.etcd.existingSecret }}
+      key: password
+{{- end }}
+{{- with .Values.extraEnv }}
+{{ toYaml . }}
+{{- end }}
+{{- end }}

@@ -135,3 +135,24 @@ config:
     existingSecret: ""
   # Lua scripts, mounted at /etc/gateway/plugins/<name>: {auth.lua: "..."}
   scripts: {}
+
+probes:
+  # /healthz and /readyz sit behind Basic Auth. HTTP probes are used when the
+  # chart knows the password (admin.password set, or already stored from a
+  # previous install); otherwise probes fall back to a TCP check on the admin
+  # port. Set this to "Basic <base64 user:pass>" to force HTTP probes with
+  # admin.existingSecret.
+  authHeader: ""
+  liveness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+  startup:
+    periodSeconds: 2
+    failureThreshold: 30
