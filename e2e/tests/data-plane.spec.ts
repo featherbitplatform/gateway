@@ -134,4 +134,23 @@ test.describe('Data plane', () => {
     await traffic.dispose();
     await api.dispose();
   });
+
+  test('E2E-DP-11: a route with hosts only matches those virtual hosts', async () => {
+    const traffic = await dataPlane();
+    // host-api: /host/*, hosts [e2e.example.com, *.e2e.example.org] -> echo.
+    const exact = await traffic.get('/host/x', {headers: {host: 'e2e.example.com'}});
+    expect(exact.status()).toBe(200);
+    // The request port is ignored and the comparison is case-insensitive.
+    const withPort = await traffic.get('/host/x', {headers: {host: 'E2E.Example.COM:18081'}});
+    expect(withPort.status()).toBe(200);
+    // The wildcard matches exactly one leading label.
+    const wildcard = await traffic.get('/host/x', {headers: {host: 'api.e2e.example.org'}});
+    expect(wildcard.status()).toBe(200);
+    const twoLabels = await traffic.get('/host/x', {headers: {host: 'a.b.e2e.example.org'}});
+    expect(twoLabels.status()).toBe(404);
+    // Any other host (incl. the default 127.0.0.1:port) is not routed.
+    const other = await traffic.get('/host/x');
+    expect(other.status()).toBe(404);
+    await traffic.dispose();
+  });
 });

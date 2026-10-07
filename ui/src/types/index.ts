@@ -33,8 +33,16 @@ export interface MatchRule {
   methods?: string[];
   /** Header name/value pairs that must all be present on the request. */
   headers?: Record<string, string>;
-  /** Host header value to match. */
+  /**
+   * Legacy single Host pattern; merged with {@link hosts} at match time.
+   * The UI reads it but always writes `hosts`.
+   */
   host?: string;
+  /**
+   * Host patterns the request `Host` (port ignored) must match one of:
+   * an exact hostname or a one-label wildcard such as `*.example.com`.
+   */
+  hosts?: string[];
 }
 
 /**

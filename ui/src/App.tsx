@@ -11,6 +11,7 @@ import { GraphCanvas } from './components/GraphCanvas';
 import { PluginConfigPanel } from './components/PluginConfigPanel';
 import { StoresPanel } from './components/StoresPanel';
 import { Dialog, DialogButton, DialogField } from './components/Dialog';
+import { RouteDialog } from './components/RouteDialog';
 import { DebugPanel } from './components/DebugPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import { CertificatesPanel } from './components/CertificatesPanel';
@@ -23,6 +24,7 @@ import { useNotificationLog } from './useNotificationLog';
 import { detailsFromMessage } from './notifications';
 import { buildCommands, matchesShortcut, type CommandContext } from './commands';
 import { useEditorActions } from './editorActions';
+import { describeMatch } from './routeMatch';
 import { usePortNames } from './usePortNames';
 import { toggleTheme } from './theme';
 import { api } from './api/client';
@@ -33,6 +35,7 @@ import { useChat } from './chat/useChat';
 import { onSignedIn } from './auth';
 import type {
   Route,
+  MatchRule,
   Policy,
   Supernode,
   PluginConfigDef,
@@ -118,8 +121,9 @@ export default function App() {
 
   // Create-route dialog state
   const [createOpen, setCreateOpen] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [newPath, setNewPath] = useState('/*');
+
+  // Edit-route dialog state: the name of the route being edited, or null.
+  const [editTarget, setEditTarget] = useState<string | null>(null);
 
   // Delete-route confirmation state
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -330,15 +334,10 @@ export default function App() {
   // fields of the memoized `commandCtx`, which keys the global keydown effect
   // (an unstable field there would resubscribe the listener every render).
   const handleCreateRoute = useCallback(() => {
-    setNewName('');
-    setNewPath('/*');
     setCreateOpen(true);
   }, []);
 
-  const submitCreateRoute = async () => {
-    const name = newName.trim();
-    const path = newPath.trim();
-    if (!name || !path) return;
+  const submitCreateRoute = async (name: string, match: MatchRule) => {
     setCreateOpen(false);
 
     const policyName = `${name}-policy`;
@@ -354,16 +353,30 @@ export default function App() {
           { from: 'listener.out', to: 'client.in' },
         ],
       });
-      await api.createRoute({
-        name,
-        match: { path, methods: ['GET', 'POST', 'PUT', 'DELETE'] },
-        policy: policyName,
-      });
+      await api.createRoute({ name, match, policy: policyName });
       await loadData();
       setSelectedRoute(name);
-      notify({ tone: 'success', title: 'Route created', message: `${name} · ${path}` });
+      notify({ tone: 'success', title: 'Route created', message: `${name} · ${describeMatch(match)}` });
     } catch (e) {
       notify({ tone: 'error', title: 'Failed to create route', message: `${e}` });
+    }
+  };
+
+  const editingRoute = useMemo(
+    () => (editTarget ? routes.find((r) => r.name === editTarget) : undefined),
+    [editTarget, routes]
+  );
+
+  const submitEditRoute = async (name: string, match: MatchRule) => {
+    const existing = routes.find((r) => r.name === name);
+    setEditTarget(null);
+    if (!existing) return;
+    try {
+      await api.updateRoute(name, { ...existing, match });
+      await loadData();
+      notify({ tone: 'success', title: 'Route updated', message: `${name} · ${describeMatch(match)}` });
+    } catch (e) {
+      notify({ tone: 'error', title: 'Failed to update route', message: `${e}` });
     }
   };
 
@@ -995,6 +1008,7 @@ export default function App() {
         onSelectRoute={handleSelectRoute}
         onCreateRoute={handleCreateRoute}
         onDeleteRoute={(name) => setDeleteTarget(name)}
+        onEditRoute={(name) => setEditTarget(name)}
         onReorderRoutes={(order) => void handleReorderRoutes(order)}
         onRefresh={handleRefresh}
         supernodes={supernodes}
@@ -1064,22 +1078,20 @@ export default function App() {
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} ctx={commandCtx} />
 
-      <Dialog
+      <RouteDialog
         open={createOpen}
-        title="New route"
+        mode="create"
         onClose={() => setCreateOpen(false)}
-        footer={
-          <>
-            <DialogButton variant="ghost" onClick={() => setCreateOpen(false)}>
-              Cancel
-            </DialogButton>
-            <DialogButton onClick={submitCreateRoute}>Create route</DialogButton>
-          </>
-        }
-      >
-        <DialogField label="Route name" value={newName} onChange={setNewName} placeholder="echo-api" autoFocus />
-        <DialogField label="Match path" value={newPath} onChange={setNewPath} placeholder="/api/*" mono />
-      </Dialog>
+        onSubmit={(name, match) => void submitCreateRoute(name, match)}
+      />
+
+      <RouteDialog
+        open={editingRoute !== undefined}
+        mode="edit"
+        route={editingRoute}
+        onClose={() => setEditTarget(null)}
+        onSubmit={(name, match) => void submitEditRoute(name, match)}
+      />
 
       <Dialog
         open={deleteTarget !== null}
