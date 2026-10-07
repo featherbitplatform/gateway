@@ -10,11 +10,20 @@
 
 use async_trait::async_trait;
 use std::path::PathBuf;
+use tracing::warn;
 
 use crate::config::{load_yaml, GatewayConfig};
 use crate::state::SharedState;
 
 pub mod etcd;
+
+/// True when a config-load error is the file simply not existing (as opposed
+/// to a permission or parse problem). `load_yaml` boxes the `io::Error` from
+/// `fs::read_to_string` directly, so a downcast recovers its kind.
+fn is_not_found(e: &(dyn std::error::Error + 'static)) -> bool {
+    e.downcast_ref::<std::io::Error>()
+        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+}
 
 /// A source of gateway configuration and the sink for Admin API mutations.
 #[async_trait]
@@ -53,7 +62,21 @@ impl ConfigStore for FileConfigStore {
         // Raw load: `${VAR}` placeholders stay in the stored config (the
         // Admin API serves it to the UI); env resolution happens at
         // compile/build time.
-        load_yaml(&self.path).map_err(|e| e.to_string())
+        match load_yaml(&self.path) {
+            Ok(gw) => Ok(gw),
+            // No gateway.yaml yet (fresh install, or routes authored only
+            // through the Admin API): boot with an empty config instead of
+            // refusing to start. Any other error — unreadable file,
+            // malformed YAML — is still fatal.
+            Err(e) if is_not_found(e.as_ref()) => {
+                warn!(
+                    "Gateway config {} not found; starting with no routes or policies",
+                    self.path.display()
+                );
+                Ok(GatewayConfig::default())
+            }
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     async fn commit(&self, state: &SharedState, candidate: GatewayConfig) -> Result<(), String> {
@@ -164,6 +187,42 @@ policies:
 
         std::fs::remove_file(&path).ok();
         std::env::remove_var("TEST_STORE_SECRET");
+    }
+
+    #[tokio::test]
+    async fn test_load_all_missing_file_yields_empty_config() {
+        // A fresh install has no gateway.yaml yet: the gateway must still boot
+        // (Admin API + UI up, no routes) rather than exit, so a missing file
+        // is treated as an empty config. Only "not found" gets this treatment.
+        let path = std::env::temp_dir().join(format!(
+            "fb_store_missing_{}/does-not-exist.yaml",
+            std::process::id()
+        ));
+        assert!(!path.exists());
+
+        let gw = FileConfigStore::new(path).load_all().await.unwrap();
+        assert!(gw.routes.is_empty());
+        assert!(gw.policies.is_empty());
+        assert!(gw.consumers.is_empty());
+        assert!(gw.supernodes.is_empty());
+        assert!(gw.plugin_configs.is_empty());
+        assert!(gw.stores.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_load_all_still_fails_on_malformed_yaml() {
+        // Tolerating a missing file must not swallow real errors: a file that
+        // exists but does not parse is still a startup failure.
+        let path = std::env::temp_dir().join(format!("fb_store_bad_{}.yaml", std::process::id()));
+        std::fs::write(&path, "routes: [\n").unwrap();
+
+        let err = FileConfigStore::new(path.clone())
+            .load_all()
+            .await
+            .unwrap_err();
+        assert!(!err.is_empty());
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[tokio::test]

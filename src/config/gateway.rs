@@ -23,7 +23,7 @@ use std::collections::HashMap;
 ///     edges:
 ///       - { from: in.out, to: up.in }
 /// ```
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct GatewayConfig {
     /// Routes evaluated in declaration order; the first match wins.
     #[serde(default)]

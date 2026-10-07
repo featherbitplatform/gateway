@@ -67,6 +67,8 @@ The `tls` (certificate/key paths, minimum version, mTLS, SNI) and `http2` sectio
 - `routes` — match rules bound to a policy name, evaluated in declaration order (see [Routing](./routing.md))
 - `policies` — named node graphs referenced by routes; a route referencing an unknown policy fails compilation
 
+The file itself is optional: if the path passed to `--gateway-config` does not exist, the gateway logs a warning and starts with no routes or policies (the Admin API and Web UI are up, so you can author the config from there). A file that exists but cannot be read or parsed is still a startup error.
+
 ```yaml
 routes:
   - name: echo-api
