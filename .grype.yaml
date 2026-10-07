@@ -20,14 +20,6 @@ exclude:
 
 # Accepted findings, each with a comment explaining why.
 ignore:
-  # image-size infinite-loop DoS on crafted ICNS/JXL/HEIF images. No patched
-  # release exists (2.0.2 is latest and flagged); pulled in via
-  # @docusaurus/mdx-loader, which only parses images checked into this repo
-  # at docs build time — not attacker-reachable, never in the shipped
-  # binary/image. Remove once image-size ships a fix and docusaurus picks
-  # it up (mirrors website/audit-ci.jsonc).
-  - vulnerability: GHSA-w3rx-r6r6-pgpr
-  - vulnerability: GHSA-5p2g-fcmc-qvqq
   # braces stack-exhaustion DoS on deeply nested glob patterns. Every
   # published version is flagged (3.0.3 is latest), so no upgrade exists;
   # pulled in via chokidar 3 (@docusaurus/core, webpack-dev-server), which

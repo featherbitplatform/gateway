@@ -27,7 +27,6 @@ type CompiledRoutes = Vec<(RouteConfig, Arc<CompiledGraph>)>;
 /// request path.
 pub struct SharedState {
     /// Immutable system-level configuration (`system.yaml`); fixed for the process lifetime.
-    #[allow(dead_code)] // callers take `&SystemConfig` directly; kept on state for reference
     pub system: SystemConfig,
     /// Current gateway configuration (`gateway.yaml`), mutated by the Admin API CRUD endpoints.
     pub gateway: RwLock<GatewayConfig>,

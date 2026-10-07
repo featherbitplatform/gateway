@@ -183,7 +183,6 @@ pub struct SandboxArgs {
     pub context: Option<SandboxContextArgs>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SandboxOnError {

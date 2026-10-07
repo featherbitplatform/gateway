@@ -147,6 +147,8 @@ export function DebugPanel({
   // this is what makes it usable as a live "recent requests" view.
   useEffect(() => {
     if (!open || !enabled) return;
+    // Load-on-open; same documented rule false-positive as SessionsPanel.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh();
     setDetail(null);
   }, [open, enabled, refresh]);
@@ -162,6 +164,9 @@ export function DebugPanel({
   useEffect(() => {
     if (!open) return;
     const initial = selectedPolicy ?? policies[0]?.name ?? '';
+    // Re-seeds editable scratch state each time the panel opens; a derived
+    // value would clobber the user's in-progress edits on every poll tick.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPolicyName(initial);
     const p = policies.find((x) => x.name === initial);
     if (p) {

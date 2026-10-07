@@ -118,6 +118,9 @@ export function TemplateEditorModal({
 
   useEffect(() => {
     if (!open) return;
+    // Re-initialises the scratch draft on open only (see the comment above
+    // `draft`); deriving it from `value` would discard in-progress edits.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDraft(value);
     // Move focus (and the caret) into the modal's own textarea the moment it
     // opens — without this, focus stays wherever it was on the field behind

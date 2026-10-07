@@ -40,7 +40,7 @@ pub struct StoreConn {
 impl StoreConn {
     fn gave_up(&self) -> redis::RedisError {
         redis::RedisError::from((
-            redis::ErrorKind::IoError,
+            redis::ErrorKind::Io,
             "store operation gave up",
             format!(
                 "store '{}': no connection within {}ms (connect_budget_ms)",
@@ -138,7 +138,8 @@ impl RedisStoreClient {
         if let Some(pw) = cfg.password.as_deref() {
             let pw = interpolate_env(pw);
             if !pw.is_empty() {
-                info.redis.password = Some(pw);
+                let redis = info.redis_settings().clone().set_password(pw);
+                info = info.set_redis_settings(redis);
             }
         }
         let client = match cfg.tls.as_ref().and_then(|t| t.ca_cert_path.as_deref()) {
@@ -202,10 +203,10 @@ impl RedisStoreClient {
             .conn
             .get_or_try_init(|| async {
                 let cfg = redis::aio::ConnectionManagerConfig::new()
-                    .set_connection_timeout(self.connect_timeout)
-                    .set_response_timeout(self.connect_timeout)
+                    .set_connection_timeout(Some(self.connect_timeout))
+                    .set_response_timeout(Some(self.connect_timeout))
                     // No individual backoff may outlast the budget itself.
-                    .set_max_delay(self.connect_budget.as_millis() as u64);
+                    .set_max_delay(self.connect_budget);
 
                 // `connect_timeout` bounds one attempt; it says nothing about
                 // the retry schedule around them. With the crate defaults that
@@ -272,9 +273,6 @@ impl RedisStoreClient {
         })
     }
 
-    // Only this module's own tests call this — not yet used by any
-    // production code path.
-    #[allow(dead_code)]
     pub fn name(&self) -> &str {
         &self.name
     }
