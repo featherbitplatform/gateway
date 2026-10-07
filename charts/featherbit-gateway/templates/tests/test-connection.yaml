@@ -36,11 +36,15 @@ spec:
               key: password
       command: ["sh", "-ec"]
       args:
+        # The hook can start before kube-proxy has programmed the Services'
+        # endpoints for a pod that just turned Ready, so every request retries
+        # connection refusals and transient errors for up to ~30s.
         - |
-          curl -fsS -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+          retry="--retry 15 --retry-delay 2 --retry-connrefused --retry-all-errors"
+          curl -fsS $retry -u "$ADMIN_USER:$ADMIN_PASSWORD" \
             "http://{{ include "featherbit-gateway.fullname" . }}-admin:{{ .Values.adminService.port }}/healthz"
           {{- if .Values.tests.dataPlanePath }}
-          curl -fsS "http://{{ include "featherbit-gateway.fullname" . }}:{{ .Values.service.port }}{{ .Values.tests.dataPlanePath }}" \
+          curl -fsS $retry "http://{{ include "featherbit-gateway.fullname" . }}:{{ .Values.service.port }}{{ .Values.tests.dataPlanePath }}" \
             | grep -q {{ .Values.tests.expect | quote }}
           {{- end }}
 {{- end }}
