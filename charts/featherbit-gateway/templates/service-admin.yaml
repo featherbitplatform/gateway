@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "featherbit-gateway.fullname" . }}-admin
+  labels:
+    {{- include "featherbit-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+    {{- with .Values.adminService.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.adminService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.adminService.type }}
+  {{- with .Values.adminService.clusterIP }}
+  clusterIP: {{ . }}
+  {{- end }}
+  ports:
+    - name: admin
+      port: {{ .Values.adminService.port }}
+      targetPort: admin
+      protocol: TCP
+  selector:
+    {{- include "featherbit-gateway.selectorLabels" . | nindent 4 }}

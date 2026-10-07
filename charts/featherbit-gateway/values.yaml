@@ -216,5 +216,27 @@ extraVolumeMounts: []
 extraContainers: []
 initContainers: []
 
+# Data plane. For an edge deployment set type: LoadBalancer (or NodePort);
+# behind an existing controller leave ClusterIP and enable ingress/httpRoute.
+service:
+  type: ClusterIP
+  port: 80
+  nodePort: null
+  clusterIP: ""
+  annotations: {}
+  labels: {}
+  externalTrafficPolicy: ""
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+
+# Admin API + web UI. Deliberately never exposed by default: Basic Auth
+# credentials travel on every request and it has full write access.
+adminService:
+  type: ClusterIP
+  port: 9090
+  clusterIP: ""
+  annotations: {}
+  labels: {}
+
 autoscaling:
   enabled: false
