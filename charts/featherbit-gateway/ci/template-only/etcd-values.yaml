@@ -1,0 +1,12 @@
+# Template-only (lint + kubeconform): no etcd runs in CI.
+config:
+  source: etcd
+  etcd:
+    endpoints: ["http://etcd.default.svc:2379"]
+    prefix: /featherbit
+    existingSecret: etcd-auth
+  system:
+    timeouts:
+      shutdown_timeout_seconds: 10
+    logging:
+      level: debug
