@@ -1,0 +1,4 @@
+# Exercised by `ct install` in CI (image.tag is overridden to a published tag
+# on the ct command line). Default values; the file exists so ct runs the
+# baseline install.
+replicaCount: 1

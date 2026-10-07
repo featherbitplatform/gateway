@@ -1,0 +1,40 @@
+featherbit {{ .Chart.AppVersion }} is being deployed as release {{ .Release.Name }}.
+
+Admin API + web UI (not exposed by default):
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "featherbit-gateway.fullname" . }}-admin {{ .Values.adminService.port }}:{{ .Values.adminService.port }}
+  open http://localhost:{{ .Values.adminService.port }}
+
+  username: {{ .Values.admin.username }}
+{{- if .Values.admin.existingSecret }}
+  password: from Secret {{ .Values.admin.existingSecret }} (key: password)
+{{- else }}
+  password: kubectl -n {{ .Release.Namespace }} get secret {{ include "featherbit-gateway.secretName" . }} -o jsonpath='{.data.password}' | base64 -d
+{{- end }}
+
+Data plane:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ (index .paths 0).path }}
+{{- end }}
+{{- else if .Values.httpRoute.enabled }}
+  attached via HTTPRoute {{ include "featherbit-gateway.fullname" . }} to {{ range .Values.httpRoute.parentRefs }}{{ .name }} {{ end }}
+{{- else if eq .Values.service.type "LoadBalancer" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "featherbit-gateway.fullname" . }} -w   # wait for EXTERNAL-IP
+{{- else if eq .Values.service.type "NodePort" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "featherbit-gateway.fullname" . }}      # see the NodePort
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "featherbit-gateway.fullname" . }} 8080:{{ .Values.service.port }}
+  curl http://localhost:8080{{ .Values.tests.dataPlanePath | default "/" }}
+{{- end }}
+
+{{- if not .Values.admin.password }}
+{{- if not .Values.admin.existingSecret }}
+
+Note: health probes use a TCP check until the admin password is known to the
+chart. Run `helm upgrade` once (same values) to switch them to HTTP /readyz,
+or set admin.password / probes.authHeader.
+{{- end }}
+{{- end }}
+
+Docs: https://featherbitplatform.github.io/gateway/guides/deployment#kubernetes-helm

@@ -302,3 +302,12 @@ serviceMonitor:
   labels: {}
   relabelings: []
   metricRelabelings: []
+
+# `helm test`: checks /healthz with the admin credentials, then sends one
+# request through the data plane. Set dataPlanePath to "" to skip the second
+# check when you replace the default gateway config.
+tests:
+  enabled: true
+  image: curlimages/curl:8.11.1
+  dataPlanePath: /hello
+  expect: featherbit
