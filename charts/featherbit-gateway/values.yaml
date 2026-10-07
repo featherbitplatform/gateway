@@ -156,3 +156,65 @@ probes:
   startup:
     periodSeconds: 2
     failureThreshold: 30
+
+replicaCount: 1
+
+# L4 stream listeners declared in config.system.stream need container ports
+# and a Service; list them here: [{name: mqtt, port: 1883, protocol: TCP}]
+stream:
+  ports: []
+  service:
+    type: ClusterIP
+    annotations: {}
+
+# Defaults to config.system.timeouts.shutdown_timeout_seconds (30) + 5 so the
+# gateway's drain finishes before the kubelet kills the pod.
+terminationGracePeriodSeconds: null
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automount: false
+
+podAnnotations: {}
+podLabels: {}
+
+# The image is FROM scratch and runs as the distroless "nonroot" uid.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources: {}
+#  limits:
+#    cpu: "1"
+#    memory: 256Mi
+#  requests:
+#    cpu: 100m
+#    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+# Raw additions to the gateway container / pod.
+extraEnv: []            # e.g. [{name: UPSTREAM_HOST, value: my-api.default.svc}]
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+extraContainers: []
+initContainers: []
+
+autoscaling:
+  enabled: false

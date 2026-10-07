@@ -157,6 +157,14 @@ Basic {{ printf "%s:%s" .Values.admin.username $pw | b64enc }}
 {{- end -}}
 {{- end }}
 
+{{- define "featherbit-gateway.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "featherbit-gateway.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
 {{/* Container env: every ${ENV} the rendered system.yaml references. */}}
 {{- define "featherbit-gateway.env" -}}
 - name: ADMIN_USER
