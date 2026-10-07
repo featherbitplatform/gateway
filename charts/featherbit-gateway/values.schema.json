@@ -101,7 +101,7 @@
     },
     "probes": {
       "type": "object",
-      "properties": { "authHeader": { "type": "string" } }
+      "properties": { "http": { "type": "boolean" }, "authHeader": { "type": "string" } }
     },
     "stream": {
       "type": "object",

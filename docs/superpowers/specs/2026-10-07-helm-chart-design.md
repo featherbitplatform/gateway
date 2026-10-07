@@ -121,7 +121,7 @@ extraEnv: []              # raw env entries
 extraEnvFrom: []          # raw envFrom entries
 ```
 
-The Deployment uses `envFrom` on the managed (or existing) Secret. A random admin password uses the `lookup`-then-`randAlphaNum` idiom so `helm upgrade` does not rotate it; `helm template` (no cluster) still renders deterministically because `lookup` returns empty there and the template falls back to a fresh value.
+The Deployment reads the managed (or existing) Secret through `secretKeyRef` env entries. A random admin password uses the `lookup`-then-`randAlphaNum` idiom so `helm upgrade` does not rotate it. `helm template` (no cluster) is **not** deterministic: `lookup` returns empty there, so every render produces a fresh value — GitOps tools that render without cluster access must set `admin.password` or `admin.existingSecret` (documented in the README and the deployment guide).
 
 ### 4.4 Networking
 

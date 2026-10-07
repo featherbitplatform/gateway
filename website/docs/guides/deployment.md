@@ -167,7 +167,9 @@ config:
           - id: backend
             type: upstream
             config:
-              targets: [{ host: ${USERS_HOST}, port: 8080 }]
+              targets:
+                - host: ${USERS_HOST}
+                  port: 8080
           - { id: client, type: client }
         edges:
           - { from: listener.out, to: backend.in }
@@ -183,7 +185,9 @@ Changing `system.yaml` rolls the pods (it is not hot-reloaded). Changing `gatewa
 
 ### Secrets
 
-Admin credentials live in a chart-managed Secret (an empty `admin.password` is generated once and kept across upgrades) or in `admin.existingSecret` with keys `username` and `password`. MCP tokens and etcd credentials follow the same pattern (`mcp.existingSecret`, `config.etcd.existingSecret`). Health probes use `/healthz` and `/readyz`, which sit behind Basic Auth: the chart sends the header when it knows the password and falls back to a TCP check otherwise (`probes.authHeader` forces HTTP probes with an existing Secret).
+Admin credentials live in a chart-managed Secret (an empty `admin.password` is generated once and kept across upgrades) or in `admin.existingSecret` with keys `username` and `password`. MCP tokens and etcd credentials follow the same pattern (`mcp.existingSecret`, `config.etcd.existingSecret`). Health probes use `/healthz` and `/readyz`, which sit behind Basic Auth: the chart sends the header when it knows the password and falls back to a TCP check otherwise (`probes.authHeader` forces HTTP probes with an existing Secret; `probes.http: false` keeps TCP probes so the credentials never appear in the pod template).
+
+The generated password depends on Helm's `lookup`, so tools that render without cluster access (ArgoCD, Flux in `helm template` mode, CI pipelines) would produce a new password on every sync. With those, set `admin.password` or `admin.existingSecret`.
 
 ### Multiple replicas
 

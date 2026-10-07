@@ -1,4 +1,5 @@
-{{- $auth := include "featherbit-gateway.probeAuthHeader" . -}}
+{{- $auth := "" -}}
+{{- if .Values.probes.http }}{{ $auth = include "featherbit-gateway.probeAuthHeader" . }}{{ end -}}
 {{- $drain := dig "timeouts" "shutdown_timeout_seconds" 30 .Values.config.system -}}
 {{- $grace := .Values.terminationGracePeriodSeconds -}}
 {{- if not $grace }}{{ if kindIs "string" $drain }}{{ $grace = 35 }}{{ else }}{{ $grace = add $drain 5 }}{{ end }}{{ end -}}

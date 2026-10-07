@@ -39,7 +39,9 @@ The admin Service is `ClusterIP` and has no Ingress unless `adminIngress.enabled
 
 The chart creates a Secret with `username`/`password`; an empty `admin.password` is generated once and kept across upgrades. `admin.existingSecret` (keys `username`, `password`) replaces it. MCP tokens go in the same Secret (`mcp.tokens[].value`) or in `mcp.existingSecret` keyed by token name.
 
-Health probes hit `/healthz` and `/readyz`, which are behind Basic Auth. The chart sends the header when it knows the password (explicit `admin.password`, or a previously stored one on `helm upgrade`); otherwise probes fall back to a TCP check. Set `probes.authHeader` to force HTTP probes with an existing Secret.
+Health probes hit `/healthz` and `/readyz`, which are behind Basic Auth. The chart sends the header when it knows the password (explicit `admin.password`, or a previously stored one on `helm upgrade`); otherwise probes fall back to a TCP check. Set `probes.authHeader` to force HTTP probes with an existing Secret. An HTTP probe embeds the credentials in the pod template, so anyone who can read the Deployment can read the admin password; set `probes.http: false` to always use TCP probes if that matters in your cluster.
+
+The generated password relies on Helm's `lookup`, which only works with cluster access. A tool that renders without it (ArgoCD, Flux's `helm template` mode, CI pipelines running `helm template`) produces a fresh random password on every render and would rotate it on every sync. With such tools set `admin.password` or `admin.existingSecret`. There is no regenerate command: to rotate a generated password, set `admin.password`.
 
 ## TLS and ACME
 

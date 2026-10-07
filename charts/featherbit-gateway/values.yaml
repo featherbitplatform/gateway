@@ -140,8 +140,11 @@ probes:
   # /healthz and /readyz sit behind Basic Auth. HTTP probes are used when the
   # chart knows the password (admin.password set, or already stored from a
   # previous install); otherwise probes fall back to a TCP check on the admin
-  # port. Set this to "Basic <base64 user:pass>" to force HTTP probes with
-  # admin.existingSecret.
+  # port. Note that an HTTP probe embeds "Basic <base64 user:pass>" in the pod
+  # template, so anyone who can read the Deployment can read the admin
+  # password. Set http: false to always use TCP probes instead.
+  http: true
+  # "Basic <base64 user:pass>" to force HTTP probes with admin.existingSecret.
   authHeader: ""
   liveness:
     initialDelaySeconds: 5
