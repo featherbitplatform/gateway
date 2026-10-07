@@ -74,14 +74,9 @@ pub async fn start_admin_server(
 
     let app = build_router(admin_config, state);
 
-    if (auth::AuthState {
-        username: admin_config.username.clone(),
-        password: admin_config.password.clone(),
-    })
-    .is_default()
-    {
+    if admin_config.uses_default_credentials() {
         warn!(
-            "admin API is using the default admin/admin credentials; set admin.username/admin.password (e.g. ADMIN_USER/ADMIN_PASSWORD) before exposing the admin port"
+            "admin API accepts the default admin/admin credentials; set admin.username/admin.password (e.g. ADMIN_USER/ADMIN_PASSWORD) or admin.users before exposing the admin port"
         );
     }
 
@@ -176,10 +171,7 @@ pub(crate) fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) 
         .merge(vars::router())
         .merge(env_vars::router())
         .layer(axum::middleware::from_fn_with_state(
-            Arc::new(auth::AuthState {
-                username: admin_config.username.clone(),
-                password: admin_config.password.clone(),
-            }),
+            Arc::new(auth::AuthState::from_config(admin_config)),
             auth::basic_auth_middleware,
         ))
         .with_state(state.clone());

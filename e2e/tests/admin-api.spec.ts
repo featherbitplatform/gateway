@@ -267,4 +267,44 @@ test.describe('Admin API', () => {
 
     await api.dispose();
   });
+
+  test('E2E-API-14: every configured admin user is accepted, with equal access', async () => {
+    // system.yaml declares admin/admin (legacy keys) plus users: [ops/ops-secret].
+    const ops = await request.newContext({
+      baseURL: ADMIN_URL,
+      httpCredentials: {username: 'ops', password: 'ops-secret'},
+    });
+    const read = await ops.get('/api/routes');
+    expect(read.status()).toBe(200);
+    // Writes too: all users are full admins.
+    await deleteRouteIfPresent(ops, 'ops-made');
+    const write = await ops.post('/api/routes', {
+      data: {name: 'ops-made', match: {path: '/ops-made/*'}, policy: 'echo-policy'},
+    });
+    expect(write.ok(), `${write.status()} ${await write.text()}`).toBeTruthy();
+    await ops.delete('/api/routes/ops-made');
+    await ops.dispose();
+
+    // A valid username with another user's password is still refused.
+    const crossed = await request.newContext({
+      baseURL: ADMIN_URL,
+      httpCredentials: {username: 'ops', password: 'admin'},
+    });
+    expect((await crossed.get('/api/routes')).status()).toBe(401);
+    await crossed.dispose();
+  });
+
+  test('E2E-API-15: a route with an invalid host pattern is rejected', async () => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'bad-host');
+    const res = await api.post('/api/routes', {
+      data: {name: 'bad-host', match: {path: '/bad-host/*', hosts: ['api.*.example.com']}, policy: 'echo-policy'},
+    });
+    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status()).toBeLessThan(500);
+    expect(await res.text()).toContain('api.*.example.com');
+    const names = ((await (await api.get('/api/routes')).json()) as {name: string}[]).map((r) => r.name);
+    expect(names).not.toContain('bad-host');
+    await api.dispose();
+  });
 });
