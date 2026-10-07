@@ -24,10 +24,8 @@ pub mod redis;
 /// A 128-bit random session id, hex-encoded (32 chars). The only thing the
 /// browser holds in redis mode, and deliberately unguessable.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct SessionId(String);
 
-#[allow(dead_code)]
 impl SessionId {
     /// Fresh random id from the system RNG (house pattern, see
     /// `authz_casdoor::random_state`).
@@ -57,7 +55,6 @@ impl SessionId {
 /// Unencrypted envelope for the operator surface. `id` is left empty on
 /// `put` (the key already carries it) and filled in by `list`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct SessionMeta {
     #[serde(default)]
     pub id: String,
@@ -76,7 +73,7 @@ pub struct SessionMeta {
 
 /// Listing filter; `cursor` is backend-opaque (Redis SCAN cursor).
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
+#[allow(dead_code)] // headless (no redis-store) builds compile this but never call it
 pub struct SessionFilter {
     pub subject: Option<String>,
     pub plugin: Option<String>,
@@ -86,7 +83,7 @@ pub struct SessionFilter {
 
 /// One page of session metadata.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[allow(dead_code)] // headless (no redis-store) builds compile this but never call it
 pub struct SessionPage {
     pub sessions: Vec<SessionMeta>,
     pub next_cursor: Option<String>,
@@ -95,7 +92,6 @@ pub struct SessionPage {
 /// Session-store backend failure. Always maps to 503 on the plugin's
 /// `error` port; callers must never treat it as "unauthenticated".
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct StoreError(pub String);
 
 impl std::fmt::Display for StoreError {
@@ -106,7 +102,7 @@ impl std::fmt::Display for StoreError {
 
 /// A backend holding sealed session payloads plus their meta envelopes.
 #[async_trait]
-#[allow(dead_code)]
+#[allow(dead_code)] // headless (no redis-store) builds compile this but never call it
 pub trait SessionStore: Send + Sync {
     /// Upserts a session: sealed payload + meta, both expiring after `ttl`.
     async fn put(

@@ -29,6 +29,8 @@ allow = [
     "CDLA-Permissive-2.0",
     "MIT-0",
     "CC0-1.0",
+    # Boost Software License (permissive, OSI-approved): xxhash-rust via redis 1.x.
+    "BSL-1.0",
 ]
 # The featherbit crate itself is publish = false; don't require a license
 # expression on it.
@@ -49,7 +51,20 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 multiple-versions = "warn"
 wildcards = "deny"
 skip = [
-    { name = "bitflags" },
+    # rmcp 3.x sits on base64 0.23 / rand 0.10 / syn 3 while axum, jsonwebtoken,
+    # reqwest, ring and every proc-macro crate are still on the previous majors.
+    { name = "base64" },
+    { name = "rand" },
+    { name = "rand_core" },
+    { name = "syn" },
+    { name = "synstructure" },
+    # RustCrypto 0.11 (sha2 via rust-embed-utils) next to 0.10 (sha1 via axum/tungstenite).
+    { name = "block-buffer" },
+    { name = "crypto-common" },
+    { name = "digest" },
+    { name = "cpufeatures" },
+    # rcgen 0.14.10 moved to pem 4; jsonwebtoken 9 (the last ring-only major) stays on 3.
+    { name = "pem" },
     { name = "core-foundation" },
     { name = "getrandom" },
     { name = "hashbrown" },
