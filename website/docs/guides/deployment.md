@@ -1,6 +1,6 @@
 ---
 title: Deployment
-description: Docker Compose development setup, the scratch container image, and stateless multi-instance deployment.
+description: Docker Compose development setup, the scratch container image, the Helm chart, and multi-instance deployment.
 ---
 
 ## Example stacks
@@ -98,6 +98,101 @@ CMD ["--system-config", "/etc/gateway/system.yaml", "--gateway-config", "/etc/ga
 
 Note that the UI must be built (`ui/dist/`) before the image, since `cargo build` embeds the UI assets into the binary.
 
+## Kubernetes (Helm)
+
+The chart `featherbit-gateway` is published as an OCI artifact on every release, to GHCR and to Docker Hub (same chart, pick either). Its version equals the gateway version it installs.
+
+```bash
+helm install featherbit oci://ghcr.io/featherbitplatform/charts/featherbit-gateway --version 0.14.0
+# or
+helm install featherbit oci://registry-1.docker.io/featherbit/featherbit-gateway --version 0.14.0
+```
+
+A bare install runs one replica with a `/hello` mock route and an `/api/*` route to `${UPSTREAM_HOST}`, the admin API and UI on an internal Service, and a generated admin password:
+
+```bash
+kubectl port-forward svc/featherbit-featherbit-gateway-admin 9090:9090
+kubectl get secret featherbit-featherbit-gateway-admin -o jsonpath='{.data.password}' | base64 -d
+```
+
+### Exposing the data plane
+
+featherbit is itself a gateway, so pick one of two shapes:
+
+- **featherbit is the edge** — expose the data-plane Service directly and let featherbit terminate TLS (a mounted Secret or ACME):
+
+  ```yaml
+  service:
+    type: LoadBalancer
+  tls:
+    existingSecret: gateway-tls        # kubernetes.io/tls
+  ```
+
+- **Behind an existing controller** — keep the Service internal and attach it to an Ingress or a Gateway API `Gateway` (featherbit does not implement Gateway API; it attaches as a backend):
+
+  ```yaml
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: api.example.com
+        paths: [{ path: /, pathType: Prefix }]
+  # or
+  httpRoute:
+    enabled: true
+    parentRefs: [{ name: edge, namespace: gateway-system }]
+    hostnames: [api.example.com]
+  ```
+
+The admin Service is `ClusterIP` and gets no Ingress unless `adminIngress.enabled: true`. It carries Basic Auth credentials on every request and has full write access, so keep it internal or put your own auth proxy in front.
+
+### Your configuration
+
+The chart renders the gateway's own files into a ConfigMap. `config.system` is deep-merged over a chart default `system.yaml`; `config.gateway` is the full `gateway.yaml` as a map (`config.gatewayRaw` takes the literal text). `${ENV}` placeholders are passed through untouched and resolve from the pod environment:
+
+```yaml
+config:
+  system:
+    timeouts:
+      shutdown_timeout_seconds: 20
+  gateway:
+    routes:
+      - name: users
+        match: { path: /users/* }
+        policy: users
+    policies:
+      - name: users
+        nodes:
+          - { id: listener, type: listener }
+          - id: backend
+            type: upstream
+            config:
+              targets: [{ host: ${USERS_HOST}, port: 8080 }]
+          - { id: client, type: client }
+        edges:
+          - { from: listener.out, to: backend.in }
+          - { from: backend.success, to: client.in }
+  scripts:
+    audit.lua: |
+      return function(ctx) return ctx end
+extraEnv:
+  - { name: USERS_HOST, value: users.default.svc }
+```
+
+Changing `system.yaml` rolls the pods (it is not hot-reloaded). Changing `gateway.yaml` or a script hot-reloads in place once the kubelet refreshes the mount, within about a minute.
+
+### Secrets
+
+Admin credentials live in a chart-managed Secret (an empty `admin.password` is generated once and kept across upgrades) or in `admin.existingSecret` with keys `username` and `password`. MCP tokens and etcd credentials follow the same pattern (`mcp.existingSecret`, `config.etcd.existingSecret`). Health probes use `/healthz` and `/readyz`, which sit behind Basic Auth: the chart sends the header when it knows the password and falls back to a TCP check otherwise (`probes.authHeader` forces HTTP probes with an existing Secret).
+
+### Multiple replicas
+
+Scale with `replicaCount` or `autoscaling`, and add `podDisruptionBudget` for voluntary disruptions. For a coordinated cluster, set `config.source: etcd` with `config.etcd.endpoints` (see [HA clustering with etcd](#ha-clustering-with-etcd)); the chart does not run etcd. Cluster-accurate rate limits, sessions and ACME storage need redis `stores` declared in `config.gateway`.
+
+ACME works through `config.system.acme` and `config.system.tls.acme`; TLS-ALPN-01 requires the gateway itself to answer on port 443, so use a `LoadBalancer` Service rather than an Ingress, and the redis storage backend when running more than one replica.
+
+Every value is documented in the chart's [`values.yaml`](https://github.com/featherbitplatform/gateway/blob/main/charts/featherbit-gateway/values.yaml).
+
 ## Graceful shutdown
 
 On `SIGTERM` (the signal container orchestrators send) or Ctrl+C, the gateway shuts down gracefully:
@@ -122,7 +217,7 @@ featherbit's implemented clustering model is **stateless**: all gateway instance
 - There is no coordination between instances — each is self-contained.
 - To change configuration across all instances, edit the shared files. Admin API mutations apply to the in-memory configuration of the instance that received them, so with multiple instances behind a load balancer, file-based changes are the reliable propagation path.
 
-This fits simple deployments, Docker Compose, single-node setups, and Kubernetes with ConfigMap-mounted config.
+This fits simple deployments, Docker Compose, single-node setups, and Kubernetes — where the [Helm chart](#kubernetes-helm) mounts both files from a ConfigMap and the kubelet's refresh triggers the same hot-reload.
 
 **Load-balancing caveat**: the `upstream` plugin's `least_connections` strategy tracks in-flight request counts **per gateway instance**. With multiple gateway replicas, each instance picks the target that is least loaded from its own local view, not globally across the fleet.
 

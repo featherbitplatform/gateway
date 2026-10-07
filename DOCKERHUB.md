@@ -56,6 +56,18 @@ services:
       - ./gateway.yaml:/etc/gateway/gateway.yaml:ro
 ```
 
+## Kubernetes
+
+The Helm chart is published to this registry too (as an OCI artifact, not an
+image — `docker pull` will not work on it):
+
+```console
+helm install featherbit oci://registry-1.docker.io/featherbit/featherbit-gateway --version <release>
+```
+
+Chart versions equal gateway versions. Values and the deployment guide:
+https://featherbitplatform.github.io/gateway/guides/deployment#kubernetes-helm
+
 ## Configuration
 
 - Config lives at `/etc/gateway/system.yaml` (listeners, TLS, timeouts, admin

@@ -14,6 +14,8 @@ Full documentation lives at [featherbitplatform.github.io/gateway](https://feath
 
 Container images are on [Docker Hub](https://hub.docker.com/r/featherbit/featherbit): `docker pull featherbit/featherbit` (`latest` = newest release, `edge` = tip of develop, `X.Y.Z` = pinned releases; amd64 + arm64). Published by `.github/workflows/docker.yml`, with the Hub page synced from [`DOCKERHUB.md`](DOCKERHUB.md).
 
+A Helm chart is published alongside: `helm install featherbit oci://ghcr.io/featherbitplatform/charts/featherbit-gateway --version <release>` (also on Docker Hub as `oci://registry-1.docker.io/featherbit/featherbit-gateway`). Source in [`charts/featherbit-gateway/`](charts/featherbit-gateway/), published by `.github/workflows/helm.yml`.
+
 ## Features
 
 - **Node-graph routing policies** — design request/response pipelines visually or in YAML. Each node has context in, success output, and error output ports
