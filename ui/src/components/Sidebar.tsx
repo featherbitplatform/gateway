@@ -35,10 +35,12 @@ import {
   ChevronUp,
   ChevronDown,
   RefreshCw,
+  Pencil,
 } from 'lucide-react';
 import type { Route, Supernode, PluginConfigDef, StoreConfig, GatewayStatus } from '../types';
 import { api } from '../api/client';
 import { moveBy, moveTo } from '../routeOrder';
+import { describeMatch } from '../routeMatch';
 import { getUsername, signOut } from '../auth';
 
 /**
@@ -92,6 +94,8 @@ interface SidebarProps {
   onCreateRoute: () => void;
   /** Called with the route's name when its hover-revealed delete button is clicked. */
   onDeleteRoute: (name: string) => void;
+  /** Called with the route's name when its hover-revealed edit button is clicked; the parent opens the edit-route dialog. */
+  onEditRoute: (name: string) => void;
   /** Called with every route name in the new match order after a drag or an up/down click. */
   onReorderRoutes: (order: string[]) => void;
   /** Re-fetches everything the UI shows from the admin API (no gateway-side reload). */
@@ -172,6 +176,7 @@ export function Sidebar({
   onSelectRoute,
   onCreateRoute,
   onDeleteRoute,
+  onEditRoute,
   onReorderRoutes,
   onRefresh,
   supernodes,
@@ -511,7 +516,7 @@ export function Sidebar({
                         color: 'var(--text-muted)',
                       }}
                     >
-                      {route.match?.path || '/'}
+                      {describeMatch(route.match ?? {})}
                     </span>
                   </div>
                 </div>
@@ -549,6 +554,18 @@ export function Sidebar({
                       </button>
                     </>
                   )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditRoute(route.name);
+                    }}
+                    className="flex items-center justify-center rounded"
+                    style={{ width: 22, height: 22, color: 'var(--text-secondary)' }}
+                    aria-label={`Edit route ${route.name}`}
+                    title="Edit match rule"
+                  >
+                    <Pencil size={12} />
+                  </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();

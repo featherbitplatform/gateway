@@ -25,6 +25,7 @@ routes:
 
 - `match.path` — glob-style path pattern the incoming request must match.
 - `match.methods` — allowed HTTP methods.
+- `match.hosts` (optional) — virtual hosts the request's `Host` must match, e.g. `[api.example.com, "*.example.org"]`; omit to match any host (see [Routing](../guides/routing.md#virtual-hosts)).
 - `policy` — the name of a policy defined in the `policies:` section. Routes are checked in declaration order; the first match wins.
 
 ## 2. Add the policy

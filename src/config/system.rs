@@ -701,6 +701,7 @@ impl SystemConfig {
             tls.validate(self.acme.is_some(), "tls")?;
         }
         if let Some(admin) = &self.admin {
+            admin.validate()?;
             if let Some(tls) = &admin.tls {
                 if tls.acme.is_some() || tls.sni_certs.iter().any(|s| s.acme.is_some()) {
                     return Err(
@@ -791,10 +792,19 @@ pub struct AdminConfig {
     /// TCP port; defaults to `9090`.
     #[serde(default = "default_admin_port")]
     pub port: u16,
-    /// Basic Auth username. Required (typically supplied via `${ENV_VAR}`).
-    pub username: String,
-    /// Basic Auth password. Required (typically supplied via `${ENV_VAR}`).
-    pub password: String,
+    /// Legacy single Basic Auth username (typically `${ENV_VAR}`). Optional
+    /// since `users` exists; when set, `password` must be set too and the
+    /// pair is treated as the first entry of [`users`](Self::users).
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Legacy single Basic Auth password; see `username`.
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Additional Basic Auth accounts. Every entry is a full-access admin.
+    /// At least one account must result from `username`/`password` plus
+    /// this list, and usernames must be unique (checked by [`validate`](Self::validate)).
+    #[serde(default)]
+    pub users: Vec<AdminUser>,
     /// Serve the embedded web UI (node-graph editor) as the unauthenticated
     /// fallback. `false` returns 404 for non-API paths. Restart-gated like
     /// the rest of this file; inert in binaries compiled without the `ui`
@@ -816,6 +826,73 @@ pub struct AdminConfig {
     /// the binary is compiled with the `mcp` feature.
     #[serde(default)]
     pub mcp: Option<McpConfig>,
+}
+
+/// One Basic Auth account for the admin API (`admin.users[]`).
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct AdminUser {
+    /// Username the client must present.
+    pub username: String,
+    /// Password the client must present.
+    pub password: String,
+}
+
+impl AdminConfig {
+    /// Every configured account: the legacy `username`/`password` pair first
+    /// (when both are set), then `users` in declaration order. Does not
+    /// validate; see [`validate`](Self::validate).
+    pub fn users(&self) -> Vec<AdminUser> {
+        let legacy = match (&self.username, &self.password) {
+            (Some(username), Some(password)) => Some(AdminUser {
+                username: username.clone(),
+                password: password.clone(),
+            }),
+            _ => None,
+        };
+        legacy
+            .into_iter()
+            .chain(self.users.iter().cloned())
+            .collect()
+    }
+
+    /// True while the guessable shipped default (`admin`/`admin`) is one of
+    /// the accepted accounts.
+    pub fn uses_default_credentials(&self) -> bool {
+        self.users()
+            .iter()
+            .any(|u| u.username == "admin" && u.password == "admin")
+    }
+
+    /// Fail-fast checks on the account list: the legacy pair is all-or-nothing,
+    /// at least one account exists, none is blank, and usernames are unique.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.username.is_some() != self.password.is_some() {
+            return Err(
+                "admin.username and admin.password must be set together (or both omitted in favour of admin.users)"
+                    .into(),
+            );
+        }
+        let users = self.users();
+        if users.is_empty() {
+            return Err(
+                "admin has no credentials: set admin.username/admin.password or at least one entry in admin.users"
+                    .into(),
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        for user in &users {
+            if user.username.is_empty() || user.password.is_empty() {
+                return Err("admin.users entries need a non-empty username and password".into());
+            }
+            if !seen.insert(user.username.as_str()) {
+                return Err(format!(
+                    "admin.users: username '{}' is configured more than once",
+                    user.username
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Minimum accepted length of an MCP bearer token, in characters.
@@ -1049,6 +1126,95 @@ mod tests {
         // Unset fields still fall back to their defaults.
         assert_eq!(cfg.trigger_header, "x-featherbit-debug");
         assert_eq!(cfg.max_steps, 200);
+    }
+
+    fn admin_users(cfg: &AdminConfig) -> Vec<(String, String)> {
+        cfg.users()
+            .into_iter()
+            .map(|u| (u.username, u.password))
+            .collect()
+    }
+
+    #[test]
+    fn test_admin_users_merges_legacy_pair_first() {
+        let cfg: AdminConfig = serde_yaml::from_str(
+            "username: u\npassword: p\nusers:\n  - { username: ops, password: s }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            admin_users(&cfg),
+            vec![("u".into(), "p".into()), ("ops".into(), "s".into())]
+        );
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_admin_users_list_alone_is_enough() {
+        let cfg: AdminConfig =
+            serde_yaml::from_str("users:\n  - { username: ops, password: s }\n").unwrap();
+        assert_eq!(admin_users(&cfg), vec![("ops".into(), "s".into())]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_admin_without_any_user_is_rejected() {
+        let cfg: AdminConfig = serde_yaml::from_str("port: 1\n").unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("admin.users"), "{err}");
+    }
+
+    #[test]
+    fn test_admin_half_legacy_pair_is_rejected() {
+        for yaml in [
+            "username: u\n",
+            "password: p\n",
+            "username: u\nusers: [{ username: a, password: b }]\n",
+        ] {
+            let cfg: AdminConfig = serde_yaml::from_str(yaml).unwrap();
+            let err = cfg.validate().unwrap_err();
+            assert!(
+                err.contains("admin.username") && err.contains("admin.password"),
+                "{yaml}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_admin_duplicate_username_is_rejected() {
+        let cfg: AdminConfig = serde_yaml::from_str(
+            "username: ops\npassword: p\nusers:\n  - { username: ops, password: s }\n",
+        )
+        .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("'ops'"), "{err}");
+    }
+
+    #[test]
+    fn test_admin_empty_username_or_password_is_rejected() {
+        for yaml in [
+            "users: [{ username: '', password: s }]\n",
+            "users: [{ username: ops, password: '' }]\n",
+        ] {
+            let cfg: AdminConfig = serde_yaml::from_str(yaml).unwrap();
+            assert!(cfg.validate().is_err(), "{yaml}");
+        }
+    }
+
+    #[test]
+    fn test_admin_default_credentials_detected_in_any_entry() {
+        let cfg: AdminConfig = serde_yaml::from_str("username: u\npassword: p\n").unwrap();
+        assert!(!cfg.uses_default_credentials());
+        let cfg: AdminConfig = serde_yaml::from_str(
+            "username: u\npassword: p\nusers:\n  - { username: admin, password: admin }\n",
+        )
+        .unwrap();
+        assert!(cfg.uses_default_credentials());
+    }
+
+    #[test]
+    fn test_system_validate_runs_admin_user_checks() {
+        let sys: SystemConfig = serde_yaml::from_str("admin:\n  port: 1\n").unwrap();
+        assert!(sys.validate().unwrap_err().contains("admin.users"));
     }
 
     #[test]

@@ -16,11 +16,16 @@ admin:
   port: ${ADMIN_PORT:-9090}
   username: ${ADMIN_USER:-admin}
   password: ${ADMIN_PASSWORD:-admin}
+  users:                               # optional further accounts
+    - username: ${OPS_USER}
+      password: ${OPS_PASSWORD}
 ```
+
+`username`/`password` is one account; `users` adds more. Every account has the same full access — there are no roles — so give each operator (or automation) their own entry rather than sharing one password, and drop an entry to revoke it. The pair and the list can be combined or either used alone; at least one account must exist, usernames must be unique, and `username` without `password` (or vice versa) is a startup error.
 
 Requests without a matching `Authorization: Basic <base64(user:pass)>` header receive `401 Unauthorized` with a `WWW-Authenticate: Basic realm="featherbit admin"` challenge. The one exception is a request carrying `X-Featherbit-Client` (the web UI sets it on every call): its 401 has no challenge, so the browser does not open its native login dialog on top of the UI's own sign-in screen. The credential check is constant-time.
 
-The shipped default is `admin`/`admin`. While it is in use the gateway logs a warning at startup, `GET /api/status` reports `"default_credentials": true`, and the web UI shows a warning in its sidebar — set `ADMIN_USER`/`ADMIN_PASSWORD` (or `admin.username`/`admin.password`) before exposing the admin port.
+The shipped default is `admin`/`admin`. While any configured account still uses it the gateway logs a warning at startup, `GET /api/status` reports `"default_credentials": true`, and the web UI shows a warning in its sidebar — set `ADMIN_USER`/`ADMIN_PASSWORD` (or `admin.username`/`admin.password`, or `admin.users`) before exposing the admin port.
 
 Basic Auth sends the credentials with every request, so when the admin port is reachable from another machine serve it over HTTPS with `admin.tls`. `admin.tls: { inherit: true }` reuses the data plane's certificate (see [TLS → Admin API over TLS](./tls.md#admin-api-over-tls)). The gateway warns at startup when the data plane has TLS but the admin API is plain HTTP on a non-loopback address.
 

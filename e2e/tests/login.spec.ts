@@ -97,4 +97,11 @@ test.describe('Sign-in', () => {
     await expect(page.getByText('Sign in again')).toHaveCount(0);
     await expect(page.locator('.react-flow__node').first()).toBeVisible();
   });
+
+  test('E2E-LOGIN-06: a second configured admin user can sign in', async ({page}) => {
+    await page.goto('/');
+    await signIn(page, 'ops', 'ops-secret');
+    await expect(page.getByText('echo-api', {exact: true})).toBeVisible();
+    await expect(page.getByText('Signed in as ops')).toBeVisible();
+  });
 });

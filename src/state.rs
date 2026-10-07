@@ -307,6 +307,8 @@ impl SharedState {
             // config keeps the placeholder form (the Admin API serves it).
             let mut route = route.clone();
             route.match_rule.interpolate_env();
+            crate::routing::validate_match_rule(&route.match_rule)
+                .map_err(|e| format!("Route '{}': {e}", route.name))?;
             routes.push((route, graph));
         }
         Ok(routes)
@@ -457,6 +459,31 @@ policies:
             Some("${TEST_ROUTE_PREFIX}/*")
         );
         std::env::remove_var("TEST_ROUTE_PREFIX");
+    }
+
+    #[test]
+    fn test_route_with_invalid_host_pattern_is_rejected() {
+        let gw: crate::config::GatewayConfig = serde_yaml::from_str(
+            r#"
+routes:
+  - name: r
+    match:
+      hosts: ["ok.example.com", "api.*.example.com"]
+    policy: p
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: client.in }
+"#,
+        )
+        .unwrap();
+
+        let err = SharedState::compile_routes(&gw, &PluginResources::new(None)).unwrap_err();
+        assert!(err.contains("Route 'r'"), "{err}");
+        assert!(err.contains("api.*.example.com"), "{err}");
     }
 
     /// I5: the etcd seeder's pre-write gate. It must reach the same verdict as

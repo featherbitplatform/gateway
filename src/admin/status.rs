@@ -112,7 +112,7 @@ async fn status(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
             .system
             .admin
             .as_ref()
-            .is_some_and(|a| a.username == "admin" && a.password == "admin"),
+            .is_some_and(|a| a.uses_default_credentials()),
     }))
 }
 

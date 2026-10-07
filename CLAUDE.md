@@ -72,7 +72,7 @@ Core features:
 - **Node-graph routing policies** — request/response pipelines declared in YAML with declared-port routing (success/outcome/error); 38 node types exit deliberate rejections, redirects, throttles, cache/split short-circuits, and conditional branches on dedicated outcome ports (`denied`, `redirect`, `limited`, `broken`, `preflight`, `abort`, `routed`, `hit`, `respond`, `true`/`false`) instead of the `error` port, and the compiler rejects any policy that leaves a `success`/outcome port unwired
 - **Two-tier plugin system** — 80+ native Rust node types (structural nodes, proxy/transform, security, auth & authz incl. interactive SSO, traffic control, 17 loggers, tracing, metrics, serverless/FaaS — most ported from Apache APISIX 3.17) + scripted plugins in Lua (mlua, Luau runtime)
 - **Context object** — `request`, `response`, `message`, `errors` flowing through every node
-- **Admin API** — axum-based REST API on separate port with Basic Auth, CRUD for routes/policies, health/ready/metrics endpoints
+- **Admin API** — axum-based REST API on separate port with Basic Auth (one or more full-access accounts: `admin.username`/`password` plus `admin.users[]`, constant-time check across all of them), CRUD for routes/policies, health/ready/metrics endpoints
 - **Hot-reload** — file watcher (notify) triggers config reload on gateway.yaml changes
 - **Prometheus metrics** — per-route and per-node counters/histograms at `/metrics`
 - **Supernodes** — reusable named subgraphs inlined into policies at compile time; a definition may declare any number of `type: output` boundary nodes, each becoming a mandatory-wired named instance port (the `output`-id boundary maps to `success`/`out`), and any number of `type: error` boundary nodes, each becoming an optional-wiring named error-kind instance port (the `error`-id boundary is the default and the sole target of the black-box implicit-error-wiring rule; renaming it away removes that default)
@@ -102,7 +102,7 @@ Core features:
 ## Configuration
 
 - `config/system.yaml` — listeners, TLS, HTTP/2, timeouts, admin API, logging
-- `config/gateway.yaml` — routes (match rules + policy reference), policies (nodes + edges), `stores` (named redis/valkey connections referenced by plugin config)
+- `config/gateway.yaml` — routes (match rules: `path`, `methods`, `headers`, virtual-host `hosts`/`host` patterns — exact or one-label `*.` wildcard, request port ignored, validated at route-table build in `src/routing/mod.rs` — plus the policy reference), policies (nodes + edges), `stores` (named redis/valkey connections referenced by plugin config)
 - All YAML values support `${ENV_VAR:-default}` interpolation — `system.yaml` resolves on the raw file text at load; `gateway.yaml` is loaded raw (placeholders stay in the stored config so the Admin API/UI never serve resolved secrets) and resolves at the point of use: plugin config at graph-compile time, route match rules at route-table build, consumer fields at consumer-store build
 
 ## Available Plugin Types

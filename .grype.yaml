@@ -28,3 +28,11 @@ ignore:
   # it up (mirrors website/audit-ci.jsonc).
   - vulnerability: GHSA-w3rx-r6r6-pgpr
   - vulnerability: GHSA-5p2g-fcmc-qvqq
+  # braces stack-exhaustion DoS on deeply nested glob patterns. Every
+  # published version is flagged (3.0.3 is latest), so no upgrade exists;
+  # pulled in via chokidar 3 (@docusaurus/core, webpack-dev-server), which
+  # only expands the file-watch globs from this repo's docusaurus config at
+  # docs build/dev time — not attacker-reachable, never in the shipped
+  # binary/image. Remove once braces ships a fix or docusaurus moves to
+  # chokidar 4+ (mirrors website/audit-ci.jsonc).
+  - vulnerability: GHSA-vfj7-8cjw-p6xm

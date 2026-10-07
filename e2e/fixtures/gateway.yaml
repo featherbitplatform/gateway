@@ -37,6 +37,14 @@ routes:
       methods: [GET]
     policy: dead-policy
 
+  # Virtual-host routing: only requests whose Host matches one of the patterns
+  # reach this route. The request port is ignored; `*.` matches one label.
+  - name: host-api
+    match:
+      path: /host/*
+      hosts: ["e2e.example.com", "*.e2e.example.org"]
+    policy: echo-policy
+
   # A throwaway route the UI round-trip tests mutate freely (add/delete nodes,
   # wire edges, edit config, Save) without perturbing the shared policies.
   - name: rt-api

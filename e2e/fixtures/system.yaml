@@ -22,6 +22,10 @@ admin:
   port: 19091
   username: admin
   password: admin
+  # A second operator account: every entry is a full-access admin.
+  users:
+    - username: ops
+      password: ops-secret
   # MCP is on for the whole e2e run (static config, like debug above). The
   # disabled path is covered by unit tests in src/admin/mod.rs and src/mcp.
   mcp:
