@@ -80,7 +80,6 @@ pub struct StoreRegistry {
     #[cfg(feature = "redis-store")]
     counters: HashMap<String, Arc<dyn CounterStore>>,
     #[cfg(feature = "redis-store")]
-    #[allow(dead_code)] // consumed by task 5 (session backend helper)
     sessions: HashMap<String, Arc<dyn crate::sessions::SessionStore>>,
     // Keeps the struct non-empty (and the imports used) in headless builds.
     #[cfg(not(feature = "redis-store"))]
@@ -206,7 +205,6 @@ impl StoreRegistry {
     /// Resolves the session backend for a named store; the error carries the
     /// declared-store list so a typo is self-explanatory.
     #[cfg(feature = "redis-store")]
-    #[allow(dead_code)] // consumed by task 5 (session backend helper)
     pub fn session_store(
         &self,
         name: &str,
@@ -226,7 +224,7 @@ impl StoreRegistry {
         })
     }
 
-    #[allow(dead_code)] // consumed by task 5 (session backend helper)
+    #[allow(dead_code)] // headless stub: nothing calls it without the redis-store feature
     #[cfg(not(feature = "redis-store"))]
     pub fn session_store(
         &self,

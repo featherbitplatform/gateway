@@ -389,4 +389,88 @@ test.describe('Route priority and refresh', () => {
     await api.delete('/api/routes/ui-refreshed');
     await api.dispose();
   });
+
+  test('E2E-UI-27: the New route dialog sets hosts and methods', async ({page}) => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'ui-hosted');
+
+    await page.goto('/');
+    await page.getByRole('button', {name: 'New route'}).click();
+    await page.getByPlaceholder('echo-api').fill('ui-hosted');
+    await page.getByPlaceholder('/api/*').fill('/ui-hosted/*');
+    await page.getByLabel('Hosts').fill('ui.example.com, *.ui.example.org');
+    // Every method starts selected; deselect all but GET and POST.
+    for (const m of ['PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) {
+      await page.getByRole('checkbox', {name: m}).uncheck();
+    }
+    await page.getByRole('button', {name: 'Create route'}).click();
+
+    // The sidebar row summarises the match: first host, +N, path.
+    await expect(page.getByTestId('route-row-ui-hosted').getByText('ui.example.com +1/ui-hosted/*')).toBeVisible();
+
+    const route = (await (await api.get('/api/routes/ui-hosted')).json()) as {
+      match: {path?: string; hosts?: string[]; methods?: string[]};
+    };
+    expect(route.match.path).toBe('/ui-hosted/*');
+    expect(route.match.hosts).toEqual(['ui.example.com', '*.ui.example.org']);
+    expect(route.match.methods).toEqual(['GET', 'POST']);
+
+    // And the data plane honours it straight away.
+    const traffic = await dataPlane();
+    const hit = await traffic.get('/ui-hosted/x', {headers: {host: 'a.ui.example.org'}});
+    expect(hit.status()).toBe(200);
+    const miss = await traffic.get('/ui-hosted/x');
+    expect(miss.status()).toBe(404);
+    const wrongMethod = await traffic.delete('/ui-hosted/x', {headers: {host: 'ui.example.com'}});
+    expect(wrongMethod.status()).toBe(404);
+    await traffic.dispose();
+
+    await api.delete('/api/routes/ui-hosted');
+    await api.dispose();
+  });
+
+  test('E2E-UI-28: Edit route changes an existing match rule in place', async ({page}) => {
+    const api = await adminApi();
+    await deleteRouteIfPresent(api, 'ui-edited');
+    const created = await api.post('/api/routes', {
+      data: {
+        name: 'ui-edited',
+        match: {path: '/ui-edited/*', host: 'old.example.com', methods: ['GET'], headers: {'x-tier': 'gold'}},
+        policy: 'echo-policy',
+      },
+    });
+    expect(created.ok(), `${created.status()} ${await created.text()}`).toBeTruthy();
+
+    await page.goto('/');
+    await expect(page.getByText('ui-edited', {exact: true})).toBeVisible();
+    await page.getByRole('button', {name: 'Edit route ui-edited'}).click();
+    const dialog = page.getByRole('dialog', {name: 'Edit route'});
+    await expect(dialog).toBeVisible();
+    // The legacy single `host` is shown in the hosts field, prefilled.
+    await expect(dialog.getByLabel('Hosts')).toHaveValue('old.example.com');
+    await expect(dialog.getByRole('checkbox', {name: 'GET'})).toBeChecked();
+    await expect(dialog.getByRole('checkbox', {name: 'POST'})).not.toBeChecked();
+
+    await dialog.getByLabel('Hosts').fill('new.example.com');
+    await dialog.getByPlaceholder('/api/*').fill('/ui-edited-v2/*');
+    await dialog.getByRole('checkbox', {name: 'POST'}).check();
+    await dialog.getByRole('button', {name: 'Save route'}).click();
+
+    await expect(page.getByTestId('route-row-ui-edited').getByText('new.example.com/ui-edited-v2/*')).toBeVisible();
+
+    const route = (await (await api.get('/api/routes/ui-edited')).json()) as {
+      policy: string;
+      match: {path?: string; host?: string; hosts?: string[]; methods?: string[]; headers?: Record<string, string>};
+    };
+    expect(route.policy).toBe('echo-policy');
+    expect(route.match.path).toBe('/ui-edited-v2/*');
+    expect(route.match.hosts).toEqual(['new.example.com']);
+    expect(route.match.host).toBeUndefined();
+    expect(route.match.methods).toEqual(['GET', 'POST']);
+    // Constraints the form does not edit survive the save.
+    expect(route.match.headers).toEqual({'x-tier': 'gold'});
+
+    await api.delete('/api/routes/ui-edited');
+    await api.dispose();
+  });
 });

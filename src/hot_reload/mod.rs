@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::state::SharedState;
 
@@ -28,23 +28,37 @@ pub async fn watch_config(state: Arc<SharedState>, config_path: PathBuf) {
     let path = config_path.clone();
     std::thread::spawn(move || {
         let rt_tx = tx.clone();
-        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            if let Ok(event) = res {
-                match event.kind {
-                    EventKind::Modify(_) | EventKind::Create(_) => {
-                        let _ = rt_tx.blocking_send(());
+        let mut watcher =
+            match notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+                if let Ok(event) = res {
+                    match event.kind {
+                        EventKind::Modify(_) | EventKind::Create(_) => {
+                            let _ = rt_tx.blocking_send(());
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
-        })
-        .expect("Failed to create file watcher");
+            }) {
+                Ok(w) => w,
+                Err(e) => {
+                    error!("Failed to create config file watcher: {e}; hot-reload disabled");
+                    return;
+                }
+            };
 
-        // Watch the parent directory of the config file
+        // Watch the parent directory of the config file. The gateway boots
+        // without a gateway.yaml, so the directory may not exist yet: that
+        // is not fatal — hot-reload is simply unavailable until a restart
+        // (the Admin API keeps working, and `POST /api/config/reload` still
+        // picks the file up once it is created).
         let watch_dir = path.parent().unwrap_or(&path);
-        watcher
-            .watch(watch_dir, RecursiveMode::Recursive)
-            .expect("Failed to watch config directory");
+        if let Err(e) = watcher.watch(watch_dir, RecursiveMode::Recursive) {
+            warn!(
+                "Cannot watch {} for config changes: {e}; hot-reload disabled until restart",
+                watch_dir.display()
+            );
+            return;
+        }
 
         info!("File watcher started on {:?}", watch_dir);
 

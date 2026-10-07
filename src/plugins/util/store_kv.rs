@@ -301,7 +301,8 @@ pub fn value_invalid(
 #[cfg(feature = "redis-store")]
 pub fn is_value_type_error(e: &redis::RedisError) -> bool {
     e.code() == Some("WRONGTYPE")
-        || (e.kind() == redis::ErrorKind::ResponseError && e.to_string().contains("not an integer"))
+        || (e.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError)
+            && e.to_string().contains("not an integer"))
 }
 
 #[cfg(all(test, feature = "redis-store"))]
@@ -484,12 +485,12 @@ mod tests {
         assert!(is_value_type_error(&wrongtype));
 
         let not_an_integer = redis::RedisError::from((
-            redis::ErrorKind::ResponseError,
+            redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
             "value is not an integer or out of range",
         ));
         assert!(is_value_type_error(&not_an_integer));
 
-        let outage = redis::RedisError::from((redis::ErrorKind::IoError, "connection refused"));
+        let outage = redis::RedisError::from((redis::ErrorKind::Io, "connection refused"));
         assert!(!is_value_type_error(&outage));
     }
 }

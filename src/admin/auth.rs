@@ -20,36 +20,55 @@ use subtle::ConstantTimeEq;
 /// other client (curl, scripts) still gets the standard challenge.
 pub const UI_CLIENT_HEADER: &str = "x-featherbit-client";
 
-/// Expected Basic Auth credentials, sourced from `AdminConfig`
-/// (which in turn supports `${ENV_VAR}` interpolation).
+/// Accepted Basic Auth accounts, sourced from `AdminConfig` (which in turn
+/// supports `${ENV_VAR}` interpolation). Every account has full access.
 #[derive(Clone)]
 pub struct AuthState {
-    /// Username the client must present.
-    pub username: String,
-    /// Password the client must present.
-    pub password: String,
+    /// Each account pre-rendered as the `user:pass` bytes a client presents.
+    expected: Vec<Vec<u8>>,
 }
 
 impl AuthState {
-    /// True for the shipped `admin`/`admin` default, which anyone can guess.
-    pub fn is_default(&self) -> bool {
-        self.username == "admin" && self.password == "admin"
+    /// Builds the state from `(username, password)` pairs; see
+    /// [`from_config`](Self::from_config) for the usual entry point.
+    pub fn new(users: Vec<(String, String)>) -> Self {
+        Self {
+            expected: users
+                .into_iter()
+                .map(|(u, p)| format!("{u}:{p}").into_bytes())
+                .collect(),
+        }
     }
 
-    /// Compares a presented `user:pass` against the configured pair in
-    /// constant time (per byte of the expected value), so response timing
-    /// does not reveal how much of a guess was right.
+    /// The accounts `admin.username`/`admin.password` plus `admin.users` declare.
+    pub fn from_config(admin: &crate::config::AdminConfig) -> Self {
+        Self::new(
+            admin
+                .users()
+                .into_iter()
+                .map(|u| (u.username, u.password))
+                .collect(),
+        )
+    }
+
+    /// Compares a presented `user:pass` against every configured account in
+    /// constant time per account (no early exit on a hit, per-byte compare
+    /// of the expected value), so response timing reveals neither how much
+    /// of a guess was right nor which usernames exist.
     fn matches(&self, presented: &[u8]) -> bool {
-        let expected = format!("{}:{}", self.username, self.password);
-        let same_len = presented.len() == expected.len();
-        // Compare against the expected bytes either way so a length mismatch
-        // costs the same as a content mismatch.
-        let candidate = if same_len {
-            presented
-        } else {
-            expected.as_bytes()
-        };
-        same_len & bool::from(candidate.ct_eq(expected.as_bytes()))
+        let mut hit = subtle::Choice::from(0u8);
+        for expected in &self.expected {
+            let same_len = presented.len() == expected.len();
+            // Compare against the expected bytes either way so a length
+            // mismatch costs the same as a content mismatch.
+            let candidate = if same_len {
+                presented
+            } else {
+                expected.as_slice()
+            };
+            hit |= subtle::Choice::from(same_len as u8) & candidate.ct_eq(expected);
+        }
+        bool::from(hit)
     }
 }
 
@@ -111,10 +130,7 @@ mod tests {
         Router::new()
             .route("/api/status", get(|| async { "ok" }))
             .layer(axum::middleware::from_fn_with_state(
-                Arc::new(AuthState {
-                    username: "u".into(),
-                    password: "p".into(),
-                }),
+                Arc::new(state_for(&[("u", "p"), ("ops", "s")])),
                 basic_auth_middleware,
             ))
     }
@@ -127,22 +143,44 @@ mod tests {
         format!("Basic {}", STANDARD.encode(creds))
     }
 
+    fn state_for(users: &[(&str, &str)]) -> AuthState {
+        AuthState::new(
+            users
+                .iter()
+                .map(|(u, p)| (u.to_string(), p.to_string()))
+                .collect(),
+        )
+    }
+
     #[test]
     fn test_matches_exact_credentials_only() {
-        let auth = AuthState {
-            username: "u".into(),
-            password: "p".into(),
-        };
+        let auth = state_for(&[("u", "p")]);
         assert!(auth.matches(b"u:p"));
         for bad in [&b"u:q"[..], b"u:pp", b"u:", b"", b"U:p"] {
             assert!(!auth.matches(bad), "{bad:?}");
         }
-        assert!(!auth.is_default());
-        assert!(AuthState {
-            username: "admin".into(),
-            password: "admin".into()
+    }
+
+    #[test]
+    fn test_any_configured_user_matches_but_pairs_do_not_cross() {
+        let auth = state_for(&[("u", "p"), ("ops", "s")]);
+        assert!(auth.matches(b"u:p"));
+        assert!(auth.matches(b"ops:s"));
+        for bad in [&b"u:s"[..], b"ops:p", b"ops:", b"u:p:ops:s"] {
+            assert!(!auth.matches(bad), "{bad:?}");
         }
-        .is_default());
+    }
+
+    #[tokio::test]
+    async fn test_second_user_passes_middleware() {
+        let resp = send(
+            Request::get("/api/status")
+                .header("authorization", basic("ops:s"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

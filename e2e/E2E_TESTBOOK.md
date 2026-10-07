@@ -97,6 +97,7 @@ Seeded routes:
 | `echo-api` | `/api/*` | `echo-policy` | listener → cors → strip `/api` → upstream(echo) → client; upstream errors → `error-handler` (502) |
 | `secure-api` | `/secure/*` | `secure-policy` | listener → key-auth → rate-limit → strip `/secure` → upstream(echo) → client |
 | `dead-api` | `/dead/*` | `dead-policy` | listener → upstream(127.0.0.1:9, closed) → client; upstream errors → `error-handler` (502) |
+| `host-api` | `/host/*`, hosts `e2e.example.com`, `*.e2e.example.org` | `echo-policy` | same as `echo-api`; only reachable under those virtual hosts |
 | `bearer-api` | `/bearer/*` | `bearer-policy` | listener → openid-connect (bearer, JWKS) → strip `/bearer` → upstream(echo) → client |
 | `app-api` | `/app/*` | `app-policy` | listener → openid-connect (interactive) → strip `/app` → upstream(echo) → client; the match covers the `/app/callback` redirect_uri |
 
@@ -139,6 +140,8 @@ compilation fails (every non-error output port is mandatory).
 | E2E-API-11 | UI static assets | Served **without** auth, unlike `/api/*` |
 | E2E-API-12 | `GET /api/config/export` | `200` `text/yaml`; contains the live routes/policies; behind auth |
 | E2E-API-13 | `PUT` a policy with a `cors` node missing its `preflight` edge | Rejected; body contains `must be wired — add an edge from` naming `cors.preflight` — the mandatory-outcome-port validation added for named output ports |
+| E2E-API-14 | Authenticate as the second `admin.users` entry (`ops`), read and write; then `ops` with `admin`'s password | Both calls succeed — every configured user is a full admin; the crossed pair is `401` |
+| E2E-API-15 | `POST` a route whose `hosts` contains `api.*.example.com` | Rejected (4xx) naming the offending pattern; route table unchanged |
 
 ## Data plane — `tests/data-plane.spec.ts`
 
@@ -154,6 +157,7 @@ compilation fails (every non-error output port is mandatory).
 | E2E-DP-08 | `/dead/*` (upstream refuses connections) | `502` with the `error-handler`'s JSON template — not a raw 500 |
 | E2E-DP-09 | `OPTIONS /api/*` preflight | `204` + `access-control-allow-origin` |
 | E2E-DP-10 | Traffic then `GET /metrics` | Per-route request counter incremented |
+| E2E-DP-11 | `/host/x` with `Host: e2e.example.com`, `E2E.Example.COM:18081`, `api.e2e.example.org`; then `a.b.e2e.example.org` and no matching host | The first three are routed (`200`): exact, port-insensitive + case-insensitive, one-label wildcard; the last two `404` — `hosts` is a virtual-host constraint |
 
 ## Web UI — `tests/editor.spec.ts`
 
@@ -169,6 +173,8 @@ compilation fails (every non-error output port is mandatory).
 | E2E-UI-08 | Toggle the theme | Theme flips and survives a reload (persisted) |
 | E2E-UI-24 | Create `ord-broad` (`/ord/*`, failing policy) then `ord-narrow` (`/ord/narrow/*`, echo); move `ord-narrow` up with its hover arrow, then drag `ord-broad` back above it | After the arrow click `GET /api/routes` ends `ord-narrow, ord-broad` and `/ord/narrow/x` answers `200`; after the drag the order flips back and the broad route shadows it again — sidebar order is match priority |
 | E2E-UI-25 | With the editor open, create a route through the API, then click the header **Refresh** button | The route is absent until Refresh, then listed — the UI re-fetches without a browser reload |
+| E2E-UI-27 | **New route** with two hosts and only `GET`/`POST` ticked | Sidebar row reads `ui.example.com +1/ui-hosted/*`; `GET /api/routes/{name}` stores `hosts` and `methods`; the data plane routes a matching host, `404`s a missing host and a `DELETE` |
+| E2E-UI-28 | Hover a route created with the legacy `host` key and a header constraint, click its **Edit route** button, change hosts/path/methods, **Save route** | The dialog is prefilled (legacy `host` shown in Hosts, `GET` ticked); the saved rule has `hosts` (no `host`), the new path and methods, the untouched `headers`, and the same policy |
 | E2E-UI-15 | Open `echo-api`'s `cors` node, then delete its `preflight` edge and save | The node renders exactly three source handles (`success`/`preflight`/`error`, `[data-handleid]`) with distinct colors and a title mentioning `preflight`; after deleting that edge, Save Policy shows the client's "Unwired ports" warning **and** the server's `must be wired` rejection — the warning does not block the save attempt, it only precedes it |
 
 ## openid-connect — `tests/openid-connect.spec.ts`
@@ -526,6 +532,7 @@ Every other spec starts its pages signed in (`storageState` in
 | E2E-LOGIN-03 | Sign in with the right credentials, then reload | Editor loads with "Signed in as admin" and the default-credentials warning; credentials in `sessionStorage` only; the reload stays signed in |
 | E2E-LOGIN-04 | Sign in with **Remember me**, then **Sign out** and reload | Credentials in `localStorage` only; Sign out returns to the form and clears both storages, and it stays signed out after reload |
 | E2E-LOGIN-05 | With a policy open, make the next call return 401, then sign in on the overlay | "Sign in again" overlays the editor with the username prefilled; the canvas stays mounted throughout and the overlay closes after signing in |
+| E2E-LOGIN-06 | Sign in as the second `admin.users` entry (`ops`/`ops-secret`) | Editor loads with "Signed in as ops" |
 
 ## Chat (`tests/chat.spec.ts`)
 

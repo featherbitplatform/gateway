@@ -5,7 +5,7 @@
  *
  * @module chat/useChat
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { isWriteTool, runTurn, type Provider, type ToolRunner } from './loop';
 import { createMcpClient, resultText, toToolDefs, type McpClient } from './mcpClient';
 import { streamChat, type ToolDef } from './openai';
@@ -97,8 +97,12 @@ export function useChat(opts: {
   const toolsRef = useRef<ToolDef[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const confirmRef = useRef<((ok: boolean) => void) | null>(null);
+  // Synced in a layout effect (not during render, which the hooks rules
+  // forbid) so it is current before any passive effect or timer reads it.
   const threadsRef = useRef(threads);
-  threadsRef.current = threads;
+  useLayoutEffect(() => {
+    threadsRef.current = threads;
+  }, [threads]);
   /** Mirrors `busyThreadId` synchronously so `runOn`'s guard is not a stale closure. */
   const busyRef = useRef<string | null>(null);
   /** Thread ids dismissed (deleted / cleared) while a turn may still be streaming into them. */
@@ -116,7 +120,9 @@ export function useChat(opts: {
     else if (out.dropped > 0 && out.threads.length !== current.length) setThreads(out.threads);
   }, []);
   const flushRef = useRef(flushThreads);
-  flushRef.current = flushThreads;
+  useLayoutEffect(() => {
+    flushRef.current = flushThreads;
+  }, [flushThreads]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -207,6 +213,10 @@ export function useChat(opts: {
   }, [opts.mcpEnabled, opts.mcpUrl, settings.apiKey, settings.mcpToken]);
 
   useEffect(() => {
+    // Connect-on-mount/reconnect: `connect` flips the status synchronously
+    // before its awaits, which the compiler-based rule flags (same documented
+    // false-positive as SessionsPanel's load-on-open effect).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void connect();
     // connectNonce forces a reconnect even when `connect`'s own identity is
     // unchanged (a settings save that touched no credential/URL field).

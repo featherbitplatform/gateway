@@ -23,7 +23,7 @@ use std::collections::HashMap;
 ///     edges:
 ///       - { from: in.out, to: up.in }
 /// ```
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct GatewayConfig {
     /// Routes evaluated in declaration order; the first match wins.
     #[serde(default)]
@@ -78,9 +78,15 @@ pub struct MatchRule {
     /// Required header name → value pairs; empty means no header constraints.
     #[serde(default)]
     pub headers: HashMap<String, String>,
-    /// Required `Host` value; `None` matches any host.
-    #[serde(default)]
+    /// Required `Host` value; `None` matches any host. Exact hostname or a
+    /// single-label wildcard (`*.example.com`); the request's port is ignored.
+    /// Merged with [`hosts`](Self::hosts) at match time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// Additional accepted `Host` patterns (same syntax as `host`); the route
+    /// matches when any entry matches. Empty means no constraint beyond `host`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
 }
 
 impl MatchRule {
@@ -99,6 +105,9 @@ impl MatchRule {
             resolve(path);
         }
         if let Some(host) = &mut self.host {
+            resolve(host);
+        }
+        for host in &mut self.hosts {
             resolve(host);
         }
         for method in &mut self.methods {

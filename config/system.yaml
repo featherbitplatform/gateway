@@ -20,6 +20,10 @@ admin:
   port: ${ADMIN_PORT:-9090}
   username: ${ADMIN_USER:-admin}
   password: ${ADMIN_PASSWORD:-admin}
+  # Further full-access admin accounts (alongside or instead of the pair above).
+  # users:
+  #   - username: ${OPS_USER}
+  #     password: ${OPS_PASSWORD}
   # HTTPS for the admin API/UI (Basic Auth credentials travel with every
   # request). `inherit: true` reuses the data-plane `tls:` certificate;
   # or give admin its own cert_path/key_path.

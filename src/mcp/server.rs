@@ -86,8 +86,8 @@ fn tools_obj(v: serde_json::Value) -> JsonObject {
 }
 
 impl ServerHandler for McpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
@@ -414,10 +414,10 @@ mod tests {
     async fn client(
         url: &str,
         token: &str,
-    ) -> rmcp::service::RunningService<rmcp::RoleClient, ClientInfo> {
+    ) -> rmcp::service::RunningService<rmcp::RoleClient, ClientConfig> {
         let cfg = StreamableHttpClientTransportConfig::with_uri(url.to_string()).auth_header(token);
         let transport = StreamableHttpClientTransport::from_config(cfg);
-        ClientInfo::new(
+        ClientConfig::new(
             ClientCapabilities::default(),
             Implementation::new("test", "0"),
         )

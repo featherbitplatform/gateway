@@ -1,6 +1,6 @@
 [package]
 name = "featherbit"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2021"
 # Not published to crates.io; also lets cargo-deny's license check skip the
 # workspace crate (deny.toml: private = { ignore = true }).
@@ -44,12 +44,16 @@ base64 = "0.22"
 
 # Admin API
 axum = { version = "0.8", features = ["ws"] }
-tower-http = { version = "0.6", features = ["cors", "compression-gzip"] }
 
 # Plugins
 dashmap = "6"
+# Pinned to 9: 10+ drops ring for aws-lc-rs or RustCrypto (rsa, with the
+# unpatched Marvin advisory), both off-limits for this ring-only tree.
+# GHSA-h395-gr6q-cpjc (medium, fixed in 10.3) does not apply here: it only
+# skips `exp`/`nbf` checks when the claim is malformed AND not required, and
+# both call sites keep `Validation::new`'s default `exp` requirement and never
+# enable `validate_nbf`. Keep that invariant if either site changes.
 jsonwebtoken = "9"
-governor = "0.8"
 
 # Hot reload
 notify = "8"
@@ -74,7 +78,7 @@ schemars = "1"
 subtle = "2"
 
 # Lua scripting
-mlua = { version = "0.10", features = ["luau", "serialize"] }
+mlua = { version = "0.12", features = ["luau", "serialize"] }
 ipnet = "2.12.0"
 # Pinned to the ring provider (default features pull in aws-lc-rs, which we
 # don't use — the whole tree is ring). Keeps aws-lc-sys out of the build.
@@ -102,28 +106,32 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem
 time = "0.3"
 arc-swap = "1.9.2"
 flate2 = "1.1.9"
-brotli = "8.0.4"
-jsonschema = { version = "0.47.0", default-features = false }
+brotli = "9"
+jsonschema = { version = "0.58", default-features = false }
 serde_json_path = "0.7"
 ring = "0.17.14"
 casbin = "2.20.0"
 # Redis/Valkey client for the `stores:` resource (`redis-store` feature).
 # default-features = false + rustls: the tree must stay ring-only — after any
 # version bump, verify `cargo tree -i aws-lc-sys` prints nothing.
-redis = { version = "0.32", optional = true, default-features = false, features = ["tokio-rustls-comp", "connection-manager", "script"] }
+redis = { version = "1", optional = true, default-features = false, features = ["tokio-rustls-comp", "connection-manager", "script"] }
 ldap3 = { version = "0.12.1", default-features = false, features = ["tls-rustls-ring"] }
 # etcd config store (HA clustering) talks to etcd's v3 HTTP/JSON gateway via the
 # shared outbound client — no gRPC/protoc/tonic dependency required.
 
 [dev-dependencies]
-# http2 + rustls-tls so the in-process TLS test reliably negotiates h2 via ALPN
-# (native-tls/schannel does not on Windows). aws-lc-rs is already in the tree.
-reqwest = { version = "0.12", features = ["json", "http2", "rustls-tls"] }
-tokio-test = "0.4"
+# `test-util` for the paused-clock tests in src/batch (tokio::time::pause/advance);
+# it used to ride in on tokio-test, which nothing else referenced.
+tokio = { version = "1", features = ["test-util"] }
+# Same major as rmcp's client transport, so one copy. `rustls-no-provider`
+# (not `rustls`, which would pull aws-lc-rs) leaves the provider to the tree's
+# sole enabled one, ring; http2 so the in-process TLS test negotiates h2 via
+# ALPN (native-tls/schannel does not on Windows).
+reqwest = { version = "0.13", default-features = false, features = ["json", "http2", "rustls-no-provider"] }
 tower = { version = "0.5", features = ["util"] }
 # WebSocket echo upstream + client for the in-process WS proxy test
 # (versions already in the tree via axum, so they unify — no second copy).
-tokio-tungstenite = "0.28"
+tokio-tungstenite = "0.29"
 futures-util = "0.3"
 # MCP client for in-process server tests (plain http, no TLS feature needed).
 rmcp = { version = "3.1", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }

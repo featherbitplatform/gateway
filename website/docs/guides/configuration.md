@@ -41,6 +41,10 @@ admin:
   port: ${ADMIN_PORT:-9090}
   username: ${ADMIN_USER:-admin}
   password: ${ADMIN_PASSWORD:-admin}
+  # Further full-access accounts, alongside (or instead of) the pair above.
+  # users:
+  #   - username: ${OPS_USER}
+  #     password: ${OPS_PASSWORD}
   ui_enabled: ${ADMIN_UI_ENABLED:-true}
 ```
 
@@ -49,7 +53,7 @@ admin:
 | `listener` | `bind` (default `0.0.0.0`), `port` (default `8080`) — the data-plane HTTP listener |
 | `timeouts` | `connection_seconds`, `read_seconds`, `write_seconds` (default `30` each), `idle_seconds` (default `300`) |
 | `logging` | `level` (default `info`), `format` (`json` is the default; any other value produces plain text) |
-| `admin` | `bind` (default `0.0.0.0`), `port` (default `9090`), `username` and `password` (required, typically supplied via `${ENV_VAR}`), `ui_enabled` (default `true`) — serve the embedded web UI; `false` gives 404 on non-API paths. Inert in the `-headless` image, whose binary omits the UI entirely. Omitting the whole section disables the admin server entirely |
+| `admin` | `bind` (default `0.0.0.0`), `port` (default `9090`), `username` and `password` (one Basic Auth account, typically supplied via `${ENV_VAR}`; set together or not at all), `users` (list of `{username, password}` accounts, every one a full admin; at least one account must come out of the pair plus the list, usernames unique), `ui_enabled` (default `true`) — serve the embedded web UI; `false` gives 404 on non-API paths. Inert in the `-headless` image, whose binary omits the UI entirely. Omitting the whole section disables the admin server entirely |
 | `cache` | `max_entries` (default `10000`) — entry bound for the `proxy-cache` [plugin](../reference/plugins/proxy-cache.md)'s `policy: local` backend, process-wide and shared by every `policy: local` node. Once full, entries expiring soonest are evicted (`gateway_cache_events_total{backend="local",event="eviction"}`); has no effect on `policy: redis`, which is bounded by the store's own `maxmemory` policy instead |
 
 The `RUST_LOG` environment variable, when set, overrides `logging.level` at startup.
@@ -63,12 +67,15 @@ The `tls` (certificate/key paths, minimum version, mTLS, SNI) and `http2` sectio
 - `routes` — match rules bound to a policy name, evaluated in declaration order (see [Routing](./routing.md))
 - `policies` — named node graphs referenced by routes; a route referencing an unknown policy fails compilation
 
+The file itself is optional: if the path passed to `--gateway-config` does not exist, the gateway logs a warning and starts with no routes or policies (the Admin API and Web UI are up, so you can author the config from there). A file that exists but cannot be read or parsed is still a startup error.
+
 ```yaml
 routes:
   - name: echo-api
     match:
       path: /api/*
       methods: [GET, POST, PUT, DELETE]
+      # hosts: [api.example.com, "*.example.org"]   # optional virtual-host constraint
     policy: echo-policy
 
 policies:
@@ -138,7 +145,7 @@ the point of use instead:
 
 - **plugin node config** (including `plugin_configs` profiles and supernode
   inner nodes) — when the policy graph is compiled;
-- **route `match` rules** (path, host, methods, header values) — when the route
+- **route `match` rules** (path, hosts, methods, header values) — when the route
   table is built;
 - **consumer fields and credentials** — when the consumer store is built.
 
