@@ -534,6 +534,37 @@ mod tests {
         assert_eq!(body["buffering"][0]["blocked_by"], serde_json::json!("rw"));
     }
 
+    /// The operator's admission webhook validates in-process with
+    /// `validate_gateway_config`; the UI uses this endpoint. Same policy,
+    /// same verdict, or `kubectl apply` and the UI would disagree.
+    #[tokio::test]
+    async fn test_validate_endpoint_agrees_with_validate_gateway_config() {
+        let policy = serde_json::json!({
+            "name": "cors",
+            "nodes": [
+                { "id": "listener", "type": "listener" },
+                { "id": "cors", "type": "cors", "config": { "allow_origins": "*" } },
+                { "id": "client", "type": "client" }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "cors.in" },
+                { "from": "cors.success", "to": "client.in" }
+            ]
+        });
+        let api = validate_policy_json(policy.clone()).await;
+        assert_eq!(api["valid"], false, "{api}");
+        let api_errors: Vec<String> = serde_json::from_value(api["errors"].clone()).unwrap();
+
+        let mut gw: crate::config::GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        gw.policies.push(serde_json::from_value(policy).unwrap());
+        let lib_error = crate::state::validate_gateway_config(&gw).unwrap_err();
+        assert!(
+            api_errors.iter().any(|e| lib_error.contains(e.as_str())),
+            "API errors {api_errors:?} are not reported by the lib: {lib_error}"
+        );
+        assert!(lib_error.contains("preflight"), "{lib_error}");
+    }
+
     /// Extracts the node types registered in `create_plugin`'s match arms by
     /// reading its source. The factory is a `match` on `&str`, so there is no
     /// runtime list to enumerate -- and calling it for every type would need

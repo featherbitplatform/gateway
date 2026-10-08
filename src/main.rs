@@ -1,31 +1,5 @@
-//! # featherbit
-//!
-//! A high-performance API gateway delivered as a single Rust binary.
-//!
-//! Featherbit routes traffic through **node-graph policies** declared in YAML:
-//! each policy is a pipeline of nodes wired together by success/error ports.
-//! Plugins come in two tiers — 13 native Rust plugins (proxying, auth,
-//! rate-limiting, CORS, logging, ...) plus scripted plugins written in Lua.
-//! A [`context::Context`] object (`request`, `response`, `message`, `errors`)
-//! flows through every node in the pipeline. Operations are handled by an
-//! admin REST API with an embedded React UI, configuration hot-reload via a
-//! file watcher, and Prometheus metrics per route and per node.
-//!
-//! # Architecture
-//!
-//! Request flow: HTTP request → `server::listener` matches a route → builds a
-//! `Context` → `CompiledGraph::execute()` walks the policy's nodes following
-//! success/error ports → the final `Context.response` is sent to the client.
-//!
-//! Configuration lives in two files: `system.yaml` (listeners, timeouts,
-//! admin API, logging) and `gateway.yaml` (routes and policies). Both support
-//! `${ENV_VAR:-default}` interpolation and the latter is hot-reloaded on change.
-
-// `PluginExecutionError` deliberately carries the whole `Context` by value so the
-// graph engine can route a failing node's context out through its `error` port
-// (see `plugins::PluginExecutionError`). That makes the `Err` variant large by
-// design; boxing it would ripple through the `Plugin` trait and every plugin.
-#![allow(clippy::result_large_err)]
+//! Command-line entry point: parses `--system-config` / `--gateway-config`,
+//! loads both files, and runs the gateway (`featherbit` crate).
 
 /// mimalloc instead of the platform allocator. The published image is a static
 /// musl build, and musl's malloc serializes under concurrency: the competitive
@@ -33,43 +7,15 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-mod acme;
-mod admin;
-mod balancer;
-mod batch;
-mod config;
-mod config_store;
-mod consumers;
-mod context;
-mod debug;
-mod graph;
-mod hot_reload;
-mod mcp;
-mod metrics;
-mod net;
-mod outbound;
-mod plugins;
-mod ratelimit;
-mod routing;
-mod server;
-mod sessions;
-mod state;
-mod stores;
-mod stream;
-#[cfg(test)]
-mod test_log;
-mod traffic;
-mod vars;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
+use featherbit::config::{self, ConfigSourceKind, GatewayConfig, SystemConfig};
+use featherbit::config_store::{self, ConfigStore, FileConfigStore};
+use featherbit::state::SharedState;
+use featherbit::{admin, hot_reload, server, stream};
 use tracing::{error, info};
-
-use crate::config::{ConfigSourceKind, GatewayConfig, SystemConfig};
-use crate::config_store::{ConfigStore, FileConfigStore};
-use crate::state::SharedState;
 
 /// Command-line arguments: paths to the two YAML configuration files.
 #[derive(Parser)]
