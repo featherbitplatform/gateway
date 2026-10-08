@@ -38,6 +38,12 @@ pub struct PluginResources {
     /// Plugins resolve a store by name at construction time and hold the
     /// resulting `Arc` — nothing reads this on the request path.
     pub stores: ArcSwap<crate::stores::StoreRegistry>,
+    /// True when compiling for validation only, outside the gateway process
+    /// (the Kubernetes operator's webhook and reconciler). Constructors that
+    /// read files from config paths skip the read, because those paths exist
+    /// in the gateway pod, not in the validator's. Nothing built in this mode
+    /// ever serves traffic.
+    pub offline: bool,
 }
 
 impl PluginResources {
@@ -51,7 +57,15 @@ impl PluginResources {
             consumers: ArcSwap::from_pointee(ConsumerStore::default()),
             counters: CounterStoreRegistry::default(),
             stores: ArcSwap::from_pointee(crate::stores::StoreRegistry::default()),
+            offline: false,
         })
+    }
+
+    /// Resources for offline validation (see [`PluginResources::offline`]).
+    pub fn offline() -> Arc<Self> {
+        let mut r = Arc::try_unwrap(Self::new(None)).ok().expect("fresh Arc");
+        r.offline = true;
+        Arc::new(r)
     }
 
     /// Resources with optional services disabled — for unit tests.

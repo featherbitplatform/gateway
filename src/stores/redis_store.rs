@@ -124,6 +124,13 @@ impl RedisStoreClient {
     /// loads the CA bundle if configured. **No network I/O** — connection is
     /// deferred to [`Self::conn`], so config apply never blocks on a store.
     pub fn build(cfg: &StoreConfig) -> Result<Self, String> {
+        Self::build_in(cfg, false)
+    }
+
+    /// [`Self::build`] with an `offline` switch: when true, `ca_cert_path` is
+    /// not read and the client is built as if no CA were configured (URL and
+    /// password resolution still run). For validation outside the gateway pod.
+    pub fn build_in(cfg: &StoreConfig, offline: bool) -> Result<Self, String> {
         let url = interpolate_env(&cfg.url);
         if url.trim().is_empty() {
             return Err(format!(
@@ -142,7 +149,12 @@ impl RedisStoreClient {
                 info = info.set_redis_settings(redis);
             }
         }
-        let client = match cfg.tls.as_ref().and_then(|t| t.ca_cert_path.as_deref()) {
+        let ca_path = cfg
+            .tls
+            .as_ref()
+            .and_then(|t| t.ca_cert_path.as_deref())
+            .filter(|_| !offline);
+        let client = match ca_path {
             Some(path) => {
                 let pem = std::fs::read(path).map_err(|e| {
                     format!(

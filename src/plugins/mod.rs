@@ -492,7 +492,10 @@ pub fn create_plugin(
         "serverless-post-function" => Ok(Box::new(
             native::serverless_post_function::ServerlessPostFunctionPlugin::from_config(config)?,
         )),
-        "script" => Ok(Box::new(script::ScriptPlugin::from_config(config)?)),
+        "script" => Ok(Box::new(script::ScriptPlugin::from_config_in(
+            config,
+            resources.offline,
+        )?)),
         "store-get" => Ok(Box::new(native::store_get::StoreGetPlugin::from_config(
             config, resources,
         )?)),

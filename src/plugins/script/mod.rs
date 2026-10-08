@@ -15,6 +15,11 @@ use std::path::PathBuf;
 use crate::context::Context;
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 
+/// Stands in for a file-backed script during offline validation: a script
+/// that compiles and declares `execute`, so the rest of construction (ports,
+/// timeout, modules_path) is validated exactly as online.
+const OFFLINE_STUB: &str = "function execute(ctx) return ctx end";
+
 /// Executes a scripted plugin as a graph node.
 ///
 /// The script receives the full `Context` (request, response, message) and
@@ -72,6 +77,16 @@ impl ScriptPlugin {
     /// end
     /// ```
     pub fn from_config(config: &HashMap<String, serde_json::Value>) -> Result<Self, String> {
+        Self::from_config_in(config, false)
+    }
+
+    /// [`Self::from_config`] with an `offline` switch: when true, a file-backed
+    /// `source` is not read (a stub script stands in), so validation can run
+    /// where the file does not exist.
+    pub fn from_config_in(
+        config: &HashMap<String, serde_json::Value>,
+        offline: bool,
+    ) -> Result<Self, String> {
         let runtime_name = config
             .get("runtime")
             .and_then(|v| v.as_str())
@@ -91,11 +106,12 @@ impl ScriptPlugin {
             return Err("script plugin requires 'source' or 'inline'".to_string());
         }
 
-        let source = if let Some(ref path) = source_path {
-            std::fs::read_to_string(path)
-                .map_err(|e| format!("Failed to read script '{}': {}", path, e))?
-        } else {
-            inline_source.unwrap()
+        let source = match (source_path.as_deref(), inline_source) {
+            (Some(_), _) if offline => OFFLINE_STUB.to_string(),
+            (Some(path), _) => std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read script '{}': {}", path, e))?,
+            (None, Some(inline)) => inline,
+            (None, None) => unreachable!("checked above"),
         };
 
         let timeout_ms = config

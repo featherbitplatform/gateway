@@ -239,6 +239,7 @@ impl SharedState {
             &prev,
             &gateway.stores,
             resources.metrics.clone(),
+            resources.offline,
         )?;
         resources.stores.store(Arc::new(candidate));
         let result = Self::compile_routes_inner(gateway, resources);
@@ -327,9 +328,67 @@ pub fn validate_gateway_config(gw: &GatewayConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// [`validate_gateway_config`] for a validator running outside the gateway
+/// process (the Kubernetes operator): compile-time file reads are skipped —
+/// `script.source`, `google-cloud-logging.auth_file`, store `tls.ca_cert_path`
+/// — because those paths exist in the gateway pod, not here. Everything else
+/// is validated exactly as online.
+pub fn validate_gateway_config_offline(gw: &GatewayConfig) -> Result<(), String> {
+    crate::consumers::ConsumerStore::from_config(&gw.consumers)?;
+    SharedState::compile_routes(gw, &PluginResources::offline())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FILE_REFS: &str = r#"
+stores:
+  - { name: cache, type: redis, url: "redis://r:6379", tls: { ca_cert_path: /nonexistent/ca.pem } }
+routes:
+  - { name: r, match: { path: /a }, policy: p }
+policies:
+  - name: p
+    nodes:
+      - { id: listener, type: listener }
+      - { id: lua, type: script, config: { source: /nonexistent/enrich.lua } }
+      - { id: gcl, type: google-cloud-logging, config: { auth_file: /nonexistent/creds.json } }
+      - { id: client, type: client }
+    edges:
+      - { from: listener.out, to: lua.in }
+      - { from: lua.success, to: gcl.in }
+      - { from: lua.respond, to: client.in }
+      - { from: gcl.success, to: client.in }
+"#;
+
+    #[tokio::test]
+    async fn online_validation_rejects_missing_files_and_offline_accepts_them() {
+        let gw: crate::config::GatewayConfig = serde_yaml::from_str(FILE_REFS).unwrap();
+        let err = validate_gateway_config(&gw).unwrap_err();
+        assert!(err.contains("nonexistent"), "{err}");
+        validate_gateway_config_offline(&gw).expect("offline validation ignores file existence");
+    }
+
+    #[tokio::test]
+    async fn offline_validation_still_rejects_real_errors() {
+        // Unwired `respond` port on the script node.
+        let bad = FILE_REFS.replace("      - { from: lua.respond, to: client.in }\n", "");
+        let gw: crate::config::GatewayConfig = serde_yaml::from_str(&bad).unwrap();
+        let err = validate_gateway_config_offline(&gw).unwrap_err();
+        assert!(err.contains("respond"), "{err}");
+        // Inline Lua is still compiled offline.
+        let inline_bad = FILE_REFS.replace(
+            "source: /nonexistent/enrich.lua",
+            "inline: 'this is not lua'",
+        );
+        let gw: crate::config::GatewayConfig = serde_yaml::from_str(&inline_bad).unwrap();
+        assert!(validate_gateway_config_offline(&gw).is_err());
+        // A store URL that does not parse is still rejected offline.
+        let bad_url = FILE_REFS.replace("redis://r:6379", "not a url");
+        let gw: crate::config::GatewayConfig = serde_yaml::from_str(&bad_url).unwrap();
+        assert!(validate_gateway_config_offline(&gw).is_err());
+    }
 
     fn state_from_yaml(gateway_yaml: &str) -> Result<(), String> {
         let system: crate::config::SystemConfig = serde_yaml::from_str("{}").unwrap();
