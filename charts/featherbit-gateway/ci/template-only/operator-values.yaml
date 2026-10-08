@@ -1,0 +1,7 @@
+# Operator-managed configuration: gateway.yaml comes from an external
+# ConfigMap, so the chart must not render one and the helm test hook must not
+# expect the default /hello route.
+config:
+  gatewayConfigMap: edge-gateway-config
+tests:
+  dataPlanePath: ""

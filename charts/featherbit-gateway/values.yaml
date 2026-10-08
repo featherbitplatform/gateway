@@ -127,6 +127,13 @@ config:
             to: client.in
   # Alternatively the literal gateway.yaml text; wins over `gateway` when set.
   gatewayRaw: ""
+  # Mount gateway.yaml from a ConfigMap you manage yourself (or that the
+  # featherbit operator renders) instead of config.gateway/gatewayRaw, which
+  # are then ignored. The ConfigMap must live in the release namespace and hold
+  # a `gateway.yaml` key. It is optional at pod start: until it exists the
+  # gateway serves no routes and picks the file up when it appears. With
+  # config.source=etcd the file only seeds an empty prefix on first boot.
+  gatewayConfigMap: ""
   etcd:
     endpoints: []        # e.g. ["http://etcd:2379"]
     prefix: /featherbit

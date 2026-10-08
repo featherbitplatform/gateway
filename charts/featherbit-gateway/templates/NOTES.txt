@@ -36,5 +36,12 @@ chart. Run `helm upgrade` once (same values) to switch them to HTTP /readyz,
 or set admin.password / probes.authHeader.
 {{- end }}
 {{- end }}
+{{- if .Values.config.gatewayConfigMap }}
+
+gateway.yaml is mounted from ConfigMap {{ .Values.config.gatewayConfigMap }}
+(config.gateway / config.gatewayRaw are ignored). Until that ConfigMap exists
+the gateway serves no routes{{ if eq .Values.config.source "etcd" }}; in etcd mode
+the file only seeds an empty prefix on first boot{{ end }}.
+{{- end }}
 
 Docs: https://featherbitplatform.github.io/gateway/guides/deployment#kubernetes-helm
