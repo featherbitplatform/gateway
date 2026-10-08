@@ -1,0 +1,50 @@
+{{- if .Values.tests.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "featherbit-gateway.fullname" . }}-test
+  labels:
+    {{- include "featherbit-gateway.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: curl
+      image: {{ .Values.tests.image }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      env:
+        - name: ADMIN_USER
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "featherbit-gateway.secretName" . }}
+              key: username
+        - name: ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "featherbit-gateway.secretName" . }}
+              key: password
+      command: ["sh", "-ec"]
+      args:
+        # The hook can start before kube-proxy has programmed the Services'
+        # endpoints for a pod that just turned Ready, so every request retries
+        # connection refusals and transient errors for up to ~30s.
+        - |
+          retry="--retry 15 --retry-delay 2 --retry-connrefused --retry-all-errors"
+          curl -fsS $retry -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+            "http://{{ include "featherbit-gateway.fullname" . }}-admin:{{ .Values.adminService.port }}/healthz"
+          {{- if .Values.tests.dataPlanePath }}
+          curl -fsS $retry "http://{{ include "featherbit-gateway.fullname" . }}:{{ .Values.service.port }}{{ .Values.tests.dataPlanePath }}" \
+            | grep -q {{ .Values.tests.expect | quote }}
+          {{- end }}
+{{- end }}

@@ -1,0 +1,316 @@
+# Default values for featherbit-gateway.
+#
+# Documentation: https://featherbitplatform.github.io/gateway/guides/deployment#kubernetes-helm
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: featherbit/featherbit
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # Pin by digest instead of tag (sha256:...). Takes precedence over tag.
+  digest: ""
+  # Use the -headless image variant (no embedded web UI).
+  headless: false
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Ports the gateway listens on inside the container. Rendered into system.yaml.
+containerPorts:
+  http: 8080
+  admin: 9090
+
+logging:
+  level: info          # error | warn | info | debug | trace
+  format: text         # text | json
+
+admin:
+  # Primary full-access account. Rendered into system.yaml as ${ADMIN_USER} /
+  # ${ADMIN_PASSWORD} and supplied through the Secret (see secret.yaml).
+  username: admin
+  # Empty -> generated once on first install and kept across upgrades.
+  password: ""
+  # Use your own Secret (keys: username, password) instead of a chart-managed one.
+  # Not compatible with admin.users (add those accounts to config.system.admin.users).
+  existingSecret: ""
+  # Extra full-access accounts: [{username: ops, password: s3cret}]
+  users: []
+  # Serve the embedded web UI on the admin port.
+  uiEnabled: true
+
+# Model Context Protocol endpoint for AI agents (admin.mcp in system.yaml).
+mcp:
+  enabled: false
+  path: /mcp
+  # [{name: local-agent, scope: read, value: <token>}]. `value` may be omitted
+  # when existingSecret is set; the Secret key is then the token name.
+  tokens: []
+  existingSecret: ""
+  allowedOrigins: []
+
+# TLS for the data plane from a kubernetes.io/tls Secret, mounted at
+# /etc/gateway/tls and wired into system.yaml tls.cert_path/key_path.
+tls:
+  existingSecret: ""
+  # Reuse the data-plane certificate for the admin listener (admin.tls.inherit).
+  adminInherit: false
+
+config:
+  # file: config from the ConfigMap below (Admin API edits live in memory).
+  # etcd: config lives in etcd; gateway.yaml only seeds an empty prefix.
+  source: file
+  # Merged over the chart's default system.yaml. Any key the gateway accepts:
+  # timeouts, http2, debug, cache, acme, tls (for ACME), stream, admin.tls, ...
+  system: {}
+  # The full gateway.yaml as a map: routes, policies, supernodes, stores, ...
+  # ${ENV} placeholders are passed through to the gateway untouched.
+  gateway:
+    routes:
+      - name: hello
+        match:
+          path: /hello
+        policy: hello
+      - name: api
+        match:
+          path: /api/*
+        policy: api
+    policies:
+      - name: hello
+        nodes:
+          - id: listener
+            type: listener
+          - id: mock
+            type: mocking
+            config:
+              response_example: '{"gateway": "featherbit", "path": "$uri"}'
+          - id: client
+            type: client
+        edges:
+          - from: listener.out
+            to: mock.in
+          - from: mock.success
+            to: client.in
+      - name: api
+        error_handler: on-error
+        nodes:
+          - id: listener
+            type: listener
+          - id: strip-prefix
+            type: proxy-rewrite
+            config:
+              phase: request
+              strip_path_prefix: /api
+          - id: backend
+            type: upstream
+            config:
+              targets:
+                - host: ${UPSTREAM_HOST:-upstream}
+                  port: ${UPSTREAM_PORT:-80}
+          - id: on-error
+            type: error-handler
+            config:
+              status_code: 502
+              body_template: '{"error": "{{error.code}}", "message": "{{error.message}}"}'
+          - id: client
+            type: client
+        edges:
+          - from: listener.out
+            to: strip-prefix.in
+          - from: strip-prefix.success
+            to: backend.in
+          - from: backend.success
+            to: client.in
+          - from: backend.error
+            to: on-error.in
+          - from: on-error.success
+            to: client.in
+  # Alternatively the literal gateway.yaml text; wins over `gateway` when set.
+  gatewayRaw: ""
+  etcd:
+    endpoints: []        # e.g. ["http://etcd:2379"]
+    prefix: /featherbit
+    timeoutMs: 3000
+    # Secret with keys `user` and `password` for etcd auth.
+    existingSecret: ""
+  # Lua scripts, mounted at /etc/gateway/plugins/<name>: {auth.lua: "..."}
+  scripts: {}
+
+probes:
+  # /healthz and /readyz sit behind Basic Auth. HTTP probes are used when the
+  # chart knows the password (admin.password set, or already stored from a
+  # previous install); otherwise probes fall back to a TCP check on the admin
+  # port. Note that an HTTP probe embeds "Basic <base64 user:pass>" in the pod
+  # template, so anyone who can read the Deployment can read the admin
+  # password. Set http: false to always use TCP probes instead.
+  http: true
+  # "Basic <base64 user:pass>" to force HTTP probes with admin.existingSecret.
+  authHeader: ""
+  liveness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+  startup:
+    periodSeconds: 2
+    failureThreshold: 30
+
+replicaCount: 1
+
+# L4 stream listeners declared in config.system.stream need container ports
+# and a Service; list them here: [{name: mqtt, port: 1883, protocol: TCP}]
+stream:
+  ports: []
+  service:
+    type: ClusterIP
+    annotations: {}
+
+# Defaults to config.system.timeouts.shutdown_timeout_seconds (30) + 5 so the
+# gateway's drain finishes before the kubelet kills the pod.
+terminationGracePeriodSeconds: null
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automount: false
+
+podAnnotations: {}
+podLabels: {}
+
+# The image is FROM scratch and runs as the distroless "nonroot" uid.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources: {}
+#  limits:
+#    cpu: "1"
+#    memory: 256Mi
+#  requests:
+#    cpu: 100m
+#    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+# Raw additions to the gateway container / pod.
+extraEnv: []            # e.g. [{name: UPSTREAM_HOST, value: my-api.default.svc}]
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+extraContainers: []
+initContainers: []
+
+# Data plane. For an edge deployment set type: LoadBalancer (or NodePort);
+# behind an existing controller leave ClusterIP and enable ingress/httpRoute.
+service:
+  type: ClusterIP
+  port: 80
+  nodePort: null
+  clusterIP: ""
+  annotations: {}
+  labels: {}
+  externalTrafficPolicy: ""
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+
+# Admin API + web UI. Deliberately never exposed by default: Basic Auth
+# credentials travel on every request and it has full write access.
+adminService:
+  type: ClusterIP
+  port: 9090
+  clusterIP: ""
+  annotations: {}
+  labels: {}
+
+# Expose the data plane through an existing Ingress controller.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: gateway.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: gateway-tls
+  #    hosts: [gateway.example.com]
+
+# Expose the admin API/UI. Off by default on purpose; put it behind your own
+# network policy / auth proxy if you turn it on.
+adminIngress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: gateway-admin.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Expose the data plane through a Gateway API implementation (HTTPRoute).
+# featherbit does not implement Gateway API itself; this attaches it as a
+# backend of a Gateway you already run.
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs: []
+  #  - name: my-gateway
+  #    namespace: gateway-system
+  #    sectionName: https
+  hostnames: []
+  # Defaults to one PathPrefix / rule to the data-plane Service when empty.
+  rules: []
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 75
+  targetMemoryUtilizationPercentage: null
+  behavior: {}
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: null
+
+# Prometheus Operator ServiceMonitor scraping /metrics on the admin port with
+# the admin credentials (Secret keys username/password).
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+  relabelings: []
+  metricRelabelings: []
+
+# `helm test`: checks /healthz with the admin credentials, then sends one
+# request through the data plane. Set dataPlanePath to "" to skip the second
+# check when you replace the default gateway config.
+tests:
+  enabled: true
+  image: curlimages/curl:8.11.1
+  dataPlanePath: /hello
+  expect: featherbit

@@ -9,7 +9,7 @@
 #   ./dev/sast.sh image           # docker build + grype/trivy + SBOM on the image
 #   ./dev/sast.sh sbom            # CycloneDX SBOMs into sast-out/sbom/
 #
-# Targets: semgrep deny grype hadolint gitleaks npm-audit sbom image all
+# Targets: semgrep deny grype hadolint gitleaks npm-audit helm sbom image all
 set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,6 +22,7 @@ GITLEAKS_IMAGE='zricethezav/gitleaks:latest'
 TRIVY_IMAGE='aquasec/trivy:latest'
 NODE_IMAGE='node:22-alpine'
 SYFT_IMAGE='anchore/syft:latest'
+HELM_IMAGE='alpine/helm:3.16.3'
 
 # Semgrep registry rulesets — keep in sync with the semgrep job in security.yml.
 SEMGREP_RULESETS='--config p/default --config p/rust --config p/typescript --config p/dockerfile'
@@ -32,7 +33,7 @@ SEMGREP_EXCLUDES='--exclude-rule javascript.lang.security.detect-insecure-websoc
 TARGETS=("$@")
 [ ${#TARGETS[@]} -eq 0 ] && TARGETS=(all)
 if [ "${TARGETS[0]}" = all ]; then
-    TARGETS=(semgrep deny grype hadolint gitleaks npm-audit sbom)
+    TARGETS=(semgrep deny grype hadolint gitleaks npm-audit helm sbom)
 fi
 
 # The product version stamped into every SBOM (ui/website package.json
@@ -80,6 +81,23 @@ for target in "${TARGETS[@]}"; do
         run_scan hadolint docker run --rm -v "$REPO_ROOT:/src:ro" -w /src "$HADOLINT_IMAGE" \
             hadolint --config .hadolint.yaml \
             Dockerfile ui/Dockerfile dev/echo-backend/Dockerfile
+        ;;
+
+    helm)
+        # Same two checks as the lint job in .github/workflows/helm.yml:
+        # strict helm lint over every values file, then trivy's
+        # misconfiguration rules over the rendered chart.
+        run_scan "helm lint" docker run --rm -v "$REPO_ROOT:/src:ro" -w /src --entrypoint sh "$HELM_IMAGE" -c '
+set -e
+helm lint --strict charts/featherbit-gateway
+for f in charts/featherbit-gateway/ci/*-values.yaml charts/featherbit-gateway/ci/template-only/*-values.yaml; do
+  echo "== $f"; helm lint --strict charts/featherbit-gateway -f "$f"
+done'
+        # .trivyignore.yaml holds the chart's documented false positives
+        # (the same file the helm.yml workflow passes to trivy-action).
+        run_scan "trivy (helm config)" docker run --rm -v "$REPO_ROOT:/src:ro" -w /src \
+            -v featherbit-trivy-cache:/root/.cache/trivy \
+            "$TRIVY_IMAGE" config --config trivy.yaml --ignorefile .trivyignore.yaml --exit-code 1 charts
         ;;
 
     gitleaks)
@@ -150,7 +168,7 @@ for target in "${TARGETS[@]}"; do
         ;;
 
     *)
-        echo "Unknown target '$target'. Targets: semgrep deny grype hadolint gitleaks npm-audit sbom image all"
+        echo "Unknown target '$target'. Targets: semgrep deny grype hadolint gitleaks npm-audit helm sbom image all"
         exit 2
         ;;
     esac

@@ -1,0 +1,13 @@
+{{- if .Values.config.scripts }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "featherbit-gateway.scriptsConfigMapName" . }}
+  labels:
+    {{- include "featherbit-gateway.labels" . | nindent 4 }}
+data:
+  {{- range $name, $body := .Values.config.scripts }}
+  {{ $name }}: |
+    {{- $body | nindent 4 }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,17 @@
+# `ct install`: Ingress object creation (no controller runs in kind, so the
+# object is only created, not routed).
+ingress:
+  enabled: true
+  hosts:
+    - host: gateway.ci.local
+      paths:
+        - path: /
+          pathType: Prefix
+admin:
+  password: ci-password
+  users:
+    - username: ops
+      password: ci-ops-password
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 0

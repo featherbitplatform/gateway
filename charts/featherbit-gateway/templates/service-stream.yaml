@@ -1,0 +1,24 @@
+{{- if .Values.stream.ports }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "featherbit-gateway.fullname" . }}-stream
+  labels:
+    {{- include "featherbit-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: stream
+  {{- with .Values.stream.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.stream.service.type }}
+  ports:
+    {{- range .Values.stream.ports }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .name }}
+      protocol: {{ default "TCP" .protocol }}
+    {{- end }}
+  selector:
+    {{- include "featherbit-gateway.selectorLabels" . | nindent 4 }}
+{{- end }}

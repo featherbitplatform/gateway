@@ -1,0 +1,28 @@
+apiVersion: v2
+name: featherbit-gateway
+description: featherbit — a single-binary API gateway with node-graph routing policies
+type: application
+# version and appVersion track the gateway version in Cargo.toml and are bumped
+# in the same chore(release) commit; src/admin/status.rs has a test for it.
+version: 0.14.0
+appVersion: "0.14.0"
+kubeVersion: ">=1.25.0-0"
+home: https://featherbitplatform.github.io/gateway/
+icon: https://raw.githubusercontent.com/featherbitplatform/gateway/main/banner.png
+sources:
+  - https://github.com/featherbitplatform/gateway
+keywords:
+  - api-gateway
+  - gateway
+  - proxy
+  - rust
+maintainers:
+  - name: featherbit
+    url: https://github.com/featherbitplatform
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://featherbitplatform.github.io/gateway/
+    - name: Docker Hub
+      url: https://hub.docker.com/r/featherbit/featherbit
