@@ -459,6 +459,11 @@ stores:
         assert_eq!(config["type"], "object");
         assert_ne!(config["additionalProperties"], false, "{config}");
 
+        let plugin_config = serde_json::to_value(schemars::schema_for!(PluginConfigDef)).unwrap();
+        let config = &plugin_config["properties"]["config"];
+        assert_eq!(config["type"], "object");
+        assert_ne!(config["additionalProperties"], false, "{config}");
+
         let route = serde_json::to_value(schemars::schema_for!(RouteConfig)).unwrap();
         assert!(route["properties"]["match"].is_object(), "{route}");
 

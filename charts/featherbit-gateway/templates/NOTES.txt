@@ -25,7 +25,7 @@ Data plane:
   kubectl -n {{ .Release.Namespace }} get svc {{ include "featherbit-gateway.fullname" . }}      # see the NodePort
 {{- else }}
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "featherbit-gateway.fullname" . }} 8080:{{ .Values.service.port }}
-  curl http://localhost:8080{{ .Values.tests.dataPlanePath | default "/" }}
+  curl http://localhost:8080{{ if .Values.config.gatewayConfigMap }}/{{ else }}{{ .Values.tests.dataPlanePath | default "/" }}{{ end }}
 {{- end }}
 
 {{- if not .Values.admin.password }}
@@ -39,9 +39,11 @@ or set admin.password / probes.authHeader.
 {{- if .Values.config.gatewayConfigMap }}
 
 gateway.yaml is mounted from ConfigMap {{ .Values.config.gatewayConfigMap }}
-(config.gateway / config.gatewayRaw are ignored). Until that ConfigMap exists
-the gateway serves no routes{{ if eq .Values.config.source "etcd" }}; in etcd mode
-the file only seeds an empty prefix on first boot{{ end }}.
+(config.gateway / config.gatewayRaw are ignored).
+{{- if eq .Values.config.source "etcd" }} In etcd mode the gateway serves whatever
+the etcd prefix holds; this file only seeds an empty prefix on first boot.
+{{- else }} Until that ConfigMap exists the gateway serves no routes.
+{{- end }}
 {{- end }}
 
 Docs: https://featherbitplatform.github.io/gateway/guides/deployment#kubernetes-helm

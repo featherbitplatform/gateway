@@ -28,4 +28,12 @@ helm template fb "$CHART" --set config.gatewayConfigMap=edge-gateway-config --se
 helm install fb "$CHART" --dry-run=client --set config.gatewayConfigMap=edge-gateway-config \
   | grep -q 'mounted from ConfigMap edge-gateway-config' || fail "NOTES do not mention the external ConfigMap"
 
+# 5. With an external ConfigMap there is no known route to probe: neither the
+#    test hook nor NOTES may mention the demo /hello route.
+grep -q '/hello' <<<"$ext" && fail "external render still mentions the demo /hello route"
+helm install fb "$CHART" --dry-run=client --set config.gatewayConfigMap=edge-gateway-config   | grep -q '/hello' && fail "NOTES with an external ConfigMap still mention /hello"
+
+# 6. The schema rejects a ConfigMap name that is not a DNS-1123 name.
+helm template fb "$CHART" --set config.gatewayConfigMap='Not Valid' >/dev/null 2>&1   && fail "schema accepted an invalid gatewayConfigMap name"
+
 echo "chart render check: OK"

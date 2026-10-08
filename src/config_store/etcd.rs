@@ -252,11 +252,15 @@ impl EtcdConfigStore {
 
     /// Makes the prefix hold exactly `desired`: puts every desired key, then
     /// deletes the keys under the prefix that `desired` no longer contains.
-    /// Not transactional — a reader polling mid-way sees a superset or a
-    /// subset, which the gateway's apply either accepts or rejects as a
-    /// whole and retries on its next poll.
+    /// Only keys in the gateway's own layout (see [`parse_resource_key`]) are
+    /// ever deleted; anything else under the prefix is left alone.
+    ///
+    /// Not transactional — a reader polling mid-way may see a mix of old and
+    /// new documents. The gateway loads the prefix in one range request and
+    /// either applies that snapshot as a whole or rejects it and keeps its
+    /// last-good config, then retries on the next poll.
     async fn reconcile(&self, desired: &GatewayConfig) -> Result<(), String> {
-        let current: std::collections::HashSet<String> = self
+        let current: Vec<String> = self
             .range_prefix()
             .await?
             .into_iter()
@@ -267,7 +271,7 @@ impl EtcdConfigStore {
             self.put(&key, &value).await?;
             kept.insert(key);
         }
-        for stale in current.difference(&kept) {
+        for stale in stale_keys(&self.prefix, &current, &kept) {
             self.delete(stale).await?;
         }
         Ok(())
@@ -298,12 +302,57 @@ impl ConfigStore for EtcdConfigStore {
 /// is responsible for validating `desired` first
 /// ([`crate::state::validate_gateway_config`]); every gateway polling the
 /// prefix re-validates on apply and keeps its last-good config on failure.
+///
+/// Fails without any I/O when the prefix is empty (`""` or `/`): that would
+/// make the gateway's key range the whole keyspace.
 pub async fn reconcile_prefix(cfg: &EtcdConfig, desired: &GatewayConfig) -> Result<(), String> {
     let store = EtcdConfigStore::new(cfg);
+    if store.prefix.is_empty() {
+        return Err(format!(
+            "etcd prefix {:?} is empty after trimming; refusing to reconcile the whole keyspace",
+            cfg.prefix
+        ));
+    }
     if store.auth.is_some() {
         store.authenticate().await?;
     }
     store.reconcile(desired).await
+}
+
+/// The resource families under a prefix, in key order.
+const RESOURCE_FAMILIES: [&str; 6] = [
+    "routes",
+    "policies",
+    "consumers",
+    "supernodes",
+    "plugin_configs",
+    "stores",
+];
+
+/// Recognises a gateway resource key: `<prefix>/<family>/<name>` where family
+/// is one of [`RESOURCE_FAMILIES`]. Returns `(family, name)`; anything else
+/// (other prefix, nested prefix such as `<prefix>/b/routes/x`, unknown family,
+/// no name separator) is `None`. Shared by the reader and the stale-key filter
+/// so the two cannot drift.
+fn parse_resource_key<'a>(prefix: &str, key: &'a str) -> Option<(&'a str, &'a str)> {
+    let rest = key.strip_prefix(prefix)?.strip_prefix('/')?;
+    let (family, name) = rest.split_once('/')?;
+    RESOURCE_FAMILIES
+        .contains(&family)
+        .then_some((family, name))
+}
+
+/// The keys in `current` that are gateway resource keys under `prefix` but not
+/// in `kept`: the only keys `reconcile` may delete.
+fn stale_keys<'a>(
+    prefix: &str,
+    current: &'a [String],
+    kept: &std::collections::HashSet<String>,
+) -> Vec<&'a String> {
+    current
+        .iter()
+        .filter(|k| parse_resource_key(prefix, k).is_some() && !kept.contains(*k))
+        .collect()
 }
 
 /// Assembles a [`GatewayConfig`] from the etcd key/value pairs under `prefix`.
@@ -322,11 +371,7 @@ fn gateway_from_kvs(prefix: &str, kvs: Vec<(String, Vec<u8>)>) -> Result<Gateway
         stores: Vec::new(),
     };
     for (key, value) in kvs {
-        let rest = match key.strip_prefix(&format!("{}/", prefix)) {
-            Some(r) => r,
-            None => continue,
-        };
-        let (category, name) = match rest.split_once('/') {
+        let (category, name) = match parse_resource_key(prefix, &key) {
             Some(p) => p,
             None => continue,
         };
@@ -670,6 +715,56 @@ stores:
 "#,
         )
         .unwrap()
+    }
+
+    /// Only keys the reader recognises are stale candidates: a nested
+    /// gateway's prefix and unrelated keys survive, a removed route does not.
+    #[test]
+    fn stale_keys_only_covers_the_gateways_own_layout() {
+        let current: Vec<String> = [
+            "/fb/routes/keep",
+            "/fb/routes/old",
+            "/fb/b/routes/x",
+            "/fb/other",
+            "/fb/unknown/y",
+            "/fbx/routes/z",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let kept: std::collections::HashSet<String> =
+            ["/fb/routes/keep".to_string()].into_iter().collect();
+        let stale = stale_keys("/fb", &current, &kept);
+        assert_eq!(stale, vec!["/fb/routes/old"]);
+    }
+
+    #[test]
+    fn parse_resource_key_recognises_the_six_families() {
+        for f in RESOURCE_FAMILIES {
+            assert_eq!(
+                parse_resource_key("/fb", &format!("/fb/{f}/n")),
+                Some((f, "n"))
+            );
+        }
+        assert_eq!(parse_resource_key("/fb", "/fb/routes"), None);
+        assert_eq!(parse_resource_key("/fb", "/fb/b/routes/x"), None);
+    }
+
+    /// An empty (or `/`) prefix is refused before any network I/O.
+    #[tokio::test]
+    async fn reconcile_prefix_rejects_an_empty_prefix() {
+        let empty: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        for prefix in ["''", "/", "'/'"] {
+            let cfg: EtcdConfig = serde_yaml::from_str(&format!(
+                "endpoints: ['http://127.0.0.1:1']
+prefix: {prefix}
+"
+            ))
+            .unwrap();
+            let err = reconcile_prefix(&cfg, &empty).await.unwrap_err();
+            assert!(err.contains("prefix"), "{err}");
+            assert!(err.contains("empty"), "{err}");
+        }
     }
 
     /// desired_kvs is the write side of gateway_from_kvs: one JSON document

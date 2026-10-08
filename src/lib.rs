@@ -30,6 +30,12 @@
 //! [`state::validate_gateway_config`], [`plugins::port_spec`] and
 //! [`config_store::etcd::reconcile_prefix`]. `tests/lib_surface.rs` pins that
 //! surface.
+//!
+//! Depend on it with `default-features = false`: the `ui` feature embeds the
+//! gitignored `ui/dist/`, and `mcp` mounts a transport a library consumer does
+//! not need. Enable `redis-store` when the redis store backends must be
+//! compiled in (the `stores:` section's static checks,
+//! [`stores::validate_stores`], do not depend on it).
 
 // `PluginExecutionError` deliberately carries the whole `Context` by value so the
 // graph engine can route a failing node's context out through its `error` port

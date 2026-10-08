@@ -133,6 +133,7 @@ config:
   # a `gateway.yaml` key. It is optional at pod start: until it exists the
   # gateway serves no routes and picks the file up when it appears. With
   # config.source=etcd the file only seeds an empty prefix on first boot.
+  # tests.dataPlanePath is ignored while this is set (no known route to probe).
   gatewayConfigMap: ""
   etcd:
     endpoints: []        # e.g. ["http://etcd:2379"]

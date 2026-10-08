@@ -43,7 +43,7 @@ spec:
           retry="--retry 15 --retry-delay 2 --retry-connrefused --retry-all-errors"
           curl -fsS $retry -u "$ADMIN_USER:$ADMIN_PASSWORD" \
             "http://{{ include "featherbit-gateway.fullname" . }}-admin:{{ .Values.adminService.port }}/healthz"
-          {{- if .Values.tests.dataPlanePath }}
+          {{- if and .Values.tests.dataPlanePath (not .Values.config.gatewayConfigMap) }}
           curl -fsS $retry "http://{{ include "featherbit-gateway.fullname" . }}:{{ .Values.service.port }}{{ .Values.tests.dataPlanePath }}" \
             | grep -q {{ .Values.tests.expect | quote }}
           {{- end }}
