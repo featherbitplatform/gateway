@@ -32,6 +32,7 @@ The admin Service is `ClusterIP` and has no Ingress unless `adminIngress.enabled
 - `config.system` is deep-merged over the chart's default `system.yaml`. Any gateway key works: `timeouts`, `http2`, `debug`, `cache`, `acme`, `stream`, `admin.tls`.
 - `config.gateway` is the full `gateway.yaml` as a map (or `config.gatewayRaw` as text). `${ENV}` placeholders pass through to the gateway and resolve from the pod environment (`extraEnv`, `extraEnvFrom`).
 - `config.scripts` mounts Lua files under `/etc/gateway/plugins`.
+- `config.gatewayConfigMap` mounts `gateway.yaml` from a ConfigMap you manage (or that the [featherbit operator](https://github.com/featherbitplatform/gateway-operator) renders) instead of `config.gateway`/`gatewayRaw`. The source is optional at pod start, so the gateway serves no routes until the ConfigMap exists and hot-reloads once it does. CRDs or your GitOps tool are then the source of truth: Admin UI edits are overwritten on the next render.
 - Changing `system.yaml` rolls the pods (checksum annotation). Changing `gateway.yaml` or a script hot-reloads in place once the kubelet refreshes the ConfigMap mount.
 - `config.source=etcd` with `config.etcd.endpoints` moves routes/policies into etcd (shared by every replica, Admin API edits persist). The chart does not run etcd for you.
 
