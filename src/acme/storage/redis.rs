@@ -304,9 +304,13 @@ key_prefix: fbacme{tag}{}
         };
         let cfg = store_cfg(tag, &url);
         let resources = PluginResources::new(None);
-        let registry =
-            StoreRegistry::rebuild(&StoreRegistry::default(), std::slice::from_ref(&cfg), None)
-                .unwrap();
+        let registry = StoreRegistry::rebuild(
+            &StoreRegistry::default(),
+            std::slice::from_ref(&cfg),
+            None,
+            false,
+        )
+        .unwrap();
         let client = registry.client("acme-live").unwrap();
         resources.stores.store(Arc::new(registry));
         Some((resources, client))
@@ -386,9 +390,13 @@ SECRET-KEY-BYTES
         // key_prefix and swap it in, exactly as an Admin API store edit does.
         let url = std::env::var("FEATHERBIT_TEST_REDIS_URL").unwrap();
         let cfg2 = store_cfg("swap2", &url);
-        let registry2 =
-            StoreRegistry::rebuild(&StoreRegistry::default(), std::slice::from_ref(&cfg2), None)
-                .unwrap();
+        let registry2 = StoreRegistry::rebuild(
+            &StoreRegistry::default(),
+            std::slice::from_ref(&cfg2),
+            None,
+            false,
+        )
+        .unwrap();
         let second = registry2.client("acme-live").unwrap();
         assert_ne!(first.key_prefix(), second.key_prefix());
         resources.stores.store(Arc::new(registry2));

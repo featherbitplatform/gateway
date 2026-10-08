@@ -143,3 +143,11 @@ fn config_types_expose_json_schema() {
         "{consumer}"
     );
 }
+
+#[test]
+fn offline_validation_is_on_the_surface() {
+    let _: fn(&GatewayConfig) -> Result<(), String> =
+        featherbit::state::validate_gateway_config_offline;
+    let gw: GatewayConfig = serde_yaml::from_str(MINIMAL).unwrap();
+    featherbit::state::validate_gateway_config_offline(&gw).unwrap();
+}

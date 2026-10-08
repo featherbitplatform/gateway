@@ -537,7 +537,7 @@ mod live_tests {
         let store_cfg: StoreConfig =
             serde_yaml::from_str(&format!("name: test\ntype: redis\nurl: {url}\n"))
                 .expect("store config parses");
-        let registry = StoreRegistry::rebuild(&StoreRegistry::default(), &[store_cfg], None)
+        let registry = StoreRegistry::rebuild(&StoreRegistry::default(), &[store_cfg], None, false)
             .expect("store registry builds against a reachable url");
         let resources = PluginResources::empty();
         resources.stores.store(Arc::new(registry));
