@@ -43,6 +43,22 @@ const config: Config = {
     ],
   ],
 
+  // Offline full-text search: the index is built at `docusaurus build` and
+  // served as static files next to the site, so it works on GitHub Pages
+  // without an external search service or API keys.
+  themes: [
+    [
+      '@easyops-cn/docusaurus-search-local',
+      {
+        hashed: true,
+        indexBlog: false,
+        docsRouteBasePath: '/docs',
+        highlightSearchTermsOnTargetPage: true,
+        explicitSearchResultPath: true,
+      },
+    ],
+  ],
+
   themeConfig: {
     image: 'img/featherbit-mark.png',
     colorMode: {

@@ -64,6 +64,14 @@ python bench/bench.py run --quick --gateways featherbit,nginx --scenarios core.p
 python -m unittest discover -s bench/tests -t bench   # harness unit tests
 ```
 
+Helm chart (`charts/featherbit-gateway/`; version + appVersion track `Cargo.toml` and are bumped
+in the release commit — `src/admin/status.rs` has a test for it; published by `.github/workflows/helm.yml`):
+```bash
+helm lint --strict charts/featherbit-gateway
+./dev/sast.ps1 helm           # strict lint over every ci/ values file + trivy config scan
+kind create cluster && helm install fb charts/featherbit-gateway --set image.tag=edge --wait && helm test fb
+```
+
 ## What This Project Is
 
 A high-performance API gateway delivered as a single Rust binary. (The original `REQUIREMENTS.md` specification no longer exists in the repo; the closest current equivalents are the docs site under `website/docs/` and the honest-state ledger at `website/docs/reference/roadmap.md`.)
@@ -82,6 +90,7 @@ Core features:
 - **Context var autocomplete** — $var suggestions with live value preview from debug traces, plus GET /api/vars catalog
 - **Universal config templates** — {{namespace.path}} rendering in all traffic-bound plugin config, with env vars and live-preview suggestions everywhere
 - **MCP server for agents** — `admin.mcp` (off by default; `mcp` cargo feature, default-on) mounts an `rmcp` Streamable HTTP endpoint at `admin.mcp.path` on the admin listener, outside Basic Auth, behind scoped bearer tokens (`read`/`write`, constant-time compare, `Origin` allow-list). `src/mcp/`: `tools/` (typed tools over `SharedState`; writes via `commit_candidate` → `validate_gateway`/`ConfigStore::commit`), `docs.rs` (rust-embed'd `website/docs` pages as `featherbit://docs/...` resources), `prompts.rs` (precompiled prompts, also served by `GET /api/mcp/prompts/{name}` for the UI's "copy as agent prompt"), `server.rs` (the `rmcp` adapter, feature-gated). Debug/sandbox tools reuse `debug::render`, `debug::sandbox::run_sandbox`, `graph::prepare_policy`. The web UI's **Chat** panel (`ui/src/chat/` — store, OpenAI streaming client, browser MCP client, turn loop, `useChat`; `ui/src/components/ChatPanel.tsx`) is a bring-your-own-key OpenAI-compatible chat that calls these MCP tools from the browser, reads auto-run and writes gated by Run/Skip, threads/settings in localStorage (`featherbit.chat.*`); the MCP `Origin` check accepts same-origin requests so the embedded UI works with an empty `allowed_origins`.
+- **Helm chart** — `charts/featherbit-gateway`, OCI-published to GHCR and Docker Hub on release tags; the gateway's `system.yaml`/`gateway.yaml` rendered from values into a ConfigMap, credentials via Secret + `${ENV}` interpolation, split data-plane/admin Services, optional Ingress/HTTPRoute/HPA/PDB/ServiceMonitor. A Kubernetes operator is planned as a separate repository.
 
 ## Architecture
 

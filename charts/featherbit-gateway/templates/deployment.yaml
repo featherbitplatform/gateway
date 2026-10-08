@@ -1,0 +1,179 @@
+{{- $auth := "" -}}
+{{- if .Values.probes.http }}{{ $auth = include "featherbit-gateway.probeAuthHeader" . }}{{ end -}}
+{{- $drain := dig "timeouts" "shutdown_timeout_seconds" 30 .Values.config.system -}}
+{{- $grace := .Values.terminationGracePeriodSeconds -}}
+{{- if not $grace }}{{ if kindIs "string" $drain }}{{ $grace = 35 }}{{ else }}{{ $grace = add $drain 5 }}{{ end }}{{ end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "featherbit-gateway.fullname" . }}
+  labels:
+    {{- include "featherbit-gateway.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "featherbit-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # system.yaml is not hot-reloaded by the gateway: a change rolls the pods.
+        # gateway.yaml is, so it is deliberately left out of the checksum.
+        checksum/system-config: {{ include "featherbit-gateway.systemConfig" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "featherbit-gateway.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "featherbit-gateway.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+      terminationGracePeriodSeconds: {{ $grace }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ include "featherbit-gateway.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPorts.http }}
+              protocol: TCP
+            - name: admin
+              containerPort: {{ .Values.containerPorts.admin }}
+              protocol: TCP
+            {{- range .Values.stream.ports }}
+            - name: {{ .name }}
+              containerPort: {{ .port }}
+              protocol: {{ default "TCP" .protocol }}
+            {{- end }}
+          env:
+            {{- include "featherbit-gateway.env" . | nindent 12 }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            {{- if $auth }}
+            httpGet:
+              path: /healthz
+              port: admin
+              httpHeaders:
+                - name: Authorization
+                  value: {{ $auth | quote }}
+            {{- else }}
+            tcpSocket:
+              port: admin
+            {{- end }}
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- if $auth }}
+            httpGet:
+              path: /readyz
+              port: admin
+              httpHeaders:
+                - name: Authorization
+                  value: {{ $auth | quote }}
+            {{- else }}
+            tcpSocket:
+              port: admin
+            {{- end }}
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          startupProbe:
+            {{- if $auth }}
+            httpGet:
+              path: /readyz
+              port: admin
+              httpHeaders:
+                - name: Authorization
+                  value: {{ $auth | quote }}
+            {{- else }}
+            tcpSocket:
+              port: admin
+            {{- end }}
+            {{- toYaml .Values.probes.startup | nindent 12 }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/gateway
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/featherbit
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      volumes:
+        # One projected volume so config, scripts and TLS material all live
+        # under /etc/gateway, the directory the gateway's watchers cover.
+        - name: config
+          projected:
+            sources:
+              - configMap:
+                  name: {{ include "featherbit-gateway.configMapName" . }}
+              {{- if .Values.config.scripts }}
+              - configMap:
+                  name: {{ include "featherbit-gateway.scriptsConfigMapName" . }}
+                  items:
+                    {{- range $name, $_ := .Values.config.scripts }}
+                    - key: {{ $name }}
+                      path: plugins/{{ $name }}
+                    {{- end }}
+              {{- end }}
+              {{- if .Values.tls.existingSecret }}
+              - secret:
+                  name: {{ .Values.tls.existingSecret }}
+                  items:
+                    - key: tls.crt
+                      path: tls/tls.crt
+                    - key: tls.key
+                      path: tls/tls.key
+              {{- end }}
+        - name: data
+          emptyDir: {}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

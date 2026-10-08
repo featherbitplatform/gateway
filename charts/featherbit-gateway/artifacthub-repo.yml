@@ -1,0 +1,5 @@
+# Artifact Hub repository metadata (registration is a one-time step in the
+# Artifact Hub UI pointing at oci://ghcr.io/featherbitplatform/charts/featherbit-gateway).
+repositoryID: ""
+owners:
+  - name: featherbit

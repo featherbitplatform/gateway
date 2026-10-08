@@ -1,0 +1,78 @@
+# Lint + kubeconform only: every optional resource on at once.
+replicaCount: 2
+image:
+  headless: true
+admin:
+  password: all-options
+  users:
+    - username: ops
+      password: ops-password
+mcp:
+  enabled: true
+  tokens:
+    - name: local-agent
+      scope: read
+      value: read-token
+    - name: ci.writer
+      scope: write
+      value: write-token
+tls:
+  existingSecret: gateway-tls
+  adminInherit: true
+config:
+  system:
+    timeouts:
+      shutdown_timeout_seconds: 20
+    http2:
+      enabled: true
+    stream:
+      - protocol: tcp
+        bind: 0.0.0.0
+        port: 1883
+        upstream:
+          targets:
+            - host: mqtt.default.svc
+              port: 1883
+  scripts:
+    hello.lua: |
+      return function(ctx) return ctx end
+stream:
+  ports:
+    - name: mqtt
+      port: 1883
+      protocol: TCP
+  service:
+    type: LoadBalancer
+service:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+ingress:
+  enabled: true
+  className: nginx
+  tls:
+    - secretName: gateway-tls
+      hosts: [gateway.example.com]
+adminIngress:
+  enabled: true
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: edge
+      namespace: gateway-system
+  hostnames: [gateway.example.com]
+autoscaling:
+  enabled: true
+podDisruptionBudget:
+  enabled: true
+serviceMonitor:
+  enabled: true
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+extraEnv:
+  - name: UPSTREAM_HOST
+    value: my-api.default.svc

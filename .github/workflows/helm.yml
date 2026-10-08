@@ -1,0 +1,176 @@
+# Helm chart: lint + kubeconform + trivy config on every change, a kind
+# install on PRs/branches, and an OCI publish to GHCR + Docker Hub on
+# vX.Y.Z tags (the chart version must equal the tag — it tracks Cargo.toml).
+name: helm
+
+on:
+  push:
+    branches: [main, develop]
+    paths: ['charts/**', '.github/workflows/helm.yml', '.github/ct-lintconf.yaml']
+    tags: ['v*.*.*']
+  pull_request:
+    paths: ['charts/**', '.github/workflows/helm.yml', '.github/ct-lintconf.yaml']
+  workflow_dispatch:
+
+concurrency:
+  group: helm-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CHART_DIR: charts/featherbit-gateway
+  KUBECONFORM_VERSION: v0.6.7
+  GATEWAY_API_VERSION: v1.2.1
+
+jobs:
+  lint:
+    name: lint + schema + trivy
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # ct compares against the target branch
+
+      - uses: azure/setup-helm@v4
+
+      - name: helm lint (every values file)
+        run: |
+          helm lint --strict "$CHART_DIR"
+          for f in "$CHART_DIR"/ci/*-values.yaml "$CHART_DIR"/ci/template-only/*-values.yaml; do
+            echo "== $f"
+            helm lint --strict "$CHART_DIR" -f "$f"
+          done
+
+      - uses: helm/chart-testing-action@v2
+
+      # Version increments are made by the release chore commit, not per PR.
+      - name: ct lint
+        run: |
+          ct lint --charts "$CHART_DIR" \
+            --lint-conf .github/ct-lintconf.yaml \
+            --check-version-increment=false \
+            --validate-maintainers=false
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+
+      # CRD schemas (HTTPRoute, ServiceMonitor) come from the CRDs catalog.
+      - name: kubeconform
+        run: |
+          schemas='-schema-location default -schema-location https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          # shellcheck disable=SC2086  # $schemas is a flag list, word-splitting intended
+          helm template fb "$CHART_DIR" | kubeconform -strict -summary $schemas
+          for f in "$CHART_DIR"/ci/*-values.yaml "$CHART_DIR"/ci/template-only/*-values.yaml; do
+            echo "== $f"
+            # shellcheck disable=SC2086
+            helm template fb "$CHART_DIR" -f "$f" | kubeconform -strict -summary $schemas
+          done
+
+      # .trivyignore.yaml: documented false positives (KSV-0109 on the
+      # ${ADMIN_PASSWORD} placeholder in the ConfigMap).
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: ${{ env.CHART_DIR }}
+          trivy-config: trivy.yaml
+          trivyignores: .trivyignore.yaml
+          exit-code: '1'
+          format: sarif
+          output: trivy-helm.sarif
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-helm.sarif
+          category: trivy-helm
+
+  install:
+    name: kind install
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: azure/setup-helm@v4
+      - uses: helm/chart-testing-action@v2
+      - uses: helm/kind-action@v1
+
+      # HTTPRoute CRDs so the all-options render would apply; no controller.
+      - name: Install Gateway API CRDs
+        run: kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
+
+      # develop/PRs test against the edge image; main against latest.
+      - name: Pick image tag
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "IMAGE_TAG=latest" >> "$GITHUB_ENV"
+          else
+            echo "IMAGE_TAG=edge" >> "$GITHUB_ENV"
+          fi
+
+      - name: ct install
+        run: |
+          ct install --charts "$CHART_DIR" \
+            --helm-extra-set-args "--set image.tag=${IMAGE_TAG}" \
+            --helm-extra-args "--timeout 3m"
+
+  publish:
+    name: publish (GHCR + Docker Hub)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    needs: lint
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Chart version must equal the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          chart_version=$(sed -n 's/^version: *//p' "$CHART_DIR/Chart.yaml")
+          app_version=$(sed -n 's/^appVersion: *"\(.*\)"/\1/p' "$CHART_DIR/Chart.yaml")
+          if [ "$chart_version" != "$version" ] || [ "$app_version" != "$version" ]; then
+            echo "::error::Chart.yaml version=$chart_version appVersion=$app_version, tag is $version — bump the chart in the release commit."
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: helm package
+        run: helm package "$CHART_DIR" --destination dist
+
+      - name: Push to GHCR
+        env:
+          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+        run: |
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
+          helm push "dist/featherbit-gateway-${VERSION}.tgz" "oci://ghcr.io/${OWNER,,}/charts"
+
+      - name: Push to Docker Hub
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          echo "$DOCKER_PASSWORD" | helm registry login registry-1.docker.io -u "$DOCKER_USERNAME" --password-stdin
+          helm push "dist/featherbit-gateway-${VERSION}.tgz" "oci://registry-1.docker.io/${DOCKER_USERNAME}"
+
+      # Same release the SBOMs attach to (docker.yml); created if missing.
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/featherbit-gateway-*.tgz

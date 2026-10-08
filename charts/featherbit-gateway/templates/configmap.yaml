@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "featherbit-gateway.configMapName" . }}
+  labels:
+    {{- include "featherbit-gateway.labels" . | nindent 4 }}
+data:
+  system.yaml: |
+    {{- include "featherbit-gateway.systemConfig" . | nindent 4 }}
+  # In etcd mode this file only seeds an empty prefix on first boot.
+  gateway.yaml: |
+    {{- include "featherbit-gateway.gatewayConfig" . | nindent 4 }}

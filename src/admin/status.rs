@@ -283,3 +283,25 @@ tls:
         assert_eq!(readyz_status(file_tls).await.0, StatusCode::OK);
     }
 }
+
+#[cfg(test)]
+mod chart_version_tests {
+    /// The Helm chart is versioned in lockstep with the crate: Chart.yaml's
+    /// `version` and `appVersion` must equal CARGO_PKG_VERSION, and the
+    /// release chore commit bumps all three (helm.yml refuses to publish a
+    /// chart whose version differs from the tag).
+    #[test]
+    fn helm_chart_version_tracks_the_crate_version() {
+        let chart = include_str!("../../charts/featherbit-gateway/Chart.yaml");
+        let version = env!("CARGO_PKG_VERSION");
+        let has = |line: &str| chart.lines().any(|l| l.trim_end() == line);
+        assert!(
+            has(&format!("version: {version}")),
+            "charts/featherbit-gateway/Chart.yaml `version` must be {version}"
+        );
+        assert!(
+            has(&format!("appVersion: \"{version}\"")),
+            "charts/featherbit-gateway/Chart.yaml `appVersion` must be \"{version}\""
+        );
+    }
+}

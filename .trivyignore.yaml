@@ -1,0 +1,11 @@
+# trivy ignore file, passed explicitly (`--ignorefile` in dev/sast.*,
+# `trivyignores` in .github/workflows/helm.yml).
+misconfigurations:
+  # The chart's ConfigMap carries `password: ${ADMIN_PASSWORD}` — a placeholder
+  # the gateway resolves from the pod environment, where the value comes from
+  # a Secret. No credential is stored in the ConfigMap.
+  - id: KSV-0109
+    paths:
+      - "charts/**"
+      - "featherbit-gateway/**"
+    statement: "ConfigMap values are ${ENV} placeholders; secrets live in the chart's Secret"
