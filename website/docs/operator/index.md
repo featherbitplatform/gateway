@@ -41,7 +41,7 @@ Pick the sink that matches the gateway's `config.source`. A `FeatherbitGateway` 
 
 | | ConfigMap sink | etcd sink |
 |---|---|---|
-| Gateway install | `config.source: file` (default) with `config.gatewayConfigMap: <name>` | `config.source: etcd` with `config.etcd.*` and `config.gateway: {}` |
+| Gateway install | `config.source: file` (default) with `config.gatewayConfigMap: <name>` | `config.source: etcd` with `config.etcd.*` and the empty seed `config.gatewayRaw: "routes: []"` (`config.gateway: {}` does not work: Helm merges it with the chart defaults) |
 | `FeatherbitGateway` | `spec.sink.configMap.name` | `spec.sink.etcd` (`endpoints`, `prefix`, `timeoutMs`, `credentialsSecretRef`) |
 | What the operator writes | key `gateway.yaml` of a ConfigMap in the gateway's namespace, by server-side apply | one JSON document per object under `<prefix>/<kind>/<name>`, using the gateway's own reconcile code |
 | How the gateway picks it up | kubelet refreshes the projected volume (up to about a minute), then the file watcher hot-reloads | every replica re-reads the prefix every 2 s |

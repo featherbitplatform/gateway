@@ -159,10 +159,10 @@ helm install edge oci://ghcr.io/featherbitplatform/charts/featherbit-gateway \
   --set replicaCount=2 \
   --set config.source=etcd \
   --set 'config.etcd.endpoints={http://etcd.gateway-system.svc:2379}' \
-  --set-json 'config.gateway={}'
+  --set-string config.gatewayRaw='routes: []'
 ```
 
-`config.gateway: {}` matters: the gateway seeds an empty prefix from its local `gateway.yaml` on first boot, and the chart's default seed would add demo routes that the first reconcile then has to replace. The chart does not run etcd; point `endpoints` at yours.
+The empty seed matters: the gateway seeds an empty prefix from its local `gateway.yaml` on first boot, and the chart's default seed would add demo routes that the first reconcile then has to replace. Values-file form: `config: { gatewayRaw: "routes: []" }`. `config.gateway: {}` does not work because Helm merges it with the chart defaults. The chart does not run etcd; point `endpoints` at yours.
 
 Then bind with the etcd sink, using the same endpoints and prefix as the gateway:
 
