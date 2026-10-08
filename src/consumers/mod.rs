@@ -30,7 +30,7 @@ use crate::context::Context;
 ///       key-auth: { key: "s3cret" }
 ///       basic-auth: { username: alice, password: pw }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ConsumerConfig {
     /// Unique consumer name (the identity attached to matching requests).
     pub name: String,

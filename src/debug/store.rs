@@ -223,6 +223,11 @@ impl DebugState {
     pub fn len(&self) -> usize {
         self.traces.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
+
+    /// True when no traces are held.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,8 @@ metadata:
 data:
   system.yaml: |
     {{- include "featherbit-gateway.systemConfig" . | nindent 4 }}
+  {{- if not .Values.config.gatewayConfigMap }}
   # In etcd mode this file only seeds an empty prefix on first boot.
   gateway.yaml: |
     {{- include "featherbit-gateway.gatewayConfig" . | nindent 4 }}
+  {{- end }}

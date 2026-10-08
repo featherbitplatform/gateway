@@ -183,6 +183,8 @@ extraEnv:
 
 Changing `system.yaml` rolls the pods (it is not hot-reloaded). Changing `gateway.yaml` or a script hot-reloads in place once the kubelet refreshes the mount, within about a minute.
 
+To hand `gateway.yaml` to an external owner, set `config.gatewayConfigMap` to the name of a ConfigMap (in the release namespace, key `gateway.yaml`): the chart then renders only `system.yaml` and projects that ConfigMap into `/etc/gateway`, optional so the pod starts before it exists. This is how the [featherbit operator](https://github.com/featherbitplatform/gateway-operator) feeds configuration to a chart-installed gateway. In etcd mode the file only seeds an empty prefix on first boot, so the operator writes the etcd prefix directly instead. For an operator-managed etcd gateway set `config.gateway: {}` so a pod booting against an empty prefix seeds nothing instead of the demo routes.
+
 ### Secrets
 
 Admin credentials live in a chart-managed Secret (an empty `admin.password` is generated once and kept across upgrades) or in `admin.existingSecret` with keys `username` and `password`. MCP tokens and etcd credentials follow the same pattern (`mcp.existingSecret`, `config.etcd.existingSecret`). Health probes use `/healthz` and `/readyz`, which sit behind Basic Auth: the chart sends the header when it knows the password and falls back to a TCP check otherwise (`probes.authHeader` forces HTTP probes with an existing Secret; `probes.http: false` keeps TCP probes so the credentials never appear in the pod template).

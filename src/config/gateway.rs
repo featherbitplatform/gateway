@@ -3,6 +3,7 @@
 //! hot-reloadable half of the configuration and is also mutated at runtime
 //! by the Admin API.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -23,7 +24,7 @@ use std::collections::HashMap;
 ///     edges:
 ///       - { from: in.out, to: up.in }
 /// ```
-#[derive(Debug, Default, Deserialize, Serialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone, JsonSchema)]
 pub struct GatewayConfig {
     /// Routes evaluated in declaration order; the first match wins.
     #[serde(default)]
@@ -52,7 +53,7 @@ pub struct GatewayConfig {
 }
 
 /// Binds a request match rule to a named policy.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, JsonSchema)]
 pub struct RouteConfig {
     /// Unique route name, used in logs, metrics labels, and the Admin API.
     pub name: String,
@@ -67,7 +68,7 @@ pub struct RouteConfig {
 ///
 /// All specified criteria must match (logical AND); every field defaults to
 /// unset/empty, which matches any request.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, JsonSchema)]
 pub struct MatchRule {
     /// Path pattern to match (e.g. `/api/*`); `None` matches any path.
     #[serde(default)]
@@ -123,7 +124,7 @@ impl MatchRule {
 ///
 /// Compiled into a `CompiledGraph` at load/reload time; execution starts at
 /// the `listener` node and follows each node's `success`/`error` ports.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, JsonSchema)]
 pub struct PolicyConfig {
     /// Unique policy name, referenced by [`RouteConfig::policy`].
     pub name: String,
@@ -139,7 +140,7 @@ pub struct PolicyConfig {
 }
 
 /// One plugin node in a policy graph.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, JsonSchema)]
 pub struct NodeConfig {
     /// Unique node id within the policy, referenced by edges as `id.port`.
     pub id: String,
@@ -163,7 +164,7 @@ pub struct NodeConfig {
 }
 
 /// 2D canvas coordinates of a node in the Web UI graph editor.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, JsonSchema)]
 pub struct Position {
     pub x: f64,
     pub y: f64,
@@ -173,7 +174,7 @@ pub struct Position {
 ///
 /// Ports: `out`, `success`, `error` on the source side; `in` on the target
 /// side (e.g. `from: auth.success`, `to: upstream.in`).
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, JsonSchema)]
 pub struct EdgeConfig {
     /// Source endpoint, `node_id.port`.
     pub from: String,
@@ -190,7 +191,7 @@ pub struct EdgeConfig {
 /// Instances appear in policies as nodes of `type: supernode` with
 /// `config: { name: <this name> }` and are inlined at compile time —
 /// stored configuration always keeps the compact reference form.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, JsonSchema)]
 pub struct SupernodeConfig {
     /// Unique supernode name, referenced from policy nodes' `config.name`.
     pub name: String,
@@ -212,7 +213,7 @@ pub struct SupernodeConfig {
 /// A named, shared plugin configuration, referenced by plugin nodes of the
 /// matching type via [`NodeConfig::config_ref`]. Editing a shared config
 /// re-resolves and recompiles every referencing policy atomically.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, JsonSchema)]
 pub struct PluginConfigDef {
     /// Unique name, referenced by `config_ref`.
     pub name: String,
@@ -233,7 +234,7 @@ pub struct PluginConfigDef {
 /// support `${ENV_VAR:-default}` placeholders, resolved only when the client
 /// is built — the stored config (and everything the Admin API serves) keeps
 /// the raw placeholder.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, JsonSchema)]
 pub struct StoreConfig {
     /// Unique name, referenced by plugin config (`store: <name>`).
     pub name: String,
@@ -291,7 +292,7 @@ fn default_store_connect_budget_ms() -> u64 {
 }
 
 /// TLS options for a `rediss://` store.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, JsonSchema)]
 pub struct StoreTlsConfig {
     /// PEM CA bundle for a private CA.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -435,5 +436,49 @@ stores:
         assert!(out.contains("redis://localhost"), "{out}");
         assert!(!out.contains("description"), "{out}");
         assert!(!out.contains("topology"), "{out}");
+    }
+
+    /// The operator generates CRD schemas from these types; serde attributes
+    /// must carry over and opaque plugin config must stay free-form.
+    #[test]
+    fn config_types_generate_json_schemas() {
+        let policy = serde_json::to_value(schemars::schema_for!(PolicyConfig)).unwrap();
+        assert!(policy["properties"]["nodes"].is_object());
+        assert!(policy["properties"]["error_handler"].is_object());
+
+        let node = serde_json::to_value(schemars::schema_for!(NodeConfig)).unwrap();
+        assert!(
+            node["properties"]["type"].is_object(),
+            "serde rename honored: {node}"
+        );
+        assert!(node["properties"]["node_type"].is_null());
+        let required = node["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "id") && required.iter().any(|v| v == "type"));
+        // Opaque plugin config: an object whose values are unconstrained.
+        let config = &node["properties"]["config"];
+        assert_eq!(config["type"], "object");
+        assert_ne!(config["additionalProperties"], false, "{config}");
+
+        let plugin_config = serde_json::to_value(schemars::schema_for!(PluginConfigDef)).unwrap();
+        let config = &plugin_config["properties"]["config"];
+        assert_eq!(config["type"], "object");
+        assert_ne!(config["additionalProperties"], false, "{config}");
+
+        let route = serde_json::to_value(schemars::schema_for!(RouteConfig)).unwrap();
+        assert!(route["properties"]["match"].is_object(), "{route}");
+
+        let consumer =
+            serde_json::to_value(schemars::schema_for!(crate::consumers::ConsumerConfig)).unwrap();
+        assert_eq!(consumer["properties"]["credentials"]["type"], "object");
+
+        // Every top-level kind the operator exposes as a CRD.
+        for schema in [
+            serde_json::to_value(schemars::schema_for!(SupernodeConfig)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(PluginConfigDef)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(StoreConfig)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(GatewayConfig)).unwrap(),
+        ] {
+            assert_eq!(schema["type"], "object", "{schema}");
+        }
     }
 }

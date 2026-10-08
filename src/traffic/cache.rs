@@ -115,6 +115,12 @@ impl LocalResponseCache {
         self.entries.len()
     }
 
+    /// True when no entries are held.
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Makes room for one more entry.
     ///
     /// Expired entries go first, since they are already worthless. If that is
