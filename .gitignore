@@ -46,3 +46,6 @@ sast-out/
 # Benchmark suite run output (bench/README.md)
 bench/results/
 __pycache__/
+
+# Git worktrees for isolated feature work (superpowers:using-git-worktrees)
+.worktrees/
