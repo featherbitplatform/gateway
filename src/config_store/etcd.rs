@@ -212,37 +212,63 @@ impl EtcdConfigStore {
         format!("{}/stores/{}", self.prefix, name)
     }
 
-    /// Writes every resource in `gw` to etcd (used to seed an empty prefix).
-    async fn write_all(&self, gw: &GatewayConfig) -> Result<(), String> {
+    /// The key/value pairs `gw` maps to under this store's prefix: one JSON
+    /// document per resource, under `routes/`, `policies/`, `consumers/`,
+    /// `supernodes/`, `plugin_configs/` and `stores/`. The write-side mirror
+    /// of [`gateway_from_kvs`].
+    fn desired_kvs(&self, gw: &GatewayConfig) -> Vec<(String, Vec<u8>)> {
+        let mut kvs = Vec::new();
         for r in &gw.routes {
-            self.put(&self.route_key(&r.name), &serde_json::to_vec(r).unwrap())
-                .await?;
+            kvs.push((self.route_key(&r.name), serde_json::to_vec(r).unwrap()));
         }
         for p in &gw.policies {
-            self.put(&self.policy_key(&p.name), &serde_json::to_vec(p).unwrap())
-                .await?;
+            kvs.push((self.policy_key(&p.name), serde_json::to_vec(p).unwrap()));
         }
         for c in &gw.consumers {
-            self.put(&self.consumer_key(&c.name), &serde_json::to_vec(c).unwrap())
-                .await?;
+            kvs.push((self.consumer_key(&c.name), serde_json::to_vec(c).unwrap()));
         }
         for s in &gw.supernodes {
-            self.put(
-                &self.supernode_key(&s.name),
-                &serde_json::to_vec(s).unwrap(),
-            )
-            .await?;
+            kvs.push((self.supernode_key(&s.name), serde_json::to_vec(s).unwrap()));
         }
         for pc in &gw.plugin_configs {
-            self.put(
-                &self.plugin_config_key(&pc.name),
-                &serde_json::to_vec(pc).unwrap(),
-            )
-            .await?;
+            kvs.push((
+                self.plugin_config_key(&pc.name),
+                serde_json::to_vec(pc).unwrap(),
+            ));
         }
         for s in &gw.stores {
-            self.put(&self.store_key(&s.name), &serde_json::to_vec(s).unwrap())
-                .await?;
+            kvs.push((self.store_key(&s.name), serde_json::to_vec(s).unwrap()));
+        }
+        kvs
+    }
+
+    /// Puts every resource of `gw` (no deletes). Used by the first-boot seeder.
+    async fn write_all(&self, gw: &GatewayConfig) -> Result<(), String> {
+        for (key, value) in self.desired_kvs(gw) {
+            self.put(&key, &value).await?;
+        }
+        Ok(())
+    }
+
+    /// Makes the prefix hold exactly `desired`: puts every desired key, then
+    /// deletes the keys under the prefix that `desired` no longer contains.
+    /// Not transactional — a reader polling mid-way sees a superset or a
+    /// subset, which the gateway's apply either accepts or rejects as a
+    /// whole and retries on its next poll.
+    async fn reconcile(&self, desired: &GatewayConfig) -> Result<(), String> {
+        let current: std::collections::HashSet<String> = self
+            .range_prefix()
+            .await?
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        let mut kept = std::collections::HashSet::new();
+        for (key, value) in self.desired_kvs(desired) {
+            self.put(&key, &value).await?;
+            kept.insert(key);
+        }
+        for stale in current.difference(&kept) {
+            self.delete(stale).await?;
         }
         Ok(())
     }
@@ -258,55 +284,26 @@ impl ConfigStore for EtcdConfigStore {
     async fn commit(&self, state: &SharedState, candidate: GatewayConfig) -> Result<(), String> {
         // 1. Reject invalid config before touching etcd (synchronous 400).
         state.validate_gateway(&candidate)?;
-
-        // 2. Reconcile etcd to match the candidate: put all desired keys, then
-        //    delete any keys under the prefix that the candidate dropped.
-        let current: std::collections::HashSet<String> = self
-            .range_prefix()
-            .await?
-            .into_iter()
-            .map(|(k, _)| k)
-            .collect();
-        let mut desired = std::collections::HashSet::new();
-
-        for r in &candidate.routes {
-            let key = self.route_key(&r.name);
-            self.put(&key, &serde_json::to_vec(r).unwrap()).await?;
-            desired.insert(key);
-        }
-        for p in &candidate.policies {
-            let key = self.policy_key(&p.name);
-            self.put(&key, &serde_json::to_vec(p).unwrap()).await?;
-            desired.insert(key);
-        }
-        for c in &candidate.consumers {
-            let key = self.consumer_key(&c.name);
-            self.put(&key, &serde_json::to_vec(c).unwrap()).await?;
-            desired.insert(key);
-        }
-        for s in &candidate.supernodes {
-            let key = self.supernode_key(&s.name);
-            self.put(&key, &serde_json::to_vec(s).unwrap()).await?;
-            desired.insert(key);
-        }
-        for pc in &candidate.plugin_configs {
-            let key = self.plugin_config_key(&pc.name);
-            self.put(&key, &serde_json::to_vec(pc).unwrap()).await?;
-            desired.insert(key);
-        }
-        for s in &candidate.stores {
-            let key = self.store_key(&s.name);
-            self.put(&key, &serde_json::to_vec(s).unwrap()).await?;
-            desired.insert(key);
-        }
-        for stale in current.difference(&desired) {
-            self.delete(stale).await?;
-        }
-
+        // 2. Reconcile etcd to match the candidate.
+        self.reconcile(&candidate).await?;
         // 3. Apply locally so the writing node reflects the change immediately;
         //    other nodes converge on their next poll. Idempotent with the poll.
         state.apply_gateway(candidate).await
     }
+}
+
+/// Makes the etcd prefix described by `cfg` hold exactly `desired`, with no
+/// gateway runtime involved. The Kubernetes operator's etcd sink calls this so
+/// the key layout and write sequence stay the gateway's own code. The caller
+/// is responsible for validating `desired` first
+/// ([`crate::state::validate_gateway_config`]); every gateway polling the
+/// prefix re-validates on apply and keeps its last-good config on failure.
+pub async fn reconcile_prefix(cfg: &EtcdConfig, desired: &GatewayConfig) -> Result<(), String> {
+    let store = EtcdConfigStore::new(cfg);
+    if store.auth.is_some() {
+        store.authenticate().await?;
+    }
+    store.reconcile(desired).await
 }
 
 /// Assembles a [`GatewayConfig`] from the etcd key/value pairs under `prefix`.
@@ -643,5 +640,80 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("bad store 'bad'"), "{err}");
+    }
+
+    fn store_at(prefix: &str) -> EtcdConfigStore {
+        let cfg: EtcdConfig = serde_yaml::from_str(&format!(
+            "endpoints: ['http://127.0.0.1:2379']\nprefix: {prefix}\n"
+        ))
+        .unwrap();
+        EtcdConfigStore::new(&cfg)
+    }
+
+    fn sample_config() -> GatewayConfig {
+        serde_yaml::from_str(
+            r#"
+routes:
+  - { name: r1, match: { path: /a }, policy: p1 }
+policies:
+  - name: p1
+    nodes: [{ id: listener, type: listener }, { id: client, type: client }]
+    edges: [{ from: listener.out, to: client.in }]
+consumers:
+  - { name: c1, credentials: { key-auth: { key: k } } }
+supernodes:
+  - { name: s1, nodes: [{ id: input, type: input }, { id: output, type: output }], edges: [{ from: input.out, to: output.in }] }
+plugin_configs:
+  - { name: pc1, type: cors, config: { allow_origins: "*" } }
+stores:
+  - { name: st1, type: redis, url: "redis://r:6379" }
+"#,
+        )
+        .unwrap()
+    }
+
+    /// desired_kvs is the write side of gateway_from_kvs: one JSON document
+    /// per resource under the six key families, and reading them back yields
+    /// the same config.
+    #[test]
+    fn desired_kvs_round_trips_through_gateway_from_kvs() {
+        let store = store_at("/featherbit");
+        let gw = sample_config();
+        let kvs = store.desired_kvs(&gw);
+        let keys: Vec<&str> = kvs.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "/featherbit/routes/r1",
+                "/featherbit/policies/p1",
+                "/featherbit/consumers/c1",
+                "/featherbit/supernodes/s1",
+                "/featherbit/plugin_configs/pc1",
+                "/featherbit/stores/st1",
+            ]
+        );
+        let back = gateway_from_kvs("/featherbit", kvs).unwrap();
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            serde_json::to_value(&gw).unwrap()
+        );
+    }
+
+    /// An empty desired config produces no keys, so reconcile deletes every
+    /// current key: the operator uses this to empty a gateway's prefix.
+    #[test]
+    fn desired_kvs_of_empty_config_is_empty() {
+        let store = store_at("/featherbit/");
+        let empty: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        assert!(store.desired_kvs(&empty).is_empty());
+    }
+
+    /// The prefix's trailing slash is normalized by `new`, so keys never
+    /// double up a separator.
+    #[test]
+    fn desired_kvs_normalizes_prefix() {
+        let store = store_at("/fb/");
+        let kvs = store.desired_kvs(&sample_config());
+        assert_eq!(kvs[0].0, "/fb/routes/r1");
     }
 }

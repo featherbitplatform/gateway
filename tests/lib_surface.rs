@@ -75,3 +75,17 @@ fn port_spec_is_the_node_type_catalog() {
     assert!(port_spec("listener").is_some());
     assert!(port_spec("no-such-node-type").is_none());
 }
+
+/// `reconcile_prefix` is the operator's etcd sink; it must stay callable
+/// without a `SharedState`. An unreachable endpoint is the cheapest way to
+/// prove the signature from outside the crate.
+#[tokio::test]
+async fn reconcile_prefix_is_callable_without_runtime_state() {
+    let cfg: featherbit::config::EtcdConfig =
+        serde_yaml::from_str("endpoints: ['http://127.0.0.1:1']\ntimeout_ms: 100\n").unwrap();
+    let gw: GatewayConfig = serde_yaml::from_str(MINIMAL).unwrap();
+    let err = featherbit::config_store::etcd::reconcile_prefix(&cfg, &gw)
+        .await
+        .unwrap_err();
+    assert!(!err.is_empty());
+}
