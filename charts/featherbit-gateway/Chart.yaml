@@ -4,8 +4,8 @@ description: featherbit — a single-binary API gateway with node-graph routing 
 type: application
 # version and appVersion track the gateway version in Cargo.toml and are bumped
 # in the same chore(release) commit; src/admin/status.rs has a test for it.
-version: 0.15.0
-appVersion: "0.15.0"
+version: 0.16.0
+appVersion: "0.16.0"
 kubeVersion: ">=1.25.0-0"
 home: https://featherbitplatform.github.io/gateway/
 icon: https://raw.githubusercontent.com/featherbitplatform/gateway/main/banner.png

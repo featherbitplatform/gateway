@@ -138,6 +138,17 @@ spec:
             sources:
               - configMap:
                   name: {{ include "featherbit-gateway.configMapName" . }}
+              {{- if .Values.config.gatewayConfigMap }}
+              # gateway.yaml managed outside the chart (e.g. by the operator).
+              # Optional so the pod starts before the ConfigMap exists; the
+              # gateway hot-reloads the file once it appears.
+              - configMap:
+                  name: {{ .Values.config.gatewayConfigMap }}
+                  optional: true
+                  items:
+                    - key: gateway.yaml
+                      path: gateway.yaml
+              {{- end }}
               {{- if .Values.config.scripts }}
               - configMap:
                   name: {{ include "featherbit-gateway.scriptsConfigMapName" . }}

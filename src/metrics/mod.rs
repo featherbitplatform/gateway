@@ -65,6 +65,12 @@ pub struct GatewayMetrics {
     pub session_store_errors: IntCounterVec,
 }
 
+impl Default for GatewayMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GatewayMetrics {
     /// Creates a fresh registry with all gateway collectors registered.
     ///

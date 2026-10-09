@@ -96,6 +96,7 @@ impl StoreRegistry {
         prev: &StoreRegistry,
         stores: &[StoreConfig],
         metrics: Option<Arc<crate::metrics::GatewayMetrics>>,
+        offline: bool,
     ) -> Result<StoreRegistry, String> {
         let mut clients = HashMap::new();
         let mut counters: HashMap<String, Arc<dyn CounterStore>> = HashMap::new();
@@ -104,7 +105,7 @@ impl StoreRegistry {
             let fingerprint = redis_store::RedisStoreClient::fingerprint_of(cfg);
             let client = match prev.clients.get(&cfg.name) {
                 Some(existing) if existing.fingerprint() == fingerprint => existing.clone(),
-                _ => Arc::new(redis_store::RedisStoreClient::build(cfg)?),
+                _ => Arc::new(redis_store::RedisStoreClient::build_in(cfg, offline)?),
             };
             counters.insert(
                 cfg.name.clone(),
@@ -136,6 +137,7 @@ impl StoreRegistry {
         _prev: &StoreRegistry,
         stores: &[StoreConfig],
         _metrics: Option<Arc<crate::metrics::GatewayMetrics>>,
+        _offline: bool,
     ) -> Result<StoreRegistry, String> {
         if stores.is_empty() {
             Ok(StoreRegistry::default())

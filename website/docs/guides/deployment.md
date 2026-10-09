@@ -103,9 +103,9 @@ Note that the UI must be built (`ui/dist/`) before the image, since `cargo build
 The chart `featherbit-gateway` is published as an OCI artifact on every release, to GHCR and to Docker Hub (same chart, pick either). Its version equals the gateway version it installs.
 
 ```bash
-helm install featherbit oci://ghcr.io/featherbitplatform/charts/featherbit-gateway --version 0.15.0
+helm install featherbit oci://ghcr.io/featherbitplatform/charts/featherbit-gateway --version 0.16.0
 # or
-helm install featherbit oci://registry-1.docker.io/featherbit/featherbit-gateway --version 0.15.0
+helm install featherbit oci://registry-1.docker.io/featherbit/featherbit-gateway --version 0.16.0
 ```
 
 A bare install runs one replica with a `/hello` mock route and an `/api/*` route to `${UPSTREAM_HOST}`, the admin API and UI on an internal Service, and a generated admin password:
@@ -182,6 +182,8 @@ extraEnv:
 ```
 
 Changing `system.yaml` rolls the pods (it is not hot-reloaded). Changing `gateway.yaml` or a script hot-reloads in place once the kubelet refreshes the mount, within about a minute.
+
+To hand `gateway.yaml` to an external owner, set `config.gatewayConfigMap` to the name of a ConfigMap (in the release namespace, key `gateway.yaml`): the chart then renders only `system.yaml` and projects that ConfigMap into `/etc/gateway`, optional so the pod starts before it exists. This is how the [featherbit operator](../operator/index.md) (source: [`gateway-operator`](https://github.com/featherbitplatform/gateway-operator)) feeds configuration to a chart-installed gateway; see [Operator → Getting started](../operator/getting-started.md). In etcd mode the file only seeds an empty prefix on first boot, so the operator writes the etcd prefix directly instead. For an operator-managed etcd gateway set the empty seed `--set-string config.gatewayRaw='routes: []'` (values-file form: `config: { gatewayRaw: "routes: []" }`) so a pod booting against an empty prefix seeds nothing instead of the demo routes. `config.gateway: {}` does not work because Helm merges it with the chart defaults.
 
 ### Secrets
 

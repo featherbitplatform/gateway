@@ -42,6 +42,17 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Operator',
+      items: [
+        'operator/index',
+        'operator/getting-started',
+        'operator/crds',
+        'operator/conditions',
+        'operator/releases',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Reference',
       items: [
         {

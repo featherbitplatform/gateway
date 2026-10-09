@@ -133,7 +133,7 @@ impl GoogleCloudLoggingPlugin {
         config: &HashMap<String, Value>,
         resources: &Arc<PluginResources>,
     ) -> Result<Self, String> {
-        let auth = resolve_auth(config)?;
+        let auth = resolve_auth(config, resources.offline)?;
 
         let ssl_verify = config
             .get("ssl_verify")
@@ -199,7 +199,7 @@ impl GoogleCloudLoggingPlugin {
 /// Resolves the service-account credentials from `auth_config` (inline) or
 /// `auth_file` (path to a JSON file). `client_email`, `private_key`, and
 /// `project_id` are required.
-fn resolve_auth(config: &HashMap<String, Value>) -> Result<AuthConfig, String> {
+fn resolve_auth(config: &HashMap<String, Value>, offline: bool) -> Result<AuthConfig, String> {
     let obj: serde_json::Map<String, Value> = match config.get("auth_config") {
         Some(Value::Object(m)) => m.clone(),
         _ => {
@@ -207,6 +207,19 @@ fn resolve_auth(config: &HashMap<String, Value>) -> Result<AuthConfig, String> {
                 .get("auth_file")
                 .and_then(|v| v.as_str())
                 .ok_or("google-cloud-logging: `auth_config` or `auth_file` is required")?;
+            if offline {
+                // Validation outside the gateway pod: the file is not there.
+                if path.is_empty() {
+                    return Err("google-cloud-logging: `auth_file` must not be empty".to_string());
+                }
+                return Ok(AuthConfig {
+                    client_email: "offline@invalid".to_string(),
+                    private_key: String::new(),
+                    project_id: "offline".to_string(),
+                    token_uri: DEFAULT_TOKEN_URI.to_string(),
+                    scopes: DEFAULT_SCOPES.iter().map(|s| s.to_string()).collect(),
+                });
+            }
             let content = std::fs::read_to_string(path).map_err(|e| {
                 format!("google-cloud-logging: failed to read auth_file `{path}`: {e}")
             })?;
@@ -550,7 +563,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
     #[tokio::test]
     async fn from_config_ok_and_defaults() {
         let c = cfg(&[("auth_config", auth_config_value())]);
-        let auth = resolve_auth(&c).unwrap();
+        let auth = resolve_auth(&c, false).unwrap();
         assert_eq!(auth.token_uri, DEFAULT_TOKEN_URI);
         assert_eq!(auth.scopes, DEFAULT_SCOPES);
         assert!(GoogleCloudLoggingPlugin::from_config(&c, &PluginResources::empty()).is_ok());

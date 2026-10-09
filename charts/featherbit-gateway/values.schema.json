@@ -86,6 +86,7 @@
         "system": { "type": "object" },
         "gateway": { "type": "object" },
         "gatewayRaw": { "type": "string" },
+        "gatewayConfigMap": { "type": "string", "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$", "maxLength": 253 },
         "etcd": {
           "type": "object",
           "properties": {
