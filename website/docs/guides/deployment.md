@@ -103,9 +103,9 @@ Note that the UI must be built (`ui/dist/`) before the image, since `cargo build
 The chart `featherbit-gateway` is published as an OCI artifact on every release, to GHCR and to Docker Hub (same chart, pick either). Its version equals the gateway version it installs.
 
 ```bash
-helm install featherbit oci://ghcr.io/featherbitplatform/charts/featherbit-gateway --version 0.15.0
+helm install featherbit oci://ghcr.io/featherbitplatform/charts/featherbit-gateway --version 0.16.0
 # or
-helm install featherbit oci://registry-1.docker.io/featherbit/featherbit-gateway --version 0.15.0
+helm install featherbit oci://registry-1.docker.io/featherbit/featherbit-gateway --version 0.16.0
 ```
 
 A bare install runs one replica with a `/hello` mock route and an `/api/*` route to `${UPSTREAM_HOST}`, the admin API and UI on an internal Service, and a generated admin password:
