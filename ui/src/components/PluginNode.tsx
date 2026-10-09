@@ -1,6 +1,6 @@
 /**
  * Custom ReactFlow node for the policy editor. Renders a gateway plugin node
- * with a per-type colored header and the in/success/error connection handles
+ * with a tinted per-type icon chip and the in/success/error connection handles
  * that realize the gateway's success/error port routing model.
  *
  * @module components/PluginNode
@@ -52,25 +52,34 @@ export interface PluginNodeData {
   [key: string]: unknown;
 }
 
-/** Stroke/handle color for each port kind. */
+/**
+ * Handle color for each output port kind. Success and error carry the
+ * routing semantics; deliberate outcome ports (denied, redirect, limited,
+ * true/false, ...) stay neutral so the canvas keeps one accent hue.
+ */
 const PORT_COLOR: Record<PortDecl['kind'], string> = {
   success: 'var(--success)',
-  outcome: 'var(--accent)',
+  outcome: 'var(--text-muted)',
   error: 'var(--error)',
 };
 
+/** Input handles use the selection violet. */
+const INPUT_COLOR = 'var(--accent-border)';
+
 /**
- * Builds the inline style for a connection handle dot.
+ * Builds the inline style for a connection handle dot: a 9px port ringed in
+ * the canvas color so it reads as cut out of the card edge. No glow.
  *
- * @param color - Handle color (accent for input, success/error for outputs).
- * @returns Style with a matching soft glow.
+ * @param color - Handle color (accent for input, success/error/neutral for outputs).
  */
 const handleStyle = (color: string): React.CSSProperties => ({
   background: color,
-  width: 11,
-  height: 11,
-  border: '2px solid var(--surface-sunken)',
-  boxShadow: `0 0 6px ${color}`,
+  width: 9,
+  height: 9,
+  minWidth: 9,
+  minHeight: 9,
+  border: '2px solid var(--bg-canvas)',
+  boxSizing: 'content-box',
 });
 
 /** One port row: relative so its Handle anchors to the row, not the node. */
@@ -145,39 +154,62 @@ export function PluginNode({ id, data, selected }: NodeProps) {
       style={{
         minWidth: 'var(--node-min-w)',
         background: 'var(--surface-raised)',
-        border: `2px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        border: `1px solid ${selected ? 'var(--accent-border)' : 'var(--border)'}`,
         borderRadius: 'var(--radius-md)',
         boxShadow: selected
-          ? '0 0 0 3px var(--accent-soft), var(--shadow-md)'
+          ? '0 0 0 3px var(--accent-soft), var(--shadow-md), var(--shadow-inset)'
           : isExpanded
-            ? 'var(--shadow-md)'
-            : 'var(--shadow-sm)',
+            ? 'var(--shadow-md), var(--shadow-inset)'
+            : 'var(--shadow-sm), var(--shadow-inset)',
         transition:
-          'border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out)',
+          'border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease',
       }}
     >
-      {/* Header — per-type color bar */}
-      <div
-        className="flex items-center"
-        style={{
-          gap: 7,
-          padding: '6px 10px',
-          background: meta.color,
-          borderRadius: '6px 6px 0 0',
-          color: '#fff',
-        }}
-      >
-        <Icon size={13} strokeWidth={2} style={{ opacity: 0.95, flexShrink: 0 }} />
+      {/* Header: tinted icon chip in the plugin's identity color, type name,
+          and the node id beneath it. The plugin color never fills the card. */}
+      <div className="flex items-center" style={{ gap: 9, padding: '9px 10px 8px' }}>
         <span
+          aria-hidden
+          className="flex items-center justify-center"
           style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: 'var(--text-xs)',
-            fontWeight: 'var(--weight-semibold)' as never,
-            letterSpacing: 'var(--tracking-tight)',
+            width: 22,
+            height: 22,
+            flexShrink: 0,
+            borderRadius: 'var(--radius-sm)',
+            background: `color-mix(in oklch, ${meta.color} 16%, transparent)`,
+            color: meta.color,
           }}
         >
-          {nodeData.pluginType}
+          <Icon size={13} strokeWidth={1.75} />
         </span>
+        <div className="flex flex-col" style={{ minWidth: 0, gap: 1 }}>
+          <span
+            style={{
+              fontFamily: 'var(--font-sans)',
+              fontSize: 'var(--text-sm)',
+              fontWeight: 'var(--weight-medium)' as never,
+              letterSpacing: 'var(--tracking-tight)',
+              lineHeight: 1.25,
+              color: 'var(--text-primary)',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {nodeData.pluginType}
+          </span>
+          <span
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: 11,
+              lineHeight: 1.3,
+              color: 'var(--text-muted)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {nodeData.label}
+          </span>
+        </div>
         {isSupernode && (
           <button
             onClick={(e) => {
@@ -186,24 +218,23 @@ export function PluginNode({ id, data, selected }: NodeProps) {
             }}
             aria-label={nodeData.expanded ? 'Collapse supernode preview' : 'Expand supernode preview'}
             title={nodeData.expanded ? 'Fold preview' : 'Preview contents'}
-            className="flex items-center justify-center"
-            style={{ marginLeft: 'auto', width: 18, height: 18, color: '#fff', opacity: 0.9, background: 'transparent' }}
+            className="rg-press rg-hover flex items-center justify-center"
+            style={
+              {
+                marginLeft: 'auto',
+                width: 22,
+                height: 22,
+                flexShrink: 0,
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid transparent',
+                '--rg-fg': 'var(--text-muted)',
+                '--rg-hover-fg': 'var(--text-primary)',
+              } as React.CSSProperties
+            }
           >
-            {nodeData.expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            {nodeData.expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
         )}
-      </div>
-
-      {/* Body */}
-      <div
-        style={{
-          padding: '8px 10px',
-          fontFamily: 'var(--font-mono)',
-          fontSize: 'var(--text-xs)',
-          color: 'var(--text-secondary)',
-        }}
-      >
-        {nodeData.label}
       </div>
 
       {nodeData.configRef && (
@@ -211,7 +242,7 @@ export function PluginNode({ id, data, selected }: NodeProps) {
           className="flex items-center"
           style={{
             gap: 4,
-            padding: '0 10px 8px',
+            padding: '0 10px 8px 41px',
             fontFamily: 'var(--font-mono)',
             fontSize: 'var(--text-2xs)',
             color: 'var(--text-muted)',
@@ -229,7 +260,7 @@ export function PluginNode({ id, data, selected }: NodeProps) {
           and body grow. With names hidden, handles keep the previous
           evenly-spaced absolute placement. */}
       {showNames ? (
-        <div style={{ borderTop: '1px solid var(--border)', padding: '4px 0' }}>
+        <div style={{ borderTop: '1px solid var(--border-subtle)', padding: '4px 0' }}>
           {!isEntry && (
             <div style={portRowStyle('left')}>
               <Handle
@@ -237,7 +268,7 @@ export function PluginNode({ id, data, selected }: NodeProps) {
                 position={Position.Left}
                 id="in"
                 title={nodeData.ports?.input ?? undefined}
-                style={{ ...handleStyle('var(--accent)'), top: '50%' }}
+                style={{ ...handleStyle(INPUT_COLOR), top: '50%' }}
               />
               in
             </div>
@@ -263,7 +294,7 @@ export function PluginNode({ id, data, selected }: NodeProps) {
               position={Position.Left}
               id="in"
               title={nodeData.ports?.input ?? undefined}
-              style={handleStyle('var(--accent)')}
+              style={handleStyle(INPUT_COLOR)}
             />
           )}
           {outputs.map((p, i) => (
@@ -295,8 +326,8 @@ export function PluginNode({ id, data, selected }: NodeProps) {
           style={{
             width: 480,
             height: 320,
-            borderTop: '1px solid var(--border)',
-            borderRadius: '0 0 6px 6px',
+            borderTop: '1px solid var(--border-subtle)',
+            borderRadius: '0 0 7px 7px',
             overflow: 'hidden',
             background: 'var(--bg-canvas)',
           }}

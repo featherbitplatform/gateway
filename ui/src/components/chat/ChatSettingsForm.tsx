@@ -121,7 +121,7 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
             style={{
               background: 'transparent',
               border: 'none',
-              color: draft.baseUrl.trim() === '' ? 'var(--text-muted)' : 'var(--accent)',
+              color: draft.baseUrl.trim() === '' ? 'var(--text-muted)' : 'var(--accent-fg)',
               fontSize: 'var(--text-2xs)',
               padding: 0,
             }}
@@ -266,7 +266,7 @@ export function ChatSettingsForm({ settings, connection, onSave, onForget, onDon
       <div style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }} data-testid="chat-connection">{connectionLabel(connection)}</div>
       <div className="flex justify-between">
         <DialogButton
-          variant="danger"
+          variant="danger-quiet"
           onClick={() => {
             setDraft((d) => ({ ...d, apiKey: '', mcpToken: '' }));
             onForget();

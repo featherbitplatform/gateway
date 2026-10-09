@@ -68,7 +68,7 @@ describe('policyToEdges', () => {
   });
   test('colors a declared outcome-port edge with the accent stroke, not animated', () => {
     const edges = policyToEdges(policy(), SPECS);
-    expect(edges[1].style?.stroke).toBe('var(--accent)');
+    expect(edges[1].style?.stroke).toBe('var(--text-muted)');
     expect(edges[1].animated).toBe(false);
   });
   test('error-port edges animate with the error stroke', () => {
@@ -168,7 +168,7 @@ describe('policyToNodes/policyToEdges with supernode instances', () => {
   test('styles a named instance port as an outcome edge', () => {
     const edges = policyToEdges(snPolicy, {}, [gateDef]);
     const denied = edges.find((e) => e.sourceHandle === 'denied')!;
-    expect(denied.style?.stroke).toBe('var(--accent)');
+    expect(denied.style?.stroke).toBe('var(--text-muted)');
     expect(denied.animated).toBe(false);
   });
 

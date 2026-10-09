@@ -57,7 +57,7 @@ export function CommandPalette({ open, onClose, ctx }: CommandPaletteProps) {
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0,0,0,0.45)',
+        background: 'var(--scrim)',
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'flex-start',
@@ -70,12 +70,12 @@ export function CommandPalette({ open, onClose, ctx }: CommandPaletteProps) {
         aria-label="Command palette"
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: 460,
+          width: 480,
           maxWidth: '90vw',
-          background: 'var(--surface-raised)',
+          background: 'var(--surface-overlay)',
           border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-md)',
-          boxShadow: 'var(--shadow-md)',
+          borderRadius: 'var(--radius-lg)',
+          boxShadow: 'var(--shadow-xl), var(--shadow-inset)',
           overflow: 'hidden',
         }}
       >
@@ -105,9 +105,9 @@ export function CommandPalette({ open, onClose, ctx }: CommandPaletteProps) {
           }}
           style={{
             width: '100%',
-            padding: '10px 12px',
+            padding: '12px 14px',
             border: 'none',
-            borderBottom: '1px solid var(--border)',
+            borderBottom: '1px solid var(--border-subtle)',
             background: 'transparent',
             color: 'var(--text-primary)',
             fontFamily: 'var(--font-sans)',
@@ -115,7 +115,7 @@ export function CommandPalette({ open, onClose, ctx }: CommandPaletteProps) {
             outline: 'none',
           }}
         />
-        <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+        <div style={{ maxHeight: 320, overflowY: 'auto', padding: 4 }}>
           {matches.length === 0 && (
             <div style={{ padding: '10px 12px', color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>
               No matching command
@@ -128,9 +128,10 @@ export function CommandPalette({ open, onClose, ctx }: CommandPaletteProps) {
               onMouseEnter={() => setActive(i)}
               className="flex items-center justify-between cursor-pointer"
               style={{
-                padding: '8px 12px',
-                background: i === active ? 'var(--surface-hover)' : 'transparent',
-                color: 'var(--text-primary)',
+                padding: '7px 10px',
+                borderRadius: 'var(--radius-sm)',
+                background: i === active ? 'var(--surface-active)' : 'transparent',
+                color: i === active ? 'var(--text-primary)' : 'var(--text-secondary)',
                 fontSize: 'var(--text-sm)',
               }}
             >
@@ -141,8 +142,9 @@ export function CommandPalette({ open, onClose, ctx }: CommandPaletteProps) {
                     fontFamily: 'var(--font-mono)',
                     fontSize: 'var(--text-2xs)',
                     color: 'var(--text-muted)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius-sm)',
+                    background: 'var(--surface-sunken)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-xs)',
                     padding: '1px 5px',
                   }}
                 >

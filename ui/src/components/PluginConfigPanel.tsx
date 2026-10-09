@@ -81,16 +81,18 @@ export function PluginConfigPanel({ def, onSave, storeOptions }: PluginConfigPan
       <div style={{ maxWidth: 560, margin: '32px auto', padding: '0 16px' }}>
         <div className="flex items-center" style={{ gap: 10, marginBottom: 4 }}>
           <span
+            aria-hidden
             className="flex items-center justify-center"
             style={{
               width: 30,
               height: 30,
+              flexShrink: 0,
               borderRadius: 'var(--radius-sm)',
-              background: meta.color,
-              color: '#fff',
+              background: `color-mix(in oklch, ${meta.color} 16%, transparent)`,
+              color: meta.color,
             }}
           >
-            <Icon size={15} />
+            <Icon size={15} strokeWidth={1.75} />
           </span>
           <div>
             <h2
@@ -98,6 +100,7 @@ export function PluginConfigPanel({ def, onSave, storeOptions }: PluginConfigPan
                 fontFamily: 'var(--font-mono)',
                 fontSize: 'var(--text-md)',
                 fontWeight: 600,
+                letterSpacing: 'var(--tracking-tight)',
                 color: 'var(--text-primary)',
                 margin: 0,
               }}
@@ -129,15 +132,15 @@ export function PluginConfigPanel({ def, onSave, storeOptions }: PluginConfigPan
           type="text"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          className="w-full"
+          className="rg-field w-full"
           style={{
-            padding: '6px 10px',
+            height: 32,
+            padding: '0 10px',
             marginBottom: 16,
             borderRadius: 'var(--radius-sm)',
             fontSize: 'var(--text-sm)',
-            background: 'var(--surface-input)',
             color: 'var(--text-primary)',
-            border: '1px solid var(--border)',
+            outline: 'none',
           }}
         />
 
@@ -169,16 +172,21 @@ export function PluginConfigPanel({ def, onSave, storeOptions }: PluginConfigPan
                 if (jsonError) setJsonError('');
               }}
               rows={12}
-              className="w-full resize-y"
-              style={{
-                padding: '8px 10px',
-                borderRadius: 'var(--radius-sm)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 'var(--text-xs)',
-                background: 'var(--surface-sunken)',
-                color: 'var(--text-primary)',
-                border: `1px solid ${jsonError ? 'var(--error)' : 'var(--border)'}`,
-              }}
+              className="rg-field w-full resize-y"
+              style={
+                {
+                  padding: '8px 10px',
+                  borderRadius: 'var(--radius-sm)',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 'var(--text-xs)',
+                  color: 'var(--text-primary)',
+                  outline: 'none',
+                  '--rg-bg': 'var(--surface-sunken)',
+                  ...(jsonError
+                    ? { '--rg-bd': 'var(--error)', '--rg-hover-bd': 'var(--error)', '--rg-focus-bd': 'var(--error)', '--rg-focus-ring': 'var(--error-soft)' }
+                    : null),
+                } as React.CSSProperties
+              }
             />
             {jsonError && (
               <p
@@ -197,16 +205,20 @@ export function PluginConfigPanel({ def, onSave, storeOptions }: PluginConfigPan
 
         <button
           onClick={handleSave}
-          className="w-full transition-colors"
-          style={{
-            marginTop: 16,
-            padding: '8px 0',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 'var(--text-sm)',
-            fontWeight: 500,
-            background: 'var(--accent)',
-            color: 'var(--text-on-accent)',
-          }}
+          className="rg-press rg-hover w-full"
+          style={
+            {
+              marginTop: 16,
+              height: 34,
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid transparent',
+              fontSize: 'var(--text-sm)',
+              fontWeight: 500,
+              '--rg-bg': 'var(--accent)',
+              '--rg-fg': 'var(--text-on-accent)',
+              '--rg-hover-bg': 'var(--accent-hover)',
+            } as React.CSSProperties
+          }
         >
           Save Plugin Config
         </button>

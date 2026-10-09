@@ -80,14 +80,13 @@ function resolveTemplateMode(
 }
 
 const inputStyle: React.CSSProperties = {
+  outline: 'none',
   width: '100%',
   padding: '6px 10px',
   borderRadius: 'var(--radius-sm)',
   fontFamily: 'var(--font-mono)',
   fontSize: 'var(--text-sm)',
-  background: 'var(--surface-input)',
   color: 'var(--text-primary)',
-  border: '1px solid var(--border)',
 };
 
 const labelStyle: React.CSSProperties = {
@@ -118,23 +117,21 @@ export function AddButton({ label, onClick }: { label: string; onClick: () => vo
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-center justify-center gap-1 transition-colors"
+      className="rg-press rg-hover w-full flex items-center justify-center gap-1"
       style={{
-        padding: '5px 0',
+        height: 28,
         borderRadius: 'var(--radius-sm)',
         fontSize: 'var(--text-xs)',
         fontWeight: 500,
-        background: 'transparent',
-        color: 'var(--accent-hover)',
-        border: '1px dashed var(--border-strong)',
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = 'var(--accent-ring)';
-        e.currentTarget.style.background = 'var(--accent-soft)';
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = 'var(--border-strong)';
-        e.currentTarget.style.background = 'transparent';
+        borderWidth: 1,
+        borderStyle: 'dashed',
+        ...({
+          '--rg-fg': 'var(--text-secondary)',
+          '--rg-bd': 'var(--border-strong)',
+          '--rg-hover-bg': 'var(--surface-hover)',
+          '--rg-hover-fg': 'var(--text-primary)',
+          '--rg-hover-bd': 'var(--border-strong)',
+        } as React.CSSProperties),
       }}
     >
       <Plus size={12} />
@@ -151,10 +148,16 @@ export function RemoveButton({ onClick, label }: { onClick: () => void; label: s
   return (
     <button
       onClick={onClick}
-      className="flex items-center justify-center shrink-0 rounded transition-colors"
-      style={{ width: 24, height: 24, color: 'var(--text-muted)' }}
-      onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--error)')}
-      onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+      className="rg-press rg-hover flex items-center justify-center shrink-0 rounded"
+      style={{
+        width: 24,
+        height: 24,
+        ...({
+          '--rg-fg': 'var(--text-muted)',
+          '--rg-hover-fg': 'var(--error)',
+          '--rg-hover-bg': 'var(--error-soft)',
+        } as React.CSSProperties),
+      }}
       aria-label={label}
     >
       <X size={13} />
@@ -243,10 +246,10 @@ function Switch({
           width: 30,
           height: 17,
           borderRadius: 'var(--radius-pill)',
-          background: checked ? 'var(--accent)' : 'var(--surface-input)',
-          border: '1px solid var(--border)',
+          background: checked ? 'var(--accent)' : 'var(--border-strong)',
+          border: `1px solid ${checked ? 'var(--accent)' : 'var(--border)'}`,
           position: 'relative',
-          transition: 'background var(--dur-base) var(--ease-out)',
+          transition: 'background-color var(--dur-base) ease, border-color var(--dur-base) ease',
           flexShrink: 0,
         }}
       >
@@ -254,12 +257,14 @@ function Switch({
           style={{
             position: 'absolute',
             top: 1,
-            left: checked ? 14 : 1,
+            left: 1,
             width: 13,
             height: 13,
             borderRadius: '50%',
-            background: '#fff',
-            transition: 'left var(--dur-base) var(--ease-out)',
+            background: 'var(--white)',
+            boxShadow: 'var(--shadow-xs)',
+            transform: checked ? 'translateX(13px)' : 'none',
+            transition: 'transform var(--dur-base) var(--ease-out)',
           }}
         />
       </span>
@@ -356,6 +361,7 @@ export function SchemaForm({
             value={(current as string) ?? (field.default as string) ?? ''}
             placeholder={field.placeholder}
             onChange={(e) => set(field.key, e.target.value)}
+            className="rg-field"
             style={inputStyle}
           />
         );
@@ -395,7 +401,7 @@ export function SchemaForm({
             placeholder={field.placeholder}
             rows={field.rows ?? 4}
             onChange={(e) => set(field.key, e.target.value)}
-            className="resize-y"
+            className="rg-field resize-y"
             style={{ ...inputStyle, fontSize: 'var(--text-xs)' }}
           />
         );
@@ -419,6 +425,7 @@ export function SchemaForm({
           <select
             value={(current as string) ?? (field.default as string) ?? ''}
             onChange={(e) => set(field.key, e.target.value)}
+            className="rg-field"
             style={{ ...inputStyle, appearance: 'auto' }}
             aria-label={field.label}
           >
@@ -483,6 +490,7 @@ export function SchemaForm({
                       next[i] = e.target.value;
                       set(field.key, next);
                     }}
+                    className="rg-field"
                     style={inputStyle}
                   />
                 )}
@@ -574,6 +582,7 @@ export function SchemaForm({
                               );
                               set(field.key, next);
                             }}
+                            className="rg-field"
                             style={inputStyle}
                           />
                         )}
@@ -663,7 +672,7 @@ export function SchemaForm({
                     style={{
                       fontFamily: 'var(--font-mono)',
                       fontSize: 'var(--text-2xs)',
-                      color: 'var(--accent-hover)',
+                      color: 'var(--accent-fg)',
                       background: 'var(--accent-soft)',
                       border: '1px solid var(--accent-ring)',
                       borderRadius: 'var(--radius-pill)',
@@ -674,10 +683,12 @@ export function SchemaForm({
                   </span>
                   <button
                     onClick={() => onChange(applyEdit(value, inh, field.key, undefined))}
-                    className="flex items-center justify-center rounded transition-colors"
-                    style={{ width: 18, height: 18, color: 'var(--text-muted)' }}
-                    onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent-hover)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+                    className="rg-hover flex items-center justify-center rounded"
+                    style={{
+                      width: 18,
+                      height: 18,
+                      ...({ '--rg-fg': 'var(--text-muted)', '--rg-hover-fg': 'var(--accent-fg)' } as React.CSSProperties),
+                    }}
                     aria-label={`Reset ${field.label} to inherited`}
                     title={
                       origin === 'override' ? 'Reset to inherited value' : 'Remove local value'

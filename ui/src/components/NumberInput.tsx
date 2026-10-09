@@ -47,10 +47,20 @@ export function NumberInput({ value, onChange, placeholder, style, 'aria-label':
       onBlur={() => {
         if (draft !== null && parseNumberField(draft).ok) setDraft(null);
       }}
+      className="rg-field"
       style={{
         ...style,
         fontFamily: typeof value === 'string' || (draft ?? '').includes('${') ? 'var(--font-mono)' : style?.fontFamily,
-        ...(invalid ? { borderColor: 'var(--error)', boxShadow: '0 0 0 1px var(--error)' } : {}),
+        // Invalid text recolors the rg-field border and focus ring (CSS vars,
+        // so hover/focus states still apply) instead of an inline border.
+        ...(invalid
+          ? ({
+              '--rg-bd': 'var(--error)',
+              '--rg-hover-bd': 'var(--error)',
+              '--rg-focus-bd': 'var(--error)',
+              '--rg-focus-ring': 'var(--error-soft)',
+            } as CSSProperties)
+          : {}),
       }}
     />
   );

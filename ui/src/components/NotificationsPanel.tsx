@@ -91,7 +91,7 @@ export function NotificationsPanel({ open, onClose, entries, onClear, focusId = 
           fontWeight: 'var(--weight-medium)' as never,
           background: active ? 'var(--accent-soft, var(--surface-input))' : 'transparent',
           color: active ? 'var(--text-primary)' : 'var(--text-muted)',
-          border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+          border: `1px solid ${active ? 'var(--accent-border)' : 'var(--border)'}`,
         }}
       >
         {label}
@@ -149,10 +149,10 @@ export function NotificationsPanel({ open, onClose, entries, onClear, focusId = 
               <div
                 key={entry.id}
                 style={{
-                  border: '1px solid var(--border)',
-                  borderLeft: `2px solid ${color}`,
-                  borderRadius: 'var(--radius-sm)',
-                  background: 'var(--surface-input)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-md)',
+                  background: 'var(--surface-raised)',
+                  boxShadow: 'var(--shadow-inset)',
                 }}
               >
                 <button
