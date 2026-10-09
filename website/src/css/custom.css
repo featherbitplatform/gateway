@@ -1,38 +1,104 @@
 /**
- * featherbit design system applied to Docusaurus/Infima.
- * Tokens mirror ui/src/index.css: electric violet accent on cool ink
- * neutrals, IBM Plex Sans/Mono, 4/6/8px radii. Dark is the default theme.
+ * featherbit design system v2 "Graphite" applied to Docusaurus/Infima.
+ * Tokens mirror ui/src/index.css and the design system token layer:
+ * near-neutral graphite (oklch hue 286), the violet feather as the only
+ * hue in the chrome, Geist + Geist Mono (self-hosted), radii 6 / 8 / 12,
+ * hue-tinted shadows. Dark is the default theme.
+ *
+ * Contrast (WCAG 2.x): dark body 16.7:1, secondary 9.1:1, muted 5.8:1;
+ * light body 16.7:1, secondary 8.0:1, muted 5.4:1; violet links 8.9:1
+ * (dark, violet-300) and 5.3:1 (light, violet-600).
  */
 
-@import '@fontsource/ibm-plex-sans/400.css';
-@import '@fontsource/ibm-plex-sans/500.css';
-@import '@fontsource/ibm-plex-sans/600.css';
-@import '@fontsource/ibm-plex-sans/700.css';
-@import '@fontsource/ibm-plex-mono/400.css';
-@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
 
 :root {
-  /* Brand — Electric Violet */
-  --fb-violet-300: #b794ff;
-  --fb-violet-400: #9b5cff;
+  /* ---- Brand: Electric Violet (hue 293) ----
+     500 is the feather mark itself. Fills use 600 (white text passes
+     AA); 300/400 carry violet text and rings on dark surfaces. */
+  --fb-violet-50: #f5f2ff;
+  --fb-violet-100: #e9e1ff;
+  --fb-violet-200: #d6c8ff;
+  --fb-violet-300: #bea8ff;
+  --fb-violet-400: #a584ff;
   --fb-violet-500: #863bff;
-  --fb-violet-600: #7e14ff;
-  --fb-violet-700: #6a10d6;
-  --fb-violet-800: #530ca6;
+  --fb-violet-600: #7c49e3;
+  --fb-violet-700: #6738c1;
+  --fb-violet-800: #4f2998;
 
-  /* Neutral — Ink */
-  --fb-ink-950: #080b14;
-  --fb-ink-900: #0d1320;
-  --fb-ink-850: #121a2b;
-  --fb-ink-800: #182235;
-  --fb-ink-750: #1f2b41;
-  --fb-ink-700: #283449;
-  --fb-ink-600: #36435c;
-  --fb-ink-400: #64748b;
-  --fb-ink-300: #94a3b8;
-  --fb-ink-50: #f1f5f9;
+  /* ---- Neutral: Graphite ---- */
+  --fb-ink-950: #0b0b0e;
+  --fb-ink-900: #101013;
+  --fb-ink-850: #151518;
+  --fb-ink-800: #19191c;
+  --fb-ink-750: #1f1f22;
+  --fb-ink-700: #262629;
+  --fb-ink-600: #313135;
+  --fb-ink-500: #54545c;
+  --fb-ink-400: #919199;
+  --fb-ink-300: #b6b6bf;
+  --fb-ink-50: #f5f5f7;
 
-  /* Light theme (Infima default mode) */
+  /* ---- Status ---- */
+  --fb-green-500: #2bbb71;
+  --fb-green-600: #00884b;
+  --fb-red-500: #ed4a49;
+  --fb-red-600: #c52b30;
+  --fb-amber-500: #f2a635;
+  --fb-amber-600: #be7100;
+  --fb-cyan-400: #59c5f5;
+  --fb-cyan-600: #1479b0;
+
+  /* ---- Plugin palette: one lightness + chroma, hue varies ---- */
+  --fb-plugin-l: 0.56;
+  --fb-plugin-c: 0.13;
+  --fb-plugin-listener: oklch(var(--fb-plugin-l) var(--fb-plugin-c) 293);
+  --fb-plugin-proxy: oklch(var(--fb-plugin-l) var(--fb-plugin-c) 250);
+  --fb-plugin-upstream: oklch(var(--fb-plugin-l) var(--fb-plugin-c) 70);
+  --fb-plugin-client: oklch(var(--fb-plugin-l) var(--fb-plugin-c) 155);
+
+  /* ---- Semantic (light) ---- */
+  --fb-bg: #fdfdfe;
+  --fb-bg-canvas: #f3f3f6;
+  --fb-surface: #f5f5f8;
+  --fb-surface-raised: #ffffff;
+  --fb-surface-hover: rgba(28, 28, 34, 0.04);
+  --fb-surface-active: rgba(124, 73, 227, 0.08);
+  --fb-border: #dadadf;
+  --fb-border-subtle: #e7e7ea;
+  --fb-border-strong: #bdbdc3;
+  --fb-text: #1c1c22;
+  --fb-text-secondary: #4f4f56;
+  --fb-text-muted: #686870;
+  --fb-accent-fg: var(--fb-violet-600);
+  --fb-accent-fill: var(--fb-violet-600);
+  --fb-accent-fill-hover: var(--fb-violet-700);
+  --fb-accent-soft: rgba(124, 73, 227, 0.09);
+  --fb-accent-ring: rgba(124, 73, 227, 0.30);
+  --fb-focus-ring: var(--fb-violet-600);
+  --fb-success: var(--fb-green-600);
+  --fb-error: var(--fb-red-600);
+  --fb-warning: var(--fb-amber-600);
+  --fb-info: var(--fb-cyan-600);
+  --fb-success-soft: rgba(0, 136, 75, 0.07);
+  --fb-error-soft: rgba(197, 43, 48, 0.06);
+  --fb-warning-soft: rgba(190, 113, 0, 0.08);
+  --fb-info-soft: rgba(20, 121, 176, 0.07);
+  --fb-neutral-soft: rgba(28, 28, 34, 0.035);
+  --fb-code-bg: #f5f5f8;
+  --fb-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  --fb-shadow-sm: 0 1px 2px rgba(40, 36, 64, 0.07), 0 2px 6px rgba(40, 36, 64, 0.05);
+  --fb-shadow-md: 0 4px 12px rgba(40, 36, 64, 0.08), 0 1px 3px rgba(40, 36, 64, 0.06);
+  --fb-shadow-lg: 0 12px 32px rgba(40, 36, 64, 0.12), 0 2px 6px rgba(40, 36, 64, 0.06);
+  --fb-glow-mark: none;
+
+  /* ---- Motion (Emil Kowalski curves) ---- */
+  --fb-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --fb-dur-press: 120ms;
+  --fb-dur-fast: 140ms;
+
+  /* ---- Infima (light) ---- */
   --ifm-color-primary: var(--fb-violet-600);
   --ifm-color-primary-dark: var(--fb-violet-700);
   --ifm-color-primary-darker: var(--fb-violet-700);
@@ -41,116 +107,435 @@
   --ifm-color-primary-lighter: var(--fb-violet-400);
   --ifm-color-primary-lightest: var(--fb-violet-300);
 
-  --ifm-background-color: #ffffff;
-  --ifm-background-surface-color: #f7f8fb;
-  --ifm-font-color-base: #14182a;
-  --ifm-color-content-secondary: #545b70;
-  --ifm-toc-border-color: #dfe3ec;
-  --ifm-hr-border-color: #dfe3ec;
+  --ifm-background-color: var(--fb-bg);
+  --ifm-background-surface-color: var(--fb-surface);
+  --ifm-font-color-base: var(--fb-text);
+  --ifm-heading-color: var(--fb-text);
+  --ifm-color-content: var(--fb-text);
+  --ifm-color-content-secondary: var(--fb-text-secondary);
+  --ifm-toc-border-color: var(--fb-border-subtle);
+  --ifm-hr-border-color: var(--fb-border-subtle);
+  --ifm-color-emphasis-200: var(--fb-border-subtle);
+  --ifm-color-emphasis-300: var(--fb-border);
+  --ifm-link-color: var(--fb-accent-fg);
+  --ifm-link-hover-color: var(--fb-text);
+  --ifm-link-hover-decoration: none;
 
-  --ifm-font-family-base: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --ifm-font-family-monospace: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-  --ifm-code-font-size: 90%;
+  --ifm-font-family-base: 'Geist Variable', 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --ifm-font-family-monospace: 'Geist Mono Variable', 'Geist Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+  --ifm-heading-font-weight: 600;
+  --ifm-font-weight-bold: 600;
+  --ifm-line-height-base: 1.65;
+  --ifm-code-font-size: 88%;
+
   --ifm-global-radius: 8px;
   --ifm-button-border-radius: 6px;
   --ifm-code-border-radius: 4px;
+  --ifm-alert-border-radius: 8px;
+  --ifm-card-border-radius: 8px;
+  --ifm-pagination-nav-border-radius: 8px;
 
-  --ifm-navbar-background-color: #ffffff;
-  --ifm-footer-background-color: #f7f8fb;
-  --ifm-footer-color: #545b70;
+  --ifm-global-shadow-lw: var(--fb-shadow-sm);
+  --ifm-global-shadow-md: var(--fb-shadow-md);
+  --ifm-global-shadow-tl: var(--fb-shadow-lg);
 
-  --docusaurus-highlighted-code-line-bg: rgba(134, 59, 255, 0.1);
+  --ifm-transition-fast: var(--fb-dur-fast);
+  --ifm-transition-slow: 240ms;
+  --ifm-transition-timing-default: var(--fb-ease-out);
+
+  --ifm-navbar-background-color: var(--fb-bg);
+  --ifm-navbar-shadow: none;
+  --ifm-navbar-link-color: var(--fb-text-secondary);
+  --ifm-navbar-link-hover-color: var(--fb-text);
+  --ifm-footer-background-color: var(--fb-bg-canvas);
+  --ifm-footer-color: var(--fb-text-secondary);
+  --ifm-footer-link-color: var(--fb-text-secondary);
+  --ifm-footer-title-color: var(--fb-text);
+
+  --ifm-menu-color: var(--fb-text-secondary);
+  --ifm-menu-color-active: var(--fb-accent-fg);
+  --ifm-menu-color-background-active: var(--fb-surface-active);
+  --ifm-menu-color-background-hover: var(--fb-surface-hover);
+
+  --ifm-table-border-color: var(--fb-border-subtle);
+  --ifm-table-stripe-background: var(--fb-neutral-soft);
+  --ifm-table-head-background: transparent;
+
+  --ifm-code-background: var(--fb-code-bg);
+  --ifm-pre-background: var(--fb-code-bg);
+
+  --ifm-dropdown-background-color: var(--fb-surface-raised);
+
+  --docusaurus-highlighted-code-line-bg: var(--fb-accent-soft);
 }
 
 [data-theme='dark'] {
-  --ifm-color-primary: var(--fb-violet-500);
-  --ifm-color-primary-dark: var(--fb-violet-600);
-  --ifm-color-primary-darker: var(--fb-violet-600);
-  --ifm-color-primary-darkest: var(--fb-violet-700);
-  --ifm-color-primary-light: var(--fb-violet-400);
-  --ifm-color-primary-lighter: var(--fb-violet-400);
-  --ifm-color-primary-lightest: var(--fb-violet-300);
+  /* Plugin palette lifts for dark surfaces */
+  --fb-plugin-l: 0.75;
+  --fb-plugin-c: 0.12;
 
-  --ifm-background-color: var(--fb-ink-900);
-  --ifm-background-surface-color: var(--fb-ink-850);
-  --ifm-font-color-base: var(--fb-ink-50);
-  --ifm-color-content-secondary: var(--fb-ink-300);
-  --ifm-toc-border-color: var(--fb-ink-700);
-  --ifm-hr-border-color: var(--fb-ink-700);
+  /* ---- Semantic (dark) ---- */
+  --fb-bg: var(--fb-ink-900);
+  --fb-bg-canvas: var(--fb-ink-950);
+  --fb-surface: var(--fb-ink-850);
+  --fb-surface-raised: var(--fb-ink-750);
+  --fb-surface-hover: rgba(255, 255, 255, 0.045);
+  --fb-surface-active: rgba(165, 132, 255, 0.14);
+  --fb-border: var(--fb-ink-600);
+  --fb-border-subtle: var(--fb-ink-700);
+  --fb-border-strong: var(--fb-ink-500);
+  --fb-text: var(--fb-ink-50);
+  --fb-text-secondary: var(--fb-ink-300);
+  --fb-text-muted: var(--fb-ink-400);
+  --fb-accent-fg: var(--fb-violet-300);
+  --fb-accent-fill: var(--fb-violet-600);
+  --fb-accent-fill-hover: #8656ee;
+  --fb-accent-soft: rgba(165, 132, 255, 0.14);
+  --fb-accent-ring: rgba(165, 132, 255, 0.40);
+  --fb-focus-ring: var(--fb-violet-400);
+  --fb-success: var(--fb-green-500);
+  --fb-error: var(--fb-red-500);
+  --fb-warning: var(--fb-amber-500);
+  --fb-info: var(--fb-cyan-400);
+  --fb-success-soft: rgba(43, 187, 113, 0.09);
+  --fb-error-soft: rgba(237, 74, 73, 0.09);
+  --fb-warning-soft: rgba(242, 166, 53, 0.09);
+  --fb-info-soft: rgba(89, 197, 245, 0.08);
+  --fb-neutral-soft: rgba(255, 255, 255, 0.03);
+  --fb-code-bg: var(--fb-ink-850);
+  --fb-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --fb-shadow-sm: 0 1px 2px rgba(6, 6, 12, 0.45), 0 2px 6px rgba(6, 6, 12, 0.25);
+  --fb-shadow-md: 0 4px 12px rgba(6, 6, 12, 0.45), 0 1px 3px rgba(6, 6, 12, 0.35);
+  --fb-shadow-lg: 0 12px 32px rgba(6, 6, 12, 0.55), 0 2px 6px rgba(6, 6, 12, 0.35);
+  --fb-glow-mark: drop-shadow(0 0 24px rgba(134, 59, 255, 0.35));
 
-  --ifm-navbar-background-color: var(--fb-ink-900);
-  --ifm-footer-background-color: var(--fb-ink-950);
-  --ifm-footer-color: var(--fb-ink-300);
+  /* ---- Infima (dark): links and active states carry violet-300;
+     filled buttons stay on violet-600 (see .button--primary). ---- */
+  --ifm-color-primary: var(--fb-violet-300);
+  --ifm-color-primary-dark: var(--fb-violet-400);
+  --ifm-color-primary-darker: var(--fb-violet-400);
+  --ifm-color-primary-darkest: var(--fb-violet-600);
+  --ifm-color-primary-light: var(--fb-violet-200);
+  --ifm-color-primary-lighter: var(--fb-violet-100);
+  --ifm-color-primary-lightest: var(--fb-violet-50);
 
-  --ifm-code-background: var(--fb-ink-850);
-  --ifm-pre-background: var(--fb-ink-850);
+  --ifm-background-color: var(--fb-bg);
+  --ifm-background-surface-color: var(--fb-surface);
+  --ifm-font-color-base: var(--fb-text);
+  --ifm-heading-color: var(--fb-text);
+  --ifm-color-content: var(--fb-text);
+  --ifm-color-content-secondary: var(--fb-text-secondary);
+  --ifm-toc-border-color: var(--fb-border-subtle);
+  --ifm-hr-border-color: var(--fb-border-subtle);
+  --ifm-color-emphasis-200: var(--fb-border-subtle);
+  --ifm-color-emphasis-300: var(--fb-border);
+  --ifm-link-color: var(--fb-accent-fg);
+  --ifm-link-hover-color: var(--fb-text);
 
-  --docusaurus-highlighted-code-line-bg: rgba(134, 59, 255, 0.14);
+  --ifm-navbar-background-color: var(--fb-bg);
+  --ifm-navbar-link-color: var(--fb-text-secondary);
+  --ifm-navbar-link-hover-color: var(--fb-text);
+  --ifm-footer-background-color: var(--fb-bg-canvas);
+  --ifm-footer-color: var(--fb-text-secondary);
+  --ifm-footer-link-color: var(--fb-text-secondary);
+  --ifm-footer-title-color: var(--fb-text);
+
+  --ifm-menu-color: var(--fb-text-secondary);
+  --ifm-menu-color-active: var(--fb-accent-fg);
+  --ifm-menu-color-background-active: var(--fb-surface-active);
+  --ifm-menu-color-background-hover: var(--fb-surface-hover);
+
+  --ifm-table-border-color: var(--fb-border-subtle);
+  --ifm-table-stripe-background: var(--fb-neutral-soft);
+
+  --ifm-code-background: var(--fb-code-bg);
+  --ifm-pre-background: var(--fb-code-bg);
+
+  --ifm-dropdown-background-color: var(--fb-surface-raised);
+
+  --docusaurus-highlighted-code-line-bg: var(--fb-accent-soft);
 }
 
 /* ---- Type & prose ------------------------------------------------------ */
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--fb-accent-ring);
+}
 
 article {
   text-wrap: pretty;
 }
 
 h1, h2, h3, h4 {
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+h1 {
+  letter-spacing: -0.025em;
+}
+
+code {
+  font-feature-settings: 'zero' 1;
+  border: 1px solid var(--fb-border-subtle);
+  vertical-align: baseline;
+}
+
+a code {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--fb-focus-ring);
+  outline-offset: 2px;
+}
+
+/* ---- Buttons: filled violet-600 in both themes (white text AA) ---------- */
+
+.button {
+  font-weight: 500;
+  transition:
+    transform var(--fb-dur-press) var(--fb-ease-out),
+    background-color var(--fb-dur-fast) ease,
+    border-color var(--fb-dur-fast) ease,
+    color var(--fb-dur-fast) ease;
+}
+
+.button:active {
+  transform: scale(0.97);
+}
+
+.button--primary {
+  --ifm-button-background-color: var(--fb-accent-fill);
+  --ifm-button-border-color: var(--fb-accent-fill);
+  --ifm-button-color: #ffffff;
+}
+
+.button--primary:hover {
+  --ifm-button-background-color: var(--fb-accent-fill-hover);
+  --ifm-button-border-color: var(--fb-accent-fill-hover);
+  color: #ffffff;
+}
+
+.button--secondary.button--outline {
+  --ifm-button-border-color: var(--fb-border);
+  --ifm-button-color: var(--fb-text);
+  --ifm-button-background-color: transparent;
+}
+
+.button--secondary.button--outline:hover {
+  --ifm-button-background-color: var(--fb-surface-hover);
+  --ifm-button-border-color: var(--fb-border-strong);
+  color: var(--fb-text);
 }
 
 /* ---- Navbar ------------------------------------------------------------ */
 
 .navbar {
-  border-bottom: 1px solid var(--ifm-toc-border-color);
+  border-bottom: 1px solid var(--fb-border-subtle);
   box-shadow: none;
 }
 
 .navbar__title {
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.011em;
 }
 
-/* ---- Admonitions: flat tinted surface + 1px border, no left-bar trope -- */
+.navbar__link--active {
+  color: var(--fb-text);
+}
 
-.theme-admonition {
-  border: 1px solid var(--ifm-toc-border-color);
-  border-left-width: 1px;
+.navbar__logo img {
+  filter: var(--fb-glow-mark);
+}
+
+.dropdown__menu {
+  border: 1px solid var(--fb-border-subtle);
+  border-radius: 12px;
+  box-shadow: var(--fb-shadow-lg), var(--fb-shadow-inset);
+  padding: 0.375rem;
+}
+
+.dropdown__link {
+  border-radius: 6px;
+  color: var(--fb-text-secondary);
+}
+
+.navbar-sidebar {
+  background-color: var(--fb-bg);
+}
+
+/* ---- Search (docusaurus-search-local) ---------------------------------- */
+
+.navbar__search-input {
+  background-color: var(--fb-surface);
+  border: 1px solid var(--fb-border-subtle);
+  border-radius: 6px;
+  color: var(--fb-text);
+}
+
+.navbar__search-input::placeholder {
+  color: var(--fb-text-muted);
+}
+
+/* ---- Admonitions: soft status tint + 1px tinted border, no stripe ------ */
+
+.theme-admonition.alert {
+  --ifm-alert-border-width: 1px;
+  --ifm-alert-border-left-width: 1px;
+  --ifm-alert-foreground-color: var(--fb-text);
+  border-style: solid;
   border-radius: 8px;
   box-shadow: none;
 }
 
-/* ---- Sidebar ----------------------------------------------------------- */
+.theme-admonition.alert--secondary {
+  --ifm-alert-background-color: var(--fb-neutral-soft);
+  --ifm-alert-border-color: var(--fb-border);
+}
+
+.theme-admonition.alert--info {
+  --ifm-alert-background-color: var(--fb-info-soft);
+  --ifm-alert-border-color: color-mix(in oklab, var(--fb-info) 35%, transparent);
+}
+
+.theme-admonition.alert--success {
+  --ifm-alert-background-color: var(--fb-success-soft);
+  --ifm-alert-border-color: color-mix(in oklab, var(--fb-success) 35%, transparent);
+}
+
+.theme-admonition.alert--warning {
+  --ifm-alert-background-color: var(--fb-warning-soft);
+  --ifm-alert-border-color: color-mix(in oklab, var(--fb-warning) 40%, transparent);
+}
+
+.theme-admonition.alert--danger {
+  --ifm-alert-background-color: var(--fb-error-soft);
+  --ifm-alert-border-color: color-mix(in oklab, var(--fb-error) 35%, transparent);
+}
+
+.theme-admonition.alert--secondary svg { fill: var(--fb-text-secondary); }
+.theme-admonition.alert--info svg { fill: var(--fb-info); }
+.theme-admonition.alert--success svg { fill: var(--fb-success); }
+.theme-admonition.alert--warning svg { fill: var(--fb-warning); }
+.theme-admonition.alert--danger svg { fill: var(--fb-error); }
+
+.theme-admonition.alert a {
+  color: var(--fb-accent-fg);
+  text-decoration: underline;
+  text-decoration-color: var(--fb-accent-ring);
+  text-underline-offset: 2px;
+}
+
+/* ---- Code blocks: graphite surface, hairline border --------------------
+   Prism themes set --prism-background-color inline on the container;
+   !important lets the graphite surface win in both modes. */
+
+.theme-code-block {
+  --prism-background-color: var(--fb-code-bg) !important;
+  border: 1px solid var(--fb-border-subtle);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.theme-code-block code {
+  border: 0;
+}
+
+/* The prism theme also writes an inline background and text-shadow on the
+   <pre>; the graphite surface and crisp glyphs win. */
+.theme-code-block pre.prism-code {
+  background-color: var(--fb-code-bg) !important;
+  text-shadow: none !important;
+}
+
+[class*='codeBlockTitle'] {
+  border-bottom: 1px solid var(--fb-border-subtle) !important;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+  color: var(--fb-text-secondary);
+}
+
+/* ---- Sidebar / TOC ----------------------------------------------------- */
 
 .menu {
   font-size: 0.875rem;
 }
 
+.menu__link {
+  border-radius: 6px;
+}
+
 .menu__link--active:not(.menu__link--sublist) {
-  background: rgba(134, 59, 255, 0.12);
+  font-weight: 500;
+}
+
+.table-of-contents__link {
+  color: var(--fb-text-muted);
+}
+
+.table-of-contents__link--active {
+  color: var(--fb-accent-fg);
 }
 
 /* ---- Tables ------------------------------------------------------------ */
 
 table {
   font-size: 0.875rem;
+  border-collapse: collapse;
+}
+
+table thead tr {
+  border-bottom: 1px solid var(--fb-border);
+}
+
+table th {
+  font-weight: 600;
+  color: var(--fb-text);
 }
 
 table code {
   white-space: nowrap;
 }
 
+/* ---- Pagination / cards ------------------------------------------------ */
+
+.pagination-nav__link {
+  border: 1px solid var(--fb-border-subtle);
+  transition: border-color var(--fb-dur-fast) ease;
+}
+
+.card {
+  border: 1px solid var(--fb-border-subtle);
+  box-shadow: var(--fb-shadow-sm), var(--fb-shadow-inset);
+}
+
 /* ---- Footer ------------------------------------------------------------ */
 
 .footer {
-  border-top: 1px solid var(--ifm-toc-border-color);
+  border-top: 1px solid var(--fb-border-subtle);
   padding: 1.5rem 0;
+}
+
+.footer--dark {
+  --ifm-footer-background-color: var(--fb-bg-canvas);
+  --ifm-footer-color: var(--fb-text-secondary);
 }
 
 .footer__copyright {
   font-size: 0.8125rem;
+  color: var(--fb-text-muted);
 }
 
-/* ---- Plugin color chips (used on plugin reference pages) --------------- */
+/* ---- Plugin color chips (used on plugin reference pages) ---------------
+   Pages pass their legacy hex as --chip-color; relative color syntax
+   re-projects it onto the shared plugin lightness + chroma so every chip
+   matches the v2 palette (falls back to the raw color where unsupported). */
 
 .plugin-chip {
   display: inline-flex;
@@ -159,8 +544,9 @@ table code {
   font-family: var(--ifm-font-family-monospace);
   font-size: 0.8125rem;
   padding: 0.2rem 0.6rem;
-  border: 1px solid var(--ifm-toc-border-color);
+  border: 1px solid var(--fb-border-subtle);
   border-radius: 999px;
+  background: var(--fb-neutral-soft);
 }
 
 .plugin-chip::before {
@@ -169,4 +555,42 @@ table code {
   height: 0.5rem;
   border-radius: 999px;
   background: var(--chip-color, var(--ifm-color-primary));
+  background: oklch(from var(--chip-color, var(--fb-violet-500)) var(--fb-plugin-l) var(--fb-plugin-c) h);
+}
+
+/* ---- Hover only on fine pointers (no sticky hover after a tap) ---------- */
+
+@media (hover: none), (pointer: coarse) {
+  .menu__link:hover,
+  .menu__caret:hover,
+  .dropdown__link:hover,
+  .navbar__link:hover,
+  .table-of-contents__link:hover {
+    background: transparent;
+    color: inherit;
+  }
+
+  .button--primary:hover {
+    --ifm-button-background-color: var(--fb-accent-fill);
+    --ifm-button-border-color: var(--fb-accent-fill);
+  }
+
+  .button--secondary.button--outline:hover {
+    --ifm-button-background-color: transparent;
+    --ifm-button-border-color: var(--fb-border);
+  }
+}
+
+/* ---- Reduced motion: keep fades, drop movement and scaling ------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+  }
+
+  .button:active {
+    transform: none;
+  }
 }
