@@ -1,75 +1,97 @@
 @import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 
 /* ============================================================
-   featherbit · Design tokens
+   featherbit · Design tokens  (design system v2 "Graphite")
    Dark-first. Mirrors the featherbit design system token layer
    (tokens/colors.css · typography.css · spacing.css · base.css).
    Light theme lives under [data-theme="light"].
+
+   Neutrals are a near-neutral graphite (oklch hue 286) so the
+   violet feather is the only hue in the chrome. Contrast on
+   --surface: primary 16.7:1, secondary 9.1:1, muted 5.8:1.
+   Fonts are self-hosted (Geist / Geist Mono variable, OFL-1.1)
+   because the UI is embedded in the binary and must work offline.
    ============================================================ */
 
 :root {
-  /* ---- Brand: Electric Violet ---- */
-  --violet-50:  #f3eeff;
-  --violet-100: #ede6ff;
-  --violet-200: #d6c2ff;
-  --violet-300: #b794ff;
-  --violet-400: #9b5cff;
+  /* ---- Brand: Electric Violet (hue 293) ----
+     500 is the feather mark and is never retuned. UI fills use
+     600 (white text passes AA); 300/400 carry violet text, rings
+     and selection on dark surfaces. */
+  --violet-50:  #f5f2ff;
+  --violet-100: #e9e1ff;
+  --violet-200: #d6c8ff;
+  --violet-300: #bea8ff;
+  --violet-400: #a584ff;
   --violet-500: #863bff;
-  --violet-600: #7e14ff;
-  --violet-700: #6a10d6;
-  --violet-800: #530ca6;
-  --violet-900: #3d0a7a;
+  --violet-600: #7c49e3;
+  --violet-700: #6738c1;
+  --violet-800: #4f2998;
+  --violet-900: #381d6d;
 
-  /* ---- Secondary accent: Signal Cyan ---- */
-  --cyan-300: #7dd3ff;
-  --cyan-400: #47bfff;
-  --cyan-500: #1ea7f0;
-  --cyan-600: #0d86c7;
+  /* ---- Info: Signal Cyan ---- */
+  --cyan-300: #8fd6f7;
+  --cyan-400: #59c5f5;
+  --cyan-500: #2ea4dc;
+  --cyan-600: #1479b0;
 
-  /* ---- Neutral: Ink (cool slate, slight blue undertone) ---- */
-  --ink-950: #080b14;
-  --ink-900: #0d1320;
-  --ink-850: #121a2b;
-  --ink-800: #182235;
-  --ink-750: #1f2b41;
-  --ink-700: #283449;
-  --ink-600: #36435c;
-  --ink-500: #475569;
-  --ink-400: #64748b;
-  --ink-300: #94a3b8;
-  --ink-200: #cbd5e1;
-  --ink-100: #e2e8f0;
-  --ink-50:  #f1f5f9;
+  /* ---- Neutral: Graphite ---- */
+  --ink-950: #0b0b0e;
+  --ink-900: #101013;
+  --ink-850: #151518;
+  --ink-800: #19191c;
+  --ink-750: #1f1f22;
+  --ink-700: #262629;
+  --ink-600: #313135;
+  --ink-500: #54545c;
+  --ink-400: #919199;
+  --ink-300: #b6b6bf;
+  --ink-200: #d0d0d9;
+  --ink-100: #e6e6e8;
+  --ink-50:  #f5f5f7;
   --white:   #ffffff;
 
-  /* ---- Semantic status ---- */
-  --green-500: #22c55e;
-  --red-500:   #ef4444;
-  --amber-500: #f59e0b;
+  /* ---- Status ---- */
+  --green-500: #2bbb71;
+  --green-600: #00884b;
+  --red-500:   #ed4a49;
+  --red-600:   #c52b30;
+  --amber-500: #f2a635;
+  --amber-600: #be7100;
 
-  /* ---- Plugin-type categorical palette ---- */
-  --plugin-listener:  #8b5cf6;
-  --plugin-client:    #10b981;
-  --plugin-proxy:     #3b82f6;
-  --plugin-upstream:  #f59e0b;
-  --plugin-error:     #ef4444;
-  --plugin-cors:      #06b6d4;
-  --plugin-ratelimit: #f97316;
-  --plugin-ip:        #ec4899;
-  --plugin-size:      #84cc16;
-  --plugin-auth:      #14b8a6;
-  --plugin-logging:   #6b7280;
-  --plugin-script:    #a855f7;
+  /* ---- Plugin-type categorical palette ----
+     One lightness and chroma, hue varies. Catalog plugins in
+     pluginMeta.tsx use oklch(var(--plugin-l) var(--plugin-c) <hue>)
+     so they follow the theme too. Shown as a tinted icon chip,
+     never as a filled header. */
+  --plugin-l: 0.75;
+  --plugin-c: 0.12;
+  --plugin-listener:  oklch(var(--plugin-l) var(--plugin-c) 293);
+  --plugin-client:    oklch(var(--plugin-l) var(--plugin-c) 155);
+  --plugin-proxy:     oklch(var(--plugin-l) var(--plugin-c) 250);
+  --plugin-upstream:  oklch(var(--plugin-l) var(--plugin-c) 70);
+  --plugin-error:     oklch(var(--plugin-l) var(--plugin-c) 25);
+  --plugin-cors:      oklch(var(--plugin-l) var(--plugin-c) 210);
+  --plugin-ratelimit: oklch(var(--plugin-l) var(--plugin-c) 50);
+  --plugin-ip:        oklch(var(--plugin-l) var(--plugin-c) 350);
+  --plugin-size:      oklch(var(--plugin-l) var(--plugin-c) 125);
+  --plugin-auth:      oklch(var(--plugin-l) var(--plugin-c) 175);
+  --plugin-logging:   oklch(var(--plugin-l) 0.02 286);
+  --plugin-script:    oklch(var(--plugin-l) var(--plugin-c) 320);
 
   /* ---- Semantic aliases (dark) ---- */
   --bg-canvas:       var(--ink-950);
   --bg-app:          var(--ink-900);
-  --surface:         var(--ink-800);
+  --surface:         var(--ink-850);
   --surface-raised:  var(--ink-750);
-  --surface-sunken:  var(--ink-850);
-  --surface-input:   var(--ink-700);
-  --surface-hover:   rgba(255, 255, 255, 0.04);
-  --surface-active:  rgba(134, 59, 255, 0.12);
+  --surface-sunken:  var(--ink-900);
+  --surface-input:   var(--ink-900);
+  --surface-overlay: var(--ink-750);
+  --surface-hover:   rgba(255, 255, 255, 0.045);
+  --surface-active:  rgba(165, 132, 255, 0.14);
+  --scrim:           rgba(6, 6, 10, 0.64);
 
   --border:          var(--ink-600);
   --border-subtle:   var(--ink-700);
@@ -80,26 +102,36 @@
   --text-muted:      var(--ink-400);
   --text-on-accent:  var(--white);
 
-  --accent:          var(--violet-500);
-  --accent-hover:    var(--violet-400);
-  --accent-press:    var(--violet-600);
-  --accent-soft:     rgba(134, 59, 255, 0.14);
-  --accent-ring:     rgba(134, 59, 255, 0.45);
+  --accent:          var(--violet-600);
+  --accent-hover:    #8656ee;
+  --accent-press:    var(--violet-700);
+  --accent-fg:       var(--violet-300);
+  --accent-soft:     rgba(165, 132, 255, 0.14);
+  --accent-ring:     rgba(165, 132, 255, 0.40);
+  --accent-border:   var(--violet-400);
   --focus-ring:      var(--violet-400);
 
   --success:         var(--green-500);
   --error:           var(--red-500);
   --warning:         var(--amber-500);
   --info:            var(--cyan-400);
+  --success-soft:    rgba(43, 187, 113, 0.14);
+  --error-soft:      rgba(237, 74, 73, 0.14);
+  --warning-soft:    rgba(242, 166, 53, 0.14);
+  --info-soft:       rgba(89, 197, 245, 0.14);
+  --success-solid:   var(--green-600);
+  --error-solid:     var(--red-600);
 
-  --glow-violet:     0 0 24px rgba(134, 59, 255, 0.35);
+  /* Glow is reserved for the brand mark (login screen). Never on
+     buttons, nodes, dots or panel chrome. */
+  --glow-violet:     0 0 40px rgba(134, 59, 255, 0.35);
 
-  /* Canvas dotted grid dot color */
-  --grid-dot:        var(--ink-700);
+  /* Canvas dot-grid dot color */
+  --grid-dot:        rgba(255, 255, 255, 0.075);
 
   /* ---- Type ---- */
-  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-sans: 'Geist Variable', 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
 
   --text-2xs: 10px;
   --text-xs:  12px;
@@ -113,20 +145,28 @@
   --weight-semibold: 600;
   --weight-bold: 700;
 
-  --tracking-tight: -0.01em;
-  --tracking-wider: 0.08em;
+  --tracking-tight: -0.011em;
+  --tracking-wide: 0.02em;
+  --tracking-wider: 0.06em;
 
-  /* ---- Radius / shadow ---- */
+  /* ---- Radius ----
+     controls 6 · cards and nodes 8 · overlays 12 · pill only for
+     switches, badges and ports. */
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
+  --radius-lg: 12px;
   --radius-pill: 999px;
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.30);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.40);
-  --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.50);
-  --shadow-panel: -8px 0 40px rgba(0, 0, 0, 0.45);
+  /* ---- Elevation: tinted to the graphite hue, never pure black,
+     plus a 1px inner top highlight for raised dark surfaces. ---- */
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --shadow-xs: 0 1px 2px rgba(6, 6, 12, 0.40);
+  --shadow-sm: 0 1px 2px rgba(6, 6, 12, 0.45), 0 2px 6px rgba(6, 6, 12, 0.25);
+  --shadow-md: 0 4px 12px rgba(6, 6, 12, 0.45), 0 1px 3px rgba(6, 6, 12, 0.35);
+  --shadow-lg: 0 12px 32px rgba(6, 6, 12, 0.55), 0 2px 6px rgba(6, 6, 12, 0.35);
+  --shadow-xl: 0 24px 64px rgba(6, 6, 12, 0.60), 0 4px 12px rgba(6, 6, 12, 0.35);
+  --shadow-panel: -12px 0 40px rgba(6, 6, 12, 0.50);
 
   /* ---- Fixed layout rails ---- */
   --rail-sidebar: 264px;
@@ -136,47 +176,80 @@
   --grid-gap: 20px;
   --node-min-w: 168px;
 
-  /* ---- Motion ---- */
-  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-  --dur-fast: 120ms;
+  /* ---- Motion ----
+     ease-out for entering and responding, ease-in-out for
+     on-screen movement, drawer curve for panels. Never ease-in.
+     Exits faster than enters. Keyboard actions never animate. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-press: 120ms;
+  --dur-fast: 140ms;
   --dur-base: 180ms;
-  --dur-panel: 240ms;
+  --dur-slow: 240ms;
+  --dur-panel: 280ms;
+  --dur-exit: 140ms;
 }
 
 [data-theme="light"] {
-  --bg-canvas:       #f7f8fb;
-  --bg-app:          #ffffff;
-  --surface:         #ffffff;
+  --bg-canvas:       #f3f3f6;
+  --bg-app:          #fafafb;
+  --surface:         #fdfdfe;
   --surface-raised:  #ffffff;
-  --surface-sunken:  #f3f4f8;
-  --surface-input:   #f1f3f8;
-  --surface-hover:   rgba(15, 19, 32, 0.04);
-  --surface-active:  rgba(134, 59, 255, 0.08);
+  --surface-sunken:  #f5f5f8;
+  --surface-input:   #fdfdfe;
+  --surface-overlay: #ffffff;
+  --surface-hover:   rgba(28, 28, 34, 0.04);
+  --surface-active:  rgba(124, 73, 227, 0.08);
+  --scrim:           rgba(28, 28, 34, 0.32);
 
-  --border:          #dfe3ec;
-  --border-subtle:   #ebeef4;
-  --border-strong:   #c6ccd9;
+  --border:          #dadadf;
+  --border-subtle:   #e7e7ea;
+  --border-strong:   #bdbdc3;
 
-  --text-primary:    #14182a;
-  --text-secondary:  #545b70;
-  --text-muted:      #8a91a6;
+  --text-primary:    #1c1c22;
+  --text-secondary:  #4f4f56;
+  --text-muted:      #686870;
   --text-on-accent:  #ffffff;
 
   --accent:          var(--violet-600);
-  --accent-hover:    var(--violet-500);
-  --accent-press:    var(--violet-700);
-  --accent-soft:     rgba(134, 59, 255, 0.10);
-  --accent-ring:     rgba(134, 59, 255, 0.35);
-  --focus-ring:      var(--violet-500);
+  --accent-hover:    var(--violet-700);
+  --accent-press:    var(--violet-800);
+  --accent-fg:       var(--violet-600);
+  --accent-soft:     rgba(124, 73, 227, 0.09);
+  --accent-ring:     rgba(124, 73, 227, 0.30);
+  --accent-border:   var(--violet-600);
+  --focus-ring:      var(--violet-600);
+
+  --success:         var(--green-600);
+  --error:           var(--red-600);
+  --warning:         var(--amber-600);
+  --info:            var(--cyan-600);
+  --success-soft:    rgba(0, 136, 75, 0.09);
+  --error-soft:      rgba(197, 43, 48, 0.08);
+  --warning-soft:    rgba(190, 113, 0, 0.10);
+  --info-soft:       rgba(20, 121, 176, 0.09);
+
+  --plugin-l: 0.56;
+  --plugin-c: 0.13;
 
   --glow-violet:     0 0 0 rgba(0, 0, 0, 0);
-  --grid-dot:        #d4d9e4;
+  --grid-dot:        rgba(28, 28, 34, 0.14);
 
-  --shadow-xs: 0 1px 2px rgba(20, 24, 42, 0.06);
-  --shadow-sm: 0 1px 3px rgba(20, 24, 42, 0.08), 0 1px 2px rgba(20, 24, 42, 0.06);
-  --shadow-md: 0 4px 12px rgba(20, 24, 42, 0.10);
-  --shadow-lg: 0 12px 28px rgba(20, 24, 42, 0.14);
-  --shadow-panel: -8px 0 40px rgba(20, 24, 42, 0.12);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  --shadow-xs: 0 1px 2px rgba(40, 36, 64, 0.06);
+  --shadow-sm: 0 1px 2px rgba(40, 36, 64, 0.07), 0 2px 6px rgba(40, 36, 64, 0.05);
+  --shadow-md: 0 4px 12px rgba(40, 36, 64, 0.08), 0 1px 3px rgba(40, 36, 64, 0.06);
+  --shadow-lg: 0 12px 32px rgba(40, 36, 64, 0.12), 0 2px 6px rgba(40, 36, 64, 0.06);
+  --shadow-xl: 0 24px 64px rgba(40, 36, 64, 0.16), 0 4px 12px rgba(40, 36, 64, 0.06);
+  --shadow-panel: -12px 0 40px rgba(40, 36, 64, 0.10);
+}
+
+html {
+  color-scheme: dark;
+}
+[data-theme="light"] {
+  color-scheme: light;
 }
 
 body {
@@ -191,36 +264,140 @@ body {
 }
 
 ::selection {
-  background: var(--accent-soft);
+  background: var(--accent-ring);
   color: var(--text-primary);
 }
 
 code, kbd, pre, samp {
   font-family: var(--font-mono);
+  font-feature-settings: "zero" 1;
 }
 
-/* Uppercase eyebrow / section label */
+/* Section label. Sentence case: the UI no longer shouts
+   uppercase mono eyebrows above every group. */
 .eyebrow {
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
   font-weight: var(--weight-medium);
-  letter-spacing: var(--tracking-wider);
-  text-transform: uppercase;
+  letter-spacing: 0;
   color: var(--text-muted);
 }
 
-/* Custom scrollbars for the dark control plane */
+/* Scrollbars */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--ink-600) transparent;
 }
 [data-theme="light"] * {
-  scrollbar-color: #c6ccd9 transparent;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 :focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+/* ============================================================
+   Interaction primitives (design system base.css)
+   Components are inline-styled; anything that needs a
+   pseudo-class lives here. Inline styles beat classes, so a
+   component using rg-hover / rg-field passes its resting and
+   hover values as CSS variables instead of inline
+   background / color / border:
+     --rg-bg --rg-fg --rg-bd, --rg-hover-bg --rg-hover-fg --rg-hover-bd
+   ============================================================ */
+
+/* Pressable: acknowledges a press with a subtle scale. */
+.rg-press {
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease;
+}
+.rg-press:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: scale(0.97);
+}
+
+.rg-hover {
+  background-color: var(--rg-bg, transparent);
+  color: var(--rg-fg, inherit);
+  border-color: var(--rg-bd, transparent);
+}
+/* Hover only on fine pointers: a tap never leaves a sticky state. */
+@media (hover: hover) and (pointer: fine) {
+  .rg-hover:hover:not(:disabled):not([aria-disabled="true"]) {
+    background-color: var(--rg-hover-bg, var(--surface-hover));
+    color: var(--rg-hover-fg, var(--rg-fg, inherit));
+    border-color: var(--rg-hover-bd, var(--rg-bd, transparent));
+  }
+  .rg-hover-reveal .rg-reveal {
+    opacity: 0;
+    transition: opacity var(--dur-fast) ease;
+  }
+  .rg-hover-reveal:hover .rg-reveal,
+  .rg-hover-reveal:focus-within .rg-reveal {
+    opacity: 1;
+  }
+}
+
+/* Field shell: owns border, background and the focus ring. */
+.rg-field {
+  background-color: var(--rg-bg, var(--surface-input));
+  border: 1px solid var(--rg-bd, var(--border));
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  .rg-field:hover:not(:focus-within):not([aria-disabled="true"]) {
+    border-color: var(--rg-hover-bd, var(--border-strong));
+  }
+}
+.rg-field:focus-within {
+  border-color: var(--rg-focus-bd, var(--accent-border));
+  box-shadow: 0 0 0 3px var(--rg-focus-ring, var(--accent-soft));
+}
+
+/* Enter motion via @starting-style: a freshly mounted element
+   animates in with no JS; exits unmount immediately. */
+.rg-dialog {
+  transition: opacity var(--dur-slow) var(--ease-out), transform var(--dur-slow) var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+.rg-scrim {
+  transition: opacity var(--dur-base) ease;
+  @starting-style {
+    opacity: 0;
+  }
+}
+.rg-toast {
+  transition: opacity var(--dur-slow) var(--ease-out), transform var(--dur-slow) var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+}
+.rg-popover {
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+.rg-panel-enter {
+  transition: transform var(--dur-panel) var(--ease-drawer), opacity var(--dur-panel) var(--ease-drawer);
+  @starting-style {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+
+@keyframes rg-ping {
+  0% { transform: scale(1); opacity: 0.55; }
+  80%, 100% { transform: scale(2.2); opacity: 0; }
 }
 
 /* ============ React Flow overrides ============ */
@@ -229,12 +406,17 @@ code, kbd, pre, samp {
 }
 
 .react-flow__edge-path {
-  stroke-width: 2;
+  stroke-width: 1.5;
+}
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:focus-visible .react-flow__edge-path {
+  stroke-width: 2.25;
 }
 
-/* Error edges: flowing dashes */
+/* Error edges: flowing dashes (the one always-on animation; it
+   encodes the direction of failure flow). */
 .react-flow__edge.animated path {
-  stroke-dasharray: 6 4;
+  stroke-dasharray: 5 4;
 }
 
 .react-flow__background {
@@ -243,24 +425,29 @@ code, kbd, pre, samp {
 
 .react-flow__minimap {
   background-color: var(--surface) !important;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md), var(--shadow-inset);
   overflow: hidden;
 }
 
 .react-flow__controls {
-  box-shadow: var(--shadow-sm);
-  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md), var(--shadow-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
 .react-flow__controls-button {
-  background: var(--surface) !important;
-  border-bottom: 1px solid var(--border) !important;
+  background: var(--surface-overlay) !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
   color: var(--text-secondary);
+  transition: background-color var(--dur-fast) ease;
 }
-.react-flow__controls-button:hover {
-  background: var(--surface-raised) !important;
+@media (hover: hover) and (pointer: fine) {
+  .react-flow__controls-button:hover {
+    background: var(--surface-raised) !important;
+  }
 }
 .react-flow__controls-button svg {
   fill: var(--text-secondary);
@@ -269,4 +456,26 @@ code, kbd, pre, samp {
 .react-flow__attribution {
   background: transparent !important;
   color: var(--text-muted);
+}
+
+/* Reduced motion: keep fades, drop movement, scaling and loops. */
+@media (prefers-reduced-motion: reduce) {
+  .rg-press:active:not(:disabled) {
+    transform: none;
+  }
+  .rg-dialog,
+  .rg-toast,
+  .rg-popover,
+  .rg-panel-enter {
+    transition-property: opacity;
+    @starting-style {
+      transform: none;
+    }
+  }
+  .react-flow__edge.animated path {
+    animation: none !important;
+  }
+  [data-rg-ping] {
+    animation: none !important;
+  }
 }

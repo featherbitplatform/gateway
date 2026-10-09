@@ -43,6 +43,9 @@ import { moveBy, moveTo } from '../routeOrder';
 import { describeMatch } from '../routeMatch';
 import { getUsername, signOut } from '../auth';
 
+/** Types CSS custom properties (the rg-* hover / press vars) as a style object. */
+const cssVars = (vars: Record<string, string>): CSSProperties => vars as CSSProperties;
+
 /**
  * Shared style of the eight two-column footer buttons. The last four
  * properties keep a long label ("Notifications" plus its unread badge,
@@ -55,9 +58,16 @@ const footerButtonStyle: CSSProperties = {
   borderRadius: 'var(--radius-sm)',
   fontSize: 'var(--text-xs)',
   fontWeight: 'var(--weight-medium)' as never,
-  background: 'var(--surface-input)',
-  color: 'var(--text-primary)',
-  border: '1px solid var(--border)',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  ...cssVars({
+    '--rg-bg': 'var(--surface-raised)',
+    '--rg-fg': 'var(--text-primary)',
+    '--rg-bd': 'var(--border)',
+    '--rg-hover-bg': 'var(--surface-raised)',
+    '--rg-hover-bd': 'var(--border-strong)',
+  }),
+  boxShadow: 'var(--shadow-inset)',
   minWidth: 0,
   whiteSpace: 'nowrap',
   overflow: 'hidden',
@@ -70,6 +80,48 @@ const footerButtonStyle: CSSProperties = {
  * aside again as soon as something is selected.
  */
 type Library = 'routes' | 'supernodes' | 'pluginConfigs' | 'stores';
+
+/** Secondary button vars: raised neutral, border brightens on hover. */
+const secondaryButtonVars = cssVars({
+  '--rg-bg': 'var(--surface-raised)',
+  '--rg-fg': 'var(--text-primary)',
+  '--rg-bd': 'var(--border)',
+  '--rg-hover-bg': 'var(--surface-raised)',
+  '--rg-hover-bd': 'var(--border-strong)',
+});
+
+/** Row background vars: quiet tint when selected, hover tint otherwise. */
+const rowVars = (selected: boolean): CSSProperties =>
+  cssVars({
+    '--rg-bg': selected ? 'var(--surface-active)' : 'transparent',
+    '--rg-hover-bg': selected ? 'var(--surface-active)' : 'var(--surface-hover)',
+  });
+
+/**
+ * Selection marker for a list row: a 2px violet rail inside the row's left
+ * edge, over the --surface-active tint. Selection is the most-seen state, so
+ * it stays quiet: no full accent fill, no outlined box.
+ */
+const selectionRailStyle: CSSProperties = {
+  position: 'absolute',
+  left: 0,
+  top: 7,
+  bottom: 7,
+  width: 2,
+  borderRadius: 2,
+  background: 'var(--accent-border)',
+  pointerEvents: 'none',
+};
+
+/** Hover vars of a row's quiet actions (refresh, reorder, edit). */
+const rowActionVars = cssVars({ '--rg-fg': 'var(--text-muted)', '--rg-hover-fg': 'var(--text-primary)' });
+
+/** Hover vars of a row's delete action: muted until hovered, then red. */
+const deleteActionVars = cssVars({
+  '--rg-fg': 'var(--text-muted)',
+  '--rg-hover-fg': 'var(--error)',
+  '--rg-hover-bg': 'var(--error-soft)',
+});
 
 /** Shared style of the library strip's buttons. */
 const stripButtonStyle: CSSProperties = {
@@ -302,10 +354,8 @@ export function Sidebar({
           disabled={refreshing}
           aria-label="Refresh"
           title="Refresh: re-fetch routes, policies and libraries from the gateway (unsaved canvas edits are kept)"
-          className="ml-auto flex items-center justify-center rounded transition-colors"
-          style={{ width: 26, height: 26, color: 'var(--text-muted)', flexShrink: 0 }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+          className="rg-press rg-hover ml-auto flex items-center justify-center rounded"
+          style={{ width: 26, height: 26, flexShrink: 0, ...rowActionVars }}
         >
           <RefreshCw size={14} className={refreshing ? 'animate-spin' : undefined} />
         </button>
@@ -339,12 +389,18 @@ export function Sidebar({
               aria-label={label}
               aria-pressed={active}
               title={`${label} (${count})`}
-              className="transition-colors"
+              className="rg-press rg-hover"
               style={{
                 ...stripButtonStyle,
-                background: active ? 'var(--accent-soft, var(--surface-input))' : 'var(--surface-input)',
-                color: active ? 'var(--accent)' : 'var(--text-muted)',
-                border: `1px solid ${active ? 'var(--accent)' : 'transparent'}`,
+                borderWidth: 1,
+                borderStyle: 'solid',
+                ...cssVars({
+                  '--rg-bg': active ? 'var(--surface-active)' : 'transparent',
+                  '--rg-fg': active ? 'var(--accent-fg)' : 'var(--text-muted)',
+                  '--rg-bd': active ? 'var(--accent-ring)' : 'var(--border-subtle)',
+                  '--rg-hover-bg': active ? 'var(--surface-active)' : 'var(--surface-hover)',
+                  '--rg-hover-fg': active ? 'var(--accent-fg)' : 'var(--text-primary)',
+                }),
               }}
             >
               <Icon size={13} />
@@ -370,17 +426,16 @@ export function Sidebar({
           <button
             onClick={onCreateRoute}
             aria-label="New route"
-            className="flex items-center gap-1 transition-colors"
+            className="rg-press rg-hover flex items-center gap-1"
             style={{
               fontSize: 'var(--text-xs)',
               fontWeight: 'var(--weight-medium)' as never,
               padding: '3px 8px',
               borderRadius: 'var(--radius-sm)',
-              background: 'var(--accent)',
-              color: 'var(--text-on-accent)',
+              borderWidth: 1,
+              borderStyle: 'solid',
+              ...secondaryButtonVars,
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-hover)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--accent)')}
           >
             <Plus size={12} />
             New
@@ -443,23 +498,17 @@ export function Sidebar({
                   setDropAt(e.clientY < rect.top + rect.height / 2 ? index : index + 1);
                 }}
                 onClick={() => onSelectRoute(route.name)}
-                className="mx-2 mb-1 cursor-pointer flex items-center justify-between group"
+                className="rg-hover mx-2 mb-1 cursor-pointer flex items-center justify-between group"
                 style={{
                   position: 'relative',
                   padding: '8px 6px 8px 2px',
                   borderRadius: 'var(--radius-sm)',
-                  background: isSelected ? 'var(--surface-active)' : 'transparent',
-                  boxShadow: isSelected ? 'inset 0 0 0 1px var(--accent-ring)' : 'none',
+                  ...rowVars(isSelected),
                   opacity: isDragged ? 0.45 : 1,
-                  transition: 'background var(--dur-fast) var(--ease-out)',
-                }}
-                onMouseEnter={(e) => {
-                  if (!isSelected) e.currentTarget.style.background = 'var(--surface-hover)';
-                }}
-                onMouseLeave={(e) => {
-                  if (!isSelected) e.currentTarget.style.background = 'transparent';
+                  transition: 'background-color var(--dur-fast) ease, opacity var(--dur-fast) ease',
                 }}
               >
+                {isSelected && <span aria-hidden style={selectionRailStyle} />}
                 {(lineAbove || lineBelow) && (
                   <span
                     aria-hidden
@@ -521,7 +570,7 @@ export function Sidebar({
                   </div>
                 </div>
                 <div
-                  className="flex items-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-all"
+                  className="flex items-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
                   style={{ flexShrink: 0 }}
                 >
                   {routes.length > 1 && (
@@ -532,8 +581,8 @@ export function Sidebar({
                           reorder(moveBy(routeNames, index, -1));
                         }}
                         disabled={index === 0}
-                        className="flex items-center justify-center rounded disabled:opacity-30"
-                        style={{ width: 20, height: 22, color: 'var(--text-secondary)' }}
+                        className="rg-hover flex items-center justify-center rounded disabled:opacity-30"
+                        style={{ width: 20, height: 22, ...rowActionVars }}
                         aria-label={`Move route ${route.name} up`}
                         title="Higher priority"
                       >
@@ -545,8 +594,8 @@ export function Sidebar({
                           reorder(moveBy(routeNames, index, 1));
                         }}
                         disabled={index === routes.length - 1}
-                        className="flex items-center justify-center rounded disabled:opacity-30"
-                        style={{ width: 20, height: 22, color: 'var(--text-secondary)' }}
+                        className="rg-hover flex items-center justify-center rounded disabled:opacity-30"
+                        style={{ width: 20, height: 22, ...rowActionVars }}
                         aria-label={`Move route ${route.name} down`}
                         title="Lower priority"
                       >
@@ -559,8 +608,8 @@ export function Sidebar({
                       e.stopPropagation();
                       onEditRoute(route.name);
                     }}
-                    className="flex items-center justify-center rounded"
-                    style={{ width: 22, height: 22, color: 'var(--text-secondary)' }}
+                    className="rg-hover flex items-center justify-center rounded"
+                    style={{ width: 22, height: 22, ...rowActionVars }}
                     aria-label={`Edit route ${route.name}`}
                     title="Edit match rule"
                   >
@@ -571,8 +620,8 @@ export function Sidebar({
                       e.stopPropagation();
                       onDeleteRoute(route.name);
                     }}
-                    className="flex items-center justify-center rounded"
-                    style={{ width: 22, height: 22, color: 'var(--error)' }}
+                    className="rg-hover flex items-center justify-center rounded"
+                    style={{ width: 22, height: 22, ...deleteActionVars }}
                     aria-label={`Delete route ${route.name}`}
                   >
                     <X size={13} />
@@ -593,17 +642,16 @@ export function Sidebar({
           <button
             onClick={onCreateSupernode}
             aria-label="New supernode"
-            className="flex items-center gap-1 transition-colors"
+            className="rg-press rg-hover flex items-center gap-1"
             style={{
               fontSize: 'var(--text-xs)',
               fontWeight: 'var(--weight-medium)' as never,
               padding: '3px 8px',
               borderRadius: 'var(--radius-sm)',
-              background: 'var(--accent)',
-              color: 'var(--text-on-accent)',
+              borderWidth: 1,
+              borderStyle: 'solid',
+              ...secondaryButtonVars,
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-hover)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--accent)')}
           >
             <Plus size={12} />
             New
@@ -615,21 +663,16 @@ export function Sidebar({
             <div
               key={supernode.name}
               onClick={() => pick(onSelectSupernode)(supernode.name)}
-              className="mx-2 mb-1 cursor-pointer flex items-center justify-between group"
+              className="rg-hover mx-2 mb-1 cursor-pointer flex items-center justify-between group"
               style={{
+                position: 'relative',
                 padding: '8px 10px',
                 borderRadius: 'var(--radius-sm)',
-                background: isSelected ? 'var(--surface-active)' : 'transparent',
-                boxShadow: isSelected ? 'inset 0 0 0 1px var(--accent-ring)' : 'none',
-                transition: 'background var(--dur-fast) var(--ease-out)',
-              }}
-              onMouseEnter={(e) => {
-                if (!isSelected) e.currentTarget.style.background = 'var(--surface-hover)';
-              }}
-              onMouseLeave={(e) => {
-                if (!isSelected) e.currentTarget.style.background = 'transparent';
+                ...rowVars(isSelected),
+                transition: 'background-color var(--dur-fast) ease',
               }}
             >
+              {isSelected && <span aria-hidden style={selectionRailStyle} />}
               <div className="flex flex-col min-w-0">
                 <span
                   className="truncate"
@@ -657,8 +700,8 @@ export function Sidebar({
                   e.stopPropagation();
                   onDeleteSupernode(supernode.name);
                 }}
-                className="opacity-0 group-hover:opacity-100 flex items-center justify-center rounded transition-all"
-                style={{ width: 22, height: 22, color: 'var(--error)' }}
+                className="rg-hover opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 flex items-center justify-center rounded transition-opacity"
+                style={{ width: 22, height: 22, ...deleteActionVars }}
                 aria-label={`Delete supernode ${supernode.name}`}
               >
                 <X size={13} />
@@ -677,17 +720,16 @@ export function Sidebar({
           <button
             onClick={onCreatePluginConfig}
             aria-label="New plugin config"
-            className="flex items-center gap-1 transition-colors"
+            className="rg-press rg-hover flex items-center gap-1"
             style={{
               fontSize: 'var(--text-xs)',
               fontWeight: 'var(--weight-medium)' as never,
               padding: '3px 8px',
               borderRadius: 'var(--radius-sm)',
-              background: 'var(--accent)',
-              color: 'var(--text-on-accent)',
+              borderWidth: 1,
+              borderStyle: 'solid',
+              ...secondaryButtonVars,
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-hover)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--accent)')}
           >
             <Plus size={12} />
             New
@@ -699,21 +741,16 @@ export function Sidebar({
             <div
               key={pc.name}
               onClick={() => pick(onSelectPluginConfig)(pc.name)}
-              className="mx-2 mb-1 cursor-pointer flex items-center justify-between group"
+              className="rg-hover mx-2 mb-1 cursor-pointer flex items-center justify-between group"
               style={{
+                position: 'relative',
                 padding: '8px 10px',
                 borderRadius: 'var(--radius-sm)',
-                background: isSelected ? 'var(--surface-active)' : 'transparent',
-                boxShadow: isSelected ? 'inset 0 0 0 1px var(--accent-ring)' : 'none',
-                transition: 'background var(--dur-fast) var(--ease-out)',
-              }}
-              onMouseEnter={(e) => {
-                if (!isSelected) e.currentTarget.style.background = 'var(--surface-hover)';
-              }}
-              onMouseLeave={(e) => {
-                if (!isSelected) e.currentTarget.style.background = 'transparent';
+                ...rowVars(isSelected),
+                transition: 'background-color var(--dur-fast) ease',
               }}
             >
+              {isSelected && <span aria-hidden style={selectionRailStyle} />}
               <div className="flex flex-col min-w-0">
                 <span
                   className="truncate"
@@ -741,8 +778,8 @@ export function Sidebar({
                   e.stopPropagation();
                   onDeletePluginConfig(pc.name);
                 }}
-                className="opacity-0 group-hover:opacity-100 flex items-center justify-center rounded transition-all"
-                style={{ width: 22, height: 22, color: 'var(--error)' }}
+                className="rg-hover opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 flex items-center justify-center rounded transition-opacity"
+                style={{ width: 22, height: 22, ...deleteActionVars }}
                 aria-label={`Delete plugin config ${pc.name}`}
               >
                 <X size={13} />
@@ -761,17 +798,16 @@ export function Sidebar({
           <button
             onClick={onCreateStore}
             aria-label="New store"
-            className="flex items-center gap-1 transition-colors"
+            className="rg-press rg-hover flex items-center gap-1"
             style={{
               fontSize: 'var(--text-xs)',
               fontWeight: 'var(--weight-medium)' as never,
               padding: '3px 8px',
               borderRadius: 'var(--radius-sm)',
-              background: 'var(--accent)',
-              color: 'var(--text-on-accent)',
+              borderWidth: 1,
+              borderStyle: 'solid',
+              ...secondaryButtonVars,
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-hover)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--accent)')}
           >
             <Plus size={12} />
             New
@@ -783,21 +819,16 @@ export function Sidebar({
             <div
               key={s.name}
               onClick={() => pick(onSelectStore)(s.name)}
-              className="mx-2 mb-1 cursor-pointer flex items-center justify-between group"
+              className="rg-hover mx-2 mb-1 cursor-pointer flex items-center justify-between group"
               style={{
+                position: 'relative',
                 padding: '8px 10px',
                 borderRadius: 'var(--radius-sm)',
-                background: isSelected ? 'var(--surface-active)' : 'transparent',
-                boxShadow: isSelected ? 'inset 0 0 0 1px var(--accent-ring)' : 'none',
-                transition: 'background var(--dur-fast) var(--ease-out)',
-              }}
-              onMouseEnter={(e) => {
-                if (!isSelected) e.currentTarget.style.background = 'var(--surface-hover)';
-              }}
-              onMouseLeave={(e) => {
-                if (!isSelected) e.currentTarget.style.background = 'transparent';
+                ...rowVars(isSelected),
+                transition: 'background-color var(--dur-fast) ease',
               }}
             >
+              {isSelected && <span aria-hidden style={selectionRailStyle} />}
               <div className="flex flex-col min-w-0">
                 <span
                   className="truncate"
@@ -825,8 +856,8 @@ export function Sidebar({
                   e.stopPropagation();
                   onDeleteStore(s.name);
                 }}
-                className="opacity-0 group-hover:opacity-100 flex items-center justify-center rounded transition-all"
-                style={{ width: 22, height: 22, color: 'var(--error)' }}
+                className="rg-hover opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 flex items-center justify-center rounded transition-opacity"
+                style={{ width: 22, height: 22, ...deleteActionVars }}
                 aria-label={`Delete store ${s.name}`}
               >
                 <X size={13} />
@@ -856,13 +887,11 @@ export function Sidebar({
                 ? `${unreadNotifications} unread error${unreadNotifications === 1 ? '' : 's'} — open the notification log`
                 : 'Notification log — every save outcome, inspectable afterwards'
             }
-            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            className="rg-press rg-hover w-full flex items-center justify-center gap-1.5"
             style={{
               ...footerButtonStyle,
-              border: `1px solid ${unreadNotifications > 0 ? 'var(--error)' : 'var(--border)'}`,
+              ...(unreadNotifications > 0 ? cssVars({ '--rg-bd': 'var(--error)', '--rg-hover-bd': 'var(--error)' }) : null),
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
             <Bell size={12} />
             Notifications
@@ -877,8 +906,8 @@ export function Sidebar({
                   fontSize: 10,
                   lineHeight: '16px',
                   fontWeight: 700,
-                  background: 'var(--error)',
-                  color: '#fff',
+                  background: 'var(--error-solid)',
+                  color: 'var(--text-on-accent)',
                 }}
               >
                 {unreadNotifications}
@@ -889,10 +918,8 @@ export function Sidebar({
             onClick={onOpenAgent}
             aria-label="Agent"
             title={mcpEnabled ? 'Connect an AI agent over MCP; copy prompts' : 'MCP is off — set admin.mcp.enabled in system.yaml and restart'}
-            className="w-full flex items-center justify-center gap-1.5 transition-colors"
-            style={{ ...footerButtonStyle, color: mcpEnabled ? 'var(--text-primary)' : 'var(--text-muted)' }}
-            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+            className="rg-press rg-hover w-full flex items-center justify-center gap-1.5"
+            style={{ ...footerButtonStyle, ...cssVars({ '--rg-fg': mcpEnabled ? 'var(--text-primary)' : 'var(--text-muted)' }) }}
           >
             <Bot size={12} />
             Agent
@@ -901,10 +928,8 @@ export function Sidebar({
             onClick={onOpenChat}
             aria-label="Chat"
             title="Chat with an AI agent about this gateway (your own OpenAI-compatible API key, stored in this browser)"
-            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            className="rg-press rg-hover w-full flex items-center justify-center gap-1.5"
             style={footerButtonStyle}
-            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
             <MessageSquare size={12} />
             Chat
@@ -913,10 +938,8 @@ export function Sidebar({
             onClick={onOpenCertificates}
             aria-label="Certificates"
             title="ACME-managed TLS certificates"
-            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            className="rg-press rg-hover w-full flex items-center justify-center gap-1.5"
             style={footerButtonStyle}
-            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
             <ShieldCheck size={12} />
             Certificates
@@ -932,10 +955,8 @@ export function Sidebar({
                 : 'List and revoke server-side sessions'
             }
             aria-label="Sessions"
-            className="w-full flex items-center justify-center gap-1.5 transition-colors"
-            style={{ ...footerButtonStyle, color: stores.length === 0 ? 'var(--text-muted)' : 'var(--text-primary)' }}
-            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+            className="rg-press rg-hover w-full flex items-center justify-center gap-1.5"
+            style={{ ...footerButtonStyle, ...cssVars({ '--rg-fg': stores.length === 0 ? 'var(--text-muted)' : 'var(--text-primary)' }) }}
           >
             <KeyRound size={12} />
             Sessions
@@ -949,30 +970,24 @@ export function Sidebar({
                 ? 'Browse policy traces and run the plugin sandbox'
                 : 'Debug mode is off — set debug.enabled in system.yaml and restart'
             }
-            className="w-full flex items-center justify-center gap-1.5 transition-colors"
-            style={{ ...footerButtonStyle, color: debugEnabled ? 'var(--text-primary)' : 'var(--text-muted)' }}
-            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+            className="rg-press rg-hover w-full flex items-center justify-center gap-1.5"
+            style={{ ...footerButtonStyle, ...cssVars({ '--rg-fg': debugEnabled ? 'var(--text-primary)' : 'var(--text-muted)' }) }}
           >
             <Bug size={12} />
             Debug
           </button>
           <button
             onClick={onViewYaml}
-            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            className="rg-press rg-hover w-full flex items-center justify-center gap-1.5"
             style={footerButtonStyle}
-            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
             <FileCode size={12} />
             View YAML
           </button>
           <button
             onClick={onReload}
-            className="w-full flex items-center justify-center gap-1.5 transition-colors"
+            className="rg-press rg-hover w-full flex items-center justify-center gap-1.5"
             style={footerButtonStyle}
-            onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-            onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
           >
             <RotateCw size={12} />
             Reload Config
@@ -997,10 +1012,13 @@ export function Sidebar({
           </span>
           <button
             onClick={signOut}
-            className="flex items-center gap-1 transition-colors"
-            style={{ color: 'var(--text-secondary)', flexShrink: 0 }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
-            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
+            className="rg-hover flex items-center gap-1"
+            style={{
+              flexShrink: 0,
+              padding: '2px 4px',
+              borderRadius: 'var(--radius-xs)',
+              ...cssVars({ '--rg-fg': 'var(--text-secondary)', '--rg-hover-fg': 'var(--text-primary)' }),
+            }}
           >
             <LogOut size={12} />
             Sign out

@@ -25,7 +25,7 @@ const POLL_MS = 30_000;
 const badgeColor: Record<AcmeCert['state'], string> = {
   placeholder: 'var(--text-muted)',
   issued: 'var(--success)',
-  renewing: 'var(--accent)',
+  renewing: 'var(--accent-fg)',
   failed: 'var(--error)',
 };
 

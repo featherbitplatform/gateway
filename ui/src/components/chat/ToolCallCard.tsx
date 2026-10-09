@@ -94,7 +94,7 @@ export function ToolCallCard({ group, awaitingConfirm, onRun, onSkip }: ToolCall
     <div
       data-testid={`tool-call-${group.name}`}
       style={{
-        border: `1px solid ${running || awaitingConfirm ? 'var(--accent)' : 'var(--border)'}`,
+        border: `1px solid ${running || awaitingConfirm ? 'var(--accent-border)' : 'var(--border)'}`,
         borderRadius: 'var(--radius-sm)',
         background: 'var(--surface-input)',
         padding: '6px 8px',
@@ -106,7 +106,7 @@ export function ToolCallCard({ group, awaitingConfirm, onRun, onSkip }: ToolCall
     >
       <div className="flex items-center justify-between" style={{ gap: 8 }}>
         <span className="flex items-center gap-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
-          {running && <Loader2 size={12} className="animate-spin" style={{ color: 'var(--accent)' }} aria-label="running" />}
+          {running && <Loader2 size={12} className="animate-spin" style={{ color: 'var(--accent-fg)' }} aria-label="running" />}
           <span>
             {write ? 'write · ' : confirms ? 'confirm · ' : ''}
             {group.name}
@@ -122,7 +122,7 @@ export function ToolCallCard({ group, awaitingConfirm, onRun, onSkip }: ToolCall
         ) : awaitingConfirm ? (
           <span style={{ color: 'var(--warning)' }}>awaiting confirmation</span>
         ) : (
-          <span style={{ color: 'var(--accent)' }}>running…</span>
+          <span style={{ color: 'var(--accent-fg)' }}>running…</span>
         )}
       </div>
 
@@ -158,7 +158,22 @@ export function ToolCallCard({ group, awaitingConfirm, onRun, onSkip }: ToolCall
 
       {awaitingConfirm && (
         <div className="flex gap-2">
-          <button onClick={onRun} style={{ padding: '3px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--accent)', color: 'var(--text-on-accent)', border: 'none' }}>
+          <button
+            onClick={onRun}
+            className="rg-press rg-hover"
+            style={{
+              padding: '3px 10px',
+              borderRadius: 'var(--radius-sm)',
+              borderWidth: 1,
+              borderStyle: 'solid',
+              ...({
+                '--rg-bg': 'var(--accent)',
+                '--rg-fg': 'var(--text-on-accent)',
+                '--rg-bd': 'transparent',
+                '--rg-hover-bg': 'var(--accent-hover)',
+              } as React.CSSProperties),
+            }}
+          >
             Run
           </button>
           <button onClick={onSkip} style={{ padding: '3px 10px', borderRadius: 'var(--radius-sm)', background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>

@@ -5,7 +5,7 @@
  *
  * @module components/Dialog
  */
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
 /** Props for Dialog. */
 interface DialogProps {
@@ -25,8 +25,8 @@ interface DialogProps {
 
 /**
  * Modal dialog — the styled replacement for native prompt/confirm/alert.
- * Renders a dimmed, blurred backdrop with a centered panel (header, body,
- * footer). Clicking the backdrop calls `onClose`; there is no Escape-key
+ * Renders a scrim with a centered panel (header, body, footer) that fades
+ * and scales in from 0.96 (rg-scrim / rg-dialog). Clicking the backdrop calls `onClose`; there is no Escape-key
  * handling or focus trap.
  *
  * @remarks Compose the body from DialogField and the footer from DialogButton
@@ -37,12 +37,12 @@ export function Dialog({ open, title, children, footer, onClose, width = 380 }: 
 
   return (
     <div
-      className="fixed inset-0 flex items-center justify-center"
+      className="rg-scrim fixed inset-0 flex items-center justify-center"
       style={{
         zIndex: 80,
-        background: 'rgba(5, 8, 16, 0.62)',
-        backdropFilter: 'blur(3px)',
-        WebkitBackdropFilter: 'blur(3px)',
+        background: 'var(--scrim)',
+        backdropFilter: 'blur(2px)',
+        WebkitBackdropFilter: 'blur(2px)',
       }}
       onClick={onClose}
     >
@@ -51,30 +51,36 @@ export function Dialog({ open, title, children, footer, onClose, width = 380 }: 
         aria-modal="true"
         aria-label={title}
         onClick={(e) => e.stopPropagation()}
+        className="rg-dialog"
         style={{
           width,
           maxWidth: 'calc(100vw - 32px)',
           background: 'var(--surface)',
           border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-md)',
-          boxShadow: 'var(--shadow-lg)',
+          borderRadius: 'var(--radius-lg)',
+          boxShadow: 'var(--shadow-xl), var(--shadow-inset)',
+          overflow: 'hidden',
         }}
       >
         <div
           style={{
-            padding: '14px 16px',
-            borderBottom: '1px solid var(--border)',
+            padding: '16px 20px 4px',
             fontSize: 'var(--text-md)',
             fontWeight: 600,
+            letterSpacing: 'var(--tracking-tight)',
             color: 'var(--text-primary)',
           }}
         >
           {title}
         </div>
-        <div style={{ padding: 16 }}>{children}</div>
+        <div style={{ padding: '12px 20px 16px' }}>{children}</div>
         <div
           className="flex justify-end gap-2"
-          style={{ padding: '12px 16px', borderTop: '1px solid var(--border)' }}
+          style={{
+            padding: '12px 16px',
+            borderTop: '1px solid var(--border-subtle)',
+            background: 'var(--surface-sunken)',
+          }}
         >
           {footer}
         </div>
@@ -83,12 +89,48 @@ export function Dialog({ open, title, children, footer, onClose, width = 380 }: 
   );
 }
 
+/** Visual variants of {@link DialogButton}. */
+type DialogButtonVariant = 'primary' | 'ghost' | 'danger' | 'danger-quiet';
+
+/** Resting and hover colors per DialogButton variant (rg-hover vars). */
+const DIALOG_BUTTON_VARS: Record<DialogButtonVariant, Record<string, string>> = {
+  primary: {
+    '--rg-bg': 'var(--accent)',
+    '--rg-fg': 'var(--text-on-accent)',
+    '--rg-bd': 'transparent',
+    '--rg-hover-bg': 'var(--accent-hover)',
+  },
+  danger: {
+    '--rg-bg': 'var(--error-solid)',
+    '--rg-fg': 'var(--text-on-accent)',
+    '--rg-bd': 'transparent',
+    '--rg-hover-bg': 'color-mix(in oklab, var(--error-solid) 88%, black)',
+  },
+  'danger-quiet': {
+    '--rg-bg': 'transparent',
+    '--rg-fg': 'var(--error)',
+    '--rg-bd': 'color-mix(in oklab, var(--error) 40%, transparent)',
+    '--rg-hover-bg': 'var(--error-soft)',
+    '--rg-hover-bd': 'var(--error)',
+  },
+  ghost: {
+    '--rg-bg': 'transparent',
+    '--rg-fg': 'var(--text-secondary)',
+    '--rg-bd': 'var(--border)',
+    '--rg-hover-bg': 'var(--surface-hover)',
+    '--rg-hover-fg': 'var(--text-primary)',
+  },
+};
+
 /**
  * Footer action button for Dialog.
  *
- * Variants: `primary` (accent background, for the confirming action),
- * `danger` (error background, for destructive confirmations such as deleting
- * a route), and `ghost` (bordered/transparent, for cancel).
+ * Variants: `primary` (accent fill, for the confirming action), `danger`
+ * (solid error fill: inside a dialog it is always the final, deliberate
+ * confirmation of a destructive action such as deleting a route),
+ * `danger-quiet` (red text and tinted border: a destructive action that is
+ * not itself the final confirmation), and `ghost` (quiet, for cancel). Press feedback and hover come from the
+ * rg-press / rg-hover classes in index.css.
  *
  * @param variant - Visual style of the button; defaults to `primary`.
  * @param disabled - When true, dims the button and blocks `onClick` (e.g. a
@@ -100,33 +142,29 @@ export function DialogButton({
   children,
   disabled = false,
 }: {
-  variant?: 'primary' | 'ghost' | 'danger';
+  variant?: DialogButtonVariant;
   onClick: () => void;
   children: ReactNode;
   disabled?: boolean;
 }) {
-  const bg =
-    variant === 'primary' ? 'var(--accent)' : variant === 'danger' ? 'var(--error)' : 'transparent';
+  const vars = DIALOG_BUTTON_VARS[variant];
   return (
     <button
       onClick={onClick}
       disabled={disabled}
+      className="rg-press rg-hover"
       style={{
-        padding: '6px 14px',
+        height: 32,
+        padding: '0 14px',
         borderRadius: 'var(--radius-sm)',
         fontSize: 'var(--text-sm)',
         fontWeight: 500,
-        background: bg,
-        color: variant === 'ghost' ? 'var(--text-secondary)' : 'var(--text-on-accent)',
-        border: variant === 'ghost' ? '1px solid var(--border)' : '1px solid transparent',
+        borderWidth: 1,
+        borderStyle: 'solid',
+        ...(vars as CSSProperties),
         opacity: disabled ? 0.5 : 1,
         cursor: disabled ? 'not-allowed' : 'pointer',
-        transition: 'filter var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out)',
       }}
-      onMouseEnter={(e) => {
-        if (!disabled) e.currentTarget.style.filter = 'brightness(1.08)';
-      }}
-      onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
     >
       {children}
     </button>
@@ -177,15 +215,15 @@ export function DialogField({
         autoFocus={autoFocus}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full"
+        className="rg-field w-full"
         style={{
-          padding: '7px 10px',
+          height: 32,
+          padding: '0 10px',
           borderRadius: 'var(--radius-sm)',
           fontFamily: mono ? 'var(--font-mono)' : 'var(--font-sans)',
           fontSize: 'var(--text-sm)',
-          background: 'var(--surface-input)',
           color: 'var(--text-primary)',
-          border: '1px solid var(--border)',
+          outline: 'none',
         }}
       />
     </div>

@@ -134,16 +134,21 @@ function JsonConfigEditor({
         value={configJson}
         onChange={(e) => setConfigJson(e.target.value)}
         rows={12}
-        className="w-full resize-y"
-        style={{
-          padding: '8px 10px',
-          borderRadius: 'var(--radius-sm)',
-          fontFamily: 'var(--font-mono)',
-          fontSize: 'var(--text-xs)',
-          background: 'var(--surface-sunken)',
-          color: 'var(--text-primary)',
-          border: `1px solid ${error ? 'var(--error)' : 'var(--border)'}`,
-        }}
+        className="rg-field w-full resize-y"
+        style={
+          {
+            padding: '8px 10px',
+            borderRadius: 'var(--radius-sm)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--text-xs)',
+            color: 'var(--text-primary)',
+            outline: 'none',
+            '--rg-bg': 'var(--surface-sunken)',
+            ...(error
+              ? { '--rg-bd': 'var(--error)', '--rg-hover-bd': 'var(--error)', '--rg-focus-bd': 'var(--error)', '--rg-focus-ring': 'var(--error-soft)' }
+              : null),
+          } as React.CSSProperties
+        }
       />
       {error && (
         <p
@@ -159,15 +164,19 @@ function JsonConfigEditor({
       )}
       <button
         onClick={handleApply}
-        className="mt-2 w-full transition-colors"
-        style={{
-          padding: '7px 0',
-          borderRadius: 'var(--radius-sm)',
-          fontSize: 'var(--text-sm)',
-          fontWeight: 500,
-          background: 'var(--accent)',
-          color: 'var(--text-on-accent)',
-        }}
+        className="rg-press rg-hover mt-2 w-full"
+        style={
+          {
+            height: 32,
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid transparent',
+            fontSize: 'var(--text-sm)',
+            fontWeight: 500,
+            '--rg-bg': 'var(--accent)',
+            '--rg-fg': 'var(--text-on-accent)',
+            '--rg-hover-bg': 'var(--accent-hover)',
+          } as React.CSSProperties
+        }
       >
         Apply Config
       </button>
@@ -294,51 +303,78 @@ export function NodeInspector({
 
   return (
     <div
-      className="absolute right-0 top-0 h-full z-40 flex flex-col"
+      className="rg-panel-enter absolute right-0 top-0 h-full z-40 flex flex-col"
       style={{
         width: 'var(--rail-inspector)',
         background: 'var(--surface)',
-        borderLeft: '1px solid var(--border)',
+        borderLeft: '1px solid var(--border-subtle)',
         boxShadow: 'var(--shadow-panel)',
       }}
     >
       <div
         className="flex items-center justify-between"
         style={{
-          padding: '14px 16px',
-          borderBottom: '1px solid var(--border)',
-          borderTop: `2px solid ${meta.color}`,
+          gap: 12,
+          padding: '12px 12px 12px 16px',
+          borderBottom: '1px solid var(--border-subtle)',
         }}
       >
-        <div>
+        <div className="flex items-center" style={{ gap: 10, minWidth: 0 }}>
           <span
+            aria-hidden
+            className="flex items-center justify-center"
             style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: 'var(--text-base)',
-              fontWeight: 600,
-              color: 'var(--text-primary)',
+              width: 28,
+              height: 28,
+              flexShrink: 0,
+              borderRadius: 'var(--radius-sm)',
+              background: `color-mix(in oklch, ${meta.color} 16%, transparent)`,
+              color: meta.color,
             }}
           >
-            {data.pluginType}
+            <meta.icon size={15} strokeWidth={1.75} />
           </span>
-          <p
-            style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: 'var(--text-xs)',
-              color: 'var(--text-muted)',
-              margin: 0,
-            }}
-          >
-            {node.id}
-          </p>
+          <div style={{ minWidth: 0 }}>
+            <span
+              style={{
+                fontFamily: 'var(--font-sans)',
+                fontSize: 'var(--text-base)',
+                fontWeight: 600,
+                letterSpacing: 'var(--tracking-tight)',
+                color: 'var(--text-primary)',
+              }}
+            >
+              {data.pluginType}
+            </span>
+            <p
+              style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--text-xs)',
+                color: 'var(--text-muted)',
+                margin: 0,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {node.id}
+            </p>
+          </div>
         </div>
         <div className="flex items-center" style={{ gap: 4 }}>
           <button
             onClick={() => setLegendOpen(true)}
-            className="flex items-center justify-center rounded transition-colors"
-            style={{ width: 26, height: 26, color: 'var(--text-secondary)' }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            className="rg-press rg-hover flex items-center justify-center"
+            style={
+              {
+                width: 28,
+                height: 28,
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid transparent',
+                '--rg-fg': 'var(--text-muted)',
+                '--rg-hover-fg': 'var(--text-primary)',
+              } as React.CSSProperties
+            }
             aria-label="Context vars reference"
             title="Context vars reference"
           >
@@ -346,10 +382,17 @@ export function NodeInspector({
           </button>
           <button
             onClick={onClose}
-            className="flex items-center justify-center rounded transition-colors"
-            style={{ width: 26, height: 26, color: 'var(--text-secondary)' }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            className="rg-press rg-hover flex items-center justify-center"
+            style={
+              {
+                width: 28,
+                height: 28,
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid transparent',
+                '--rg-fg': 'var(--text-muted)',
+                '--rg-hover-fg': 'var(--text-primary)',
+              } as React.CSSProperties
+            }
             aria-label="Close"
           >
             <X size={15} />
@@ -368,13 +411,15 @@ export function NodeInspector({
               readOnly
               className="w-full"
               style={{
-                padding: '6px 10px',
+                height: 32,
+                padding: '0 10px',
                 borderRadius: 'var(--radius-sm)',
                 fontFamily: 'var(--font-mono)',
                 fontSize: 'var(--text-sm)',
-                background: 'var(--surface-input)',
-                color: 'var(--text-primary)',
-                border: '1px solid var(--border)',
+                background: 'var(--surface-sunken)',
+                color: 'var(--text-secondary)',
+                border: '1px solid var(--border-subtle)',
+                outline: 'none',
               }}
             />
             {kind === 'supernode' &&
@@ -382,16 +427,23 @@ export function NodeInspector({
               onRenameNode && (
               <button
                 onClick={() => onRenameNode(node.id)}
-                className="shrink-0 transition-colors"
-                style={{
-                  padding: '6px 10px',
-                  borderRadius: 'var(--radius-sm)',
-                  fontSize: 'var(--text-xs)',
-                  fontWeight: 500,
-                  background: 'var(--surface-raised)',
-                  color: 'var(--text-primary)',
-                  border: '1px solid var(--border)',
-                }}
+                className="rg-press rg-hover shrink-0"
+                style={
+                  {
+                    height: 32,
+                    padding: '0 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    borderWidth: 1,
+                    borderStyle: 'solid',
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 500,
+                    '--rg-bg': 'var(--surface-raised)',
+                    '--rg-fg': 'var(--text-primary)',
+                    '--rg-bd': 'var(--border)',
+                    '--rg-hover-bg': 'var(--surface-raised)',
+                    '--rg-hover-bd': 'var(--border-strong)',
+                  } as React.CSSProperties
+                }
               >
                 Rename
               </button>
@@ -406,15 +458,15 @@ export function NodeInspector({
             <select
               value={data.configRef ?? ''}
               onChange={(e) => onUpdateConfigRef(node.id, e.target.value || undefined)}
-              className="w-full"
+              className="rg-field w-full"
               style={{
-                padding: '6px 10px',
+                height: 32,
+                padding: '0 10px',
                 borderRadius: 'var(--radius-sm)',
                 fontFamily: 'var(--font-mono)',
                 fontSize: 'var(--text-sm)',
-                background: 'var(--surface-input)',
                 color: 'var(--text-primary)',
-                border: '1px solid var(--border)',
+                outline: 'none',
               }}
             >
               <option value="">None</option>
@@ -454,25 +506,22 @@ export function NodeInspector({
             {Object.keys(effectiveConfig).length > 0 && (
               <button
                 onClick={openExtract}
-                className="w-full transition-colors"
-                style={{
-                  marginTop: 8,
-                  padding: '6px 0',
-                  borderRadius: 'var(--radius-sm)',
-                  fontSize: 'var(--text-xs)',
-                  fontWeight: 500,
-                  background: 'transparent',
-                  color: 'var(--accent-hover)',
-                  border: '1px dashed var(--border-strong)',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--accent-ring)';
-                  e.currentTarget.style.background = 'var(--accent-soft)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--border-strong)';
-                  e.currentTarget.style.background = 'transparent';
-                }}
+                className="rg-press rg-hover w-full"
+                style={
+                  {
+                    marginTop: 8,
+                    height: 30,
+                    borderRadius: 'var(--radius-sm)',
+                    borderWidth: 1,
+                    borderStyle: 'dashed',
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 500,
+                    '--rg-fg': 'var(--accent-fg)',
+                    '--rg-bd': 'var(--border-strong)',
+                    '--rg-hover-bg': 'var(--accent-soft)',
+                    '--rg-hover-bd': 'var(--accent-ring)',
+                  } as React.CSSProperties
+                }
               >
                 Save as shared config
               </button>
@@ -494,9 +543,9 @@ export function NodeInspector({
                 borderRadius: 'var(--radius-sm)',
                 fontFamily: 'var(--font-mono)',
                 fontSize: 'var(--text-sm)',
-                background: 'var(--surface-input)',
+                background: 'var(--surface-sunken)',
                 color: 'var(--text-primary)',
-                border: '1px solid var(--border)',
+                border: '1px solid var(--border-subtle)',
               }}
             >
               {String(data.config?.name ?? '')}
@@ -525,22 +574,27 @@ export function NodeInspector({
 
       {/* Delete */}
       {(!isFixed || isBoundaryPort) && (
-        <div style={{ padding: 16, borderTop: '1px solid var(--border)' }}>
+        <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border-subtle)' }}>
           <button
             onClick={() => onDeleteNode(node.id)}
             disabled={deleteDisabled}
             title={isBoundaryPort ? boundaryDeleteBlocked : undefined}
-            className="w-full transition-colors"
-            style={{
-              padding: '7px 0',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-sm)',
-              fontWeight: 500,
-              background: 'var(--error)',
-              color: '#fff',
-              opacity: deleteDisabled ? 0.5 : 1,
-              cursor: deleteDisabled ? 'not-allowed' : 'pointer',
-            }}
+            className="rg-press rg-hover w-full"
+            style={
+              {
+                height: 32,
+                borderRadius: 'var(--radius-sm)',
+                borderWidth: 1,
+                borderStyle: 'solid',
+                fontSize: 'var(--text-sm)',
+                fontWeight: 500,
+                opacity: deleteDisabled ? 0.5 : 1,
+                cursor: deleteDisabled ? 'not-allowed' : 'pointer',
+                '--rg-fg': 'var(--error)',
+                '--rg-bd': 'color-mix(in oklch, var(--error) 40%, transparent)',
+                '--rg-hover-bg': 'var(--error-soft)',
+              } as React.CSSProperties
+            }
           >
             Delete Node
           </button>

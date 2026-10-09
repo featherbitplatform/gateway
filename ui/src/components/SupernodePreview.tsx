@@ -60,7 +60,11 @@ export function SupernodePreview({ name, supernode, portSpecs }: SupernodePrevie
         connectable: false,
         selectable: false,
       })),
-      edges: policyToEdges(asPolicy, portSpecs),
+      // Same 1.5px hairline edges as the main canvas.
+      edges: policyToEdges(asPolicy, portSpecs).map((e) => ({
+        ...e,
+        style: { ...e.style, strokeWidth: 1.5 },
+      })),
     };
   }, [supernode, portSpecs]);
 

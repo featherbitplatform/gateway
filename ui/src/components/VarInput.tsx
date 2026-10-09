@@ -198,9 +198,9 @@ export function VarInput({
   return (
     <div style={{ position: 'relative' }}>
       {multiline ? (
-        <textarea rows={rows ?? 4} className="resize-y" {...fieldProps} />
+        <textarea rows={rows ?? 4} className="rg-field resize-y" {...fieldProps} />
       ) : (
-        <input type="text" {...fieldProps} />
+        <input type="text" className="rg-field" {...fieldProps} />
       )}
       {open && (
         <div
@@ -214,10 +214,10 @@ export function VarInput({
             maxHeight: 240,
             overflowY: 'auto',
             marginTop: 4,
-            background: 'var(--surface-raised)',
+            background: 'var(--surface-overlay)',
             border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)',
-            boxShadow: 'var(--shadow-md)',
+            borderRadius: 'var(--radius-md)',
+            boxShadow: 'var(--shadow-lg), var(--shadow-inset)',
           }}
         >
           {filtered.length === 0 ? (

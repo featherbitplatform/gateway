@@ -126,7 +126,7 @@ function RouteDialogBody({
           value={form.hosts}
           placeholder="api.example.com, *.example.org"
           onChange={(e) => setForm((f) => ({ ...f, hosts: e.target.value }))}
-          className="w-full"
+          className="rg-field w-full"
           style={inputStyle}
         />
         <div style={hint}>
@@ -153,10 +153,10 @@ function RouteDialogBody({
                   cursor: "pointer",
                   userSelect: "none",
                   background: on
-                    ? "var(--accent-soft, var(--surface-input))"
+                    ? "var(--accent-soft)"
                     : "transparent",
                   color: on ? "var(--text-primary)" : "var(--text-muted)",
-                  border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                  border: `1px solid ${on ? "var(--accent-border)" : "var(--border)"}`,
                 }}
               >
                 <input
@@ -192,13 +192,12 @@ const fieldLabel: React.CSSProperties = {
 };
 
 const inputStyle: React.CSSProperties = {
+  outline: 'none',
   padding: "7px 10px",
   borderRadius: "var(--radius-sm)",
   fontFamily: "var(--font-mono)",
   fontSize: "var(--text-sm)",
-  background: "var(--surface-input)",
   color: "var(--text-primary)",
-  border: "1px solid var(--border)",
 };
 
 const hint: React.CSSProperties = {
