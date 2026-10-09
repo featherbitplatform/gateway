@@ -172,7 +172,7 @@ test.describe('Web UI', () => {
    * directly: handle count, the preflight handle's title, and (cheaply) that
    * success/preflight/error render with visibly different colors via the
    * inline style GraphCanvas's PORT_COLOR map sets (var(--success) vs
-   * var(--accent) vs var(--error)), rather than just trusting three dots exist.
+   * var(--text-muted) vs var(--error)), rather than just trusting three dots exist.
    *
    * The second half proves the save-time guardrail end to end: deleting the
    * mandatory `preflight` edge and saving must surface both the client's
@@ -197,12 +197,14 @@ test.describe('Web UI', () => {
     await expect(preflightHandle).toHaveAttribute('title', /preflight/);
 
     // Kind distinction: success is colored via --success, preflight (an
-    // outcome port) via --accent -- not the same dot repeated three times.
+    // outcome port) via the neutral --text-muted (violet is reserved for
+    // input ports and selection), error via --error -- not the same dot
+    // repeated three times.
     const successStyle = await corsNode.locator('[data-handleid="success"]').getAttribute('style');
     const preflightStyle = await preflightHandle.getAttribute('style');
     const errorStyle = await corsNode.locator('[data-handleid="error"]').getAttribute('style');
     expect(successStyle).toContain('--success');
-    expect(preflightStyle).toContain('--accent');
+    expect(preflightStyle).toContain('--text-muted');
     expect(errorStyle).toContain('--error');
 
     // Delay the save PUT so the client-side warning toast is still on screen
