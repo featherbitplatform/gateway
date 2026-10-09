@@ -18,7 +18,8 @@ COPY ui/dist/ ui/dist/
 # to agents as MCP resources in every build variant, headless included.
 COPY website/docs/ website/docs/
 
-# Headless variant: CARGO_FLAGS=--no-default-features compiles the UI out
+# Headless variant: CARGO_FLAGS="--no-default-features --features mimalloc"
+# compiles the UI out (keep `mimalloc`: musl's malloc serializes under load)
 # (word-splitting of the flags is intentional).
 ARG CARGO_FLAGS=""
 # `dist` = release + fat LTO + one codegen unit (Cargo.toml).

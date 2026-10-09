@@ -1,0 +1,49 @@
+# Experimental: a fully static *glibc* build in a FROM scratch image, for
+# benchmarking against the musl image (Dockerfile). Same layout, same profile.
+#
+# Static glibc is viable here because nothing in the tree dlopen()s: the TLS
+# stack is ring-only (no OpenSSL/aws-lc), mimalloc and ring link statically,
+# and the only C++ (mlua's Luau) gets libstdc++.a. The one runtime lookup glibc
+# still does is getaddrinfo() for upstream/redis/etcd hostnames; since glibc
+# 2.34 the `files` and `dns` NSS backends are built into libc, so a static
+# binary resolves without any libnss_*.so (the linker still warns about it).
+FROM rust:bookworm AS builder
+
+RUN cargo install cargo-auditable --locked
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock* ./
+COPY src/ src/
+COPY ui/dist/ ui/dist/
+COPY website/docs/ website/docs/
+
+# CARGO_FLAGS="--no-default-features --features ui,redis-store,mcp" builds
+# with glibc's malloc instead of mimalloc (word-splitting is intentional).
+ARG CARGO_FLAGS=""
+# crt-static on the -gnu target links glibc statically; the explicit --target
+# keeps RUSTFLAGS off build scripts and proc-macros (which cannot be static).
+# rustc emits a static-PIE (ldd: "statically linked"); the grep fails the build
+# if anything is still dynamic. -static-libstdc++ is belt and braces: crt-static already links everything
+# statically, this only documents that Luau's libstdc++ is in the binary.
+RUN TARGET="$(rustc -vV | sed -n 's/^host: //p')" \
+ && RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static-libstdc++" \
+    cargo auditable build --profile dist --target "$TARGET" ${CARGO_FLAGS} \
+ && cp "target/$TARGET/dist/featherbit" /featherbit \
+ && ldd /featherbit 2>&1 | grep -qE "statically linked|not a dynamic executable" \
+ && mkdir -p /rootfs/etc \
+ && printf 'hosts: files dns\n' > /rootfs/etc/nsswitch.conf
+
+FROM scratch
+
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+# Without nsswitch.conf glibc's default hosts order is not `files dns`.
+COPY --from=builder /rootfs/etc/nsswitch.conf /etc/
+COPY --from=builder /featherbit /gateway
+COPY config/ /etc/gateway/
+
+EXPOSE 8080 9090
+
+USER 65532:65532
+
+ENTRYPOINT ["/gateway"]
+CMD ["--system-config", "/etc/gateway/system.yaml", "--gateway-config", "/etc/gateway/gateway.yaml"]

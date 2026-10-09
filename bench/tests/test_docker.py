@@ -52,6 +52,13 @@ class DockerTests(unittest.TestCase):
     def test_rm_ignores_missing(self):
         Docker(runner=Recorder(1, "", "No such container")).rm("fbb-gateway")
 
+    def test_ensure_image_passes_dockerfile(self):
+        rec = Recorder()
+        Docker(runner=rec).ensure_image("i:dev", build=PureWindowsPath("ctx"), build_args={"A": "1"},
+                                        dockerfile=PureWindowsPath("ctx/Dockerfile.alt"))
+        self.assertEqual(rec.calls[0], ["docker", "build", "-t", "i:dev", "-f", str(PureWindowsPath("ctx/Dockerfile.alt")),
+                                        "--build-arg", "A=1", "ctx"])
+
     def test_image_id_prefers_repo_digest(self):
         d = Docker(runner=Recorder(0, '["kong@sha256:abc"]|sha256:local\n'))
         self.assertEqual(d.image_id("kong:3"), "kong@sha256:abc")

@@ -9,7 +9,7 @@ publish = false
 [features]
 # The embedded admin web UI. Headless build (no UI assets, no serving code):
 # `cargo build --release --no-default-features`.
-default = ["ui", "redis-store", "mcp"]
+default = ["ui", "redis-store", "mcp", "mimalloc"]
 ui = ["dep:mime_guess"]
 # Redis/Valkey client for the `stores:` resource (sessions, distributed rate
 # limiting). Off = declaring a store fails config load with a clear error.
@@ -18,11 +18,14 @@ redis-store = ["dep:redis"]
 # tool/prompt layer still compiles (the UI's "copy as agent prompt" uses it)
 # but no MCP transport is mounted and `admin.mcp.enabled` is ignored.
 mcp = ["dep:rmcp"]
+# mimalloc as the global allocator (src/main.rs). Off = the platform allocator;
+# the benchmark suite compares both on the glibc image (Dockerfile.glibc).
+mimalloc = ["dep:mimalloc"]
 
 [dependencies]
 # Global allocator (src/main.rs). musl's default malloc serializes under
 # concurrency; the benchmark suite measured ~2-3x throughput at 4 cores.
-mimalloc = "0.1"
+mimalloc = { version = "0.1", optional = true }
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", features = ["full"] }

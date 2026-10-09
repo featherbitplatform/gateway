@@ -102,6 +102,7 @@ class Gateway:
     image: str = ""
     build: Path | None = None
     build_args: dict[str, str] = field(default_factory=dict)
+    dockerfile: Path | None = None
     build_requires: tuple[str, ...] = ()
     build_hint: str = ""
     config_dir: str = ""
@@ -266,11 +267,17 @@ def load_gateway(directory: Path, scenarios: dict[str, Scenario]) -> Gateway:
     elif any(configs.values()):
         raise ConfigError(f"{where}: a direct gateway has no config directories")
     build = raw.get("build")
+    dockerfile = raw.get("dockerfile")
+    if dockerfile and not build:
+        raise ConfigError(f"{where}: 'dockerfile' needs 'build'")
+    if dockerfile and not (directory / build / dockerfile).is_file():
+        raise ConfigError(f"{where}: dockerfile {dockerfile!r} not found in the build context")
     return Gateway(
         name=name, kind=kind, dir=directory, configs=configs, na=na,
         image=raw.get("image", ""),
         build=(directory / build).resolve() if build else None,
         build_args={str(k): str(v) for k, v in raw.get("build_args", {}).items()},
+        dockerfile=(directory / build / dockerfile).resolve() if dockerfile else None,
         build_requires=tuple(raw.get("build_requires", [])),
         build_hint=raw.get("build_hint", ""),
         config_dir=raw.get("config_dir", ""),

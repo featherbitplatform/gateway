@@ -4,6 +4,9 @@
 /// mimalloc instead of the platform allocator. The published image is a static
 /// musl build, and musl's malloc serializes under concurrency: the competitive
 /// benchmark measured ~2x throughput at 4 cores (~3x on 64 KiB payloads).
+/// Behind the default-on `mimalloc` feature so a build can fall back to the
+/// platform allocator (glibc's does not serialize the way musl's does).
+#[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
