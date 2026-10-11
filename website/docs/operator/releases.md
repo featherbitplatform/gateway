@@ -17,10 +17,10 @@ Each `vX.Y.Z` tag of [`gateway-operator`](https://github.com/featherbitplatform/
 The chart and the operator share one version, and the chart's `appVersion` is the image tag it runs. Both registries carry the same chart; pick either:
 
 ```bash
-helm install featherbit-operator oci://ghcr.io/featherbitplatform/charts/featherbit-operator --version 0.1.0 \
+helm install featherbit-operator oci://ghcr.io/featherbitplatform/charts/featherbit-operator --version 0.16.0 \
   --namespace featherbit-system --create-namespace
 # or
-helm install featherbit-operator oci://registry-1.docker.io/featherbit/featherbit-operator --version 0.1.0 \
+helm install featherbit-operator oci://registry-1.docker.io/featherbit/featherbit-operator --version 0.16.0 \
   --namespace featherbit-system --create-namespace
 ```
 
@@ -34,7 +34,7 @@ The operator pins one gateway library version. Its webhook knows that version's 
 - Operator minor versions track gateway minor versions: a `0.16.x` operator serves `0.16.x` gateways. Patch versions are independent.
 - Schema changes within `v1alpha1` are additive only; removing a field requires a new API version.
 
-Operator `0.1.0` is built against gateway `0.15.x`. File-mode installs also need a gateway chart that has the `config.gatewayConfigMap` value (0.16 or later, or `develop` until released). CRDs are installed from the chart's `crds/` directory, so Helm installs them first and never deletes them: `helm upgrade` does not update CRDs, so apply the new `crds/` manually when a release changes a schema.
+Operator `0.16.0` is built against gateway `0.16.x`. File-mode installs also need a gateway chart that has the `config.gatewayConfigMap` value (0.16 or later). CRDs are installed from the chart's `crds/` directory, so Helm installs them first and never deletes them: `helm upgrade` does not update CRDs, so apply the new `crds/` manually when a release changes a schema.
 
 ## Verify an image
 
@@ -45,11 +45,11 @@ The image is `FROM scratch`, so there is no package manager to inspect. Two thin
 
 ```bash
 # Inventory and vulnerability-scan the published image
-syft featherbit/operator:0.1.0
-grype featherbit/operator:0.1.0
+syft featherbit/operator:0.16.0
+grype featherbit/operator:0.16.0
 
 # Scan the SBOM attached to the release instead of pulling the image
-grype sbom:featherbit-operator-image-0.1.0.cdx.json
+grype sbom:featherbit-operator-image-0.16.0.cdx.json
 ```
 
 To check that the image you run is the one the release describes, compare digests: the release's image SBOM was generated from `featherbit/operator:<tag>` as pushed, and `docker buildx imagetools inspect featherbit/operator:<tag>` prints the manifest digest to pin in `image.digest`. Per-platform build provenance attestations are not published at this time; the SBOM is the supply-chain record for a release.

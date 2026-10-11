@@ -81,6 +81,11 @@ async function captureTheme(browser, theme) {
 
   await page.goto(ADMIN, {waitUntil: 'networkidle'});
 
+  // The UI has its own sign-in screen; HTTP credentials alone do not get past it.
+  await page.getByLabel('Username').fill('admin');
+  await page.getByLabel('Password').fill('admin');
+  await page.getByRole('button', {name: 'Sign in'}).click();
+
   // Load the posed policy onto the canvas.
   await page.getByText('orders-api', {exact: true}).click();
   await page.waitForSelector('.react-flow__node');

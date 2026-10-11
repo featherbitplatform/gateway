@@ -44,7 +44,7 @@ interface PluginDrawerProps {
 /**
  * Small rounded square that tints an icon with a plugin's accent color.
  *
- * @param color - Accent color; used for the icon and, at 18% opacity, the tile background.
+ * @param color - Accent color; used for the icon and, at 16% opacity, the tile background.
  * @param children - Icon element to render inside the tile.
  */
 function IconTile({ color, children }: { color: string; children: React.ReactNode }) {
@@ -55,7 +55,7 @@ function IconTile({ color, children }: { color: string; children: React.ReactNod
         width: 28,
         height: 28,
         borderRadius: 'var(--radius-sm)',
-        background: `color-mix(in srgb, ${color} 18%, transparent)`,
+        background: `color-mix(in oklch, ${color} 16%, transparent)`,
         color,
       }}
     >
@@ -83,25 +83,28 @@ function NodeRow({
   return (
     <button
       onClick={onClick}
-      className="w-full text-left flex items-center transition-colors"
-      style={{
-        gap: 10,
-        padding: '8px 10px',
-        borderRadius: 'var(--radius-sm)',
-        background: 'var(--surface-raised)',
-        border: '1px solid var(--border-subtle)',
-        color: 'var(--text-primary)',
-      }}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent-ring)')}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-subtle)')}
+      className="rg-press rg-hover w-full text-left flex items-center"
+      style={
+        {
+          gap: 10,
+          padding: '7px 8px',
+          borderRadius: 'var(--radius-sm)',
+          borderWidth: 1,
+          borderStyle: 'solid',
+          '--rg-fg': 'var(--text-primary)',
+          '--rg-hover-bg': 'var(--surface-hover)',
+          '--rg-hover-bd': 'var(--border-subtle)',
+        } as React.CSSProperties
+      }
     >
       <IconTile color={color}>{icon}</IconTile>
       <div className="flex flex-col min-w-0">
         <span
           style={{
-            fontFamily: 'var(--font-mono)',
+            fontFamily: 'var(--font-sans)',
             fontSize: 'var(--text-sm)',
             fontWeight: 'var(--weight-medium)' as never,
+            letterSpacing: 'var(--tracking-tight)',
           }}
         >
           {title}
@@ -111,7 +114,7 @@ function NodeRow({
           style={{
             fontFamily: subtitleMono ? 'var(--font-mono)' : undefined,
             fontSize: 'var(--text-xs)',
-            color: 'var(--text-secondary)',
+            color: 'var(--text-muted)',
           }}
         >
           {subtitle}
@@ -210,22 +213,23 @@ export function PluginDrawer({
   return (
     <div
       data-testid="plugin-drawer"
-      className="absolute right-0 top-0 h-full z-50 flex flex-col"
+      className="rg-panel-enter absolute right-0 top-0 h-full z-50 flex flex-col"
       style={{
         width: 'var(--rail-drawer)',
         background: 'var(--surface)',
-        borderLeft: '1px solid var(--border)',
+        borderLeft: '1px solid var(--border-subtle)',
         boxShadow: 'var(--shadow-panel)',
       }}
     >
       <div
         className="flex items-center justify-between"
-        style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)' }}
+        style={{ padding: '12px 12px 12px 16px', borderBottom: '1px solid var(--border-subtle)' }}
       >
         <span
           style={{
             fontSize: 'var(--text-base)',
             fontWeight: 'var(--weight-semibold)' as never,
+            letterSpacing: 'var(--tracking-tight)',
             color: 'var(--text-primary)',
           }}
         >
@@ -233,10 +237,17 @@ export function PluginDrawer({
         </span>
         <button
           onClick={onClose}
-          className="flex items-center justify-center rounded transition-colors"
-          style={{ width: 26, height: 26, color: 'var(--text-secondary)' }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          className="rg-press rg-hover flex items-center justify-center"
+          style={
+            {
+              width: 28,
+              height: 28,
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid transparent',
+              '--rg-fg': 'var(--text-muted)',
+              '--rg-hover-fg': 'var(--text-primary)',
+            } as React.CSSProperties
+          }
           aria-label="Close"
         >
           <X size={15} />
@@ -244,7 +255,7 @@ export function PluginDrawer({
       </div>
 
       {/* Search */}
-      <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
+      <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
         <div className="flex items-center" style={{ position: 'relative' }}>
           <Search
             size={14}
@@ -257,21 +268,32 @@ export function PluginDrawer({
             placeholder="Search plugins…"
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Escape' && (query ? setQuery('') : onClose())}
-            className="w-full"
+            className="rg-field w-full"
             style={{
-              padding: '7px 28px 7px 30px',
+              height: 32,
+              padding: '0 28px 0 30px',
               borderRadius: 'var(--radius-sm)',
               fontSize: 'var(--text-sm)',
-              background: 'var(--surface-input)',
               color: 'var(--text-primary)',
-              border: '1px solid var(--border)',
+              outline: 'none',
             }}
           />
           {query && (
             <button
               onClick={() => setQuery('')}
-              className="flex items-center justify-center"
-              style={{ position: 'absolute', right: 6, width: 20, height: 20, color: 'var(--text-muted)' }}
+              className="rg-hover flex items-center justify-center"
+              style={
+                {
+                  position: 'absolute',
+                  right: 6,
+                  width: 20,
+                  height: 20,
+                  borderRadius: 'var(--radius-xs)',
+                  border: '1px solid transparent',
+                  '--rg-fg': 'var(--text-muted)',
+                  '--rg-hover-fg': 'var(--text-primary)',
+                } as React.CSSProperties
+              }
               aria-label="Clear search"
             >
               <X size={13} />
@@ -347,16 +369,16 @@ export function PluginDrawer({
             <div key={group.label}>
               <button
                 onClick={() => toggle(group.label)}
-                className="w-full flex items-center transition-colors"
-                style={{
-                  gap: 6,
-                  padding: '6px 6px',
-                  borderRadius: 'var(--radius-sm)',
-                  background: 'transparent',
-                  color: 'var(--text-secondary)',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                className="rg-hover w-full flex items-center"
+                style={
+                  {
+                    gap: 6,
+                    padding: '6px 6px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid transparent',
+                    '--rg-fg': 'var(--text-secondary)',
+                  } as React.CSSProperties
+                }
                 aria-expanded={isOpenGroup}
               >
                 <ChevronRight

@@ -5,7 +5,7 @@
  *
  * @module components/Toast
  */
-import { useEffect } from 'react';
+import { useEffect, type CSSProperties } from 'react';
 import { CircleCheck, CircleX, TriangleAlert, X } from 'lucide-react';
 
 /** Payload describing one notification. */
@@ -55,16 +55,16 @@ export function Toast({ toast, onDismiss, onDetails }: ToastProps) {
 
   return (
     <div
-      className="fixed bottom-4 right-4 flex items-start gap-2.5"
+      key={toast.id ?? `${toast.tone}:${toast.title}`}
+      className="rg-toast fixed bottom-4 right-4 flex items-start gap-2.5"
       style={{
         zIndex: 70,
         width: 320,
         padding: '12px 14px',
-        background: 'var(--surface-raised)',
+        background: 'var(--surface-overlay)',
         border: '1px solid var(--border)',
-        borderLeft: `2px solid ${color}`,
         borderRadius: 'var(--radius-md)',
-        boxShadow: 'var(--shadow-lg)',
+        boxShadow: 'var(--shadow-lg), var(--shadow-inset)',
       }}
       role="status"
     >
@@ -103,7 +103,7 @@ export function Toast({ toast, onDismiss, onDetails }: ToastProps) {
               border: 'none',
               fontSize: 'var(--text-xs)',
               fontWeight: 600,
-              color: 'var(--accent)',
+              color: 'var(--accent-fg)',
               cursor: 'pointer',
             }}
           >
@@ -113,8 +113,12 @@ export function Toast({ toast, onDismiss, onDetails }: ToastProps) {
       </div>
       <button
         onClick={onDismiss}
-        className="flex items-center justify-center rounded shrink-0"
-        style={{ width: 20, height: 20, color: 'var(--text-muted)' }}
+        className="rg-press rg-hover flex items-center justify-center rounded shrink-0"
+        style={{
+          width: 20,
+          height: 20,
+          ...({ '--rg-fg': 'var(--text-muted)', '--rg-hover-fg': 'var(--text-primary)' } as CSSProperties),
+        }}
         aria-label="Dismiss"
       >
         <X size={13} />

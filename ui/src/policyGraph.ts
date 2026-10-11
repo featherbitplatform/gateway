@@ -20,7 +20,7 @@ import type { PortDecl, PortSpec, Policy, Supernode } from './types';
 /** Stroke color for each port kind, used for both edges and connection previews. */
 export const PORT_STROKE: Record<PortDecl['kind'], string> = {
   success: 'var(--success)',
-  outcome: 'var(--accent)',
+  outcome: 'var(--text-muted)',
   error: 'var(--error)',
 };
 

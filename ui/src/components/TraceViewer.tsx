@@ -23,16 +23,37 @@ interface TraceViewerProps {
 
 /** Shared small-button style for the trace header/detail-pane actions
  *  ("Copy to sandbox", "Copy as agent prompt", "Why this port?", …). */
-const headerButton: CSSProperties = {
+const headerButton = {
   flexShrink: 0,
-  padding: '3px 10px',
+  height: 24,
+  padding: '0 9px',
   borderRadius: 'var(--radius-sm)',
+  borderWidth: 1,
+  borderStyle: 'solid',
   fontSize: 'var(--text-2xs)',
   fontWeight: 500,
-  background: 'var(--surface-input)',
-  color: 'var(--text-primary)',
-  border: '1px solid var(--border)',
-};
+  whiteSpace: 'nowrap',
+  // Colors travel as rg-hover variables: inline background/color would
+  // beat the class's :hover rule.
+  '--rg-bg': 'var(--surface-raised)',
+  '--rg-fg': 'var(--text-primary)',
+  '--rg-bd': 'var(--border)',
+  '--rg-hover-bg': 'var(--surface-raised)',
+  '--rg-hover-bd': 'var(--border-strong)',
+} as CSSProperties;
+
+/** Filled-accent variant of {@link headerButton} for the primary header action. */
+const headerButtonPrimary = {
+  ...headerButton,
+  '--rg-bg': 'var(--accent)',
+  '--rg-fg': 'var(--text-on-accent)',
+  '--rg-bd': 'transparent',
+  '--rg-hover-bg': 'var(--accent-hover)',
+  '--rg-hover-bd': 'transparent',
+} as CSSProperties;
+
+/** Classes every header button carries (press scale + token hover). */
+const HEADER_BUTTON_CLASS = 'rg-press rg-hover';
 
 /** Human wording for each edge the engine can follow after a node. */
 const EDGE_LABEL: Record<EdgeKind, string> = {
@@ -55,7 +76,7 @@ const EDGE_IS_PROBLEM: Partial<Record<EdgeKind, boolean>> = {
 
 /** Colour token for a change kind. */
 function changeColor(kind: Change['kind']): string {
-  if (kind === 'added') return 'var(--success, #22c55e)';
+  if (kind === 'added') return 'var(--success)';
   if (kind === 'removed') return 'var(--error)';
   return 'var(--accent-hover)';
 }
@@ -184,16 +205,22 @@ export function TraceViewer({ trace, onAskAgent }: TraceViewerProps) {
               role="option"
               aria-selected={isSelected}
               onClick={() => setSelected(i)}
-              className="w-full text-left flex items-center transition-colors"
-              style={{
-                gap: 8,
-                padding: '7px 9px',
-                borderRadius: 'var(--radius-sm)',
-                background: isSelected ? 'var(--surface-active)' : 'var(--surface-raised)',
-                boxShadow: isSelected ? 'inset 0 0 0 1px var(--accent-ring)' : 'none',
-                border: '1px solid var(--border-subtle)',
-                color: 'var(--text-primary)',
-              }}
+              className="rg-hover w-full text-left flex items-center"
+              style={
+                {
+                  gap: 8,
+                  padding: '7px 9px',
+                  borderRadius: 'var(--radius-sm)',
+                  borderWidth: 1,
+                  borderStyle: 'solid',
+                  boxShadow: isSelected ? 'inset 0 0 0 1px var(--accent-ring)' : 'none',
+                  '--rg-bg': isSelected ? 'var(--surface-active)' : 'var(--surface-raised)',
+                  '--rg-fg': 'var(--text-primary)',
+                  '--rg-bd': 'var(--border-subtle)',
+                  '--rg-hover-bg': isSelected ? 'var(--surface-active)' : 'var(--surface-raised)',
+                  '--rg-hover-bd': isSelected ? 'var(--border-subtle)' : 'var(--border-strong)',
+                } as React.CSSProperties
+              }
             >
               <span
                 className="flex items-center justify-center shrink-0"
@@ -201,7 +228,7 @@ export function TraceViewer({ trace, onAskAgent }: TraceViewerProps) {
                   width: 22,
                   height: 22,
                   borderRadius: 'var(--radius-sm)',
-                  background: `color-mix(in srgb, ${meta.color} 18%, transparent)`,
+                  background: `color-mix(in oklch, ${meta.color} 16%, transparent)`,
                   color: meta.color,
                 }}
               >
@@ -321,9 +348,7 @@ export function TraceViewer({ trace, onAskAgent }: TraceViewerProps) {
                   onClick={() => onAskAgent(step.node_id)}
                   title={`Open the chat and ask why ${step.node_id} exited on port ${step.port ?? 'error'}`}
                   style={headerButton}
-                  className="flex items-center gap-1"
-                  onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+                  className={`${HEADER_BUTTON_CLASS} flex items-center gap-1`}
                 >
                   <MessageSquare size={11} />
                   Ask AI about this step
@@ -420,9 +445,8 @@ export function TraceHeader({
             <button
               onClick={onCopyToSandbox}
               title="Load this request's context into the Sandbox tab to replay or tweak it"
+              className={HEADER_BUTTON_CLASS}
               style={headerButton}
-              onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-              onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
             >
               Copy to sandbox
             </button>
@@ -431,10 +455,8 @@ export function TraceHeader({
             <button
               onClick={onAskAgent}
               title={`Open the chat with this trace and work out why the client got ${trace.status}`}
-              className="flex items-center gap-1"
-              style={{ ...headerButton, background: 'var(--accent)', color: 'var(--text-on-accent)', border: 'none' }}
-              onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-              onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+              className={`${HEADER_BUTTON_CLASS} flex items-center gap-1`}
+              style={headerButtonPrimary}
             >
               <Bot size={11} />
               Troubleshoot with AI
@@ -444,9 +466,8 @@ export function TraceHeader({
             <button
               onClick={onCopyPrompt}
               title="Copy the same troubleshooting prompt, trace inlined, for an external agent"
+              className={HEADER_BUTTON_CLASS}
               style={headerButton}
-              onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-              onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
             >
               Copy prompt
             </button>

@@ -11,7 +11,7 @@
  *
  * @module components/LoginScreen
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { LogIn, TriangleAlert } from 'lucide-react';
 import {
   getCredentials,
@@ -81,8 +81,8 @@ export function LoginGate({ children }: { children: ReactNode }) {
       {children}
       {expired && (
         <div
-          className="fixed inset-0 flex items-center justify-center"
-          style={{ background: 'var(--overlay, rgba(0, 0, 0, 0.55))', zIndex: 1000, padding: 16 }}
+          className="rg-scrim fixed inset-0 flex items-center justify-center"
+          style={{ background: 'var(--scrim)', zIndex: 1000, padding: 16 }}
         >
           <LoginForm
             expired
@@ -98,14 +98,15 @@ export function LoginGate({ children }: { children: ReactNode }) {
   );
 }
 
+/** Text input style; border, background and focus ring come from rg-field. */
 const inputStyle = {
   width: '100%',
-  padding: '8px 10px',
+  height: 34,
+  padding: '0 10px',
   borderRadius: 'var(--radius-sm)',
-  border: '1px solid var(--border)',
-  background: 'var(--surface-input)',
   color: 'var(--text-primary)',
   fontSize: 'var(--text-sm)',
+  outline: 'none',
 } as const;
 
 const labelStyle = {
@@ -113,6 +114,7 @@ const labelStyle = {
   flexDirection: 'column',
   gap: 4,
   fontSize: 'var(--text-xs)',
+  fontWeight: 500,
   color: 'var(--text-secondary)',
 } as const;
 
@@ -161,10 +163,10 @@ function LoginForm({
         width: '100%',
         maxWidth: 340,
         padding: 28,
-        borderRadius: 'var(--radius-md)',
+        borderRadius: 'var(--radius-lg)',
         background: 'var(--surface)',
         border: '1px solid var(--border)',
-        boxShadow: 'var(--shadow-md)',
+        boxShadow: 'var(--shadow-lg), var(--shadow-inset)',
         display: 'flex',
         flexDirection: 'column',
         gap: 14,
@@ -194,6 +196,7 @@ function LoginForm({
           onChange={(e) => setUsername(e.target.value)}
           autoComplete="username"
           autoFocus={!expired || initialUsername === ''}
+          className="rg-field"
           style={inputStyle}
         />
       </label>
@@ -205,11 +208,17 @@ function LoginForm({
           onChange={(e) => setPassword(e.target.value)}
           autoComplete="current-password"
           autoFocus={expired && initialUsername !== ''}
+          className="rg-field"
           style={inputStyle}
         />
       </label>
       <label className="flex items-center gap-2" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
-        <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+        <input
+          type="checkbox"
+          checked={remember}
+          onChange={(e) => setRemember(e.target.checked)}
+          style={{ accentColor: 'var(--accent)' }}
+        />
         Remember me on this browser
       </label>
       {isInsecureConnection() && (
@@ -232,12 +241,18 @@ function LoginForm({
       <button
         type="submit"
         disabled={busy || username === '' || password === ''}
-        className="flex items-center justify-center gap-1.5"
+        className="rg-press rg-hover flex items-center justify-center gap-1.5"
         style={{
-          padding: '8px 0',
+          height: 36,
           borderRadius: 'var(--radius-sm)',
-          background: 'var(--accent)',
-          color: 'var(--text-on-accent)',
+          borderWidth: 1,
+          borderStyle: 'solid',
+          ...({
+            '--rg-bg': 'var(--accent)',
+            '--rg-fg': 'var(--text-on-accent)',
+            '--rg-bd': 'transparent',
+            '--rg-hover-bg': 'var(--accent-hover)',
+          } as CSSProperties),
           fontSize: 'var(--text-sm)',
           fontWeight: 'var(--weight-medium)' as never,
           opacity: busy || username === '' || password === '' ? 0.6 : 1,

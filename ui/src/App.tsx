@@ -5,7 +5,7 @@
  *
  * @module App
  */
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { GraphCanvas } from './components/GraphCanvas';
 import { PluginConfigPanel } from './components/PluginConfigPanel';
@@ -954,10 +954,10 @@ export default function App() {
           className="text-center"
           style={{
             padding: 32,
-            borderRadius: 'var(--radius-md)',
+            borderRadius: 'var(--radius-lg)',
             background: 'var(--surface)',
             border: '1px solid var(--border)',
-            boxShadow: 'var(--shadow-md)',
+            boxShadow: 'var(--shadow-lg), var(--shadow-inset)',
             maxWidth: 420,
           }}
         >
@@ -984,13 +984,21 @@ export default function App() {
           </p>
           <button
             onClick={loadData}
+            className="rg-press rg-hover"
             style={{
-              padding: '7px 18px',
+              height: 32,
+              padding: '0 18px',
               borderRadius: 'var(--radius-sm)',
               fontSize: 'var(--text-sm)',
               fontWeight: 500,
-              background: 'var(--accent)',
-              color: 'var(--text-on-accent)',
+              borderWidth: 1,
+              borderStyle: 'solid',
+              ...({
+                '--rg-bg': 'var(--accent)',
+                '--rg-fg': 'var(--text-on-accent)',
+                '--rg-bd': 'transparent',
+                '--rg-hover-bg': 'var(--accent-hover)',
+              } as CSSProperties),
             }}
           >
             Retry

@@ -1,58 +1,72 @@
 .main {
-  max-width: 1120px;
+  max-width: 1160px;
   margin: 0 auto;
-  padding: 0 1.5rem 4rem;
+  padding: 0 1.5rem 5rem;
 }
 
-/* ---- Hero -------------------------------------------------------------- */
+/* ---- Hero: left-aligned copy, real config on the right ------------------- */
 
 .hero {
   display: grid;
   grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-  gap: 3rem;
+  gap: 3.5rem;
   align-items: center;
-  padding: 4rem 0 3rem;
+  padding: 4.5rem 0 3.5rem;
 }
 
 .heroText {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 1rem;
+  gap: 1.25rem;
 }
 
-/* Mark and wordmark sit on one line; the parent .heroText is a column, so they
-   need their own row. */
+/* Brand strip: mark + wordmark on one row above the headline. */
 .heroBrand {
   display: flex;
   align-items: center;
-  gap: 0.875rem;
+  gap: 0.625rem;
 }
 
 .heroMark {
   display: block;
   /* The mark is a tall 511x853. Drive it from height and let width follow the
-     aspect ratio — never set both, or it gets squashed. */
-  height: 64px;
+     aspect ratio; never set both, or it gets squashed. The glow token is
+     empty in light mode, and the mark is the only element that glows. */
+  height: 36px;
   width: auto;
+  filter: var(--fb-glow-mark);
+}
+
+.heroWordmark {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--fb-text);
 }
 
 .heroTitle {
-  font-size: 3rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: clamp(2.25rem, 4.2vw, 3.25rem);
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.03em;
   margin: 0;
+  max-width: 14ch;
+  text-wrap: balance;
 }
 
 .heroTagline {
   font-size: 1.125rem;
-  color: var(--ifm-color-content-secondary);
+  line-height: 1.6;
+  color: var(--fb-text-secondary);
   margin: 0;
+  max-width: 38ch;
   text-wrap: pretty;
 }
 
 .heroActions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
   margin-top: 0.5rem;
 }
@@ -63,23 +77,23 @@
 }
 
 .heroCode :global(.theme-code-block) {
-  box-shadow: none;
-  border: 1px solid var(--ifm-toc-border-color);
+  margin-bottom: 0;
+  box-shadow: var(--fb-shadow-lg), var(--fb-shadow-inset);
 }
 
-/* ---- Pipeline strip ----------------------------------------------------- */
+/* ---- Pipeline strip: the canvas language, in miniature ------------------ */
 
 .pipeline {
-  padding: 2rem 0;
-  border-top: 1px solid var(--ifm-toc-border-color);
+  padding: 2.5rem 0;
+  border-top: 1px solid var(--fb-border-subtle);
 }
 
 .pipelineRow {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0;
   flex-wrap: wrap;
+  row-gap: 1rem;
 }
 
 .pipelineStep {
@@ -89,94 +103,228 @@
 
 .pipelineNode {
   display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.75rem 1.25rem;
-  border: 1px solid var(--ifm-toc-border-color);
-  border-top: 2px solid var(--node-color);
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 1rem 0.625rem 0.625rem;
+  border: 1px solid var(--fb-border);
   border-radius: 8px;
-  background: var(--ifm-background-surface-color);
-  min-width: 9rem;
+  background: var(--fb-surface-raised);
+  box-shadow: var(--fb-shadow-sm), var(--fb-shadow-inset);
+  min-width: 9.5rem;
 }
 
-.pipelineNodeType {
-  font-size: 0.6875rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--ifm-color-content-secondary);
+/* Tinted plugin chip: identity color lives here, never as a filled header. */
+.pipelineChip {
+  flex: none;
+  width: 1.375rem;
+  height: 1.375rem;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in oklch, var(--node-color) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--node-color) 35%, transparent);
+}
+
+/* Identity dot inside the chip, in the full plugin color. */
+.pipelineChip::after {
+  content: '';
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--node-color);
+}
+
+.pipelineNodeText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.0625rem;
 }
 
 .pipelineNodeLabel {
-  font-family: var(--ifm-font-family-monospace);
   font-size: 0.875rem;
   font-weight: 500;
+  color: var(--fb-text);
 }
 
+.pipelineNodeType {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.75rem;
+  color: var(--fb-text-muted);
+}
+
+/* Success edge: solid green, as on the policy canvas. */
 .pipelineEdge {
   width: 2.5rem;
-  height: 1px;
-  background: var(--ifm-color-primary);
+  height: 1.5px;
+  background: var(--fb-success);
   position: relative;
 }
 
 .pipelineEdge::after {
   content: '';
   position: absolute;
-  right: 0;
+  right: -1px;
   top: -3px;
-  border-left: 6px solid var(--ifm-color-primary);
-  border-top: 3.5px solid transparent;
-  border-bottom: 3.5px solid transparent;
+  border-left: 6px solid var(--fb-success);
+  border-top: 3.75px solid transparent;
+  border-bottom: 3.75px solid transparent;
 }
 
 .pipelineCaption {
   text-align: center;
-  color: var(--ifm-color-content-secondary);
+  color: var(--fb-text-secondary);
   font-size: 0.875rem;
   margin: 1.5rem auto 0;
   max-width: 40rem;
   text-wrap: pretty;
 }
 
-/* ---- Feature grid -------------------------------------------------------- */
+/* ---- Features: one lead tile with the real editor, two side tiles,
+   then two grouped lists. No row of identical cards. -------------------- */
 
 .features {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1rem;
-  padding-top: 2rem;
-  border-top: 1px solid var(--ifm-toc-border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 3.5rem;
+  padding-top: 3rem;
+  border-top: 1px solid var(--fb-border-subtle);
 }
 
-.featureCard {
+.featureLead {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.leadCard,
+.sideCard {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--fb-border-subtle);
+  border-radius: 8px;
+  background: var(--fb-surface);
+  color: inherit;
+  text-decoration: none;
+  box-shadow: var(--fb-shadow-inset);
+  transition:
+    border-color var(--fb-dur-fast) ease,
+    transform var(--fb-dur-press) var(--fb-ease-out);
+}
+
+.leadCard {
+  overflow: hidden;
+}
+
+.leadText {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  padding: 1.25rem;
-  border: 1px solid var(--ifm-toc-border-color);
-  border-radius: 8px;
-  background: var(--ifm-background-surface-color);
-  color: inherit;
-  text-decoration: none;
-  transition: border-color 120ms cubic-bezier(0.22, 1, 0.36, 1);
+  padding: 1.5rem 1.5rem 1.25rem;
 }
 
-.featureCard:hover {
-  border-color: var(--ifm-color-primary);
-  color: inherit;
-  text-decoration: none;
+.leadText h2 {
+  font-size: 1.375rem;
+  margin: 0;
 }
 
-.featureCard h3 {
+.leadText p {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--fb-text-secondary);
+  text-wrap: pretty;
+}
+
+.leadShot {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: auto;
+  border-top: 1px solid var(--fb-border-subtle);
+}
+
+.sideStack {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: 1rem;
+}
+
+.sideCard {
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 1.5rem;
+}
+
+.sideCard h3,
+.groupItem h3 {
   font-size: 1rem;
   margin: 0;
 }
 
-.featureCard p {
+.sideCard p,
+.groupItem p {
   font-size: 0.875rem;
-  color: var(--ifm-color-content-secondary);
+  line-height: 1.55;
+  color: var(--fb-text-secondary);
   margin: 0;
   text-wrap: pretty;
+}
+
+.groups {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 3rem;
+}
+
+.groupHeading {
+  font-size: 1.125rem;
+  margin: 0 0 0.75rem;
+}
+
+.groupList {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--fb-border-subtle);
+}
+
+.groupItem {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 1rem 0.75rem;
+  margin: 0 -0.75rem;
+  border-radius: 8px;
+  color: inherit;
+  text-decoration: none;
+  transition: background-color var(--fb-dur-fast) ease;
+}
+
+.groupItem:active,
+.leadCard:active,
+.sideCard:active {
+  transform: scale(0.99);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .leadCard:hover,
+  .sideCard:hover {
+    border-color: var(--fb-border-strong);
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .groupItem:hover {
+    background: var(--fb-surface-hover);
+    color: inherit;
+    text-decoration: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .groupItem:active,
+  .leadCard:active,
+  .sideCard:active {
+    transform: none;
+  }
 }
 
 /* ---- Responsive ---------------------------------------------------------- */
@@ -184,10 +332,26 @@
 @media (max-width: 996px) {
   .hero {
     grid-template-columns: 1fr;
+    gap: 2.5rem;
     padding-top: 2.5rem;
   }
 
-  .features {
+  .featureLead,
+  .groups {
     grid-template-columns: 1fr;
+  }
+
+  .sideStack {
+    grid-template-rows: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .main {
+    padding: 0 1rem 3.5rem;
+  }
+
+  .pipelineEdge {
+    width: 1.5rem;
   }
 }

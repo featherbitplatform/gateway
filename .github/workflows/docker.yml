@@ -46,11 +46,11 @@ jobs:
           - platform: linux/amd64
             runner: ubuntu-24.04
             variant: headless
-            cargo_flags: --no-default-features
+            cargo_flags: --no-default-features --features mimalloc
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
             variant: headless
-            cargo_flags: --no-default-features
+            cargo_flags: --no-default-features --features mimalloc
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4

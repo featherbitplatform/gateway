@@ -43,7 +43,7 @@ const components: Components = {
   h3: ({ children }) => <h4 style={{ margin: '6px 0 4px', fontSize: 'var(--text-xs)' }}>{children}</h4>,
   h4: ({ children }) => <h4 style={{ margin: '6px 0 4px', fontSize: 'var(--text-xs)' }}>{children}</h4>,
   a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
+    <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-fg)' }}>
       {children}
     </a>
   ),

@@ -76,20 +76,25 @@ docker pull featherbit/featherbit:edge        # tip of develop
 
 Every tag also exists with a `-headless` suffix — the same gateway compiled without the embedded web editor (`ui` cargo feature off): admin REST API, health/metrics, and the data plane are identical; only the UI is gone. Published by `.github/workflows/docker.yml` on release tags and on every push to `main`/`develop`.
 
-To build the image yourself: the gateway is a fully static binary (musl) shipped in a `FROM scratch` image — no OS, no shell, no extra attack surface. The final image contains only the binary, CA certificates, and the default config. It is built with the `dist` Cargo profile (release plus fat LTO and a single codegen unit) and uses [mimalloc](https://github.com/microsoft/mimalloc) as its allocator, because musl's default allocator serializes under concurrent load:
+To build the image yourself: the gateway is a fully static binary (glibc, linked with `+crt-static`) shipped in a `FROM scratch` image — no OS, no shell, no extra attack surface. The final image contains only the binary, CA certificates, a one-line `/etc/nsswitch.conf` (so hostname lookups use `/etc/hosts`, then DNS), and the default config. It is built with the `dist` Cargo profile (release plus fat LTO and a single codegen unit) and uses [mimalloc](https://github.com/microsoft/mimalloc) as its allocator:
 
 ```dockerfile
-FROM rust:alpine AS builder
-RUN apk add --no-cache musl-dev g++ make
+FROM rust:bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
 COPY src/ src/
 COPY ui/dist/ ui/dist/
-RUN cargo build --profile dist
+COPY website/docs/ website/docs/
+RUN TARGET="$(rustc -vV | sed -n 's/^host: //p')" \
+ && RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static-libstdc++" \
+    cargo build --profile dist --target "$TARGET" \
+ && cp "target/$TARGET/dist/featherbit" /featherbit \
+ && mkdir -p /rootfs/etc && printf 'hosts: files dns\n' > /rootfs/etc/nsswitch.conf
 
 FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /app/target/dist/featherbit /gateway
+COPY --from=builder /rootfs/etc/nsswitch.conf /etc/
+COPY --from=builder /featherbit /gateway
 COPY config/ /etc/gateway/
 EXPOSE 8080 9090
 ENTRYPOINT ["/gateway"]
@@ -103,9 +108,9 @@ Note that the UI must be built (`ui/dist/`) before the image, since `cargo build
 The chart `featherbit-gateway` is published as an OCI artifact on every release, to GHCR and to Docker Hub (same chart, pick either). Its version equals the gateway version it installs.
 
 ```bash
-helm install featherbit oci://ghcr.io/featherbitplatform/charts/featherbit-gateway --version 0.16.0
+helm install featherbit oci://ghcr.io/featherbitplatform/charts/featherbit-gateway --version 0.17.0
 # or
-helm install featherbit oci://registry-1.docker.io/featherbit/featherbit-gateway --version 0.16.0
+helm install featherbit oci://registry-1.docker.io/featherbit/featherbit-gateway --version 0.17.0
 ```
 
 A bare install runs one replica with a `/hello` mock route and an `/api/*` route to `${UPSTREAM_HOST}`, the admin API and UI on an internal Service, and a generated admin password:

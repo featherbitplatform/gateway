@@ -48,20 +48,20 @@ const tabButtonStyle = (active: boolean): React.CSSProperties => ({
   borderRadius: 'var(--radius-sm)',
   fontSize: 'var(--text-sm)',
   fontWeight: 500,
-  background: active ? 'var(--surface-active)' : 'transparent',
+  background: active ? 'var(--surface-raised)' : 'transparent',
   color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-  boxShadow: active ? 'inset 0 0 0 1px var(--accent-ring)' : 'none',
+  boxShadow: active ? 'var(--shadow-sm), var(--shadow-inset)' : 'none',
+  transition: 'background-color var(--dur-fast) ease, color var(--dur-fast) ease',
 });
 
 const inputStyle: React.CSSProperties = {
+  outline: 'none',
   width: '100%',
   padding: '6px 10px',
   borderRadius: 'var(--radius-sm)',
   fontFamily: 'var(--font-mono)',
   fontSize: 'var(--text-xs)',
-  background: 'var(--surface-input)',
   color: 'var(--text-primary)',
-  border: '1px solid var(--border)',
 };
 
 /** Panel shown instead of the tabs when debug mode is off. */
@@ -297,6 +297,7 @@ export function DebugPanel({
                   <select
                     value={filterPolicy}
                     onChange={(e) => setFilterPolicy(e.target.value)}
+                    className="rg-field"
                     style={{ ...inputStyle, appearance: 'auto', marginBottom: 4 }}
                     aria-label="Filter by policy"
                   >
@@ -418,6 +419,7 @@ export function DebugPanel({
                       <select
                         value={policyName}
                         onChange={(e) => setPolicyName(e.target.value)}
+                        className="rg-field"
                         style={{ ...inputStyle, appearance: 'auto', marginTop: 4 }}
                       >
                         {policies.map((p) => (
@@ -435,6 +437,7 @@ export function DebugPanel({
                           value={nodesJson}
                           onChange={(e) => setNodesJson(e.target.value)}
                           rows={10}
+                          className="rg-field"
                           style={{ ...inputStyle, marginTop: 4 }}
                         />
                       </label>
@@ -443,6 +446,7 @@ export function DebugPanel({
                         <select
                           value={onErrorMode}
                           onChange={(e) => setOnErrorMode(e.target.value as 'stop' | 'client')}
+                          className="rg-field"
                           style={{ ...inputStyle, appearance: 'auto', marginTop: 4 }}
                         >
                           <option value="stop">stop — leave error ports unwired</option>
@@ -457,6 +461,7 @@ export function DebugPanel({
                       value={contextJson}
                       onChange={(e) => setContextJson(e.target.value)}
                       rows={8}
+                      className="rg-field"
                       style={{ ...inputStyle, marginTop: 4 }}
                     />
                   </label>

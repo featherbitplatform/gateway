@@ -5,7 +5,7 @@
  *
  * @module components/ThemeToggle
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 import { Moon, Sun } from 'lucide-react';
 import { isDarkTheme, toggleTheme, THEME_CHANGE_EVENT } from '../theme';
 
@@ -34,16 +34,13 @@ export function ThemeToggle() {
   return (
     <button
       onClick={toggleTheme}
-      className="flex items-center justify-center transition-colors"
+      className="rg-press rg-hover flex items-center justify-center"
       style={{
         width: 28,
         height: 28,
         borderRadius: 'var(--radius-sm)',
-        background: 'transparent',
-        color: 'var(--text-secondary)',
+        ...({ '--rg-fg': 'var(--text-secondary)', '--rg-hover-fg': 'var(--text-primary)' } as CSSProperties),
       }}
-      onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
-      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
       title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
       aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
     >

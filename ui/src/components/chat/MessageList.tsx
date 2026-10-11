@@ -79,7 +79,7 @@ export function MessageList({ thread, pendingConfirm, onResolveConfirm, busy }: 
           data-testid="chat-thinking"
           style={{ alignSelf: 'flex-start', padding: '6px 10px', fontSize: 'var(--text-2xs)', color: 'var(--text-muted)' }}
         >
-          <Loader2 size={12} className="animate-spin" style={{ color: 'var(--accent)' }} />
+          <Loader2 size={12} className="animate-spin" style={{ color: 'var(--accent-fg)' }} />
           thinking…
         </div>
       )}

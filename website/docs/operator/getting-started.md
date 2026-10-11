@@ -27,7 +27,7 @@ helm install edge oci://ghcr.io/featherbitplatform/charts/featherbit-gateway \
   --set config.gatewayConfigMap=edge-gateway-config
 ```
 
-With `config.gatewayConfigMap` set, the gateway chart renders `system.yaml` only and mounts `gateway.yaml` from the named ConfigMap, which must live in the release namespace. The ConfigMap is optional at pod start: until the operator renders it the gateway serves no routes, and it hot-reloads once the file appears. This value needs gateway chart 0.16 or later, or `develop` until it is released. See [Deployment](../guides/deployment.md#your-configuration).
+With `config.gatewayConfigMap` set, the gateway chart renders `system.yaml` only and mounts `gateway.yaml` from the named ConfigMap, which must live in the release namespace. The ConfigMap is optional at pod start: until the operator renders it the gateway serves no routes, and it hot-reloads once the file appears. This value needs gateway chart 0.16 or later. See [Deployment](../guides/deployment.md#your-configuration).
 
 ## 3. Bind the gateway
 

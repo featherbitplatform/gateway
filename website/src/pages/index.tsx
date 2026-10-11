@@ -3,6 +3,7 @@ import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import Layout from '@theme/Layout';
 import CodeBlock from '@theme/CodeBlock';
+import ThemedImage from '@theme/ThemedImage';
 
 import styles from './index.module.css';
 
@@ -31,59 +32,76 @@ const POLICY_SNIPPET = `policies:
       - from: backend.success
         to: client.in`;
 
-/** The gateway's real per-plugin categorical colors (ui/src/pluginMeta.tsx). */
+/** Plugin identity colors from the shared v2 palette (custom.css). */
 const PIPELINE: {label: string; type: string; color: string}[] = [
-  {label: 'listener', type: 'entry', color: '#8b5cf6'},
-  {label: 'proxy-rewrite', type: 'transform', color: '#3b82f6'},
-  {label: 'upstream', type: 'proxy', color: '#f59e0b'},
-  {label: 'client', type: 'exit', color: '#10b981'},
+  {label: 'listener', type: 'entry', color: 'var(--fb-plugin-listener)'},
+  {label: 'proxy-rewrite', type: 'transform', color: 'var(--fb-plugin-proxy)'},
+  {label: 'upstream', type: 'proxy', color: 'var(--fb-plugin-upstream)'},
+  {label: 'client', type: 'exit', color: 'var(--fb-plugin-client)'},
 ];
 
-const FEATURES: {title: string; body: string; to: string}[] = [
-  {
-    title: 'Node-graph routing policies',
-    body: 'Each route is a directed graph of plugin nodes wired through success and error ports — declared in YAML, edited visually, validated on save.',
-    to: '/docs/concepts/policies-and-graphs',
-  },
+type Feature = {title: string; body: string; to: string};
+
+/** The capability the whole product is built around. */
+const LEAD: Feature = {
+  title: 'Node-graph routing policies',
+  body: 'Each route is a directed graph of plugin nodes wired through success and error ports. Declared in YAML, edited visually, validated on save.',
+  to: '/docs/concepts/policies-and-graphs',
+};
+
+const SIDE: Feature[] = [
   {
     title: '80+ native plugins',
-    body: 'Proxying, transforms, auth (key/basic/JWT/HMAC/LDAP/OIDC), authz, rate limiting, traffic control, 17 loggers, tracing, serverless.',
+    body: 'Proxying, transforms, auth (key, basic, JWT, HMAC, LDAP, OIDC), authz, rate limiting, traffic control, 17 loggers, tracing, serverless.',
     to: '/docs/reference/plugins',
   },
   {
     title: 'Lua scripting',
-    body: 'Drop an execute(ctx) script into the pipeline. Scripts are validated at policy compile time and indistinguishable from native nodes.',
+    body: 'Drop an execute(ctx) script into the pipeline. Scripts are validated at policy compile time and behave like native nodes.',
     to: '/docs/guides/lua-scripting',
   },
+];
+
+const GROUPS: {heading: string; items: Feature[]}[] = [
   {
-    title: 'TLS, mTLS & SNI',
-    body: 'TLS termination with hot-reloading certificates, per-hostname SNI certs, and mTLS that exposes the client identity — fingerprint, CN, SAN — to the graph.',
-    to: '/docs/guides/tls',
+    heading: 'Protocols',
+    items: [
+      {
+        title: 'TLS, mTLS and SNI',
+        body: 'TLS termination with hot-reloading certificates, per-hostname SNI certs, and mTLS that exposes the client identity (fingerprint, CN, SAN) to the graph.',
+        to: '/docs/guides/tls',
+      },
+      {
+        title: 'HTTP/2 and WebSocket',
+        body: 'HTTP/2 negotiated per connection (ALPN over TLS, h2c on plaintext). WebSocket routes run the policy graph, then relay, including RFC 8441 over HTTP/2.',
+        to: '/docs/guides/tls',
+      },
+      {
+        title: 'L4 TCP/UDP streams',
+        body: 'Proxy raw TCP and UDP to a load-balanced pool, with SNI-based routing for TLS passthrough. No termination required.',
+        to: '/docs/guides/stream',
+      },
+    ],
   },
   {
-    title: 'HTTP/2 & WebSocket',
-    body: 'HTTP/2 negotiated per connection (ALPN over TLS, h2c on plaintext). WebSocket routes run the policy graph, then relay — including RFC 8441 over HTTP/2.',
-    to: '/docs/guides/tls',
-  },
-  {
-    title: 'L4 TCP/UDP streams',
-    body: 'Proxy raw TCP and UDP to a load-balanced pool, with SNI-based routing for TLS passthrough — no termination required.',
-    to: '/docs/guides/stream',
-  },
-  {
-    title: 'HA clustering with etcd',
-    body: 'Point the config source at etcd and replicas converge on the same routes, policies, and consumers. Stateless single-binary mode stays the default.',
-    to: '/docs/guides/deployment',
-  },
-  {
-    title: 'Hot-reload & graceful shutdown',
-    body: 'Config, policies, and scripts take effect without a restart; failed reloads keep the last good config serving. On SIGTERM, in-flight requests drain before exit.',
-    to: '/docs/guides/configuration',
-  },
-  {
-    title: 'Metrics, tracing & the web UI',
-    body: 'Per-route and per-node Prometheus metrics, OpenTelemetry/Zipkin tracing, health and readiness probes — plus an embedded node-graph editor.',
-    to: '/docs/guides/observability',
+    heading: 'Operations',
+    items: [
+      {
+        title: 'HA clustering with etcd',
+        body: 'Point the config source at etcd and replicas converge on the same routes, policies and consumers. Stateless single-binary mode stays the default.',
+        to: '/docs/guides/deployment',
+      },
+      {
+        title: 'Hot-reload and graceful shutdown',
+        body: 'Config, policies and scripts apply without a restart; failed reloads keep the last good config serving. On SIGTERM, in-flight requests drain before exit.',
+        to: '/docs/guides/configuration',
+      },
+      {
+        title: 'Metrics, tracing and the web UI',
+        body: 'Per-route and per-node Prometheus metrics, OpenTelemetry and Zipkin tracing, health and readiness probes, plus an embedded node-graph editor.',
+        to: '/docs/guides/observability',
+      },
+    ],
   },
 ];
 
@@ -102,13 +120,12 @@ function Hero(): ReactNode {
             width={511}
             height={853}
           />
-          <h1 className={styles.heroTitle}>featherbit</h1>
+          <span className={styles.heroWordmark}>featherbit</span>
         </div>
+        <h1 className={styles.heroTitle}>A Rust API gateway you wire as a graph</h1>
         <p className={styles.heroTagline}>
-          A high-performance API gateway delivered as a single Rust binary.
-          Routes are visual node graphs — 80+ plugins wired together through
-          success and error ports — serving HTTP/1.1, HTTP/2, WebSocket, and
-          raw TCP/UDP.
+          Routes are node graphs of 80+ plugins, wired through success and error
+          ports, serving HTTP/1.1, HTTP/2, WebSocket and TCP/UDP.
         </p>
         <div className={styles.heroActions}>
           <Link className="button button--primary button--lg" to="/docs/getting-started/intro">
@@ -139,8 +156,11 @@ function Pipeline(): ReactNode {
             <div
               className={styles.pipelineNode}
               style={{'--node-color': node.color} as React.CSSProperties}>
-              <span className={styles.pipelineNodeType}>{node.type}</span>
-              <span className={styles.pipelineNodeLabel}>{node.label}</span>
+              <span className={styles.pipelineChip} aria-hidden="true" />
+              <span className={styles.pipelineNodeText}>
+                <span className={styles.pipelineNodeLabel}>{node.label}</span>
+                <span className={styles.pipelineNodeType}>{node.type}</span>
+              </span>
             </div>
             {i < PIPELINE.length - 1 && (
               <span className={styles.pipelineEdge} aria-hidden="true" />
@@ -156,15 +176,51 @@ function Pipeline(): ReactNode {
   );
 }
 
+function FeatureLink({f, className}: {f: Feature; className: string}): ReactNode {
+  return (
+    <Link to={f.to} className={className}>
+      <h3>{f.title}</h3>
+      <p>{f.body}</p>
+    </Link>
+  );
+}
+
 function Features(): ReactNode {
   return (
     <section className={styles.features}>
-      {FEATURES.map((f) => (
-        <Link key={f.title} to={f.to} className={styles.featureCard}>
-          <h3>{f.title}</h3>
-          <p>{f.body}</p>
+      <div className={styles.featureLead}>
+        <Link to={LEAD.to} className={styles.leadCard}>
+          <div className={styles.leadText}>
+            <h2>{LEAD.title}</h2>
+            <p>{LEAD.body}</p>
+          </div>
+          <ThemedImage
+            className={styles.leadShot}
+            alt="The policy editor: a route's node graph with success and error edges"
+            sources={{
+              light: useBaseUrl('/img/ui/policy-graph-light.png'),
+              dark: useBaseUrl('/img/ui/policy-graph-dark.png'),
+            }}
+          />
         </Link>
-      ))}
+        <div className={styles.sideStack}>
+          {SIDE.map((f) => (
+            <FeatureLink key={f.title} f={f} className={styles.sideCard} />
+          ))}
+        </div>
+      </div>
+      <div className={styles.groups}>
+        {GROUPS.map((g) => (
+          <div key={g.heading} className={styles.group}>
+            <h2 className={styles.groupHeading}>{g.heading}</h2>
+            <div className={styles.groupList}>
+              {g.items.map((f) => (
+                <FeatureLink key={f.title} f={f} className={styles.groupItem} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }

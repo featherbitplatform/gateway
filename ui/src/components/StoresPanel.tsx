@@ -37,13 +37,12 @@ const labelStyle: CSSProperties = {
 };
 
 const inputStyle = (mono = false): CSSProperties => ({
+  outline: 'none',
   padding: '7px 10px',
   borderRadius: 'var(--radius-sm)',
   fontFamily: mono ? 'var(--font-mono)' : 'var(--font-sans)',
   fontSize: 'var(--text-sm)',
-  background: 'var(--surface-input)',
   color: 'var(--text-primary)',
-  border: '1px solid var(--border)',
 });
 
 const hintStyle: CSSProperties = {
@@ -126,8 +125,8 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
               width: 30,
               height: 30,
               borderRadius: 'var(--radius-sm)',
-              background: '#8b5cf6',
-              color: '#fff',
+              background: 'var(--accent-soft)',
+              color: 'var(--accent-fg)',
             }}
           >
             <Database size={15} />
@@ -158,7 +157,7 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
         <select
           value={type}
           onChange={(e) => setType(e.target.value)}
-          className="w-full"
+          className="rg-field w-full"
           style={{ ...inputStyle(), marginBottom: 16 }}
         >
           <option value="redis">redis</option>
@@ -170,7 +169,7 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
           type="text"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          className="w-full"
+          className="rg-field w-full"
           style={{ ...inputStyle(), marginBottom: 16 }}
         />
 
@@ -180,7 +179,7 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="redis://127.0.0.1:6379"
-          className="w-full"
+          className="rg-field w-full"
           style={inputStyle(true)}
         />
         <p style={hintStyle}>${'{ENV}'} placeholders stay raw &mdash; resolved only when the client is built</p>
@@ -190,7 +189,7 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="w-full"
+          className="rg-field w-full"
           style={inputStyle(true)}
         />
         <p style={hintStyle}>optional; ${'{ENV}'} recommended</p>
@@ -200,7 +199,7 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
           type="text"
           value={keyPrefix}
           onChange={(e) => setKeyPrefix(e.target.value)}
-          className="w-full"
+          className="rg-field w-full"
           style={{ ...inputStyle(), marginBottom: 16 }}
         />
 
@@ -209,7 +208,7 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
           type="number"
           value={connectTimeoutMs}
           onChange={(e) => setConnectTimeoutMs(Number(e.target.value))}
-          className="w-full"
+          className="rg-field w-full"
           style={{ ...inputStyle(), marginBottom: 4 }}
         />
         <div style={hintStyle}>Bounds a single connection attempt.</div>
@@ -219,7 +218,7 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
           type="number"
           value={connectBudgetMs}
           onChange={(e) => setConnectBudgetMs(Number(e.target.value))}
-          className="w-full"
+          className="rg-field w-full"
           style={{ ...inputStyle(), marginBottom: 4 }}
         />
         <div style={{ ...hintStyle, marginBottom: 16 }}>
@@ -281,15 +280,21 @@ export function StoresPanel({ def, onSave, onError }: StoresPanelProps) {
 
         <button
           onClick={handleSave}
-          className="w-full transition-colors"
+          className="rg-press rg-hover w-full"
           style={{
             marginTop: 12,
-            padding: '8px 0',
+            height: 34,
             borderRadius: 'var(--radius-sm)',
             fontSize: 'var(--text-sm)',
             fontWeight: 500,
-            background: 'var(--accent)',
-            color: 'var(--text-on-accent)',
+            borderWidth: 1,
+            borderStyle: 'solid',
+            ...({
+            '--rg-bg': 'var(--accent)',
+            '--rg-fg': 'var(--text-on-accent)',
+            '--rg-bd': 'transparent',
+            '--rg-hover-bg': 'var(--accent-hover)',
+          } as React.CSSProperties),
           }}
         >
           Save Store

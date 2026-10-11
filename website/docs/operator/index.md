@@ -48,7 +48,7 @@ Pick the sink that matches the gateway's `config.source`. A `FeatherbitGateway` 
 | Replicas | each replica mounts the same ConfigMap | all replicas converge on the same prefix |
 | Drift | a manual edit or deletion of the ConfigMap is re-rendered on the next reconcile | the prefix is re-applied by the 10-minute requeue |
 
-Use the **ConfigMap sink** unless you already run the gateway as an etcd cluster. In etcd mode the gateway never watches `gateway.yaml` after its first boot (it only seeds an empty prefix), so a ConfigMap could never reach it; that is why the etcd sink exists. `config.gatewayConfigMap` needs gateway chart 0.16 or later (or `develop` until it is released).
+Use the **ConfigMap sink** unless you already run the gateway as an etcd cluster. In etcd mode the gateway never watches `gateway.yaml` after its first boot (it only seeds an empty prefix), so a ConfigMap could never reach it; that is why the etcd sink exists. `config.gatewayConfigMap` needs gateway chart 0.16 or later.
 
 The ConfigMap carries `app.kubernetes.io/managed-by=featherbit-operator`, the label `featherbit.io/gateway` naming the gateway that rendered it, and the annotation `featherbit.io/config-hash` with the rendered config's hash. Because deleting a `FeatherbitGateway` leaves it in place, removing a gateway for good is a manual cleanup step: delete the ConfigMap, or the etcd prefix.
 

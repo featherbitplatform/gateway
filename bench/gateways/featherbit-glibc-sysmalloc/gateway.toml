@@ -1,0 +1,31 @@
+# Featherbit's image (Dockerfile, static glibc) built without the `mimalloc`
+# feature: glibc's own malloc. Experimental arm; configs are shared with ../featherbit.
+name = "featherbit-glibc-sysmalloc"
+image = "featherbit-bench/featherbit-glibc-sysmalloc:dev"
+build = "../../.."
+build_args = { CARGO_FLAGS = "--no-default-features --features ui,redis-store,mcp" }
+build_requires = ["ui/dist"]
+build_hint = "The Dockerfile copies ui/dist: run `npm --prefix ui ci && npm --prefix ui run build` first, there is no released image for this experimental variant."
+config_dir = "/etc/featherbit"
+common = "../featherbit/common"
+command = ["--system-config", "/etc/featherbit/system.yaml", "--gateway-config", "/etc/featherbit/gateway.yaml"]
+ports = { plain = 8000, tls = 8443 }
+
+[env]
+TOKIO_WORKER_THREADS = "@@CORES@@"
+
+[configs]
+"core.proxy" = "../featherbit/proxy"
+"payload.64k" = "../featherbit/proxy"
+"payload.1m" = "../featherbit/proxy"
+"proto.tls" = "../featherbit/tls"
+"proto.h2" = "../featherbit/tls"
+"core.routes-1k" = "../featherbit/routes-1k"
+"plugin.key-auth" = "../featherbit/key-auth"
+"plugin.jwt" = "../featherbit/jwt"
+"plugin.rate-limit" = "../featherbit/rate-limit"
+"plugin.header-rewrite" = "../featherbit/header-rewrite"
+"plugin.chain" = "../featherbit/chain"
+"script.header" = "../featherbit/script"
+
+[na]

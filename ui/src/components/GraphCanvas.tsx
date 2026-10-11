@@ -52,24 +52,58 @@ import {
 } from '../policyGraph';
 import { validatePortName } from '../portNameValidation';
 
+/** Floating-toolbar button intents (design system v2 Button variants). */
+type ToolbarIntent = 'primary' | 'secondary' | 'danger';
+
+/** Resting and hover colors per intent, passed to the rg-hover class as CSS variables. */
+const TOOLBAR_INTENT_VARS: Record<ToolbarIntent, Record<string, string>> = {
+  primary: {
+    '--rg-bg': 'var(--accent)',
+    '--rg-fg': 'var(--text-on-accent)',
+    '--rg-bd': 'transparent',
+    '--rg-hover-bg': 'var(--accent-hover)',
+  },
+  secondary: {
+    '--rg-bg': 'var(--surface-raised)',
+    '--rg-fg': 'var(--text-primary)',
+    '--rg-bd': 'var(--border)',
+    '--rg-hover-bg': 'var(--surface-raised)',
+    '--rg-hover-bd': 'var(--border-strong)',
+  },
+  danger: {
+    '--rg-bg': 'transparent',
+    '--rg-fg': 'var(--error)',
+    '--rg-bd': 'color-mix(in oklch, var(--error) 40%, transparent)',
+    '--rg-hover-bg': 'var(--error-soft)',
+  },
+};
+
 /**
- * Builds the shared inline style for floating-toolbar buttons.
+ * Builds the shared inline style for floating-toolbar buttons. Pair with
+ * {@link TOOLBAR_BUTTON_CLASS}: resting/hover colors travel as CSS variables
+ * because inline background/color would beat the :hover rule.
  *
- * @param bg - CSS background value (typically a design-token variable).
+ * @param intent - primary (filled accent), secondary (raised neutral) or
+ * danger (quiet: error text and tinted border, error-soft fill on hover).
  * @returns Style object for a compact icon-plus-label toolbar button.
  */
-const toolbarButtonStyle = (bg: string): React.CSSProperties => ({
+const toolbarButtonStyle = (intent: ToolbarIntent): React.CSSProperties => ({
   display: 'flex',
   alignItems: 'center',
   gap: 6,
-  padding: '5px 10px',
+  height: 28,
+  padding: '0 10px',
   borderRadius: 'var(--radius-sm)',
+  borderWidth: 1,
+  borderStyle: 'solid',
   fontSize: 'var(--text-xs)',
   fontWeight: 500,
-  background: bg,
-  color: 'var(--text-on-accent)',
-  transition: 'filter var(--dur-fast) var(--ease-out)',
+  whiteSpace: 'nowrap',
+  ...(TOOLBAR_INTENT_VARS[intent] as React.CSSProperties),
 });
+
+/** Class pair every toolbar button carries (press scale + token hover). */
+const TOOLBAR_BUTTON_CLASS = 'rg-press rg-hover';
 
 /** Props for {@link GraphCanvas}. */
 interface GraphCanvasProps {
@@ -413,7 +447,7 @@ export function GraphCanvas({
           {
             ...connection,
             animated: kind === 'error',
-            style: { stroke: color, strokeWidth: 2 },
+            style: { stroke: color, strokeWidth: 1.5 },
             markerEnd: {
               type: MarkerType.ArrowClosed,
               color,
@@ -778,11 +812,20 @@ export function GraphCanvas({
         }}
       >
         <div className="text-center">
-          <GitFork
-            size={28}
-            strokeWidth={1.5}
-            style={{ color: 'var(--text-muted)', margin: '0 auto 12px' }}
-          />
+          <span
+            className="flex items-center justify-center"
+            style={{
+              width: 40,
+              height: 40,
+              margin: '0 auto 12px',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--surface-sunken)',
+              border: '1px solid var(--border-subtle)',
+              color: 'var(--text-muted)',
+            }}
+          >
+            <GitFork size={18} strokeWidth={1.75} />
+          </span>
           <p
             style={{
               fontSize: 'var(--text-md)',
@@ -810,8 +853,8 @@ export function GraphCanvas({
           selected: e.id === selectedEdgeId,
           style: {
             ...e.style,
-            strokeWidth: e.id === selectedEdgeId ? 4 : 2,
-            filter: e.id === selectedEdgeId ? 'drop-shadow(0 0 4px var(--accent))' : undefined,
+            // Selection thickens the edge; no glow (glow is reserved for the mark).
+            strokeWidth: e.id === selectedEdgeId ? 2.5 : 1.5,
           },
         }))}
         onNodesChange={onNodesChange}
@@ -834,54 +877,61 @@ export function GraphCanvas({
       >
         <Background gap={20} size={1} color="var(--grid-dot)" />
         <Controls />
-        <MiniMap maskColor="rgba(8,11,20,0.35)" nodeColor="var(--surface-input)" />
-        <Panel position="top-right">
-          {/* Floating toolbar — glassy cluster */}
+        <MiniMap maskColor="color-mix(in oklch, var(--bg-canvas) 55%, transparent)" nodeColor="var(--border-strong)" nodeBorderRadius={3} />
+        {/* Keep the toolbar clear of whichever side panel is open (they
+            overlay the canvas from the right edge). */}
+        <Panel
+          position="top-right"
+          style={{
+            marginRight: drawerOpen
+              ? 'calc(var(--rail-drawer) + 15px)'
+              : selectedNodeId
+                ? 'calc(var(--rail-inspector) + 15px)'
+                : undefined,
+          }}
+        >
+          {/* Floating toolbar: translucent overlay surface over the canvas */}
           <div
             className="flex items-center gap-1.5"
             style={{
-              padding: 6,
+              padding: 5,
               borderRadius: 'var(--radius-md)',
-              background: 'color-mix(in srgb, var(--surface) 78%, transparent)',
+              background: 'color-mix(in oklch, var(--surface-overlay) 82%, transparent)',
               backdropFilter: 'blur(10px)',
               WebkitBackdropFilter: 'blur(10px)',
-              border: '1px solid var(--border)',
-              boxShadow: 'var(--shadow-md)',
+              border: '1px solid var(--border-subtle)',
+              boxShadow: 'var(--shadow-md), var(--shadow-inset)',
             }}
           >
             <ThemeToggle />
             <button
               onClick={onOpenPalette}
-              className="flex items-center justify-center transition-colors"
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 'var(--radius-sm)',
-                background: 'transparent',
-                color: 'var(--text-secondary)',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-hover)')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              className="rg-press rg-hover flex items-center justify-center"
+              style={
+                {
+                  width: 28,
+                  height: 28,
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid transparent',
+                  '--rg-fg': 'var(--text-secondary)',
+                  '--rg-hover-fg': 'var(--text-primary)',
+                } as React.CSSProperties
+              }
               title="Command palette (Ctrl+K)"
               aria-label="Open command palette"
             >
               <Command size={15} />
             </button>
             <span
-              style={{ width: 1, height: 18, background: 'var(--border)', margin: '0 2px' }}
+              style={{ width: 1, height: 18, background: 'var(--border-subtle)', margin: '0 2px' }}
             />
             <button
               onClick={() => {
                 setDrawerOpen(!drawerOpen);
                 setSelectedNodeId(null);
               }}
-              style={{
-                ...toolbarButtonStyle('var(--surface-input)'),
-                color: 'var(--text-primary)',
-                border: '1px solid var(--border)',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-              onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+              className={TOOLBAR_BUTTON_CLASS}
+              style={toolbarButtonStyle('secondary')}
             >
               <Plus size={13} />
               Add Node
@@ -890,9 +940,8 @@ export function GraphCanvas({
               <button
                 onClick={onAskAgentReview}
                 title="Open the chat and ask the AI to review this policy"
-                style={{ ...toolbarButtonStyle('var(--surface-input)'), color: 'var(--text-primary)', border: '1px solid var(--border)' }}
-                onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-                onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+                className={TOOLBAR_BUTTON_CLASS}
+                style={toolbarButtonStyle('secondary')}
               >
                 <Bot size={13} />
                 Review with AI
@@ -901,13 +950,8 @@ export function GraphCanvas({
             {extractEligible && (
               <button
                 onClick={handleExtract}
-                style={{
-                  ...toolbarButtonStyle('var(--surface-input)'),
-                  color: 'var(--text-primary)',
-                  border: '1px solid var(--border)',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-                onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+                className={TOOLBAR_BUTTON_CLASS}
+                style={toolbarButtonStyle('secondary')}
               >
                 <Boxes size={13} />
                 Extract Supernode
@@ -916,9 +960,8 @@ export function GraphCanvas({
             {selectedEdgeId && (
               <button
                 onClick={handleDeleteEdge}
-                style={toolbarButtonStyle('var(--error)')}
-                onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-                onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+                className={TOOLBAR_BUTTON_CLASS}
+                style={toolbarButtonStyle('danger')}
               >
                 <Trash2 size={13} />
                 Delete Edge
@@ -926,9 +969,8 @@ export function GraphCanvas({
             )}
             <button
               onClick={handleSave}
-              style={toolbarButtonStyle('var(--accent)')}
-              onMouseEnter={(e) => (e.currentTarget.style.filter = 'brightness(1.08)')}
-              onMouseLeave={(e) => (e.currentTarget.style.filter = 'none')}
+              className={TOOLBAR_BUTTON_CLASS}
+              style={toolbarButtonStyle('primary')}
             >
               <Save size={13} />
               {kind === 'supernode' ? 'Save Supernode' : 'Save Policy'}
@@ -939,21 +981,27 @@ export function GraphCanvas({
 
       {ctxMenu && (
         <div
+          className="rg-popover"
           style={{
             position: 'fixed', left: ctxMenu.x, top: ctxMenu.y, zIndex: 100,
-            background: 'var(--surface)', border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)', boxShadow: 'var(--shadow-md)', padding: 4,
+            transformOrigin: 'top left',
+            background: 'var(--surface-overlay)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg), var(--shadow-inset)', padding: 4,
           }}
           onMouseLeave={() => setCtxMenu(null)}
         >
           <button
             onClick={() => { setCtxMenu(null); handleExtract(); }}
             disabled={!extractEligible}
-            style={{
-              display: 'block', padding: '6px 12px', fontSize: 'var(--text-sm)',
-              color: extractEligible ? 'var(--text-primary)' : 'var(--text-muted)',
-              background: 'transparent', width: '100%', textAlign: 'left',
-            }}
+            className="rg-hover"
+            style={
+              {
+                display: 'block', padding: '6px 10px', fontSize: 'var(--text-sm)',
+                borderRadius: 'var(--radius-sm)', border: '1px solid transparent',
+                width: '100%', textAlign: 'left',
+                '--rg-fg': extractEligible ? 'var(--text-primary)' : 'var(--text-muted)',
+              } as React.CSSProperties
+            }
           >
             Extract selection as supernode…
           </button>

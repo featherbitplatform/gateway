@@ -30,13 +30,12 @@ interface SessionsPanelProps {
 }
 
 const inputStyle: CSSProperties = {
+  outline: 'none',
   padding: '6px 10px',
   borderRadius: 'var(--radius-sm)',
   fontFamily: 'var(--font-mono)',
   fontSize: 'var(--text-xs)',
-  background: 'var(--surface-input)',
   color: 'var(--text-primary)',
-  border: '1px solid var(--border)',
 };
 
 /** Panel shown instead of the session list when the build lacks redis-store support. */
@@ -178,7 +177,7 @@ export function SessionsPanel({ open, onClose, stores, onError }: SessionsPanelP
             </span>
           )}
           {!headless && !noStores && (
-            <DialogButton variant="danger" disabled={!subject} onClick={handleRevokeAll}>
+            <DialogButton variant={armed ? 'danger' : 'danger-quiet'} disabled={!subject} onClick={handleRevokeAll}>
               {armed ? `Confirm revoke all for "${subject}"` : 'Revoke all for subject…'}
             </DialogButton>
           )}
@@ -204,6 +203,7 @@ export function SessionsPanel({ open, onClose, stores, onError }: SessionsPanelP
                 setStore(e.target.value);
                 disarm();
               }}
+              className="rg-field"
               style={{ ...inputStyle, appearance: 'auto' }}
             >
               {stores.map((s) => (
@@ -220,6 +220,7 @@ export function SessionsPanel({ open, onClose, stores, onError }: SessionsPanelP
               onKeyDown={(e) => {
                 if (e.key === 'Enter') applyFilter();
               }}
+              className="rg-field"
               style={{ ...inputStyle, flex: 1 }}
             />
             <DialogButton variant="ghost" onClick={applyFilter}>
@@ -270,8 +271,17 @@ export function SessionsPanel({ open, onClose, stores, onError }: SessionsPanelP
                 <button
                   onClick={() => revoke(s.id)}
                   aria-label={`Revoke session ${s.id}`}
-                  className="flex items-center justify-center rounded transition-all"
-                  style={{ width: 24, height: 24, flexShrink: 0, color: 'var(--error)' }}
+                  className="rg-press rg-hover flex items-center justify-center rounded"
+                  style={{
+                    width: 24,
+                    height: 24,
+                    flexShrink: 0,
+                    ...({
+                      '--rg-fg': 'var(--text-muted)',
+                      '--rg-hover-fg': 'var(--error)',
+                      '--rg-hover-bg': 'var(--error-soft)',
+                    } as CSSProperties),
+                  }}
                 >
                   <X size={14} />
                 </button>

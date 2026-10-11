@@ -2,8 +2,10 @@
 //! loads both files, and runs the gateway (`featherbit` crate).
 
 /// mimalloc instead of the platform allocator. The published image is a static
-/// musl build, and musl's malloc serializes under concurrency: the competitive
-/// benchmark measured ~2x throughput at 4 cores (~3x on 64 KiB payloads).
+/// glibc build; the benchmark suite measured 8-24% more throughput at 4 cores
+/// than glibc's malloc, at ~3x the peak RSS. Behind the default-on `mimalloc`
+/// feature so a build can fall back to the platform allocator.
+#[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

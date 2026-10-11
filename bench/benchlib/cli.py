@@ -138,7 +138,8 @@ def _prepare(topology, gateways, needed: list[str], overrides: dict[str, str], s
                 if missing:
                     raise ConfigError(f"{name}: image build needs {missing}. {gw.build_hint}")
             print(f"preparing {gw.image} ...", flush=True)
-            dk["gateway"].ensure_image(gw.image, build=gw.build, build_args=gw.build_args)
+            dk["gateway"].ensure_image(gw.image, build=gw.build, build_args=gw.build_args,
+                                         dockerfile=gw.dockerfile)
             gateway_images[name] = gw.image
         for dep in gw.dependencies:
             dk["upstream"].ensure_image(dep.image)

@@ -45,14 +45,13 @@ import { VarInput } from './VarInput';
 
 /** Mirrors SchemaForm's `inputStyle` (not exported there — see its fast-refresh lint note). */
 const inputStyle: React.CSSProperties = {
+  outline: 'none',
   width: '100%',
   padding: '6px 10px',
   borderRadius: 'var(--radius-sm)',
   fontFamily: 'var(--font-mono)',
   fontSize: 'var(--text-sm)',
-  background: 'var(--surface-input)',
   color: 'var(--text-primary)',
-  border: '1px solid var(--border)',
 };
 
 /** Props for {@link ConditionBuilder}. */
@@ -183,6 +182,7 @@ function ListValueEditor({
               next[i] = e.target.value;
               onChange(next);
             }}
+            className="rg-field"
             style={{ ...inputStyle, width: 100 }}
           />
           <RemoveButton
@@ -258,6 +258,7 @@ function RuleRow({
         aria-label="Condition subject"
         value={rule.subject}
         onChange={(e) => handleSubjectChange(e.target.value as SubjectKind)}
+        className="rg-field"
         style={{ ...inputStyle, width: 'auto', appearance: 'auto' }}
       >
         {SUBJECT_OPTIONS.map((o) => (
@@ -284,6 +285,7 @@ function RuleRow({
           value={rule.name}
           placeholder={subjectMeta?.placeholder}
           onChange={(e) => patch({ name: e.target.value })}
+          className="rg-field"
           style={{ ...inputStyle, width: 140 }}
         />
       )}
@@ -299,6 +301,7 @@ function RuleRow({
         aria-label="Condition operator"
         value={rule.op}
         onChange={(e) => patch({ op: e.target.value })}
+        className="rg-field"
         style={{ ...inputStyle, width: 'auto', appearance: 'auto' }}
       >
         {ops.map((op) => (
@@ -317,6 +320,7 @@ function RuleRow({
             aria-label="Condition value"
             value={rule.value}
             onChange={(e) => patch({ value: e.target.value })}
+            className="rg-field"
             style={{ ...inputStyle, width: 140 }}
           />
           {showValueType && (
@@ -324,6 +328,7 @@ function RuleRow({
               aria-label="Condition value type"
               value={rule.valueType}
               onChange={(e) => patch({ valueType: e.target.value as ValueType })}
+              className="rg-field"
               style={{ ...inputStyle, width: 'auto', appearance: 'auto' }}
             >
               <option value="string">str</option>
@@ -605,7 +610,7 @@ export function ConditionBuilder({ value, shape, onChange, varContext }: Conditi
             value={rawText}
             onChange={(e) => setRawText(e.target.value)}
             rows={8}
-            className="w-full resize-y"
+            className="rg-field w-full resize-y"
             style={{
               ...inputStyle,
               fontSize: 'var(--text-xs)',
@@ -619,14 +624,20 @@ export function ConditionBuilder({ value, shape, onChange, varContext }: Conditi
           )}
           <button
             onClick={handleApplyRaw}
-            className="mt-2 w-full transition-colors"
+            className="rg-press rg-hover mt-2 w-full"
             style={{
-              padding: '7px 0',
+              height: 32,
               borderRadius: 'var(--radius-sm)',
               fontSize: 'var(--text-sm)',
               fontWeight: 500,
-              background: 'var(--accent)',
-              color: 'var(--text-on-accent)',
+              borderWidth: 1,
+              borderStyle: 'solid',
+              ...({
+              '--rg-bg': 'var(--accent)',
+              '--rg-fg': 'var(--text-on-accent)',
+              '--rg-bd': 'transparent',
+              '--rg-hover-bg': 'var(--accent-hover)',
+            } as React.CSSProperties),
             }}
           >
             Apply
