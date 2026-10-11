@@ -1,9 +1,8 @@
-# Featherbit as a fully static glibc binary (Dockerfile.glibc) with glibc's own
-# malloc (no mimalloc). Experimental arm; configs are shared with ../featherbit.
+# Featherbit's image (Dockerfile, static glibc) built without the `mimalloc`
+# feature: glibc's own malloc. Experimental arm; configs are shared with ../featherbit.
 name = "featherbit-glibc-sysmalloc"
 image = "featherbit-bench/featherbit-glibc-sysmalloc:dev"
 build = "../../.."
-dockerfile = "Dockerfile.glibc"
 build_args = { CARGO_FLAGS = "--no-default-features --features ui,redis-store,mcp" }
 build_requires = ["ui/dist"]
 build_hint = "The Dockerfile copies ui/dist: run `npm --prefix ui ci && npm --prefix ui run build` first, there is no released image for this experimental variant."
