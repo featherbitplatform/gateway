@@ -120,7 +120,9 @@ class DockerDriver:
 
     def _render(self, gw: Gateway, cell: Cell, values: dict[str, str]) -> Path:
         name = gw.configs[cell.scenario]
-        out = self.store.configs_dir / gw.name / name
+        # A config dir may be shared from a sibling gateway (`../featherbit/proxy`):
+        # render it under this gateway, not into the sibling's output.
+        out = self.store.configs_dir / gw.name / name.replace("\\", "/").split("/")[-1]
         if out.exists():
             shutil.rmtree(out)
         try:

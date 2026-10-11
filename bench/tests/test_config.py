@@ -135,6 +135,24 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(g.env, {"WORKERS": "@@CORES@@"})
         self.assertEqual(g.kind, "container")
 
+    def test_dockerfile_resolved_in_build_context(self):
+        body = """
+            name = "g"
+            image = "x:1"
+            build = "."
+            dockerfile = "{df}"
+            config_dir = "/etc/g"
+            ports = {{ plain = 8000, tls = 8443 }}
+            [configs]
+            a = "proxy"
+            b = "proxy"
+        """
+        d = self.gw(body.format(df="Dockerfile.alt"))
+        with self.assertRaisesRegex(ConfigError, "'Dockerfile.alt' not found"):
+            load_gateway(d, self.scenarios)
+        (d / "Dockerfile.alt").write_text("FROM scratch\n")
+        self.assertEqual(load_gateway(d, self.scenarios).dockerfile, (d / "Dockerfile.alt").resolve())
+
     def test_every_scenario_must_be_accounted_for(self):
         d = self.gw("""
             name = "g"

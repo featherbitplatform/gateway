@@ -108,9 +108,12 @@ class Docker:
         return self.run(["image", "inspect", image], check=False).returncode == 0
 
     def ensure_image(self, image: str, build: PurePath | None = None,
-                     build_args: dict[str, str] | None = None) -> None:
+                     build_args: dict[str, str] | None = None,
+                     dockerfile: PurePath | None = None) -> None:
         if build is not None:
             args = ["build", "-t", image]
+            if dockerfile is not None:
+                args += ["-f", str(dockerfile)]
             for k, v in (build_args or {}).items():
                 args += ["--build-arg", f"{k}={v}"]
             self.run([*args, str(build)], timeout=3600)
