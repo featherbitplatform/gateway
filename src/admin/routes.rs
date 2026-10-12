@@ -8,27 +8,31 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::Json;
 use serde::Deserialize;
+use utoipa::ToSchema;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
+use super::openapi::{ErrorResponse, StatusResponse};
 use crate::config::RouteConfig;
 use crate::state::SharedState;
 
 /// Builds the router for the `/api/routes` endpoints.
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new()
-        .route(
-            "/api/routes",
-            get(list_routes).post(create_route).put(reorder_routes),
-        )
-        .route(
-            "/api/routes/{name}",
-            get(get_route).put(update_route).delete(delete_route),
-        )
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new()
+        .routes(routes!(list_routes, create_route, reorder_routes))
+        .routes(routes!(get_route, update_route, delete_route))
 }
 
 /// `GET /api/routes` — returns all configured routes as a JSON array.
+#[utoipa::path(
+    get,
+    path = "/api/routes",
+    tag = "routes",
+    summary = "List routes",
+    responses((status = 200, description = "All routes, in evaluation order.", body = Vec<RouteConfig>)),
+)]
 async fn list_routes(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     Json(&gw.routes).into_response()
@@ -36,8 +40,9 @@ async fn list_routes(State(state): State<Arc<SharedState>>) -> impl IntoResponse
 
 /// Body of `PUT /api/routes`: every existing route name, exactly once, in the
 /// new evaluation order.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct RouteOrder {
+    /// Every route name, exactly once.
     order: Vec<String>,
 }
 
@@ -81,6 +86,17 @@ pub(crate) fn apply_route_order(
 ///
 /// Errors: `400 Bad Request` if `order` is not a permutation of the existing
 /// route names, or if recompilation fails.
+#[utoipa::path(
+    put,
+    path = "/api/routes",
+    tag = "routes",
+    summary = "Reorder routes",
+    request_body = RouteOrder,
+    responses(
+        (status = 200, description = "Reordered (`status: reordered`).", body = StatusResponse),
+        (status = 400, description = "`order` is not a permutation of the route names, or recompilation failed.", body = ErrorResponse),
+    ),
+)]
 async fn reorder_routes(
     State(state): State<Arc<SharedState>>,
     Json(body): Json<RouteOrder>,
@@ -111,6 +127,17 @@ async fn reorder_routes(
 /// `GET /api/routes/{name}` — returns the named route as JSON.
 ///
 /// Errors: `404 Not Found` if no route with that name exists.
+#[utoipa::path(
+    get,
+    path = "/api/routes/{name}",
+    tag = "routes",
+    summary = "Get a route",
+    params(("name" = String, Path, description = "Route name.")),
+    responses(
+        (status = 200, description = "The route.", body = RouteConfig),
+        (status = 404, description = "No such route.", body = ErrorResponse),
+    ),
+)]
 async fn get_route(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -133,6 +160,18 @@ async fn get_route(
 /// Errors: `409 Conflict` if a route with the same name already exists;
 /// `400 Bad Request` if the resulting configuration fails
 /// validation/recompilation (the previous compiled routes stay active).
+#[utoipa::path(
+    post,
+    path = "/api/routes",
+    tag = "routes",
+    summary = "Create a route",
+    request_body = RouteConfig,
+    responses(
+        (status = 201, description = "Created (`status: created`).", body = StatusResponse),
+        (status = 400, description = "The resulting configuration failed validation.", body = ErrorResponse),
+        (status = 409, description = "A route with that name already exists.", body = ErrorResponse),
+    ),
+)]
 async fn create_route(
     State(state): State<Arc<SharedState>>,
     Json(route): Json<RouteConfig>,
@@ -171,6 +210,19 @@ async fn create_route(
 ///
 /// Errors: `404 Not Found` if the route does not exist (unlike policies,
 /// routes are not upserted); `400 Bad Request` if recompilation fails.
+#[utoipa::path(
+    put,
+    path = "/api/routes/{name}",
+    tag = "routes",
+    summary = "Replace a route",
+    params(("name" = String, Path, description = "Route name; overrides any `name` in the body.")),
+    request_body = RouteConfig,
+    responses(
+        (status = 200, description = "Updated (`status: updated`).", body = StatusResponse),
+        (status = 400, description = "The resulting configuration failed validation.", body = ErrorResponse),
+        (status = 404, description = "No such route (routes are not upserted).", body = ErrorResponse),
+    ),
+)]
 async fn update_route(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -207,6 +259,18 @@ async fn update_route(
 ///
 /// Errors: `404 Not Found` if the route does not exist; `400 Bad Request`
 /// if recompilation fails.
+#[utoipa::path(
+    delete,
+    path = "/api/routes/{name}",
+    tag = "routes",
+    summary = "Delete a route",
+    params(("name" = String, Path, description = "Route name.")),
+    responses(
+        (status = 200, description = "Deleted (`status: deleted`).", body = StatusResponse),
+        (status = 400, description = "The resulting configuration failed validation.", body = ErrorResponse),
+        (status = 404, description = "No such route.", body = ErrorResponse),
+    ),
+)]
 async fn delete_route(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -282,7 +346,7 @@ policies:
     }
 
     async fn put_order(state: &Arc<SharedState>, body: &str) -> StatusCode {
-        router()
+        axum::Router::from(router())
             .with_state(state.clone())
             .oneshot(
                 Request::put("/api/routes")

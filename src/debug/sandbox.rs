@@ -136,7 +136,10 @@ impl SandboxContextInput {
 }
 
 /// What to do when an ad-hoc node fails.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
+#[derive(
+    Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, utoipa::ToSchema,
+)]
+#[schema(as = SandboxOnError)]
 #[serde(rename_all = "snake_case")]
 pub enum OnError {
     /// Leave error ports unwired, so a failing node hits the engine's
@@ -157,12 +160,19 @@ pub enum OnError {
 /// straight out of a trace (the nested `{request, response, message, errors}`
 /// snapshot shape). Typos in the flat shape are still rejected — validation
 /// runs after normalisation.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, utoipa::ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct SandboxRequest {
+    /// Ad-hoc node list, chained in order between an implicit `listener`
+    /// and `client`. Mutually exclusive with `policy`.
     pub nodes: Option<Vec<NodeConfig>>,
+    /// Name of a stored policy to run. Mutually exclusive with `nodes`.
     pub policy: Option<String>,
+    /// How a failing ad-hoc node is wired (ignored in `policy` mode).
     pub on_error: OnError,
+    /// Synthetic request context: the flat input shape, or a context copied
+    /// from a trace. Omitted or `null` yields a plain `GET /`.
+    #[schema(value_type = Object)]
     pub context: serde_json::Value,
 }
 

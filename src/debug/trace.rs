@@ -402,7 +402,7 @@ pub struct NodeStep {
 }
 
 /// Whether a trace came from live traffic or a sandbox run.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TraceSource {
     Request,

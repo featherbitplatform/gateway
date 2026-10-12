@@ -4,20 +4,40 @@
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::Json;
+use serde::Serialize;
+use utoipa::ToSchema;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::state::SharedState;
+use crate::vars::catalog::VarEntry;
 
 /// Builds the router for `/api/vars`.
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new().route("/api/vars", get(list_vars))
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new().routes(routes!(list_vars))
+}
+
+/// Body of `GET /api/vars`.
+#[derive(Serialize, ToSchema)]
+struct VarCatalog {
+    /// Every variable the resolver accepts, statics first, then families.
+    vars: Vec<VarEntry>,
 }
 
 /// `GET /api/vars` — the static catalog of `$var` names plugins can
 /// interpolate, with kinds, family sources, and descriptions. Always `200 OK`.
+#[utoipa::path(
+    get,
+    path = "/api/vars",
+    tag = "authoring",
+    summary = "List context variables",
+    responses((status = 200, description = "The `$var` catalog.", body = VarCatalog)),
+)]
 async fn list_vars() -> impl IntoResponse {
-    Json(serde_json::json!({ "vars": crate::vars::catalog::var_catalog() }))
+    Json(VarCatalog {
+        vars: crate::vars::catalog::var_catalog(),
+    })
 }
 
 #[cfg(test)]
@@ -25,6 +45,8 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
     use tower::ServiceExt;
 
     #[tokio::test]

@@ -33,6 +33,14 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 
 ## Endpoint reference
 
+The complete, machine-readable reference — every operation with its parameters, request and response schemas, and status codes — is an OpenAPI 3.1 document generated from the gateway source:
+
+- browse it on the [Admin REST API reference](/api/admin) page;
+- download it from [`/api/admin-api.json`](pathname:///api/admin-api.json) on this site, or `openapi/admin-api.json` in the repository;
+- or fetch it from a running gateway at `GET /api/openapi.json` (Basic Auth, like every other admin endpoint), which always matches that binary's version.
+
+Feed it to an OpenAPI client generator, Postman/Insomnia, or an API gateway's import tooling. The table below is the quick overview.
+
 | Method | Path | Purpose | Errors |
 |---|---|---|---|
 | `GET` | `/api/routes` | List all routes | — |
@@ -89,6 +97,7 @@ The embedded [Web UI](./web-ui.md) is served as an unauthenticated fallback on t
 | `GET` | `/healthz` | Liveness probe (auth-exempt) | — |
 | `GET` | `/readyz` | Readiness probe (auth-exempt) | `503` while the route table is empty |
 | `GET` | `/metrics` | Prometheus metrics in text exposition format | — |
+| `GET` | `/api/openapi.json` | The [OpenAPI 3.1 document](/api/admin) describing this API | — |
 
 ### Cache purge
 

@@ -6,7 +6,7 @@
 use serde::Serialize;
 
 /// Whether an entry is a fixed name or a `prefix_*` family.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum VarKind {
     Static,
@@ -15,13 +15,18 @@ pub enum VarKind {
 
 /// One catalog row. `family_source` names the context collection that
 /// populates a family's live suggestions in the UI.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct VarEntry {
+    /// Variable name without the `$`; families end in `*` (e.g. `http_*`).
     pub name: &'static str,
+    /// Fixed name or `prefix_*` family.
     pub kind: VarKind,
+    /// For a family, the context collection that supplies its members.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub family_source: Option<&'static str>,
+    /// What the variable holds.
     pub description: &'static str,
+    /// Usage example.
     pub example: &'static str,
     /// Template path equivalent for the universal-templates feature.
     /// Empty string means no direct template mapping (e.g., protocol, query_string, post_arg_*).
