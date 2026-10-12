@@ -13,6 +13,7 @@ mod consumers;
 mod debug;
 mod env_vars;
 mod mcp;
+pub mod openapi;
 mod plugin_configs;
 pub(crate) mod policies;
 mod routes;
@@ -154,22 +155,10 @@ pub async fn start_admin_server(
 /// the `ui` feature AND `admin.ui_enabled` is true — the unauthenticated SPA
 /// fallback. Without it, non-API paths get axum's default 404.
 pub(crate) fn build_router(admin_config: &AdminConfig, state: Arc<SharedState>) -> Router {
-    let api = Router::new()
-        // API routes (with auth)
-        .merge(routes::router())
-        .merge(acme::router())
-        .merge(cache::router())
-        .merge(policies::router())
-        .merge(plugin_configs::router())
-        .merge(supernodes::router())
-        .merge(consumers::router())
-        .merge(mcp::router())
-        .merge(sessions::router())
-        .merge(status::router())
-        .merge(stores::router())
-        .merge(debug::router())
-        .merge(vars::router())
-        .merge(env_vars::router())
+    // API routes (with auth), split off the OpenAPI document they're declared
+    // with (see `openapi`).
+    let (api, _) = openapi::api_router().split_for_parts();
+    let api = api
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(auth::AuthState::from_config(admin_config)),
             auth::basic_auth_middleware,
@@ -344,6 +333,42 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// The served document is the same one committed and published, and it
+    /// sits behind Basic Auth like the rest of `/api/*`.
+    #[tokio::test]
+    async fn test_openapi_json_is_served_behind_basic_auth() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+
+        let app = build_router(&admin_config(false), test_state());
+        let resp = app
+            .oneshot(
+                Request::get("/api/openapi.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let app = build_router(&admin_config(false), test_state());
+        let resp = app
+            .oneshot(
+                Request::get("/api/openapi.json")
+                    .header("Authorization", format!("Basic {}", STANDARD.encode("u:p")))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let served: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(&served, openapi::spec());
+    }
+
     #[tokio::test]
     async fn test_non_api_path_404_when_ui_disabled() {
         let app = build_router(&admin_config(false), test_state());
@@ -357,51 +382,30 @@ mod tests {
     /// The Admin API guide's endpoint table is the reference operators work
     /// from, and it has silently missed endpoints before (`/api/vars`,
     /// `/api/env-vars`, and the ACME and MCP companions all shipped
-    /// undocumented). Every path the admin router registers must appear in it.
+    /// undocumented). Every path the admin router registers — which is
+    /// exactly the OpenAPI document's path set, since both come from the same
+    /// `OpenApiRouter` — must appear in it.
     ///
     /// The table writes path parameters Express-style (`:name`) while axum
     /// registers them as `{name}`, so compare on the normalized form.
     #[test]
     fn every_admin_endpoint_is_in_the_admin_api_reference() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/admin");
         let doc = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/website/docs/guides/admin-api.md"
         ))
         .expect("admin-api.md");
 
-        let mut sources = String::new();
-        let mut stack = vec![std::path::PathBuf::from(dir)];
-        while let Some(path) = stack.pop() {
-            for entry in std::fs::read_dir(&path).expect("read src/admin").flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    stack.push(p);
-                } else if p.extension().is_some_and(|e| e == "rs") {
-                    sources.push_str(&std::fs::read_to_string(&p).expect("read source"));
-                }
-            }
-        }
-        // `.route(` and its path literal are often split across lines.
-        let flat = regex::Regex::new(r"\s+")
-            .unwrap()
-            .replace_all(&sources, " ")
-            .into_owned();
-
-        let route = regex::Regex::new(r#"\.route\(\s*"([^"]+)""#).unwrap();
         let param = regex::Regex::new(r"\{([a-z_]+)\}").unwrap();
-        let mut undocumented: Vec<String> = route
-            .captures_iter(&flat)
-            .map(|c| c[1].to_string())
-            // Test modules build throwaway routers over the same paths, so a
-            // duplicate here is harmless; only absence from the doc matters.
+        let undocumented: Vec<&String> = openapi::spec()["paths"]
+            .as_object()
+            .expect("paths")
+            .keys()
             .filter(|path| {
                 let normalized = param.replace_all(path, ":$1").into_owned();
                 !doc.contains(&normalized) && !doc.contains(path.as_str())
             })
             .collect();
-        undocumented.sort();
-        undocumented.dedup();
 
         assert!(
             undocumented.is_empty(),

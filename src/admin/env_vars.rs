@@ -4,14 +4,25 @@
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::Json;
+use serde::Serialize;
+use utoipa::ToSchema;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::state::SharedState;
 
 /// Builds the router for `/api/env-vars`.
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new().route("/api/env-vars", get(list_env_vars))
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new().routes(routes!(list_env_vars))
+}
+
+/// Body of `GET /api/env-vars`.
+#[derive(Serialize, ToSchema)]
+struct EnvVarNames {
+    /// Names of the process's environment variables, sorted. Values are never
+    /// exposed.
+    names: Vec<String>,
 }
 
 /// `GET /api/env-vars` — the names of all environment variables available
@@ -21,12 +32,19 @@ pub fn router() -> Router<Arc<SharedState>> {
 /// panics on a non-Unicode name or value — an environment the gateway
 /// process didn't choose (inherited from its container/host) must not be
 /// able to take down this handler.
+#[utoipa::path(
+    get,
+    path = "/api/env-vars",
+    tag = "authoring",
+    summary = "List environment variable names",
+    responses((status = 200, description = "Sorted environment variable names (no values).", body = EnvVarNames)),
+)]
 async fn list_env_vars() -> impl IntoResponse {
     let mut names: Vec<String> = std::env::vars_os()
         .map(|(k, _)| k.to_string_lossy().into_owned())
         .collect();
     names.sort();
-    Json(serde_json::json!({ "names": names }))
+    Json(EnvVarNames { names })
 }
 
 #[cfg(test)]
@@ -34,6 +52,8 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
     use tower::ServiceExt;
 
     #[tokio::test]

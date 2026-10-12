@@ -15,20 +15,25 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::Json;
+use serde::Serialize;
+use utoipa::ToSchema;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
+use super::openapi::ErrorResponse;
 use crate::debug::render::{apply_filter, render_trace, TraceFilter};
 use crate::debug::sandbox::SandboxRequest;
+use crate::debug::store::{Retention, TraceSummary};
 use crate::state::SharedState;
 
 /// Builds the router for the `/api/debug/*` endpoints.
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new()
-        .route("/api/debug/config", get(get_config))
-        .route("/api/debug/traces", get(list_traces).delete(clear_traces))
-        .route("/api/debug/traces/{id}", get(get_trace))
-        .route("/api/debug/sandbox", post(run_sandbox))
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new()
+        .routes(routes!(get_config))
+        .routes(routes!(list_traces, clear_traces))
+        .routes(routes!(get_trace))
+        .routes(routes!(run_sandbox))
 }
 
 /// The `404` returned when debug mode is off, matching the shape the rest of
@@ -39,11 +44,40 @@ fn disabled(what: &str) -> axum::response::Response {
          system.yaml (or FEATHERBIT_DEBUG=true) and restart",
         what
     );
+    not_found("not_found")
+}
+
+fn not_found(error: impl Into<String>) -> axum::response::Response {
     (
         StatusCode::NOT_FOUND,
-        Json(serde_json::json!({"error": "not_found"})),
+        Json(ErrorResponse {
+            error: error.into(),
+        }),
     )
         .into_response()
+}
+
+/// Body of `GET /api/debug/config`: the effective debug settings.
+#[derive(Serialize, ToSchema)]
+struct DebugSettings {
+    /// `debug.enabled`: tracing and every other `/api/debug/*` route.
+    enabled: bool,
+    /// `debug.sandbox`: whether `POST /api/debug/sandbox` may run plugins.
+    sandbox: bool,
+    /// Request header that opts a request into tracing (lowercased).
+    trigger_header: String,
+    /// Whether every request is traced, header or not.
+    trace_all: bool,
+    /// Whether request/response bodies are captured in snapshots.
+    capture_bodies: bool,
+    /// Ring buffer capacity.
+    max_traces: usize,
+    /// Per-trace cap on recorded node steps.
+    max_steps: usize,
+    /// Per-body capture cap, in bytes.
+    max_body_bytes: usize,
+    /// Traces currently held.
+    traces_stored: usize,
 }
 
 /// `GET /api/debug/config` — the effective debug settings.
@@ -51,19 +85,37 @@ fn disabled(what: &str) -> axum::response::Response {
 /// Deliberately **not** gated: it returns only booleans the UI needs to explain
 /// itself, and answering it is what turns "the button does nothing" into "debug
 /// mode is off, here is the key to set".
+#[utoipa::path(
+    get,
+    path = "/api/debug/config",
+    tag = "debug",
+    operation_id = "get_debug_config",
+    summary = "Get debug settings",
+    responses((status = 200, description = "The effective debug settings; answers even while debug mode is off.", body = DebugSettings)),
+)]
 async fn get_config(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let d = &state.debug;
-    Json(serde_json::json!({
-        "enabled": d.enabled,
-        "sandbox": d.sandbox_enabled,
-        "trigger_header": d.trigger_header,
-        "trace_all": d.trace_all,
-        "capture_bodies": d.capture_bodies,
-        "max_traces": d.max_traces,
-        "max_steps": d.max_steps,
-        "max_body_bytes": d.max_body_bytes,
-        "traces_stored": d.len(),
-    }))
+    Json(DebugSettings {
+        enabled: d.enabled,
+        sandbox: d.sandbox_enabled,
+        trigger_header: d.trigger_header.clone(),
+        trace_all: d.trace_all,
+        capture_bodies: d.capture_bodies,
+        max_traces: d.max_traces,
+        max_steps: d.max_steps,
+        max_body_bytes: d.max_body_bytes,
+        traces_stored: d.len(),
+    })
+}
+
+/// Body of `GET /api/debug/traces`.
+#[derive(Serialize, ToSchema)]
+struct DebugTraceList {
+    /// Matching trace summaries, newest first.
+    traces: Vec<TraceSummary>,
+    /// What the ring buffer holds and has evicted, so an empty `traces` can
+    /// be told apart from a rotated-out match.
+    retention: Retention,
 }
 
 /// `GET /api/debug/traces` — summaries, newest first.
@@ -71,6 +123,24 @@ async fn get_config(State(state): State<Arc<SharedState>>) -> impl IntoResponse 
 /// Optional query filters (`route`, `policy`, `status`, `source`, `limit`) let
 /// you narrow the buffer to the recent requests on one policy or route, then
 /// select one to inspect via `GET /api/debug/traces/{id}`.
+#[utoipa::path(
+    get,
+    path = "/api/debug/traces",
+    tag = "debug",
+    summary = "List traces",
+    params(
+        ("route" = Option<String>, Query, description = "Only traces of this route (blank is ignored)."),
+        ("policy" = Option<String>, Query, description = "Only traces of this policy (blank is ignored)."),
+        ("status" = Option<u16>, Query, description = "Only traces that ended with this status code."),
+        ("source" = Option<String>, Query, description = "`request` or `sandbox` (case-insensitive)."),
+        ("limit" = Option<usize>, Query, description = "Cap on the rows returned, applied after filtering."),
+    ),
+    responses(
+        (status = 200, description = "Matching trace summaries plus buffer retention.", body = DebugTraceList),
+        (status = 400, description = "A query parameter could not be parsed (e.g. a non-numeric `status`)."),
+        (status = 404, description = "Debug mode is off (`debug.enabled: false`).", body = ErrorResponse),
+    ),
+)]
 async fn list_traces(
     State(state): State<Arc<SharedState>>,
     Query(filter): Query<TraceFilter>,
@@ -82,16 +152,27 @@ async fn list_traces(
     // `retention` travels with every listing: an empty `traces` is ambiguous
     // on its own, since a rotated-out match and a match that never happened
     // look identical.
-    Json(serde_json::json!({
-        "traces": traces,
-        "retention": state.debug.retention(),
-    }))
+    Json(DebugTraceList {
+        traces,
+        retention: state.debug.retention(),
+    })
     .into_response()
 }
 
 /// `GET /api/debug/traces/{id}` — one trace with computed changes.
 ///
 /// Errors: `404` if the id is unknown or has been evicted from the ring buffer.
+#[utoipa::path(
+    get,
+    path = "/api/debug/traces/{id}",
+    tag = "debug",
+    summary = "Get a trace",
+    params(("id" = String, Path, description = "Trace id.")),
+    responses(
+        (status = 200, description = "The trace: summary fields, the redacted `initial` context snapshot, and every node `steps` entry with its `after` snapshot and the `changes` derived from the previous one.", body = Object),
+        (status = 404, description = "Debug mode is off, or the id is unknown or has been evicted.", body = ErrorResponse),
+    ),
+)]
 async fn get_trace(
     State(state): State<Arc<SharedState>>,
     Path(id): Path<String>,
@@ -101,29 +182,73 @@ async fn get_trace(
     }
     match state.debug.get(&id) {
         Some(trace) => Json(render_trace(&trace)).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "not_found"})),
-        )
-            .into_response(),
+        None => not_found("not_found"),
     }
 }
 
+/// Body of `DELETE /api/debug/traces`.
+#[derive(Serialize, ToSchema)]
+struct DebugTracesCleared {
+    /// Always `cleared`.
+    status: &'static str,
+    /// Number of traces removed.
+    removed: usize,
+}
+
 /// `DELETE /api/debug/traces` — empties the buffer.
+#[utoipa::path(
+    delete,
+    path = "/api/debug/traces",
+    tag = "debug",
+    summary = "Clear all traces",
+    responses(
+        (status = 200, description = "Buffer emptied (`status: cleared`).", body = DebugTracesCleared),
+        (status = 404, description = "Debug mode is off (`debug.enabled: false`).", body = ErrorResponse),
+    ),
+)]
 async fn clear_traces(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     if !state.debug.enabled {
         return disabled("trace clearing");
     }
     let removed = state.debug.clear();
-    Json(serde_json::json!({ "status": "cleared", "removed": removed })).into_response()
+    Json(DebugTracesCleared {
+        status: "cleared",
+        removed,
+    })
+    .into_response()
 }
 
 fn bad_request(msg: impl Into<String>) -> axum::response::Response {
     (
         StatusCode::BAD_REQUEST,
-        Json(serde_json::json!({"error": msg.into()})),
+        Json(ErrorResponse { error: msg.into() }),
     )
         .into_response()
+}
+
+/// Body of a successful `POST /api/debug/sandbox`.
+#[derive(Serialize, ToSchema)]
+struct SandboxRunResponse {
+    /// `nodes` or `policy`.
+    mode: &'static str,
+    /// The policy executed (`__sandbox` for ad-hoc node lists).
+    policy: String,
+    /// Reminder that plugins ran for real.
+    warning: &'static str,
+    /// Id of the trace stored in the debug ring buffer.
+    stored_trace_id: String,
+    /// The rendered trace, same shape as `GET /api/debug/traces/{id}`.
+    #[schema(value_type = Object)]
+    trace: serde_json::Value,
+}
+
+/// Body of the `504` a sandbox run returns when it times out.
+#[derive(Serialize, ToSchema)]
+struct SandboxTimeoutError {
+    /// Always `sandbox_timeout`.
+    error: &'static str,
+    /// Which limit was exceeded.
+    message: String,
 }
 
 /// `POST /api/debug/sandbox` — run ad-hoc nodes or a named policy against a
@@ -138,35 +263,45 @@ fn bad_request(msg: impl Into<String>) -> axum::response::Response {
 /// Errors: `400` for a malformed request or a plugin config the compiler
 /// rejects; `404` for an unknown policy; `504` if the run exceeds
 /// `debug.sandbox_timeout_seconds`.
+#[utoipa::path(
+    post,
+    path = "/api/debug/sandbox",
+    tag = "debug",
+    summary = "Run the plugin sandbox",
+    request_body = SandboxRequest,
+    responses(
+        (status = 200, description = "The run completed; its trace is inlined and stored. Plugins executed for real.", body = SandboxRunResponse),
+        (status = 400, description = "Malformed request (both or neither of `nodes`/`policy`, a bad node list or plugin config, an invalid policy, or an unmaterializable `context`), or an unparseable JSON body.", body = ErrorResponse),
+        (status = 404, description = "Debug mode or the sandbox is off (`error: not_found`), or `policy` names no stored policy.", body = ErrorResponse),
+        (status = 422, description = "The body does not deserialize into a sandbox request (e.g. an unknown field)."),
+        (status = 504, description = "The run exceeded `debug.sandbox_timeout_seconds`.", body = SandboxTimeoutError),
+    ),
+)]
 async fn run_sandbox(
     State(state): State<Arc<SharedState>>,
     Json(req): Json<SandboxRequest>,
 ) -> impl IntoResponse {
     use crate::debug::sandbox::{run_sandbox as run, SandboxError};
     match run(&state, req).await {
-        Ok(r) => Json(serde_json::json!({
-            "mode": r.mode,
-            "policy": r.policy,
-            "warning": "plugins executed for real: outbound calls were made and shared \
-                        rate-limit/breaker state was mutated",
-            "stored_trace_id": r.stored_trace_id,
-            "trace": r.trace,
-        }))
+        Ok(r) => Json(SandboxRunResponse {
+            mode: r.mode,
+            policy: r.policy,
+            warning: "plugins executed for real: outbound calls were made and shared \
+                      rate-limit/breaker state was mutated",
+            stored_trace_id: r.stored_trace_id,
+            trace: r.trace,
+        })
         .into_response(),
         Err(SandboxError::Disabled) => disabled("sandbox"),
         Err(SandboxError::SandboxDisabled) => disabled("sandbox (debug.sandbox is false)"),
         Err(SandboxError::BadRequest(e)) => bad_request(e),
-        Err(SandboxError::UnknownPolicy(name)) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("unknown policy '{name}'")})),
-        )
-            .into_response(),
+        Err(SandboxError::UnknownPolicy(name)) => not_found(format!("unknown policy '{name}'")),
         Err(SandboxError::Timeout(secs)) => (
             StatusCode::GATEWAY_TIMEOUT,
-            Json(serde_json::json!({
-                "error": "sandbox_timeout",
-                "message": format!("run exceeded debug.sandbox_timeout_seconds ({}s)", secs),
-            })),
+            Json(SandboxTimeoutError {
+                error: "sandbox_timeout",
+                message: format!("run exceeded debug.sandbox_timeout_seconds ({}s)", secs),
+            }),
         )
             .into_response(),
     }

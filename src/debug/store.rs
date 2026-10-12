@@ -50,7 +50,8 @@ pub struct DebugState {
 }
 
 /// What the ring buffer currently holds, and what it has thrown away.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[schema(as = TraceRetention)]
 pub struct Retention {
     /// Configured ceiling (`debug.max_traces`).
     pub max_traces: usize,
@@ -67,21 +68,34 @@ pub struct Retention {
 }
 
 /// Row shape for the trace list view.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct TraceSummary {
+    /// Trace id, for `GET /api/debug/traces/{id}`.
     pub id: String,
+    /// Monotonic sequence number (newest-first ordering).
     pub seq: u64,
+    /// Live traffic or a sandbox run.
     pub source: TraceSource,
+    /// Start time, Unix epoch milliseconds.
     pub started_ms: u64,
+    /// Matched route; absent for sandbox runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
+    /// Policy that executed.
     pub policy: String,
+    /// Request method.
     pub method: String,
+    /// Request path.
     pub path: String,
+    /// Final response status code.
     pub status: u16,
+    /// Total policy execution time, microseconds.
     pub duration_us: u64,
+    /// Node steps recorded.
     pub step_count: usize,
+    /// Steps that exited through an error.
     pub error_count: usize,
+    /// Whether request/response bodies were captured.
     pub captured_bodies: bool,
 }
 

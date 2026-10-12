@@ -8,28 +8,32 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::Json;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
+use super::openapi::{ErrorResponse, StatusResponse};
 use crate::consumers::ConsumerConfig;
 use crate::state::SharedState;
 
 /// Builds the router for the `/api/consumers` endpoints.
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new()
-        .route("/api/consumers", get(list_consumers).post(create_consumer))
-        .route(
-            "/api/consumers/{name}",
-            get(get_consumer)
-                .put(upsert_consumer)
-                .delete(delete_consumer),
-        )
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new()
+        .routes(routes!(list_consumers, create_consumer))
+        .routes(routes!(get_consumer, upsert_consumer, delete_consumer))
 }
 
 /// `GET /api/consumers` — returns all declared consumers as a JSON array.
 ///
 /// Note: responses include credentials verbatim — the admin API is the
 /// management plane and is Basic-Auth protected.
+#[utoipa::path(
+    get,
+    path = "/api/consumers",
+    tag = "consumers",
+    summary = "List consumers",
+    responses((status = 200, description = "All consumers, credentials included verbatim.", body = Vec<ConsumerConfig>)),
+)]
 async fn list_consumers(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     Json(&gw.consumers).into_response()
@@ -38,6 +42,17 @@ async fn list_consumers(State(state): State<Arc<SharedState>>) -> impl IntoRespo
 /// `GET /api/consumers/{name}` — returns the named consumer as JSON.
 ///
 /// Errors: `404 Not Found` if no consumer with that name exists.
+#[utoipa::path(
+    get,
+    path = "/api/consumers/{name}",
+    tag = "consumers",
+    summary = "Get a consumer",
+    params(("name" = String, Path, description = "Consumer name.")),
+    responses(
+        (status = 200, description = "The consumer, credentials included verbatim.", body = ConsumerConfig),
+        (status = 404, description = "No such consumer.", body = ErrorResponse),
+    ),
+)]
 async fn get_consumer(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -59,6 +74,18 @@ async fn get_consumer(
 /// Errors: `409 Conflict` if the name is taken; `400 Bad Request` if the
 /// store rebuild rejects the config (duplicate credentials, malformed
 /// credential objects) — the previous store stays active.
+#[utoipa::path(
+    post,
+    path = "/api/consumers",
+    tag = "consumers",
+    summary = "Create a consumer",
+    request_body = ConsumerConfig,
+    responses(
+        (status = 201, description = "Created (`status: created`).", body = StatusResponse),
+        (status = 400, description = "The consumer store rebuild rejected the config (duplicate or malformed credentials), or the config store rejected the write.", body = ErrorResponse),
+        (status = 409, description = "A consumer with that name already exists.", body = ErrorResponse),
+    ),
+)]
 async fn create_consumer(
     State(state): State<Arc<SharedState>>,
     Json(consumer): Json<ConsumerConfig>,
@@ -96,6 +123,18 @@ async fn create_consumer(
 /// endpoint's upsert semantics. Returns `{"status": "updated"}`.
 ///
 /// Errors: `400 Bad Request` if the store rebuild rejects the config.
+#[utoipa::path(
+    put,
+    path = "/api/consumers/{name}",
+    tag = "consumers",
+    summary = "Create or replace a consumer",
+    params(("name" = String, Path, description = "Consumer name; overrides any `name` in the body.")),
+    request_body = ConsumerConfig,
+    responses(
+        (status = 200, description = "Created or replaced (`status: updated`).", body = StatusResponse),
+        (status = 400, description = "The consumer store rebuild rejected the config (duplicate or malformed credentials), or the config store rejected the write.", body = ErrorResponse),
+    ),
+)]
 async fn upsert_consumer(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -126,7 +165,20 @@ async fn upsert_consumer(
 /// `DELETE /api/consumers/{name}` — removes the named consumer and rebuilds
 /// the store. Returns `{"status": "deleted"}`.
 ///
-/// Errors: `404 Not Found` if the consumer does not exist.
+/// Errors: `404 Not Found` if the consumer does not exist; `400 Bad Request`
+/// if the resulting configuration fails validation.
+#[utoipa::path(
+    delete,
+    path = "/api/consumers/{name}",
+    tag = "consumers",
+    summary = "Delete a consumer",
+    params(("name" = String, Path, description = "Consumer name.")),
+    responses(
+        (status = 200, description = "Deleted (`status: deleted`).", body = StatusResponse),
+        (status = 400, description = "The resulting configuration failed validation, or the config store rejected the write.", body = ErrorResponse),
+        (status = 404, description = "No such consumer.", body = ErrorResponse),
+    ),
+)]
 async fn delete_consumer(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,

@@ -1,79 +1,84 @@
 //! Admin surface for server-side sessions: list and revoke. Meta only —
 //! session payloads are sealed and never leave the store through this API.
+//!
+//! Every endpoint answers `501` on builds without the `redis-store` feature
+//! (the `-headless` image), since server-side sessions need it.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
+use super::openapi::{ErrorResponse, StatusResponse};
+use crate::sessions::SessionMeta;
 use crate::state::SharedState;
 
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new()
-        .route(
-            "/api/sessions",
-            get(list_sessions).delete(delete_by_subject),
-        )
-        .route(
-            "/api/sessions/{store}/{id}",
-            axum::routing::delete(delete_session),
-        )
+/// Builds the router for the `/api/sessions` endpoints.
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new()
+        .routes(routes!(list_sessions, delete_by_subject))
+        .routes(routes!(delete_session))
 }
 
-#[cfg(feature = "redis-store")]
-async fn list_sessions(
-    State(state): State<Arc<SharedState>>,
-    Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    let Some(name) = params.get("store") else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "store is required"})),
-        )
-            .into_response();
-    };
-    let store = match state.resources.stores.load().session_store(name) {
-        Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found"})),
-            )
-                .into_response()
-        }
-    };
-    let filter = crate::sessions::SessionFilter {
-        subject: params.get("subject").cloned(),
-        plugin: params.get("plugin").cloned(),
-        limit: params
-            .get("limit")
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(50),
-        cursor: params.get("cursor").cloned(),
-    };
-    match store.list(&filter).await {
-        Ok(page) => Json(serde_json::json!({
-            "sessions": page.sessions,
-            "next_cursor": page.next_cursor,
-        }))
-        .into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
+/// Query of `GET /api/sessions`.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[cfg_attr(not(feature = "redis-store"), allow(dead_code))]
+struct SessionListQuery {
+    /// Name of the declared store to list (`400` without it).
+    #[param(required = true)]
+    store: Option<String>,
+    /// Only sessions of this authenticated subject.
+    subject: Option<String>,
+    /// Only sessions established by this node type, e.g. `openid-connect`.
+    plugin: Option<String>,
+    /// Page size; 50 when absent or not a non-negative integer.
+    #[param(value_type = Option<u32>)]
+    limit: Option<String>,
+    /// Opaque cursor from a previous page's `next_cursor`.
+    cursor: Option<String>,
 }
 
+/// Query of `DELETE /api/sessions`.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[cfg_attr(not(feature = "redis-store"), allow(dead_code))]
+struct SessionRevokeQuery {
+    /// Name of the declared store (`400` without it).
+    #[param(required = true)]
+    store: Option<String>,
+    /// Subject whose sessions to revoke (`400` without it).
+    #[param(required = true)]
+    subject: Option<String>,
+}
+
+/// One page of `GET /api/sessions`.
+#[derive(Debug, Serialize, ToSchema)]
+#[cfg_attr(not(feature = "redis-store"), allow(dead_code))]
+struct SessionList {
+    /// Session metadata; payloads never leave the store.
+    sessions: Vec<SessionMeta>,
+    /// Cursor for the next page; `null` on the last page.
+    next_cursor: Option<String>,
+}
+
+/// Result of `DELETE /api/sessions`.
+#[derive(Debug, Serialize, ToSchema)]
+#[cfg_attr(not(feature = "redis-store"), allow(dead_code))]
+struct SessionsRevoked {
+    /// How many sessions were revoked.
+    revoked: u64,
+}
+
+/// The `501` every endpoint answers on builds without `redis-store`.
 #[cfg(not(feature = "redis-store"))]
-async fn list_sessions(
-    State(_state): State<Arc<SharedState>>,
-    Query(_params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
+fn not_built() -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(serde_json::json!({
@@ -83,103 +88,192 @@ async fn list_sessions(
         .into_response()
 }
 
-#[cfg(feature = "redis-store")]
+/// `GET /api/sessions?store=...` — lists the session metadata in a store,
+/// optionally filtered by subject and plugin, one page at a time.
+#[utoipa::path(
+    get,
+    path = "/api/sessions",
+    tag = "sessions",
+    summary = "List sessions",
+    params(SessionListQuery),
+    responses(
+        (status = 200, description = "One page of session metadata.", body = SessionList),
+        (status = 400, description = "`store` is missing.", body = ErrorResponse),
+        (status = 404, description = "No session-capable store of that name is declared.", body = ErrorResponse),
+        (status = 501, description = "This binary was built without the `redis-store` feature.", body = ErrorResponse),
+        (status = 502, description = "The store failed.", body = ErrorResponse),
+    ),
+)]
+async fn list_sessions(
+    State(state): State<Arc<SharedState>>,
+    Query(params): Query<SessionListQuery>,
+) -> Response {
+    #[cfg(not(feature = "redis-store"))]
+    {
+        let _ = (state, params);
+        not_built()
+    }
+    #[cfg(feature = "redis-store")]
+    {
+        let Some(name) = params.store else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "store is required"})),
+            )
+                .into_response();
+        };
+        let store = match state.resources.stores.load().session_store(&name) {
+            Ok(s) => s,
+            Err(_) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "not_found"})),
+                )
+                    .into_response()
+            }
+        };
+        let filter = crate::sessions::SessionFilter {
+            subject: params.subject,
+            plugin: params.plugin,
+            limit: params
+                .limit
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(50),
+            cursor: params.cursor,
+        };
+        match store.list(&filter).await {
+            Ok(page) => Json(SessionList {
+                sessions: page.sessions,
+                next_cursor: page.next_cursor,
+            })
+            .into_response(),
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// `DELETE /api/sessions/{store}/{id}` — revokes one session.
+#[utoipa::path(
+    delete,
+    path = "/api/sessions/{store}/{id}",
+    tag = "sessions",
+    summary = "Revoke a session",
+    params(
+        ("store" = String, Path, description = "Name of the declared store holding the session."),
+        ("id" = String, Path, description = "Session id: 32 hex chars."),
+    ),
+    responses(
+        (status = 200, description = "Revoked (`status: deleted`).", body = StatusResponse),
+        (status = 400, description = "`id` is not a valid session id.", body = ErrorResponse),
+        (status = 404, description = "No session-capable store of that name is declared.", body = ErrorResponse),
+        (status = 501, description = "This binary was built without the `redis-store` feature.", body = ErrorResponse),
+        (status = 502, description = "The store failed.", body = ErrorResponse),
+    ),
+)]
 async fn delete_session(
     State(state): State<Arc<SharedState>>,
     Path((store_name, id)): Path<(String, String)>,
-) -> impl IntoResponse {
-    let Some(session_id) = crate::sessions::SessionId::parse(&id) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "invalid session id"})),
-        )
-            .into_response();
-    };
-    let store = match state.resources.stores.load().session_store(&store_name) {
-        Ok(s) => s,
-        Err(_) => {
+) -> Response {
+    #[cfg(not(feature = "redis-store"))]
+    {
+        let _ = (state, store_name, id);
+        not_built()
+    }
+    #[cfg(feature = "redis-store")]
+    {
+        let Some(session_id) = crate::sessions::SessionId::parse(&id) else {
             return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found"})),
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid session id"})),
             )
-                .into_response()
+                .into_response();
+        };
+        let store = match state.resources.stores.load().session_store(&store_name) {
+            Ok(s) => s,
+            Err(_) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "not_found"})),
+                )
+                    .into_response()
+            }
+        };
+        match store.delete(&session_id).await {
+            Ok(()) => Json(serde_json::json!({"status": "deleted"})).into_response(),
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response(),
         }
-    };
-    match store.delete(&session_id).await {
-        Ok(()) => Json(serde_json::json!({"status": "deleted"})).into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
     }
 }
 
-#[cfg(not(feature = "redis-store"))]
-async fn delete_session(
-    State(_state): State<Arc<SharedState>>,
-    Path((_store_name, _id)): Path<(String, String)>,
-) -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({
-            "error": "this binary was built without the redis-store feature"
-        })),
-    )
-        .into_response()
-}
-
-#[cfg(feature = "redis-store")]
+/// `DELETE /api/sessions?store=...&subject=...` — revokes every session of
+/// one subject in a store.
+#[utoipa::path(
+    delete,
+    path = "/api/sessions",
+    tag = "sessions",
+    summary = "Revoke all sessions of a subject",
+    operation_id = "delete_sessions_by_subject",
+    params(SessionRevokeQuery),
+    responses(
+        (status = 200, description = "How many sessions were revoked.", body = SessionsRevoked),
+        (status = 400, description = "`store` or `subject` is missing.", body = ErrorResponse),
+        (status = 404, description = "No session-capable store of that name is declared.", body = ErrorResponse),
+        (status = 501, description = "This binary was built without the `redis-store` feature.", body = ErrorResponse),
+        (status = 502, description = "The store failed.", body = ErrorResponse),
+    ),
+)]
 async fn delete_by_subject(
     State(state): State<Arc<SharedState>>,
-    Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    let Some(name) = params.get("store") else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "store is required"})),
-        )
-            .into_response();
-    };
-    let Some(subject) = params.get("subject") else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "subject is required"})),
-        )
-            .into_response();
-    };
-    let store = match state.resources.stores.load().session_store(name) {
-        Ok(s) => s,
-        Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found"})),
-            )
-                .into_response()
-        }
-    };
-    match store.delete_subject(subject).await {
-        Ok(n) => Json(serde_json::json!({"revoked": n})).into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+    Query(params): Query<SessionRevokeQuery>,
+) -> Response {
+    #[cfg(not(feature = "redis-store"))]
+    {
+        let _ = (state, params);
+        not_built()
     }
-}
-
-#[cfg(not(feature = "redis-store"))]
-async fn delete_by_subject(
-    State(_state): State<Arc<SharedState>>,
-    Query(_params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({
-            "error": "this binary was built without the redis-store feature"
-        })),
-    )
-        .into_response()
+    #[cfg(feature = "redis-store")]
+    {
+        let Some(name) = params.store else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "store is required"})),
+            )
+                .into_response();
+        };
+        let Some(subject) = params.subject else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "subject is required"})),
+            )
+                .into_response();
+        };
+        let store = match state.resources.stores.load().session_store(&name) {
+            Ok(s) => s,
+            Err(_) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "not_found"})),
+                )
+                    .into_response()
+            }
+        };
+        match store.delete_subject(&subject).await {
+            Ok(n) => Json(SessionsRevoked { revoked: n }).into_response(),
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response(),
+        }
+    }
 }
 
 #[cfg(all(test, feature = "redis-store"))]
@@ -207,8 +301,8 @@ mod tests {
         )
     }
 
-    fn app(state: Arc<SharedState>) -> Router {
-        router().with_state(state)
+    fn app(state: Arc<SharedState>) -> axum::Router {
+        axum::Router::from(router()).with_state(state)
     }
 
     async fn send(state: &Arc<SharedState>, req: Request<Body>) -> (StatusCode, serde_json::Value) {

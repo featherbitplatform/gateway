@@ -10,77 +10,221 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::Json;
+use serde::Serialize;
+use utoipa::ToSchema;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
+use super::openapi::ErrorResponse;
 use crate::mcp::prompts;
 use crate::state::SharedState;
 
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new()
-        .route("/api/mcp/status", get(status))
-        .route("/api/mcp/prompts", get(list_prompts))
-        .route("/api/mcp/prompts/{name}", get(render_prompt))
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new()
+        .routes(routes!(status))
+        .routes(routes!(list_prompts))
+        .routes(routes!(render_prompt))
 }
 
+/// Body of `GET /api/mcp/status`. Never carries token values.
+#[derive(Serialize, ToSchema)]
+struct McpStatus {
+    /// Whether the binary was built with the `mcp` cargo feature.
+    compiled: bool,
+    /// Whether the MCP endpoint is served (compiled in and `admin.mcp.enabled`).
+    enabled: bool,
+    /// Mount path on the admin listener (`admin.mcp.path`, default `/mcp`).
+    path: String,
+    /// Number of configured bearer tokens.
+    token_count: usize,
+    /// Distinct scopes (`read`/`write`) granted by those tokens, sorted.
+    scopes: Vec<String>,
+}
+
+/// `GET /api/mcp/status` — the MCP server's configuration as the UI needs
+/// it: whether it is compiled in and enabled, its path, and its token
+/// scopes. Answers whether or not MCP is enabled.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/status",
+    tag = "mcp",
+    operation_id = "get_mcp_status",
+    summary = "Get MCP server status",
+    responses((status = 200, description = "MCP server configuration (token values are never included).", body = McpStatus)),
+)]
 async fn status(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let mcp = state.system.admin.as_ref().and_then(|a| a.mcp.as_ref());
-    let mut scopes: Vec<&str> = mcp
-        .map(|m| m.tokens.iter().map(|t| t.scope.as_str()).collect())
+    let mut scopes: Vec<String> = mcp
+        .map(|m| {
+            m.tokens
+                .iter()
+                .map(|t| t.scope.as_str().to_string())
+                .collect()
+        })
         .unwrap_or_default();
     scopes.sort_unstable();
     scopes.dedup();
-    Json(serde_json::json!({
-        "compiled": cfg!(feature = "mcp"),
-        "enabled": cfg!(feature = "mcp") && mcp.is_some_and(|m| m.enabled),
-        "path": mcp.map(|m| m.path.clone()).unwrap_or_else(|| "/mcp".to_string()),
-        "token_count": mcp.map(|m| m.tokens.len()).unwrap_or(0),
-        "scopes": scopes,
-    }))
+    Json(McpStatus {
+        compiled: cfg!(feature = "mcp"),
+        enabled: cfg!(feature = "mcp") && mcp.is_some_and(|m| m.enabled),
+        path: mcp
+            .map(|m| m.path.clone())
+            .unwrap_or_else(|| "/mcp".to_string()),
+        token_count: mcp.map(|m| m.tokens.len()).unwrap_or(0),
+        scopes,
+    })
 }
 
+/// Body of `GET /api/mcp/prompts`.
+#[derive(Serialize, ToSchema)]
+struct McpPromptList {
+    /// Every precompiled prompt.
+    prompts: Vec<McpPromptInfo>,
+}
+
+/// One precompiled prompt and its arguments.
+#[derive(Serialize, ToSchema)]
+struct McpPromptInfo {
+    /// Prompt name, for `GET /api/mcp/prompts/{name}`.
+    name: &'static str,
+    /// What the prompt asks the agent to do.
+    description: &'static str,
+    /// Arguments, passed as query parameters when rendering.
+    arguments: Vec<McpPromptArgument>,
+}
+
+/// One argument of a precompiled prompt.
+#[derive(Serialize, ToSchema)]
+struct McpPromptArgument {
+    /// Argument name (the query parameter name when rendering).
+    name: &'static str,
+    /// What the argument holds.
+    description: &'static str,
+    /// Whether rendering fails without it.
+    required: bool,
+}
+
+/// `GET /api/mcp/prompts` — the precompiled agent prompts and their
+/// arguments (the same set MCP `prompts/list` serves).
+#[utoipa::path(
+    get,
+    path = "/api/mcp/prompts",
+    tag = "mcp",
+    summary = "List agent prompts",
+    responses((status = 200, description = "Every precompiled prompt with its arguments.", body = McpPromptList)),
+)]
 async fn list_prompts() -> impl IntoResponse {
-    let prompts: Vec<_> = prompts::prompt_defs()
+    let prompts = prompts::prompt_defs()
         .iter()
-        .map(|p| {
-            serde_json::json!({
-                "name": p.name,
-                "description": p.description,
-                "arguments": p.args.iter().map(|a| serde_json::json!({
-                    "name": a.name, "description": a.description, "required": a.required
-                })).collect::<Vec<_>>(),
-            })
+        .map(|p| McpPromptInfo {
+            name: p.name,
+            description: p.description,
+            arguments: p
+                .args
+                .iter()
+                .map(|a| McpPromptArgument {
+                    name: a.name,
+                    description: a.description,
+                    required: a.required,
+                })
+                .collect(),
         })
         .collect();
-    Json(serde_json::json!({ "prompts": prompts }))
+    Json(McpPromptList { prompts })
 }
 
+/// Body of a successful `GET /api/mcp/prompts/{name}`.
+#[derive(Serialize, ToSchema)]
+struct RenderedMcpPrompt {
+    /// Prompt name.
+    name: String,
+    /// What the prompt asks the agent to do.
+    description: String,
+    /// The rendered prompt text (one user message), byte-identical to MCP
+    /// `prompts/get`.
+    text: String,
+}
+
+/// Error body of `GET /api/mcp/prompts/{name}` for everything but `404`.
+#[derive(Serialize, ToSchema)]
+struct McpPromptError {
+    /// Error code, e.g. `invalid_input`, `debug_disabled`, `sandbox_disabled`.
+    error: &'static str,
+    /// Human-readable explanation.
+    message: String,
+    /// What to do about it, when there is a suggestion.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
+}
+
+/// `GET /api/mcp/prompts/{name}` — renders a prompt with live data (the
+/// UI's "copy as agent prompt"). Prompt arguments are passed as query
+/// parameters; which ones a prompt takes is listed by `GET /api/mcp/prompts`.
+///
+/// Errors: `404` for an unknown prompt or a referenced object (trace,
+/// policy, ...) that does not exist; `400` for a missing/invalid argument or
+/// when the prompt needs debug mode (or the sandbox) and it is off.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/prompts/{name}",
+    tag = "mcp",
+    summary = "Render an agent prompt",
+    params(
+        ("name" = String, Path, description = "Prompt name, from `GET /api/mcp/prompts`."),
+        ("trace_id" = Option<String>, Query, description = "Trace id (`troubleshoot_trace`, `explain_trace`, `why_this_port`, `why_this_response`)."),
+        ("node_id" = Option<String>, Query, description = "Node id of the step to explain (`why_this_port`)."),
+        ("policy_name" = Option<String>, Query, description = "Policy to review (`review_policy`)."),
+        ("goal" = Option<String>, Query, description = "What to design, in plain words (`design_policy`, `design_supernode`, `design_route`)."),
+        ("name" = Option<String>, Query, description = "Name of the policy or supernode to create (`design_policy`, `design_supernode`)."),
+        ("method" = Option<String>, Query, description = "HTTP method of the request to diagnose (`diagnose_route`)."),
+        ("path" = Option<String>, Query, description = "Path of the request to diagnose (`diagnose_route`)."),
+        ("headers" = Option<String>, Query, description = "Headers of the request to diagnose, as `Name: value` lines (`diagnose_route`)."),
+    ),
+    responses(
+        (status = 200, description = "The rendered prompt.", body = RenderedMcpPrompt),
+        (status = 400, description = "A required argument is missing or invalid (`invalid_input`), or the prompt needs debug mode or the sandbox and it is off (`debug_disabled`, `sandbox_disabled`).", body = McpPromptError),
+        (status = 404, description = "No such prompt, or the trace/policy it references does not exist (`error: not_found`).", body = ErrorResponse),
+        (status = 500, description = "Rendering failed for another reason.", body = McpPromptError),
+    ),
+)]
 async fn render_prompt(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
     Query(args): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     match prompts::render(&state, &name, &args).await {
-        Ok(r) => {
-            Json(serde_json::json!({ "name": name, "description": r.description, "text": r.text }))
-                .into_response()
-        }
+        Ok(r) => Json(RenderedMcpPrompt {
+            name,
+            description: r.description,
+            text: r.text,
+        })
+        .into_response(),
         Err(e) => {
             let status = match e.code {
                 "unknown_prompt" | "not_found" => StatusCode::NOT_FOUND,
                 "invalid_input" | "debug_disabled" | "sandbox_disabled" => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
-            let body = if e.code == "unknown_prompt" || e.code == "not_found" {
-                serde_json::json!({"error": "not_found"})
+            if e.code == "unknown_prompt" || e.code == "not_found" {
+                (
+                    status,
+                    Json(ErrorResponse {
+                        error: "not_found".to_string(),
+                    }),
+                )
+                    .into_response()
             } else {
-                let mut v = serde_json::json!({"error": e.code, "message": e.message});
-                if let Some(h) = e.hint {
-                    v["hint"] = serde_json::Value::String(h);
-                }
-                v
-            };
-            (status, Json(body)).into_response()
+                (
+                    status,
+                    Json(McpPromptError {
+                        error: e.code,
+                        message: e.message,
+                        hint: e.hint,
+                    }),
+                )
+                    .into_response()
+            }
         }
     }
 }
@@ -91,10 +235,11 @@ mod tests {
     use crate::mcp::tools::test_support::{state, ECHO_GATEWAY};
     use axum::body::Body;
     use axum::http::Request;
+    use axum::Router;
     use tower::ServiceExt;
 
     fn app(state: Arc<SharedState>) -> Router {
-        router().with_state(state)
+        Router::from(router()).with_state(state)
     }
 
     async fn get_json(app: Router, uri: &str) -> (StatusCode, serde_json::Value) {

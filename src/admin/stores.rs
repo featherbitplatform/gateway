@@ -14,28 +14,86 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde::Serialize;
+use utoipa::ToSchema;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
+use super::openapi::{ErrorResponse, StatusResponse};
 use crate::config::{GatewayConfig, NodeConfig, StoreConfig};
 use crate::state::SharedState;
 
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new()
-        .route("/api/stores", get(list_stores).post(create_store))
-        .route(
-            "/api/stores/{name}",
-            get(get_store).put(update_store).delete(delete_store),
-        )
-        .route("/api/stores/{name}/ping", axum::routing::post(ping_store))
+/// Builds the router for the `/api/stores` endpoints.
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new()
+        .routes(routes!(list_stores, create_store))
+        .routes(routes!(get_store, update_store, delete_store))
+        .routes(routes!(ping_store))
 }
 
+/// `409` body of `DELETE /api/stores/{name}` when the store is still
+/// referenced.
+#[derive(Debug, Serialize, ToSchema)]
+struct StoreInUse {
+    /// Always `in_use`.
+    error: String,
+    /// Every referrer, human-readable: e.g. `plugin_config 'shared-lc'`,
+    /// `policy 'p' node 'lc'`, `acme.storage (system.yaml)`.
+    referrers: Vec<String>,
+}
+
+/// `200` body of `POST /api/stores/{name}/ping`. Never echoes the resolved
+/// connection details.
+#[derive(Debug, Serialize, ToSchema)]
+#[cfg_attr(not(feature = "redis-store"), allow(dead_code))]
+struct StorePingResult {
+    /// Always `ok`.
+    status: String,
+    /// Round-trip time of the `PING`, in milliseconds.
+    latency_ms: u64,
+    /// Server version: `valkey_version` on Valkey, else `redis_version`.
+    version: String,
+}
+
+/// `504` body of `POST /api/stores/{name}/ping`.
+#[derive(Debug, Serialize, ToSchema)]
+#[cfg_attr(not(feature = "redis-store"), allow(dead_code))]
+struct StorePingTimeout {
+    /// Always `ping_timeout`.
+    error: String,
+    /// Which bound elapsed, e.g. `no reply within connect_timeout_ms (2000ms)`.
+    message: String,
+}
+
+/// `GET /api/stores` — returns every declared store with its raw config.
+#[utoipa::path(
+    get,
+    path = "/api/stores",
+    tag = "stores",
+    summary = "List stores",
+    responses((status = 200, description = "All stores, raw: `${ENV}` placeholders are returned unresolved.", body = Vec<StoreConfig>)),
+)]
 async fn list_stores(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     Json(gw.stores.clone()).into_response()
 }
 
+/// `GET /api/stores/{name}` — returns the named store's raw config.
+///
+/// Errors: `404 Not Found` if no store with that name exists.
+#[utoipa::path(
+    get,
+    path = "/api/stores/{name}",
+    tag = "stores",
+    summary = "Get a store",
+    params(("name" = String, Path, description = "Store name.")),
+    responses(
+        (status = 200, description = "The store, raw: `${ENV}` placeholders are returned unresolved.", body = StoreConfig),
+        (status = 404, description = "No such store.", body = ErrorResponse),
+    ),
+)]
 async fn get_store(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -51,6 +109,24 @@ async fn get_store(
     }
 }
 
+/// `POST /api/stores` — declares a new store from the JSON body, then
+/// revalidates the configuration and rebuilds the store clients. Returns
+/// `201 Created` with `{"status": "created"}`.
+///
+/// Errors: `409 Conflict` if a store with the same name already exists;
+/// `400 Bad Request` if the resulting configuration fails validation.
+#[utoipa::path(
+    post,
+    path = "/api/stores",
+    tag = "stores",
+    summary = "Create a store",
+    request_body = StoreConfig,
+    responses(
+        (status = 201, description = "Created (`status: created`).", body = StatusResponse),
+        (status = 400, description = "The resulting configuration failed validation.", body = ErrorResponse),
+        (status = 409, description = "A store with that name already exists.", body = ErrorResponse),
+    ),
+)]
 async fn create_store(
     State(state): State<Arc<SharedState>>,
     Json(store): Json<StoreConfig>,
@@ -82,6 +158,23 @@ async fn create_store(
     }
 }
 
+/// `PUT /api/stores/{name}` — creates or replaces the named store (the path
+/// name overrides any name in the body), then revalidates. Returns
+/// `{"status": "updated"}` either way.
+///
+/// Errors: `400 Bad Request` if the resulting configuration fails validation.
+#[utoipa::path(
+    put,
+    path = "/api/stores/{name}",
+    tag = "stores",
+    summary = "Create or replace a store",
+    params(("name" = String, Path, description = "Store name; overrides any `name` in the body.")),
+    request_body = StoreConfig,
+    responses(
+        (status = 200, description = "Upserted (`status: updated`, also when the store was new).", body = StatusResponse),
+        (status = 400, description = "The resulting configuration failed validation.", body = ErrorResponse),
+    ),
+)]
 async fn update_store(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -108,6 +201,25 @@ async fn update_store(
     }
 }
 
+/// `DELETE /api/stores/{name}` — removes the named store, then revalidates.
+/// Returns `{"status": "deleted"}`.
+///
+/// Errors: `409 Conflict` with the list of referrers while any node, shared
+/// plugin config or `acme.storage` still references the store; `404 Not
+/// Found` if it does not exist; `400 Bad Request` if validation fails.
+#[utoipa::path(
+    delete,
+    path = "/api/stores/{name}",
+    tag = "stores",
+    summary = "Delete a store",
+    params(("name" = String, Path, description = "Store name.")),
+    responses(
+        (status = 200, description = "Deleted (`status: deleted`).", body = StatusResponse),
+        (status = 400, description = "The resulting configuration failed validation.", body = ErrorResponse),
+        (status = 404, description = "No such store.", body = ErrorResponse),
+        (status = 409, description = "The store is still referenced (`error: in_use`); `referrers` lists every referrer.", body = StoreInUse),
+    ),
+)]
 async fn delete_store(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -127,7 +239,10 @@ async fn delete_store(
         if !referrers.is_empty() {
             return (
                 StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "in_use", "referrers": referrers})),
+                Json(StoreInUse {
+                    error: "in_use".to_string(),
+                    referrers,
+                }),
             )
                 .into_response();
         }
@@ -153,14 +268,32 @@ async fn delete_store(
     }
 }
 
-/// Connectivity check: resolves the store's config (env placeholders included)
-/// and PINGs it, bounded by the store's own connect_timeout_ms. The response
-/// never echoes resolved connection details — only latency and version.
+/// `POST /api/stores/{name}/ping` — connectivity check.
+///
+/// Resolves the store's config (env placeholders included) and PINGs it,
+/// bounded by the store's own `connect_timeout_ms`. The response never
+/// echoes resolved connection details — only latency and version.
+#[utoipa::path(
+    post,
+    path = "/api/stores/{name}/ping",
+    tag = "stores",
+    summary = "Ping a store",
+    params(("name" = String, Path, description = "Store name.")),
+    responses(
+        (status = 200, description = "The store answered (`status: ok`).", body = StorePingResult),
+        (status = 400, description = "The store's config could not be turned into a client (e.g. an invalid URL after `${ENV}` resolution).", body = ErrorResponse),
+        (status = 404, description = "No such store.", body = ErrorResponse),
+        (status = 501, description = "This binary was built without the `redis-store` feature.", body = ErrorResponse),
+        (status = 502, description = "The store could not be reached or rejected the `PING`.", body = ErrorResponse),
+        (status = 504, description = "No reply within the store's `connect_timeout_ms` (`error: ping_timeout`).", body = StorePingTimeout),
+    ),
+)]
+async fn ping_store(State(state): State<Arc<SharedState>>, Path(name): Path<String>) -> Response {
+    ping(state, name).await
+}
+
 #[cfg(feature = "redis-store")]
-async fn ping_store(
-    State(state): State<Arc<SharedState>>,
-    Path(name): Path<String>,
-) -> impl IntoResponse {
+async fn ping(state: Arc<SharedState>, name: String) -> Response {
     let cfg = {
         let gw = state.gateway.read().await;
         match gw.stores.iter().find(|s| s.name == name) {
@@ -187,10 +320,13 @@ async fn ping_store(
     match tokio::time::timeout(client.connect_timeout(), client.ping()).await {
         Err(_) => (
             StatusCode::GATEWAY_TIMEOUT,
-            Json(serde_json::json!({
-                "error": "ping_timeout",
-                "message": format!("no reply within connect_timeout_ms ({}ms)", cfg.connect_timeout_ms),
-            })),
+            Json(StorePingTimeout {
+                error: "ping_timeout".to_string(),
+                message: format!(
+                    "no reply within connect_timeout_ms ({}ms)",
+                    cfg.connect_timeout_ms
+                ),
+            }),
         )
             .into_response(),
         Ok(Err(e)) => (
@@ -198,20 +334,17 @@ async fn ping_store(
             Json(serde_json::json!({"error": e})),
         )
             .into_response(),
-        Ok(Ok(info)) => Json(serde_json::json!({
-            "status": "ok",
-            "latency_ms": info.latency_ms,
-            "version": info.version,
-        }))
+        Ok(Ok(info)) => Json(StorePingResult {
+            status: "ok".to_string(),
+            latency_ms: info.latency_ms,
+            version: info.version,
+        })
         .into_response(),
     }
 }
 
 #[cfg(not(feature = "redis-store"))]
-async fn ping_store(
-    State(_state): State<Arc<SharedState>>,
-    Path(_name): Path<String>,
-) -> impl IntoResponse {
+async fn ping(_state: Arc<SharedState>, _name: String) -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(serde_json::json!({
@@ -311,8 +444,8 @@ mod tests {
         )
     }
 
-    fn app(state: Arc<SharedState>) -> Router {
-        router().with_state(state)
+    fn app(state: Arc<SharedState>) -> axum::Router {
+        axum::Router::from(router()).with_state(state)
     }
 
     const VALID_STORE: &str = r#"{

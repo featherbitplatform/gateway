@@ -81,12 +81,14 @@ impl std::fmt::Display for CertId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CertState {
     /// Self-signed stand-in served until the first issuance succeeds.
     Placeholder,
+    /// A CA-issued certificate is being served.
     Issued,
+    /// A renewal is in flight; the current certificate keeps serving.
     Renewing,
     /// Last attempt failed; the previous cert (or placeholder) keeps serving.
     Failed,

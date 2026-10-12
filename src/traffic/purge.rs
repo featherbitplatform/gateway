@@ -22,12 +22,16 @@ pub struct CacheTarget {
 }
 
 /// What one backend reported after a purge.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
 pub struct PurgeOutcome {
+    /// `local` or `redis`.
     #[serde(rename = "backend")]
+    #[schema(value_type = String)]
     pub backend_label: &'static str,
+    /// The declared store's name; omitted for `local`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub store: String,
+    /// How many cached entries were removed.
     pub removed: u64,
 }
 

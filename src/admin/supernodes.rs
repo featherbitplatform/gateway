@@ -8,25 +8,29 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::Json;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
+use super::openapi::{ErrorResponse, StatusResponse};
 use crate::config::SupernodeConfig;
 use crate::state::SharedState;
 
 /// Builds the router for `/api/supernodes`.
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new()
-        .route("/api/supernodes", get(list_supernodes))
-        .route(
-            "/api/supernodes/{name}",
-            get(get_supernode)
-                .put(update_supernode)
-                .delete(delete_supernode),
-        )
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new()
+        .routes(routes!(list_supernodes))
+        .routes(routes!(get_supernode, update_supernode, delete_supernode))
 }
 
 /// `GET /api/supernodes` — returns all supernode definitions as a JSON array.
+#[utoipa::path(
+    get,
+    path = "/api/supernodes",
+    tag = "supernodes",
+    summary = "List supernodes",
+    responses((status = 200, description = "All supernode definitions.", body = Vec<SupernodeConfig>)),
+)]
 async fn list_supernodes(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     Json(&gw.supernodes).into_response()
@@ -35,6 +39,17 @@ async fn list_supernodes(State(state): State<Arc<SharedState>>) -> impl IntoResp
 /// `GET /api/supernodes/{name}` — returns the named definition as JSON.
 ///
 /// Errors: `404 Not Found` if no supernode with that name exists.
+#[utoipa::path(
+    get,
+    path = "/api/supernodes/{name}",
+    tag = "supernodes",
+    summary = "Get a supernode",
+    params(("name" = String, Path, description = "Supernode name.")),
+    responses(
+        (status = 200, description = "The supernode definition.", body = SupernodeConfig),
+        (status = 404, description = "No such supernode.", body = ErrorResponse),
+    ),
+)]
 async fn get_supernode(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -57,6 +72,18 @@ async fn get_supernode(
 ///
 /// Errors: `400 Bad Request` if the definition is invalid or any consuming
 /// policy stops compiling (the previous compiled routes stay active).
+#[utoipa::path(
+    put,
+    path = "/api/supernodes/{name}",
+    tag = "supernodes",
+    summary = "Create or replace a supernode",
+    params(("name" = String, Path, description = "Supernode name; overrides any `name` in the body.")),
+    request_body = SupernodeConfig,
+    responses(
+        (status = 200, description = "Created or replaced (`status: updated`).", body = StatusResponse),
+        (status = 400, description = "The definition is invalid, a consuming policy stopped compiling, or the config store rejected the write.", body = ErrorResponse),
+    ),
+)]
 async fn update_supernode(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -89,6 +116,18 @@ async fn update_supernode(
 ///
 /// Errors: `404 Not Found` if it does not exist; `400 Bad Request` if a
 /// policy still references it (recompilation fails, nothing changes).
+#[utoipa::path(
+    delete,
+    path = "/api/supernodes/{name}",
+    tag = "supernodes",
+    summary = "Delete a supernode",
+    params(("name" = String, Path, description = "Supernode name.")),
+    responses(
+        (status = 200, description = "Deleted (`status: deleted`).", body = StatusResponse),
+        (status = 400, description = "A policy still references the supernode, or the config store rejected the write.", body = ErrorResponse),
+        (status = 404, description = "No such supernode.", body = ErrorResponse),
+    ),
+)]
 async fn delete_supernode(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -143,8 +182,8 @@ mod tests {
         )
     }
 
-    fn app(state: Arc<SharedState>) -> Router {
-        router().with_state(state)
+    fn app(state: Arc<SharedState>) -> axum::Router {
+        axum::Router::from(router()).with_state(state)
     }
 
     const VALID_SN: &str = r#"{

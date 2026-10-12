@@ -1,0 +1,4407 @@
+{
+  "components": {
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or wrong Basic Auth credentials.",
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "`Basic realm=\"featherbit admin\"` — omitted when the request carries `X-Featherbit-Client` (the web UI), so browsers don't open their native login dialog.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "AcmeCertList": {
+        "description": "Body of `GET /api/acme/certs`.",
+        "properties": {
+          "certs": {
+            "description": "Every managed certificate, sorted by id; empty when disabled.",
+            "items": {
+              "$ref": "#/components/schemas/AcmeCertStatus"
+            },
+            "type": "array"
+          },
+          "enabled": {
+            "description": "Whether `acme:` is configured in `system.yaml`.",
+            "type": "boolean"
+          },
+          "storage": {
+            "description": "Where certificates are persisted, e.g. `filesystem`; omitted when\n`enabled` is false.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "certs"
+        ],
+        "type": "object"
+      },
+      "AcmeCertStatus": {
+        "description": "One managed certificate. Never includes key material.",
+        "properties": {
+          "domains": {
+            "description": "Domains the certificate covers.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "Certificate id: its normalized (lowercased, sorted, deduplicated)\ndomain list, comma-separated.",
+            "type": "string"
+          },
+          "issuer": {
+            "description": "Issuer distinguished name.",
+            "type": "string"
+          },
+          "last_attempt_at": {
+            "description": "When issuance/renewal was last attempted, Unix seconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_error": {
+            "description": "Why the last attempt failed, if it did.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_renewal_at": {
+            "description": "When the next renewal is due, Unix seconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "not_after": {
+            "description": "Validity end, Unix seconds; `0` for a placeholder.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "not_before": {
+            "description": "Validity start, Unix seconds; `0` for a placeholder.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "serial": {
+            "description": "Serial number, colon-separated hex.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CertState",
+            "description": "Lifecycle state."
+          }
+        },
+        "required": [
+          "id",
+          "domains",
+          "state",
+          "not_before",
+          "not_after",
+          "issuer",
+          "serial"
+        ],
+        "type": "object"
+      },
+      "AcmeRenewResult": {
+        "description": "Outcome of `POST /api/acme/certs/{id}/renew`.",
+        "properties": {
+          "reason": {
+            "description": "Why not (`not_due`); omitted when scheduled.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scheduled": {
+            "description": "Whether a renewal was scheduled.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "scheduled"
+        ],
+        "type": "object"
+      },
+      "CachePurgeError": {
+        "description": "Error body of `DELETE /api/cache/{id}`.",
+        "properties": {
+          "error": {
+            "description": "`not_found` or `cache_purge_failed`.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The pair id (`cache_purge_failed` only).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "Human-readable detail.",
+            "type": "string"
+          },
+          "purged": {
+            "description": "What the backends purged before the failure (`cache_purge_failed`\nonly).",
+            "items": {
+              "$ref": "#/components/schemas/PurgeOutcome"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ],
+        "type": "object"
+      },
+      "CachePurgeResult": {
+        "description": "Successful response body: the purged id and what each backend reported.",
+        "properties": {
+          "id": {
+            "description": "The purged `proxy-cache` pair id.",
+            "type": "string"
+          },
+          "purged": {
+            "description": "One entry per distinct backend holding the pair.",
+            "items": {
+              "$ref": "#/components/schemas/PurgeOutcome"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "purged"
+        ],
+        "type": "object"
+      },
+      "CertState": {
+        "enum": [
+          "placeholder",
+          "issued",
+          "renewing",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "ConsumerConfig": {
+        "description": "A consumer as declared in `gateway.yaml` under `consumers:`.\n\n```yaml\nconsumers:\n  - name: alice\n    group: partners\n    labels: { custom_id: \"42\", tier: gold }\n    credentials:\n      key-auth: { key: \"s3cret\" }\n      basic-auth: { username: alice, password: pw }\n```",
+        "properties": {
+          "credentials": {
+            "additionalProperties": true,
+            "default": {},
+            "description": "Per-auth-plugin credentials, keyed by plugin type\n(e.g. `key-auth: {key}`, `basic-auth: {username, password}`).",
+            "type": "object"
+          },
+          "group": {
+            "description": "Optional consumer group, exposed as `consumer.group` / `$consumer_group_id`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Free-form labels; `custom_id` is special-cased into the\n`X-Consumer-Custom-ID` header (matching APISIX).",
+            "type": "object"
+          },
+          "name": {
+            "description": "Unique consumer name (the identity attached to matching requests).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "DebugSettings": {
+        "description": "Body of `GET /api/debug/config`: the effective debug settings.",
+        "properties": {
+          "capture_bodies": {
+            "description": "Whether request/response bodies are captured in snapshots.",
+            "type": "boolean"
+          },
+          "enabled": {
+            "description": "`debug.enabled`: tracing and every other `/api/debug/*` route.",
+            "type": "boolean"
+          },
+          "max_body_bytes": {
+            "description": "Per-body capture cap, in bytes.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_steps": {
+            "description": "Per-trace cap on recorded node steps.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_traces": {
+            "description": "Ring buffer capacity.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sandbox": {
+            "description": "`debug.sandbox`: whether `POST /api/debug/sandbox` may run plugins.",
+            "type": "boolean"
+          },
+          "trace_all": {
+            "description": "Whether every request is traced, header or not.",
+            "type": "boolean"
+          },
+          "traces_stored": {
+            "description": "Traces currently held.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "trigger_header": {
+            "description": "Request header that opts a request into tracing (lowercased).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "sandbox",
+          "trigger_header",
+          "trace_all",
+          "capture_bodies",
+          "max_traces",
+          "max_steps",
+          "max_body_bytes",
+          "traces_stored"
+        ],
+        "type": "object"
+      },
+      "DebugTraceList": {
+        "description": "Body of `GET /api/debug/traces`.",
+        "properties": {
+          "retention": {
+            "$ref": "#/components/schemas/TraceRetention",
+            "description": "What the ring buffer holds and has evicted, so an empty `traces` can\nbe told apart from a rotated-out match."
+          },
+          "traces": {
+            "description": "Matching trace summaries, newest first.",
+            "items": {
+              "$ref": "#/components/schemas/TraceSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "traces",
+          "retention"
+        ],
+        "type": "object"
+      },
+      "DebugTracesCleared": {
+        "description": "Body of `DELETE /api/debug/traces`.",
+        "properties": {
+          "removed": {
+            "description": "Number of traces removed.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "description": "Always `cleared`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "removed"
+        ],
+        "type": "object"
+      },
+      "EdgeConfig": {
+        "description": "A directed edge between two node ports, written as `node_id.port`.\n\nPorts: `out`, `success`, `error` on the source side; `in` on the target\nside (e.g. `from: auth.success`, `to: upstream.in`).",
+        "properties": {
+          "from": {
+            "description": "Source endpoint, `node_id.port`.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Target endpoint, `node_id.port`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "EnvVarNames": {
+        "description": "Body of `GET /api/env-vars`.",
+        "properties": {
+          "names": {
+            "description": "Names of the process's environment variables, sorted. Values are never\nexposed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "description": "`{\"error\": \"...\"}` — the body of every 4xx/5xx the admin API produces\nitself.",
+        "properties": {
+          "error": {
+            "description": "Human-readable reason, or a short code such as `not_found`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "GatewayConfig": {
+        "description": "Root of `gateway.yaml`: the route table and the policies it references.\n\nBoth sections default to empty, so a missing or minimal file is valid.\n\n```yaml\nroutes:\n  - name: api\n    match: { path: /api/* }\n    policy: api-policy\npolicies:\n  - name: api-policy\n    nodes:\n      - { id: in, type: listener }\n      - { id: up, type: upstream, config: { url: \"http://backend:3000\" } }\n    edges:\n      - { from: in.out, to: up.in }\n```",
+        "properties": {
+          "consumers": {
+            "default": [],
+            "description": "Named API clients with per-auth-plugin credentials; resolved by auth\nnodes configured with `use_consumers: true`.",
+            "items": {
+              "$ref": "#/components/schemas/ConsumerConfig"
+            },
+            "type": "array"
+          },
+          "plugin_configs": {
+            "default": [],
+            "description": "Named, typed plugin configurations shared by any number of plugin\nnodes via `config_ref`; resolved at compile time (src/config/resolve.rs).",
+            "items": {
+              "$ref": "#/components/schemas/PluginConfigDef"
+            },
+            "type": "array"
+          },
+          "policies": {
+            "default": [],
+            "description": "Policies referenced by name from `routes`.",
+            "items": {
+              "$ref": "#/components/schemas/PolicyConfig"
+            },
+            "type": "array"
+          },
+          "routes": {
+            "default": [],
+            "description": "Routes evaluated in declaration order; the first match wins.",
+            "items": {
+              "$ref": "#/components/schemas/RouteConfig"
+            },
+            "type": "array"
+          },
+          "stores": {
+            "default": [],
+            "description": "Named shared stores (redis/valkey connections) referenced by plugin\nconfig (`store: <name>`); clients are built at config-apply time\n(src/stores/), so `${ENV_VAR}` placeholders never leave this struct\nresolved.",
+            "items": {
+              "$ref": "#/components/schemas/StoreConfig"
+            },
+            "type": "array"
+          },
+          "supernodes": {
+            "default": [],
+            "description": "Reusable named subgraphs, referenced from policies by nodes of\n`type: supernode`; inlined at compile time (see src/graph/expand.rs).",
+            "items": {
+              "$ref": "#/components/schemas/SupernodeConfig"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "MatchRule": {
+        "description": "Request-matching conditions for a route.\n\nAll specified criteria must match (logical AND); every field defaults to\nunset/empty, which matches any request.",
+        "properties": {
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "Required header name → value pairs; empty means no header constraints.",
+            "type": "object"
+          },
+          "host": {
+            "description": "Required `Host` value; `None` matches any host. Exact hostname or a\nsingle-label wildcard (`*.example.com`); the request's port is ignored.\nMerged with [`hosts`](Self::hosts) at match time.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hosts": {
+            "description": "Additional accepted `Host` patterns (same syntax as `host`); the route\nmatches when any entry matches. Empty means no constraint beyond `host`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "methods": {
+            "default": [],
+            "description": "Allowed HTTP methods; empty means any method.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "path": {
+            "default": null,
+            "description": "Path pattern to match (e.g. `/api/*`); `None` matches any path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "McpPromptArgument": {
+        "description": "One argument of a precompiled prompt.",
+        "properties": {
+          "description": {
+            "description": "What the argument holds.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Argument name (the query parameter name when rendering).",
+            "type": "string"
+          },
+          "required": {
+            "description": "Whether rendering fails without it.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "required"
+        ],
+        "type": "object"
+      },
+      "McpPromptError": {
+        "description": "Error body of `GET /api/mcp/prompts/{name}` for everything but `404`.",
+        "properties": {
+          "error": {
+            "description": "Error code, e.g. `invalid_input`, `debug_disabled`, `sandbox_disabled`.",
+            "type": "string"
+          },
+          "hint": {
+            "description": "What to do about it, when there is a suggestion.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "Human-readable explanation.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ],
+        "type": "object"
+      },
+      "McpPromptInfo": {
+        "description": "One precompiled prompt and its arguments.",
+        "properties": {
+          "arguments": {
+            "description": "Arguments, passed as query parameters when rendering.",
+            "items": {
+              "$ref": "#/components/schemas/McpPromptArgument"
+            },
+            "type": "array"
+          },
+          "description": {
+            "description": "What the prompt asks the agent to do.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Prompt name, for `GET /api/mcp/prompts/{name}`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "McpPromptList": {
+        "description": "Body of `GET /api/mcp/prompts`.",
+        "properties": {
+          "prompts": {
+            "description": "Every precompiled prompt.",
+            "items": {
+              "$ref": "#/components/schemas/McpPromptInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "prompts"
+        ],
+        "type": "object"
+      },
+      "McpStatus": {
+        "description": "Body of `GET /api/mcp/status`. Never carries token values.",
+        "properties": {
+          "compiled": {
+            "description": "Whether the binary was built with the `mcp` cargo feature.",
+            "type": "boolean"
+          },
+          "enabled": {
+            "description": "Whether the MCP endpoint is served (compiled in and `admin.mcp.enabled`).",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Mount path on the admin listener (`admin.mcp.path`, default `/mcp`).",
+            "type": "string"
+          },
+          "scopes": {
+            "description": "Distinct scopes (`read`/`write`) granted by those tokens, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "token_count": {
+            "description": "Number of configured bearer tokens.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "compiled",
+          "enabled",
+          "path",
+          "token_count",
+          "scopes"
+        ],
+        "type": "object"
+      },
+      "NodeConfig": {
+        "description": "One plugin node in a policy graph.",
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "default": {},
+            "description": "Free-form plugin-specific configuration; defaults to empty.",
+            "type": "object"
+          },
+          "config_ref": {
+            "description": "Optional name of a shared [`PluginConfigDef`] to inherit configuration\nfrom. The effective config is the shared config with this node's own\n`config` keys layered on top (shallow merge, local wins), materialized\nat compile time — the stored form always keeps the reference.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Unique node id within the policy, referenced by edges as `id.port`.",
+            "type": "string"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Position"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Canvas coordinates for the Web UI node editor; ignored by the engine\nand omitted from serialized output when unset."
+          },
+          "type": {
+            "description": "Plugin type (YAML key: `type`), e.g. `upstream`, `key-auth`, `script`;\nmust be one of the registered plugin types.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ],
+        "type": "object"
+      },
+      "PluginCatalog": {
+        "description": "Response of `GET /api/plugins`: the node-type palette.",
+        "properties": {
+          "plugins": {
+            "description": "Every registered node type, in reference-docs category order.",
+            "items": {
+              "$ref": "#/components/schemas/PluginTypeInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "plugins"
+        ],
+        "type": "object"
+      },
+      "PluginConfigDef": {
+        "description": "A named, shared plugin configuration, referenced by plugin nodes of the\nmatching type via [`NodeConfig::config_ref`]. Editing a shared config\nre-resolves and recompiles every referencing policy atomically.",
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "default": {},
+            "description": "The shared plugin configuration; same shape as [`NodeConfig::config`].",
+            "type": "object"
+          },
+          "description": {
+            "description": "Optional human-readable description (shown in the UI library).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Unique name, referenced by `config_ref`.",
+            "type": "string"
+          },
+          "type": {
+            "description": "Plugin type this config is for (YAML key: `type`); only nodes of the\nsame type may reference it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "type": "object"
+      },
+      "PluginOutputPort": {
+        "description": "One declared output port (mirrors `plugins::ports::PortDecl`).",
+        "properties": {
+          "description": {
+            "description": "What leaving on this port means.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PluginPortKind",
+            "description": "Port flavor."
+          },
+          "name": {
+            "description": "Port name, e.g. `success`, `denied`, `error`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "description"
+        ],
+        "type": "object"
+      },
+      "PluginPortKind": {
+        "description": "The flavor of an output port (mirrors `plugins::ports::PortKind`).",
+        "enum": [
+          "success",
+          "outcome",
+          "error"
+        ],
+        "type": "string"
+      },
+      "PluginPortSpec": {
+        "description": "A node type's port declaration (mirrors `plugins::ports::PortSpec`).",
+        "properties": {
+          "input": {
+            "description": "Description of the single `in` port; `null` when the node has no\ninput (only `listener`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outputs": {
+            "description": "Declared output ports, in declaration order.",
+            "items": {
+              "$ref": "#/components/schemas/PluginOutputPort"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "input",
+          "outputs"
+        ],
+        "type": "object"
+      },
+      "PluginTypeInfo": {
+        "description": "One node type in the catalog. Documents the shape of the entries\n`plugin_catalog()` builds.",
+        "properties": {
+          "description": {
+            "description": "Human-readable one-line description.",
+            "type": "string"
+          },
+          "ports": {
+            "$ref": "#/components/schemas/PluginPortSpec",
+            "description": "The type's declared ports."
+          },
+          "type": {
+            "description": "Node type id, as used in a policy node's `type`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "description",
+          "ports"
+        ],
+        "type": "object"
+      },
+      "PolicyBufferingNotice": {
+        "description": "An upstream that must buffer its response instead of streaming it.\nDocuments the shape of the graph engine's `BufferingReason`.",
+        "properties": {
+          "blocked_by": {
+            "description": "Id of the downstream node that forces buffering.",
+            "type": "string"
+          },
+          "node_type": {
+            "description": "Node type of `blocked_by`, e.g. `response-rewrite`.",
+            "type": "string"
+          },
+          "upstream": {
+            "description": "Id of the `upstream` node that cannot stream.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upstream",
+          "blocked_by",
+          "node_type"
+        ],
+        "type": "object"
+      },
+      "PolicyCachePairNotice": {
+        "description": "One half of a `proxy-cache` lookup/store pair with no counterpart.\nDocuments the shape of the graph engine's `CachePairWarning`.",
+        "properties": {
+          "cache_id": {
+            "description": "The shared cache `id` that links a pair.",
+            "type": "string"
+          },
+          "missing_role": {
+            "description": "The half that is missing: `lookup` or `store`.",
+            "type": "string"
+          },
+          "present_node_id": {
+            "description": "Id of the node (the half) that is present.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cache_id",
+          "present_node_id",
+          "missing_role"
+        ],
+        "type": "object"
+      },
+      "PolicyConfig": {
+        "description": "A node-graph policy: a named pipeline of plugin nodes wired by edges.\n\nCompiled into a `CompiledGraph` at load/reload time; execution starts at\nthe `listener` node and follows each node's `success`/`error` ports.",
+        "properties": {
+          "edges": {
+            "default": [],
+            "description": "Directed connections between node ports.",
+            "items": {
+              "$ref": "#/components/schemas/EdgeConfig"
+            },
+            "type": "array"
+          },
+          "error_handler": {
+            "default": null,
+            "description": "Optional id of a node to jump to when a node errors without an explicit error edge.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Unique policy name, referenced by [`RouteConfig::policy`].",
+            "type": "string"
+          },
+          "nodes": {
+            "default": [],
+            "description": "Plugin nodes making up the pipeline.",
+            "items": {
+              "$ref": "#/components/schemas/NodeConfig"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "PolicyValidationResult": {
+        "description": "Response of `POST /api/policies/validate`.",
+        "properties": {
+          "buffering": {
+            "description": "Upstreams forced to buffer instead of stream, and the node responsible.\nInformational. Empty when the policy is invalid.",
+            "items": {
+              "$ref": "#/components/schemas/PolicyBufferingNotice"
+            },
+            "type": "array"
+          },
+          "cache_pairs": {
+            "description": "`proxy-cache` halves (lookup or store) with no counterpart. Informational.\nEmpty when the policy is invalid; absent when the body does not\ndeserialize as a policy at all.",
+            "items": {
+              "$ref": "#/components/schemas/PolicyCachePairNotice"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "errors": {
+            "description": "Compilation errors, one per entry; empty when `valid`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "valid": {
+            "description": "Whether the policy compiles. Buffering and cache-pair notices do not\nmake it invalid.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "valid",
+          "errors",
+          "buffering"
+        ],
+        "type": "object"
+      },
+      "Position": {
+        "description": "2D canvas coordinates of a node in the Web UI graph editor.",
+        "properties": {
+          "x": {
+            "format": "double",
+            "type": "number"
+          },
+          "y": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "type": "object"
+      },
+      "PurgeOutcome": {
+        "description": "What one backend reported after a purge.",
+        "properties": {
+          "backend": {
+            "description": "`local` or `redis`.",
+            "type": "string"
+          },
+          "removed": {
+            "description": "How many cached entries were removed.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "store": {
+            "description": "The declared store's name; omitted for `local`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend",
+          "removed"
+        ],
+        "type": "object"
+      },
+      "Readiness": {
+        "description": "Body of `GET /readyz`, ready or not.",
+        "properties": {
+          "acme": {
+            "$ref": "#/components/schemas/ReadinessAcme",
+            "description": "ACME certificate readiness; present in every branch."
+          },
+          "reason": {
+            "description": "Why the gateway is not ready (`no routes loaded`, `acme starting` or\n`acme placeholder certs`); absent when ready.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "routes": {
+            "description": "Number of compiled routes; present only when ready.",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "`ready` or `not_ready`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "acme"
+        ],
+        "type": "object"
+      },
+      "ReadinessAcme": {
+        "description": "The `acme` part of a [`Readiness`] body.",
+        "properties": {
+          "placeholder": {
+            "description": "Ids of ACME-managed certificates still serving a placeholder (never\nsuccessfully issued). Empty when ready.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "placeholder"
+        ],
+        "type": "object"
+      },
+      "RenderedMcpPrompt": {
+        "description": "Body of a successful `GET /api/mcp/prompts/{name}`.",
+        "properties": {
+          "description": {
+            "description": "What the prompt asks the agent to do.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Prompt name.",
+            "type": "string"
+          },
+          "text": {
+            "description": "The rendered prompt text (one user message), byte-identical to MCP\n`prompts/get`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "text"
+        ],
+        "type": "object"
+      },
+      "RouteConfig": {
+        "description": "Binds a request match rule to a named policy.",
+        "properties": {
+          "match": {
+            "$ref": "#/components/schemas/MatchRule",
+            "description": "Conditions a request must satisfy (YAML key: `match`)."
+          },
+          "name": {
+            "description": "Unique route name, used in logs, metrics labels, and the Admin API.",
+            "type": "string"
+          },
+          "policy": {
+            "description": "Name of the [`PolicyConfig`] to execute; must exist or compilation fails.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "match",
+          "policy"
+        ],
+        "type": "object"
+      },
+      "RouteOrder": {
+        "description": "Body of `PUT /api/routes`: every existing route name, exactly once, in the\nnew evaluation order.",
+        "properties": {
+          "order": {
+            "description": "Every route name, exactly once.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "order"
+        ],
+        "type": "object"
+      },
+      "SandboxOnError": {
+        "description": "What to do when an ad-hoc node fails.",
+        "enum": [
+          "stop",
+          "client"
+        ],
+        "type": "string"
+      },
+      "SandboxRequest": {
+        "additionalProperties": false,
+        "description": "A sandbox request: exactly one of `nodes` or `policy`.\n\n`context` is taken as a raw value and normalised by [`materialize_context`],\nso it accepts **both** the flat hand-authored shape *and* a context copied\nstraight out of a trace (the nested `{request, response, message, errors}`\nsnapshot shape). Typos in the flat shape are still rejected — validation\nruns after normalisation.",
+        "properties": {
+          "context": {
+            "description": "Synthetic request context: the flat input shape, or a context copied\nfrom a trace. Omitted or `null` yields a plain `GET /`.",
+            "type": "object"
+          },
+          "nodes": {
+            "default": null,
+            "description": "Ad-hoc node list, chained in order between an implicit `listener`\nand `client`. Mutually exclusive with `policy`.",
+            "items": {
+              "$ref": "#/components/schemas/NodeConfig"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "on_error": {
+            "$ref": "#/components/schemas/SandboxOnError",
+            "default": "stop",
+            "description": "How a failing ad-hoc node is wired (ignored in `policy` mode)."
+          },
+          "policy": {
+            "default": null,
+            "description": "Name of a stored policy to run. Mutually exclusive with `nodes`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "SandboxRunResponse": {
+        "description": "Body of a successful `POST /api/debug/sandbox`.",
+        "properties": {
+          "mode": {
+            "description": "`nodes` or `policy`.",
+            "type": "string"
+          },
+          "policy": {
+            "description": "The policy executed (`__sandbox` for ad-hoc node lists).",
+            "type": "string"
+          },
+          "stored_trace_id": {
+            "description": "Id of the trace stored in the debug ring buffer.",
+            "type": "string"
+          },
+          "trace": {
+            "description": "The rendered trace, same shape as `GET /api/debug/traces/{id}`.",
+            "type": "object"
+          },
+          "warning": {
+            "description": "Reminder that plugins ran for real.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "policy",
+          "warning",
+          "stored_trace_id",
+          "trace"
+        ],
+        "type": "object"
+      },
+      "SandboxTimeoutError": {
+        "description": "Body of the `504` a sandbox run returns when it times out.",
+        "properties": {
+          "error": {
+            "description": "Always `sandbox_timeout`.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Which limit was exceeded.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ScriptFile": {
+        "description": "A scripted-plugin file found on disk.",
+        "properties": {
+          "file": {
+            "description": "Path of the file, as the gateway sees it.",
+            "type": "string"
+          },
+          "name": {
+            "description": "File name without extension.",
+            "type": "string"
+          },
+          "runtime": {
+            "description": "Scripting runtime, derived from the extension (currently always `lua`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "file",
+          "runtime"
+        ],
+        "type": "object"
+      },
+      "ScriptList": {
+        "description": "Response of `GET /api/scripts`.",
+        "properties": {
+          "scripts": {
+            "description": "Every recognized script file in the `plugins/` directory.",
+            "items": {
+              "$ref": "#/components/schemas/ScriptFile"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "scripts"
+        ],
+        "type": "object"
+      },
+      "SessionList": {
+        "description": "One page of `GET /api/sessions`.",
+        "properties": {
+          "next_cursor": {
+            "description": "Cursor for the next page; `null` on the last page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sessions": {
+            "description": "Session metadata; payloads never leave the store.",
+            "items": {
+              "$ref": "#/components/schemas/SessionMeta"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "type": "object"
+      },
+      "SessionMeta": {
+        "description": "Unencrypted envelope for the operator surface. `id` is left empty on\n`put` (the key already carries it) and filled in by `list`.",
+        "properties": {
+          "created_at": {
+            "description": "Creation time, Unix seconds.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires_at": {
+            "description": "Expiry time, Unix seconds.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Session id: 32 lowercase hex chars.",
+            "type": "string"
+          },
+          "plugin": {
+            "description": "Node type that established the session, e.g. `openid-connect`.",
+            "type": "string"
+          },
+          "policy": {
+            "description": "Policy the session was established under.",
+            "type": "string"
+          },
+          "route": {
+            "description": "Route the session was established on.",
+            "type": "string"
+          },
+          "subject": {
+            "description": "Authenticated subject; may be empty (e.g. an opaque token with no\ndecodable claims) — such sessions are not indexed by subject.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "subject",
+          "plugin",
+          "policy",
+          "route",
+          "created_at",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "SessionsRevoked": {
+        "description": "Result of `DELETE /api/sessions`.",
+        "properties": {
+          "revoked": {
+            "description": "How many sessions were revoked.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revoked"
+        ],
+        "type": "object"
+      },
+      "StatusResponse": {
+        "description": "`{\"status\": \"...\"}` — the acknowledgement most mutations return.",
+        "properties": {
+          "status": {
+            "description": "What happened, e.g. `created`, `updated`, `deleted`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "StatusSummary": {
+        "description": "Body of `GET /api/status`.",
+        "properties": {
+          "default_credentials": {
+            "description": "Whether the admin API still accepts the shipped default credentials\n(the UI warns while it does).",
+            "type": "boolean"
+          },
+          "policies": {
+            "description": "Number of configured policies.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "routes": {
+            "description": "Number of compiled routes.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "description": "Gateway version (the crate version).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "routes",
+          "policies",
+          "default_credentials"
+        ],
+        "type": "object"
+      },
+      "StoreConfig": {
+        "description": "A named shared store: a redis/valkey connection referenced by name from\nplugin config. Declared under top-level `stores:`. `url` and `password`\nsupport `${ENV_VAR:-default}` placeholders, resolved only when the client\nis built — the stored config (and everything the Admin API serves) keeps\nthe raw placeholder.",
+        "properties": {
+          "connect_budget_ms": {
+            "default": 5000,
+            "description": "Total budget for establishing the first connection, covering every\nretry and the backoff between them.\n\n`connect_timeout_ms` bounds one attempt only, so without this the\nconnection manager's retry schedule decides how long a request waits\non an unreachable store -- tens of seconds with the crate defaults, on\nthe first request after an outage begins. A failed connect is not\ncached, so the next request tries again.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "connect_timeout_ms": {
+            "default": 2000,
+            "description": "Connect/response timeout applied to the client and to `ping`. Bounds a\nsingle attempt; see `connect_budget_ms` for the total.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": {
+            "description": "Optional human-readable description (shown in the UI library).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key_prefix": {
+            "default": "fb",
+            "description": "Namespace prefix for every key this store writes.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Unique name, referenced by plugin config (`store: <name>`).",
+            "type": "string"
+          },
+          "password": {
+            "description": "Optional password; overrides any password embedded in `url`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tls": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StoreTlsConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "topology": {
+            "description": "Reserved for HA topologies (`sentinel`/`cluster`); v1 accepts only\n`standalone` (the default) and rejects anything else at config load.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "description": "Backend type (YAML key: `type`): `redis` or `valkey` — aliases for the\nsame RESP backend.",
+            "type": "string"
+          },
+          "url": {
+            "description": "Connection URL (`redis://` or `rediss://`).",
+            "type": "string"
+          },
+          "urls": {
+            "description": "Reserved for HA topologies (sentinel/cluster endpoint lists); rejected\nat config load in v1.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "url"
+        ],
+        "type": "object"
+      },
+      "StoreInUse": {
+        "description": "`409` body of `DELETE /api/stores/{name}` when the store is still\nreferenced.",
+        "properties": {
+          "error": {
+            "description": "Always `in_use`.",
+            "type": "string"
+          },
+          "referrers": {
+            "description": "Every referrer, human-readable: e.g. `plugin_config 'shared-lc'`,\n`policy 'p' node 'lc'`, `acme.storage (system.yaml)`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "error",
+          "referrers"
+        ],
+        "type": "object"
+      },
+      "StorePingResult": {
+        "description": "`200` body of `POST /api/stores/{name}/ping`. Never echoes the resolved\nconnection details.",
+        "properties": {
+          "latency_ms": {
+            "description": "Round-trip time of the `PING`, in milliseconds.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "description": "Always `ok`.",
+            "type": "string"
+          },
+          "version": {
+            "description": "Server version: `valkey_version` on Valkey, else `redis_version`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "latency_ms",
+          "version"
+        ],
+        "type": "object"
+      },
+      "StorePingTimeout": {
+        "description": "`504` body of `POST /api/stores/{name}/ping`.",
+        "properties": {
+          "error": {
+            "description": "Always `ping_timeout`.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Which bound elapsed, e.g. `no reply within connect_timeout_ms (2000ms)`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ],
+        "type": "object"
+      },
+      "StoreTlsConfig": {
+        "description": "TLS options for a `rediss://` store.",
+        "properties": {
+          "ca_cert_path": {
+            "description": "PEM CA bundle for a private CA.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "SupernodeConfig": {
+        "description": "A reusable named subgraph with a boundary of one `input`, one or more\n`output`, and one or more `error` pseudo-nodes; each output/error node's\nid is an instance port name (`output` = the `success` port; `error` =\nthe default error port) (declared in `nodes` like a policy declares\n`listener`/`client`, so the UI can persist positions).\n\nInstances appear in policies as nodes of `type: supernode` with\n`config: { name: <this name> }` and are inlined at compile time —\nstored configuration always keeps the compact reference form.",
+        "properties": {
+          "description": {
+            "description": "Optional human-readable description (shown in the UI library).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "edges": {
+            "default": [],
+            "description": "Directed connections; boundary edges use `input.out`, `output.in`,\n`error.in` endpoints.",
+            "items": {
+              "$ref": "#/components/schemas/EdgeConfig"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "Unique supernode name, referenced from policy nodes' `config.name`.",
+            "type": "string"
+          },
+          "nodes": {
+            "default": [],
+            "description": "Inner plugin nodes plus the boundary pseudo-nodes: one `input`, one\nor more `output`, and one or more `error` pseudo-nodes; each\noutput/error node's id is an instance port name (`output` = the\n`success` port; `error` = the default error port).",
+            "items": {
+              "$ref": "#/components/schemas/NodeConfig"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "TraceRetention": {
+        "description": "What the ring buffer currently holds, and what it has thrown away.",
+        "properties": {
+          "evicted": {
+            "description": "Traces evicted since startup.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_traces": {
+            "description": "Configured ceiling (`debug.max_traces`).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "oldest_seq": {
+            "description": "`seq` of the oldest trace still held; `None` when the buffer is empty.\nAnything older than this is gone.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retained": {
+            "description": "Traces held right now.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "Whether anything has been evicted at all. When true, an empty result\nmay mean \"rotated out\", not \"never happened\".",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "max_traces",
+          "retained",
+          "evicted",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "TraceSource": {
+        "description": "Whether a trace came from live traffic or a sandbox run.",
+        "enum": [
+          "request",
+          "sandbox"
+        ],
+        "type": "string"
+      },
+      "TraceSummary": {
+        "description": "Row shape for the trace list view.",
+        "properties": {
+          "captured_bodies": {
+            "description": "Whether request/response bodies were captured.",
+            "type": "boolean"
+          },
+          "duration_us": {
+            "description": "Total policy execution time, microseconds.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error_count": {
+            "description": "Steps that exited through an error.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Trace id, for `GET /api/debug/traces/{id}`.",
+            "type": "string"
+          },
+          "method": {
+            "description": "Request method.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Request path.",
+            "type": "string"
+          },
+          "policy": {
+            "description": "Policy that executed.",
+            "type": "string"
+          },
+          "route": {
+            "description": "Matched route; absent for sandbox runs.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "description": "Monotonic sequence number (newest-first ordering).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/TraceSource",
+            "description": "Live traffic or a sandbox run."
+          },
+          "started_ms": {
+            "description": "Start time, Unix epoch milliseconds.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "description": "Final response status code.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "step_count": {
+            "description": "Node steps recorded.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "source",
+          "started_ms",
+          "policy",
+          "method",
+          "path",
+          "status",
+          "duration_us",
+          "step_count",
+          "error_count",
+          "captured_bodies"
+        ],
+        "type": "object"
+      },
+      "VarCatalog": {
+        "description": "Body of `GET /api/vars`.",
+        "properties": {
+          "vars": {
+            "description": "Every variable the resolver accepts, statics first, then families.",
+            "items": {
+              "$ref": "#/components/schemas/VarEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "vars"
+        ],
+        "type": "object"
+      },
+      "VarEntry": {
+        "description": "One catalog row. `family_source` names the context collection that\npopulates a family's live suggestions in the UI.",
+        "properties": {
+          "description": {
+            "description": "What the variable holds.",
+            "type": "string"
+          },
+          "example": {
+            "description": "Usage example.",
+            "type": "string"
+          },
+          "family_source": {
+            "description": "For a family, the context collection that supplies its members.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/VarKind",
+            "description": "Fixed name or `prefix_*` family."
+          },
+          "name": {
+            "description": "Variable name without the `$`; families end in `*` (e.g. `http_*`).",
+            "type": "string"
+          },
+          "path": {
+            "description": "Template path equivalent for the universal-templates feature.\nEmpty string means no direct template mapping (e.g., protocol, query_string, post_arg_*).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "description",
+          "example",
+          "path"
+        ],
+        "type": "object"
+      },
+      "VarKind": {
+        "description": "Whether an entry is a fixed name or a `prefix_*` family.",
+        "enum": [
+          "static",
+          "family"
+        ],
+        "type": "string"
+      }
+    },
+    "securitySchemes": {
+      "basicAuth": {
+        "scheme": "basic",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "REST API of the featherbit gateway's admin listener: CRUD for routes, policies, supernodes, plugin configs, consumers and stores; server-side sessions; ACME certificates; debug traces and the plugin sandbox; status, health and metrics.\n\nAll endpoints require HTTP Basic authentication except `/healthz` and `/readyz`. The MCP endpoint (`admin.mcp.path`, default `/mcp`) is a Streamable HTTP MCP transport with its own bearer tokens and is not described here.",
+    "license": {
+      "identifier": "Apache-2.0",
+      "name": "Apache-2.0"
+    },
+    "title": "featherbit Admin API",
+    "version": "0.17.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/acme/certs": {
+      "get": {
+        "operationId": "list_certs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcmeCertList"
+                }
+              }
+            },
+            "description": "Managed certificates (no key material); `enabled: false` with no certs when ACME is not configured."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List managed certificates",
+        "tags": [
+          "acme"
+        ]
+      }
+    },
+    "/api/acme/certs/{id}/renew": {
+      "post": {
+        "description": "Any spelling of the certificate's domain set is accepted as `id`\n(case, order and duplicates do not matter).",
+        "operationId": "renew_cert",
+        "parameters": [
+          {
+            "description": "Certificate id: its comma-separated domain list, in any order or case.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`true` or `1` renews even when the certificate is not due yet.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcmeRenewResult"
+                }
+              }
+            },
+            "description": "Not due, nothing scheduled (`scheduled: false`, `reason: not_due`); pass `force=true` to renew anyway."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcmeRenewResult"
+                }
+              }
+            },
+            "description": "Renewal scheduled (`scheduled: true`)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No managed certificate with that id."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A renewal is already in progress (`error: in_progress`)."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "ACME is not configured in `system.yaml`."
+          }
+        },
+        "summary": "Renew a managed certificate",
+        "tags": [
+          "acme"
+        ]
+      }
+    },
+    "/api/cache/{id}": {
+      "delete": {
+        "description": "`404` when no compiled policy has a pair with that id: a typo must not\nread as a successful flush of nothing. `502` when a backend could not be\nreached, naming it and listing what did succeed first.",
+        "operationId": "purge_cache",
+        "parameters": [
+          {
+            "description": "The `id` shared by a `proxy-cache` lookup/store pair.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CachePurgeResult"
+                }
+              }
+            },
+            "description": "Purged; what each backend removed."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CachePurgeError"
+                }
+              }
+            },
+            "description": "No compiled policy has a pair with that id (`error: not_found`)."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CachePurgeError"
+                }
+              }
+            },
+            "description": "A backend could not be reached (`error: cache_purge_failed`); `purged` lists what succeeded first."
+          }
+        },
+        "summary": "Purge a proxy-cache pair",
+        "tags": [
+          "cache"
+        ]
+      }
+    },
+    "/api/config/export": {
+      "get": {
+        "description": "Values keep their `${ENV_VAR}` templates: env interpolation happens when a\npolicy is compiled, not in the stored config, so the export mirrors the\nsource you would write by hand rather than the resolved secrets.\n\nErrors: `500 Internal Server Error` if the config cannot be serialized.",
+        "operationId": "export_config",
+        "responses": {
+          "200": {
+            "content": {
+              "text/yaml; charset=utf-8": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayConfig"
+                }
+              }
+            },
+            "description": "The live gateway configuration as `gateway.yaml`, `${ENV}` placeholders unresolved."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The configuration could not be serialized."
+          }
+        },
+        "summary": "Export the gateway config as YAML",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/config/reload": {
+      "post": {
+        "description": "Errors: `500 Internal Server Error` if no config path is set or the file\nfails to parse/validate/compile; the running config is left unchanged.",
+        "operationId": "reload_config",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Reloaded (`status: reloaded`)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No config path is set, or the file failed to parse/validate/compile; the running config is unchanged."
+          }
+        },
+        "summary": "Reload the gateway config from disk",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/consumers": {
+      "get": {
+        "description": "Note: responses include credentials verbatim — the admin API is the\nmanagement plane and is Basic-Auth protected.",
+        "operationId": "list_consumers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ConsumerConfig"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "All consumers, credentials included verbatim."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List consumers",
+        "tags": [
+          "consumers"
+        ]
+      },
+      "post": {
+        "description": "Errors: `409 Conflict` if the name is taken; `400 Bad Request` if the\nstore rebuild rejects the config (duplicate credentials, malformed\ncredential objects) — the previous store stays active.",
+        "operationId": "create_consumer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsumerConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Created (`status: created`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The consumer store rebuild rejected the config (duplicate or malformed credentials), or the config store rejected the write."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A consumer with that name already exists."
+          }
+        },
+        "summary": "Create a consumer",
+        "tags": [
+          "consumers"
+        ]
+      }
+    },
+    "/api/consumers/{name}": {
+      "delete": {
+        "description": "Errors: `404 Not Found` if the consumer does not exist; `400 Bad Request`\nif the resulting configuration fails validation.",
+        "operationId": "delete_consumer",
+        "parameters": [
+          {
+            "description": "Consumer name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Deleted (`status: deleted`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resulting configuration failed validation, or the config store rejected the write."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such consumer."
+          }
+        },
+        "summary": "Delete a consumer",
+        "tags": [
+          "consumers"
+        ]
+      },
+      "get": {
+        "description": "Errors: `404 Not Found` if no consumer with that name exists.",
+        "operationId": "get_consumer",
+        "parameters": [
+          {
+            "description": "Consumer name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsumerConfig"
+                }
+              }
+            },
+            "description": "The consumer, credentials included verbatim."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such consumer."
+          }
+        },
+        "summary": "Get a consumer",
+        "tags": [
+          "consumers"
+        ]
+      },
+      "put": {
+        "description": "Errors: `400 Bad Request` if the store rebuild rejects the config.",
+        "operationId": "upsert_consumer",
+        "parameters": [
+          {
+            "description": "Consumer name; overrides any `name` in the body.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsumerConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Created or replaced (`status: updated`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The consumer store rebuild rejected the config (duplicate or malformed credentials), or the config store rejected the write."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "Create or replace a consumer",
+        "tags": [
+          "consumers"
+        ]
+      }
+    },
+    "/api/debug/config": {
+      "get": {
+        "description": "Deliberately **not** gated: it returns only booleans the UI needs to explain\nitself, and answering it is what turns \"the button does nothing\" into \"debug\nmode is off, here is the key to set\".",
+        "operationId": "get_debug_config",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DebugSettings"
+                }
+              }
+            },
+            "description": "The effective debug settings; answers even while debug mode is off."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "Get debug settings",
+        "tags": [
+          "debug"
+        ]
+      }
+    },
+    "/api/debug/sandbox": {
+      "post": {
+        "description": "Plugins execute **for real**: outbound callouts are made, rate-limit\ncounters decrement, breakers trip, loggers fire. That is the point (a\n`key-auth` node that did not resolve real consumers would be a lie), but it\nis why the endpoint is gated behind `debug.enabled` + `debug.sandbox` on top\nof admin auth, and why every response carries a `warning`.\n\nErrors: `400` for a malformed request or a plugin config the compiler\nrejects; `404` for an unknown policy; `504` if the run exceeds\n`debug.sandbox_timeout_seconds`.",
+        "operationId": "run_sandbox",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SandboxRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxRunResponse"
+                }
+              }
+            },
+            "description": "The run completed; its trace is inlined and stored. Plugins executed for real."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Malformed request (both or neither of `nodes`/`policy`, a bad node list or plugin config, an invalid policy, or an unmaterializable `context`), or an unparseable JSON body."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Debug mode or the sandbox is off (`error: not_found`), or `policy` names no stored policy."
+          },
+          "422": {
+            "description": "The body does not deserialize into a sandbox request (e.g. an unknown field)."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxTimeoutError"
+                }
+              }
+            },
+            "description": "The run exceeded `debug.sandbox_timeout_seconds`."
+          }
+        },
+        "summary": "Run the plugin sandbox",
+        "tags": [
+          "debug"
+        ]
+      }
+    },
+    "/api/debug/traces": {
+      "delete": {
+        "operationId": "clear_traces",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DebugTracesCleared"
+                }
+              }
+            },
+            "description": "Buffer emptied (`status: cleared`)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Debug mode is off (`debug.enabled: false`)."
+          }
+        },
+        "summary": "Clear all traces",
+        "tags": [
+          "debug"
+        ]
+      },
+      "get": {
+        "description": "Optional query filters (`route`, `policy`, `status`, `source`, `limit`) let\nyou narrow the buffer to the recent requests on one policy or route, then\nselect one to inspect via `GET /api/debug/traces/{id}`.",
+        "operationId": "list_traces",
+        "parameters": [
+          {
+            "description": "Only traces of this route (blank is ignored).",
+            "in": "query",
+            "name": "route",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only traces of this policy (blank is ignored).",
+            "in": "query",
+            "name": "policy",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only traces that ended with this status code.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`request` or `sandbox` (case-insensitive).",
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Cap on the rows returned, applied after filtering.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DebugTraceList"
+                }
+              }
+            },
+            "description": "Matching trace summaries plus buffer retention."
+          },
+          "400": {
+            "description": "A query parameter could not be parsed (e.g. a non-numeric `status`)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Debug mode is off (`debug.enabled: false`)."
+          }
+        },
+        "summary": "List traces",
+        "tags": [
+          "debug"
+        ]
+      }
+    },
+    "/api/debug/traces/{id}": {
+      "get": {
+        "description": "Errors: `404` if the id is unknown or has been evicted from the ring buffer.",
+        "operationId": "get_trace",
+        "parameters": [
+          {
+            "description": "Trace id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The trace: summary fields, the redacted `initial` context snapshot, and every node `steps` entry with its `after` snapshot and the `changes` derived from the previous one."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Debug mode is off, or the id is unknown or has been evicted."
+          }
+        },
+        "summary": "Get a trace",
+        "tags": [
+          "debug"
+        ]
+      }
+    },
+    "/api/env-vars": {
+      "get": {
+        "description": "Uses `vars_os` + `to_string_lossy` rather than `std::env::vars()`, which\npanics on a non-Unicode name or value — an environment the gateway\nprocess didn't choose (inherited from its container/host) must not be\nable to take down this handler.",
+        "operationId": "list_env_vars",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvVarNames"
+                }
+              }
+            },
+            "description": "Sorted environment variable names (no values)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List environment variable names",
+        "tags": [
+          "authoring"
+        ]
+      }
+    },
+    "/api/mcp/prompts": {
+      "get": {
+        "operationId": "list_prompts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpPromptList"
+                }
+              }
+            },
+            "description": "Every precompiled prompt with its arguments."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List agent prompts",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/api/mcp/prompts/{name}": {
+      "get": {
+        "description": "Errors: `404` for an unknown prompt or a referenced object (trace,\npolicy, ...) that does not exist; `400` for a missing/invalid argument or\nwhen the prompt needs debug mode (or the sandbox) and it is off.",
+        "operationId": "render_prompt",
+        "parameters": [
+          {
+            "description": "Prompt name, from `GET /api/mcp/prompts`.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Trace id (`troubleshoot_trace`, `explain_trace`, `why_this_port`, `why_this_response`).",
+            "in": "query",
+            "name": "trace_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Node id of the step to explain (`why_this_port`).",
+            "in": "query",
+            "name": "node_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Policy to review (`review_policy`).",
+            "in": "query",
+            "name": "policy_name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "What to design, in plain words (`design_policy`, `design_supernode`, `design_route`).",
+            "in": "query",
+            "name": "goal",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Name of the policy or supernode to create (`design_policy`, `design_supernode`).",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "HTTP method of the request to diagnose (`diagnose_route`).",
+            "in": "query",
+            "name": "method",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Path of the request to diagnose (`diagnose_route`).",
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Headers of the request to diagnose, as `Name: value` lines (`diagnose_route`).",
+            "in": "query",
+            "name": "headers",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderedMcpPrompt"
+                }
+              }
+            },
+            "description": "The rendered prompt."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpPromptError"
+                }
+              }
+            },
+            "description": "A required argument is missing or invalid (`invalid_input`), or the prompt needs debug mode or the sandbox and it is off (`debug_disabled`, `sandbox_disabled`)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such prompt, or the trace/policy it references does not exist (`error: not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpPromptError"
+                }
+              }
+            },
+            "description": "Rendering failed for another reason."
+          }
+        },
+        "summary": "Render an agent prompt",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/api/mcp/status": {
+      "get": {
+        "operationId": "get_mcp_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpStatus"
+                }
+              }
+            },
+            "description": "MCP server configuration (token values are never included)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "Get MCP server status",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/api/openapi.json": {
+      "get": {
+        "operationId": "get_openapi",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The OpenAPI 3.1 document describing this API."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "`GET /api/openapi.json` — this OpenAPI document.",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/plugin-configs": {
+      "get": {
+        "operationId": "list_plugin_configs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PluginConfigDef"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "All plugin config definitions."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List plugin configs",
+        "tags": [
+          "plugin-configs"
+        ]
+      }
+    },
+    "/api/plugin-configs/{name}": {
+      "delete": {
+        "description": "Errors: `404 Not Found` if it does not exist; `400 Bad Request` if a\npolicy still references it (recompilation fails, nothing changes).",
+        "operationId": "delete_plugin_config",
+        "parameters": [
+          {
+            "description": "Plugin config name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Deleted (`status: deleted`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A policy or supernode still references the plugin config, or the config store rejected the write."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such plugin config."
+          }
+        },
+        "summary": "Delete a plugin config",
+        "tags": [
+          "plugin-configs"
+        ]
+      },
+      "get": {
+        "description": "Errors: `404 Not Found` if no plugin config with that name exists.",
+        "operationId": "get_plugin_config",
+        "parameters": [
+          {
+            "description": "Plugin config name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginConfigDef"
+                }
+              }
+            },
+            "description": "The plugin config definition."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such plugin config."
+          }
+        },
+        "summary": "Get a plugin config",
+        "tags": [
+          "plugin-configs"
+        ]
+      },
+      "put": {
+        "description": "Errors: `400 Bad Request` if the definition is invalid or any consuming\npolicy stops compiling (the previous compiled routes stay active).",
+        "operationId": "update_plugin_config",
+        "parameters": [
+          {
+            "description": "Plugin config name; overrides any `name` in the body.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginConfigDef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Created or replaced (`status: updated`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The definition is invalid (e.g. unknown plugin type), a consuming policy or supernode stopped compiling, or the config store rejected the write."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "Create or replace a plugin config",
+        "tags": [
+          "plugin-configs"
+        ]
+      }
+    },
+    "/api/plugins": {
+      "get": {
+        "description": "Every type registered in [`crate::plugins::create_plugin`] appears here, in\nthe same category order the plugin reference uses. Types the UI has no\nconfig form for still work: `NodeInspector` falls back to a raw-JSON config\neditor. Keep this in sync with the factory — `test_catalog_covers_factory`\nfails if a registered type is missing.",
+        "operationId": "list_plugin_types",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginCatalog"
+                }
+              }
+            },
+            "description": "Every registered node type with its description and port declaration."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List node types",
+        "tags": [
+          "policies"
+        ]
+      }
+    },
+    "/api/policies": {
+      "get": {
+        "operationId": "list_policies",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PolicyConfig"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "All policies."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List policies",
+        "tags": [
+          "policies"
+        ]
+      }
+    },
+    "/api/policies/validate": {
+      "post": {
+        "description": "Response: `{\"valid\": bool, \"errors\": [...], \"buffering\": [...]}`. A\npolicy that forces one or more upstreams to buffer instead of stream is\nstill `valid` — `buffering` is informational, not an error. Each entry\nnames the blocked upstream and the node responsible:\n`{\"upstream\": \"up\", \"blocked_by\": \"rw\", \"node_type\": \"response-rewrite\"}`.\n`cache_pairs` likewise lists unpaired `proxy-cache` halves; it is omitted\nwhen the body does not even parse as a policy.",
+        "operationId": "validate_policy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyConfig"
+              }
+            }
+          },
+          "description": "The policy to check; `name` is optional (defaults to `unsaved-policy`). Nothing is persisted.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyValidationResult"
+                }
+              }
+            },
+            "description": "The verdict. An invalid policy (including one that does not deserialize) is still a `200` with `valid: false`."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "Validate a policy",
+        "tags": [
+          "policies"
+        ]
+      }
+    },
+    "/api/policies/{name}": {
+      "delete": {
+        "description": "Errors: `404 Not Found` if the policy does not exist; `400 Bad Request`\nif recompilation fails (e.g. a route still references the policy).",
+        "operationId": "delete_policy",
+        "parameters": [
+          {
+            "description": "Policy name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Deleted (`status: deleted`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Recompilation failed (e.g. a route still references the policy), or the config store rejected the write."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such policy."
+          }
+        },
+        "summary": "Delete a policy",
+        "tags": [
+          "policies"
+        ]
+      },
+      "get": {
+        "description": "Errors: `404 Not Found` if no policy with that name exists.",
+        "operationId": "get_policy",
+        "parameters": [
+          {
+            "description": "Policy name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyConfig"
+                }
+              }
+            },
+            "description": "The policy."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such policy."
+          }
+        },
+        "summary": "Get a policy",
+        "tags": [
+          "policies"
+        ]
+      },
+      "put": {
+        "description": "Errors: `400 Bad Request` if the resulting configuration fails\nvalidation/recompilation (the previous compiled routes stay active).",
+        "operationId": "update_policy",
+        "parameters": [
+          {
+            "description": "Policy name; overrides any `name` in the body.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Created or replaced (`status: updated`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resulting configuration failed validation/recompilation, or the config store rejected the write."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "Create or replace a policy",
+        "tags": [
+          "policies"
+        ]
+      }
+    },
+    "/api/routes": {
+      "get": {
+        "operationId": "list_routes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RouteConfig"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "All routes, in evaluation order."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List routes",
+        "tags": [
+          "routes"
+        ]
+      },
+      "post": {
+        "description": "Errors: `409 Conflict` if a route with the same name already exists;\n`400 Bad Request` if the resulting configuration fails\nvalidation/recompilation (the previous compiled routes stay active).",
+        "operationId": "create_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Created (`status: created`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resulting configuration failed validation."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A route with that name already exists."
+          }
+        },
+        "summary": "Create a route",
+        "tags": [
+          "routes"
+        ]
+      },
+      "put": {
+        "description": "Errors: `400 Bad Request` if `order` is not a permutation of the existing\nroute names, or if recompilation fails.",
+        "operationId": "reorder_routes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteOrder"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Reordered (`status: reordered`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "`order` is not a permutation of the route names, or recompilation failed."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "Reorder routes",
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/api/routes/{name}": {
+      "delete": {
+        "description": "Errors: `404 Not Found` if the route does not exist; `400 Bad Request`\nif recompilation fails.",
+        "operationId": "delete_route",
+        "parameters": [
+          {
+            "description": "Route name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Deleted (`status: deleted`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resulting configuration failed validation."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such route."
+          }
+        },
+        "summary": "Delete a route",
+        "tags": [
+          "routes"
+        ]
+      },
+      "get": {
+        "description": "Errors: `404 Not Found` if no route with that name exists.",
+        "operationId": "get_route",
+        "parameters": [
+          {
+            "description": "Route name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteConfig"
+                }
+              }
+            },
+            "description": "The route."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such route."
+          }
+        },
+        "summary": "Get a route",
+        "tags": [
+          "routes"
+        ]
+      },
+      "put": {
+        "description": "Errors: `404 Not Found` if the route does not exist (unlike policies,\nroutes are not upserted); `400 Bad Request` if recompilation fails.",
+        "operationId": "update_route",
+        "parameters": [
+          {
+            "description": "Route name; overrides any `name` in the body.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Updated (`status: updated`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resulting configuration failed validation."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such route (routes are not upserted)."
+          }
+        },
+        "summary": "Replace a route",
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/api/scripts": {
+      "get": {
+        "description": "A missing or unreadable directory yields an empty list rather than an error.\n\n```json\n{ \"scripts\": [ { \"name\": \"my_filter\", \"file\": \"plugins/my_filter.lua\", \"runtime\": \"lua\" } ] }\n```",
+        "operationId": "list_scripts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScriptList"
+                }
+              }
+            },
+            "description": "Scripted-plugin files on disk (empty if the directory is missing or unreadable)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List script files",
+        "tags": [
+          "policies"
+        ]
+      }
+    },
+    "/api/sessions": {
+      "delete": {
+        "operationId": "delete_sessions_by_subject",
+        "parameters": [
+          {
+            "description": "Name of the declared store (`400` without it).",
+            "in": "query",
+            "name": "store",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Subject whose sessions to revoke (`400` without it).",
+            "in": "query",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionsRevoked"
+                }
+              }
+            },
+            "description": "How many sessions were revoked."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "`store` or `subject` is missing."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No session-capable store of that name is declared."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "This binary was built without the `redis-store` feature."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store failed."
+          }
+        },
+        "summary": "Revoke all sessions of a subject",
+        "tags": [
+          "sessions"
+        ]
+      },
+      "get": {
+        "operationId": "list_sessions",
+        "parameters": [
+          {
+            "description": "Name of the declared store to list (`400` without it).",
+            "in": "query",
+            "name": "store",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only sessions of this authenticated subject.",
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only sessions established by this node type, e.g. `openid-connect`.",
+            "in": "query",
+            "name": "plugin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size; 50 when absent or not a non-negative integer.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from a previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionList"
+                }
+              }
+            },
+            "description": "One page of session metadata."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "`store` is missing."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No session-capable store of that name is declared."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "This binary was built without the `redis-store` feature."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store failed."
+          }
+        },
+        "summary": "List sessions",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/api/sessions/{store}/{id}": {
+      "delete": {
+        "operationId": "delete_session",
+        "parameters": [
+          {
+            "description": "Name of the declared store holding the session.",
+            "in": "path",
+            "name": "store",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Session id: 32 hex chars.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Revoked (`status: deleted`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "`id` is not a valid session id."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No session-capable store of that name is declared."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "This binary was built without the `redis-store` feature."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store failed."
+          }
+        },
+        "summary": "Revoke a session",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/api/status": {
+      "get": {
+        "description": "```json\n{ \"version\": \"0.1.0\", \"routes\": 3, \"policies\": 2, \"default_credentials\": false }\n```",
+        "operationId": "get_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusSummary"
+                }
+              }
+            },
+            "description": "Version plus route and policy counts."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "Get gateway status",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/stores": {
+      "get": {
+        "operationId": "list_stores",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StoreConfig"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "All stores, raw: `${ENV}` placeholders are returned unresolved."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List stores",
+        "tags": [
+          "stores"
+        ]
+      },
+      "post": {
+        "description": "Errors: `409 Conflict` if a store with the same name already exists;\n`400 Bad Request` if the resulting configuration fails validation.",
+        "operationId": "create_store",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoreConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Created (`status: created`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resulting configuration failed validation."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A store with that name already exists."
+          }
+        },
+        "summary": "Create a store",
+        "tags": [
+          "stores"
+        ]
+      }
+    },
+    "/api/stores/{name}": {
+      "delete": {
+        "description": "Errors: `409 Conflict` with the list of referrers while any node, shared\nplugin config or `acme.storage` still references the store; `404 Not\nFound` if it does not exist; `400 Bad Request` if validation fails.",
+        "operationId": "delete_store",
+        "parameters": [
+          {
+            "description": "Store name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Deleted (`status: deleted`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resulting configuration failed validation."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such store."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreInUse"
+                }
+              }
+            },
+            "description": "The store is still referenced (`error: in_use`); `referrers` lists every referrer."
+          }
+        },
+        "summary": "Delete a store",
+        "tags": [
+          "stores"
+        ]
+      },
+      "get": {
+        "description": "Errors: `404 Not Found` if no store with that name exists.",
+        "operationId": "get_store",
+        "parameters": [
+          {
+            "description": "Store name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreConfig"
+                }
+              }
+            },
+            "description": "The store, raw: `${ENV}` placeholders are returned unresolved."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such store."
+          }
+        },
+        "summary": "Get a store",
+        "tags": [
+          "stores"
+        ]
+      },
+      "put": {
+        "description": "Errors: `400 Bad Request` if the resulting configuration fails validation.",
+        "operationId": "update_store",
+        "parameters": [
+          {
+            "description": "Store name; overrides any `name` in the body.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoreConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Upserted (`status: updated`, also when the store was new)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The resulting configuration failed validation."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "Create or replace a store",
+        "tags": [
+          "stores"
+        ]
+      }
+    },
+    "/api/stores/{name}/ping": {
+      "post": {
+        "description": "Resolves the store's config (env placeholders included) and PINGs it,\nbounded by the store's own `connect_timeout_ms`. The response never\nechoes resolved connection details — only latency and version.",
+        "operationId": "ping_store",
+        "parameters": [
+          {
+            "description": "Store name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorePingResult"
+                }
+              }
+            },
+            "description": "The store answered (`status: ok`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store's config could not be turned into a client (e.g. an invalid URL after `${ENV}` resolution)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such store."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "This binary was built without the `redis-store` feature."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The store could not be reached or rejected the `PING`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorePingTimeout"
+                }
+              }
+            },
+            "description": "No reply within the store's `connect_timeout_ms` (`error: ping_timeout`)."
+          }
+        },
+        "summary": "Ping a store",
+        "tags": [
+          "stores"
+        ]
+      }
+    },
+    "/api/supernodes": {
+      "get": {
+        "operationId": "list_supernodes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SupernodeConfig"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "All supernode definitions."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List supernodes",
+        "tags": [
+          "supernodes"
+        ]
+      }
+    },
+    "/api/supernodes/{name}": {
+      "delete": {
+        "description": "Errors: `404 Not Found` if it does not exist; `400 Bad Request` if a\npolicy still references it (recompilation fails, nothing changes).",
+        "operationId": "delete_supernode",
+        "parameters": [
+          {
+            "description": "Supernode name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Deleted (`status: deleted`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A policy still references the supernode, or the config store rejected the write."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such supernode."
+          }
+        },
+        "summary": "Delete a supernode",
+        "tags": [
+          "supernodes"
+        ]
+      },
+      "get": {
+        "description": "Errors: `404 Not Found` if no supernode with that name exists.",
+        "operationId": "get_supernode",
+        "parameters": [
+          {
+            "description": "Supernode name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupernodeConfig"
+                }
+              }
+            },
+            "description": "The supernode definition."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such supernode."
+          }
+        },
+        "summary": "Get a supernode",
+        "tags": [
+          "supernodes"
+        ]
+      },
+      "put": {
+        "description": "Errors: `400 Bad Request` if the definition is invalid or any consuming\npolicy stops compiling (the previous compiled routes stay active).",
+        "operationId": "update_supernode",
+        "parameters": [
+          {
+            "description": "Supernode name; overrides any `name` in the body.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupernodeConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Created or replaced (`status: updated`)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The definition is invalid, a consuming policy stopped compiling, or the config store rejected the write."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "Create or replace a supernode",
+        "tags": [
+          "supernodes"
+        ]
+      }
+    },
+    "/api/vars": {
+      "get": {
+        "operationId": "list_vars",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VarCatalog"
+                }
+              }
+            },
+            "description": "The `$var` catalog."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "List context variables",
+        "tags": [
+          "authoring"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "The process is running (`status: healthy`)."
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "Liveness probe",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "metrics",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Per-route and per-node counters/histograms in Prometheus text exposition format."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        },
+        "summary": "Get Prometheus metrics",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "description": "Ready means the route table is loaded, the ACME runtime exists when\n`system.yaml` asks for managed certificates, **and** no ACME-managed\ncertificate is still serving a placeholder — renewal failures never affect\nreadiness, only a cert that has never successfully issued does. Returns `200 OK` with\nthe compiled route count (and the empty `acme.placeholder` list) once\nboth hold, or `503 Service Unavailable` while either does not. Every\nbranch carries the same `acme.placeholder` shape, even \"no routes loaded\"\n(where the acme runtime hasn't necessarily been consulted), so callers\ncan rely on one JSON shape regardless of why readiness failed.",
+        "operationId": "readyz",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            },
+            "description": "Ready (`status: ready`, with the compiled route count)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            },
+            "description": "Not ready (`status: not_ready`, with a `reason`): no routes loaded, the ACME runtime is still starting, or a managed certificate is still a placeholder."
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "Readiness probe",
+        "tags": [
+          "operations"
+        ]
+      }
+    }
+  },
+  "security": [
+    {
+      "basicAuth": []
+    }
+  ],
+  "servers": [
+    {
+      "description": "Default admin listener",
+      "url": "http://localhost:9090"
+    }
+  ],
+  "tags": [
+    {
+      "description": "Route table: match rules bound to a policy, in evaluation order.",
+      "name": "routes"
+    },
+    {
+      "description": "Node-graph policies, policy validation, and the node-type catalog.",
+      "name": "policies"
+    },
+    {
+      "description": "Reusable named subgraphs inlined into policies.",
+      "name": "supernodes"
+    },
+    {
+      "description": "Named, typed plugin config profiles referenced via `config_ref`.",
+      "name": "plugin-configs"
+    },
+    {
+      "description": "Named API clients with per-auth-plugin credentials.",
+      "name": "consumers"
+    },
+    {
+      "description": "Named redis/valkey connections referenced by plugin config.",
+      "name": "stores"
+    },
+    {
+      "description": "Server-side sessions held in redis-backed stores.",
+      "name": "sessions"
+    },
+    {
+      "description": "Automatically managed (ACME) certificates.",
+      "name": "acme"
+    },
+    {
+      "description": "proxy-cache purging.",
+      "name": "cache"
+    },
+    {
+      "description": "Policy-execution traces and the plugin sandbox (requires `debug.enabled`).",
+      "name": "debug"
+    },
+    {
+      "description": "Context-var and env-var catalogs used by editors and agents.",
+      "name": "authoring"
+    },
+    {
+      "description": "MCP server status and the precompiled agent prompts.",
+      "name": "mcp"
+    },
+    {
+      "description": "Health, readiness, status, metrics, config export and reload.",
+      "name": "operations"
+    }
+  ]
+}
