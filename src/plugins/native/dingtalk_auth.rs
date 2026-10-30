@@ -440,8 +440,18 @@ impl DingtalkAuthPlugin {
             return Ok((None, None));
         };
         let raw = raw.to_string();
-        let Some(bytes) = server_session::load(&session.backend, &session.sealer, &raw).await?
-        else {
+        let Some(bytes) = server_session::load(
+            &session.backend,
+            &session.sealer,
+            &raw,
+            &server_session::SessionTimeouts {
+                idling: 0,
+                rolling: 0,
+                absolute: session.cookie_lifetime,
+            },
+        )
+        .await?
+        .map(|o| o.envelope.payload) else {
             return Ok((None, None));
         };
         match serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -497,15 +507,18 @@ impl DingtalkAuthPlugin {
             .or_else(|| userinfo.get("unionid"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let ttl = Duration::from_secs(session.cookie_lifetime);
-        let meta = server_session::meta_now(&ctx, "dingtalk-auth", subject, ttl);
+        let meta = server_session::meta_now(&ctx, "dingtalk-auth", subject);
         let payload = serde_json::to_vec(&userinfo).unwrap_or_default();
         let attrs = Self::session_attrs(session, &ctx);
         let set_cookie = match server_session::establish(
             &session.backend,
             &session.sealer,
             &payload,
-            ttl,
+            &server_session::SessionTimeouts {
+                idling: 0,
+                rolling: 0,
+                absolute: session.cookie_lifetime,
+            },
             meta,
             &session.cookie_name,
             &attrs,
@@ -983,7 +996,7 @@ mod tests {
 
         let sealer = CookieSealer::new("s3cr3t");
         let payload = serde_json::to_vec(&serde_json::json!({ "userid": "u1" })).unwrap();
-        let sealed = sealer.seal(&payload, Duration::from_secs(86_400));
+        let sealed = server_session::seal_fresh_for_test(&sealer, &payload);
 
         let mut ctx = base_ctx();
         ctx.request.headers.insert(
@@ -1131,7 +1144,7 @@ mod tests {
         // callback would have established it.
         let sealer = CookieSealer::new("s3cr3t");
         let payload = serde_json::to_vec(&serde_json::json!({ "userid": "u1" })).unwrap();
-        let sealed = sealer.seal(&payload, Duration::from_secs(86_400));
+        let sealed = server_session::seal_fresh_for_test(&sealer, &payload);
         let id = crate::sessions::SessionId::random();
         let meta = crate::sessions::SessionMeta {
             id: String::new(),

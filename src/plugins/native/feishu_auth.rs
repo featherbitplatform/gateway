@@ -443,8 +443,18 @@ impl FeishuAuthPlugin {
             return Ok((None, None));
         };
         let raw = raw.to_string();
-        let Some(bytes) = server_session::load(&session.backend, &session.sealer, &raw).await?
-        else {
+        let Some(bytes) = server_session::load(
+            &session.backend,
+            &session.sealer,
+            &raw,
+            &server_session::SessionTimeouts {
+                idling: 0,
+                rolling: 0,
+                absolute: session.cookie_lifetime,
+            },
+        )
+        .await?
+        .map(|o| o.envelope.payload) else {
             return Ok((None, None));
         };
         match serde_json::from_slice::<FeishuSessionData>(&bytes) {
@@ -501,8 +511,7 @@ impl FeishuAuthPlugin {
             .or_else(|| userinfo.get("union_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let ttl = Duration::from_secs(session.cookie_lifetime);
-        let meta = server_session::meta_now(&ctx, "feishu-auth", subject, ttl);
+        let meta = server_session::meta_now(&ctx, "feishu-auth", subject);
         // APISIX's skew: cache the app access token slightly short of its
         // real expiry.
         let access_token_expires_at = expires_in.map(|secs| now_unix() + secs.saturating_sub(60));
@@ -517,7 +526,11 @@ impl FeishuAuthPlugin {
             &session.backend,
             &session.sealer,
             &payload,
-            ttl,
+            &server_session::SessionTimeouts {
+                idling: 0,
+                rolling: 0,
+                absolute: session.cookie_lifetime,
+            },
             meta,
             &session.cookie_name,
             &attrs,
@@ -980,7 +993,7 @@ mod tests {
             access_token_expires_at: Some(1_000_000),
         };
         let payload = serde_json::to_vec(&session_data).unwrap();
-        let sealed = sealer.seal(&payload, Duration::from_secs(86_400));
+        let sealed = server_session::seal_fresh_for_test(&sealer, &payload);
 
         let mut ctx = base_ctx();
         ctx.request.headers.insert(
@@ -1140,7 +1153,7 @@ mod tests {
             access_token_expires_at: None,
         };
         let payload = serde_json::to_vec(&session_data).unwrap();
-        let sealed = sealer.seal(&payload, Duration::from_secs(86_400));
+        let sealed = server_session::seal_fresh_for_test(&sealer, &payload);
         let id = crate::sessions::SessionId::random();
         let meta = crate::sessions::SessionMeta {
             id: String::new(),

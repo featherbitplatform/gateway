@@ -339,7 +339,18 @@ impl CasAuthPlugin {
         let Some(raw) = read_cookie(cookie_header, &self.cookie_name) else {
             return Ok(None);
         };
-        let bytes = server_session::load(&self.backend, sealer, raw).await?;
+        let bytes = server_session::load(
+            &self.backend,
+            sealer,
+            raw,
+            &server_session::SessionTimeouts {
+                idling: 0,
+                rolling: 0,
+                absolute: self.cookie_lifetime,
+            },
+        )
+        .await?
+        .map(|o| o.envelope.payload);
         Ok(bytes.and_then(|b| {
             serde_json::from_slice::<CasSession>(&b)
                 .ok()
@@ -423,14 +434,17 @@ impl CasAuthPlugin {
         if let Some(ticket) = extract_ticket(&ctx.request.query_params, &self.ticket_param) {
             return match self.cas_validate(&ctx, &ticket).await {
                 Ok(user) => {
-                    let ttl = Duration::from_secs(self.cookie_lifetime);
-                    let meta = server_session::meta_now(&ctx, "cas-auth", &user, ttl);
+                    let meta = server_session::meta_now(&ctx, "cas-auth", &user);
                     let payload = serde_json::to_vec(&CasSession { user }).unwrap_or_default();
                     let set = match server_session::establish(
                         &self.backend,
                         sealer,
                         &payload,
-                        ttl,
+                        &server_session::SessionTimeouts {
+                            idling: 0,
+                            rolling: 0,
+                            absolute: self.cookie_lifetime,
+                        },
                         meta,
                         &self.cookie_name,
                         &self.session_attrs(&ctx),
@@ -915,7 +929,7 @@ mod tests {
             user: "dave".into(),
         })
         .unwrap();
-        let sealed = sealer.seal(&payload, Duration::from_secs(3600));
+        let sealed = server_session::seal_fresh_for_test(&sealer, &payload);
 
         let mut c = ctx("/dashboard", HashMap::new());
         c.request.headers.insert(
@@ -1013,7 +1027,7 @@ mod tests {
             user: "alice".into(),
         })
         .unwrap();
-        let sealed = sealer.seal(&payload, Duration::from_secs(3600));
+        let sealed = server_session::seal_fresh_for_test(&sealer, &payload);
         let id = crate::sessions::SessionId::random();
         let meta = crate::sessions::SessionMeta {
             id: String::new(),

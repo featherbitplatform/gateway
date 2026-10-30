@@ -286,7 +286,8 @@ impl Envelope {
 }
 
 /// Builds the meta envelope from the context's `__route`/`__policy` vars.
-pub fn meta_now(ctx: &Context, plugin: &str, subject: &str, ttl: Duration) -> SessionMeta {
+/// `created_at`/`expires_at` are filled in by whichever write persists it.
+pub fn meta_now(ctx: &Context, plugin: &str, subject: &str) -> SessionMeta {
     let var = |k: &str| {
         ctx.message
             .get(k)
@@ -302,42 +303,91 @@ pub fn meta_now(ctx: &Context, plugin: &str, subject: &str, ttl: Duration) -> Se
         policy: var("__policy"),
         route: var("__route"),
         created_at: now,
-        expires_at: now.saturating_add(ttl.as_secs()),
+        expires_at: now,
     }
 }
 
-/// Seals `payload` and returns the session Set-Cookie value. Cookie mode:
-/// the sealed blob IS the cookie. Redis mode: the sealed blob goes under a
-/// fresh random id; the cookie carries the bare id.
-pub async fn establish(
+/// Seals `envelope` at `now` with the timers' TTL and persists it: cookie
+/// mode returns the sealed blob as the cookie; redis mode `put`s it under
+/// `id` and returns the bare id as the cookie. Every `Set-Cookie` built
+/// here carries `Max-Age = ttl`, whatever `attrs.max_age` says.
+#[allow(clippy::too_many_arguments)]
+async fn persist(
     backend: &SessionBackend,
     sealer: &CookieSealer,
-    payload: &[u8],
-    ttl: Duration,
-    meta: SessionMeta,
+    id: Option<SessionId>,
+    envelope: &Envelope,
+    timeouts: &SessionTimeouts,
+    mut meta: SessionMeta,
     cookie_name: &str,
     attrs: &CookieAttrs<'_>,
+    now: u64,
 ) -> Result<String, StoreError> {
-    let sealed = sealer.seal(payload, ttl);
+    let ttl = timeouts.ttl(envelope.created_at, now);
+    let sealed = sealer.seal(&envelope.encode(), ttl);
+    let attrs = CookieAttrs {
+        path: attrs.path,
+        max_age: Some(ttl.as_secs()),
+        http_only: attrs.http_only,
+        secure: attrs.secure,
+        same_site: attrs.same_site,
+    };
     match backend {
-        SessionBackend::Cookie => Ok(build_set_cookie(cookie_name, &sealed, attrs)),
+        SessionBackend::Cookie => Ok(build_set_cookie(cookie_name, &sealed, &attrs)),
         SessionBackend::Store { store, .. } => {
-            let id = SessionId::random();
+            let id = id.unwrap_or_else(SessionId::random);
+            meta.created_at = envelope.created_at;
+            meta.expires_at = now.saturating_add(ttl.as_secs());
             store.put(&id, sealed.as_bytes(), ttl, &meta).await?;
-            Ok(build_set_cookie(cookie_name, id.as_str(), attrs))
+            Ok(build_set_cookie(cookie_name, id.as_str(), &attrs))
         }
     }
 }
 
-/// Opens a session cookie value. `Ok(None)` = treat as unauthenticated
-/// (absent/expired/tampered/junk id); `Err` = store outage (503, never 401).
-pub async fn load(
+/// Seals `payload` in a fresh envelope and returns the session Set-Cookie
+/// value. Cookie mode: the sealed blob IS the cookie. Redis mode: the sealed
+/// blob goes under a fresh random id; the cookie carries the bare id.
+pub async fn establish(
+    backend: &SessionBackend,
+    sealer: &CookieSealer,
+    payload: &[u8],
+    timeouts: &SessionTimeouts,
+    meta: SessionMeta,
+    cookie_name: &str,
+    attrs: &CookieAttrs<'_>,
+) -> Result<String, StoreError> {
+    let now = now_unix();
+    let envelope = Envelope::new(payload.to_vec(), now);
+    persist(
+        backend,
+        sealer,
+        None,
+        &envelope,
+        timeouts,
+        meta,
+        cookie_name,
+        attrs,
+        now,
+    )
+    .await
+}
+
+/// A session that passed every timer, plus the renewal it is due for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opened {
+    pub envelope: Envelope,
+    pub renewal: Renewal,
+}
+
+/// Reads and opens the sealed blob behind a cookie value without applying
+/// the timers. `Ok(None)` = absent/unsealable/legacy; `Err` = store outage.
+async fn fetch_envelope(
     backend: &SessionBackend,
     sealer: &CookieSealer,
     cookie_value: &str,
-) -> Result<Option<Vec<u8>>, StoreError> {
-    match backend {
-        SessionBackend::Cookie => Ok(sealer.open(cookie_value).ok()),
+) -> Result<Option<Envelope>, StoreError> {
+    let sealed = match backend {
+        SessionBackend::Cookie => cookie_value.to_string(),
         SessionBackend::Store { store, .. } => {
             let Some(id) = SessionId::parse(cookie_value) else {
                 return Ok(None);
@@ -345,8 +395,113 @@ pub async fn load(
             let Some(sealed) = store.get(&id).await? else {
                 return Ok(None);
             };
-            let sealed = String::from_utf8(sealed).unwrap_or_default();
-            Ok(sealer.open(&sealed).ok())
+            String::from_utf8(sealed).unwrap_or_default()
+        }
+    };
+    Ok(sealer.open(&sealed).ok().and_then(|b| Envelope::decode(&b)))
+}
+
+/// Opens a session cookie value and applies the timers. `Ok(None)` = treat
+/// as unauthenticated (absent/expired/tampered/junk id/legacy blob/timer
+/// exceeded); `Err` = store outage (503, never 401). The caller decodes
+/// `envelope.payload`, and — once it knows the subject — completes any
+/// due renewal with [`renew_if_due`].
+pub async fn load(
+    backend: &SessionBackend,
+    sealer: &CookieSealer,
+    cookie_value: &str,
+    timeouts: &SessionTimeouts,
+) -> Result<Option<Opened>, StoreError> {
+    let Some(envelope) = fetch_envelope(backend, sealer, cookie_value).await? else {
+        return Ok(None);
+    };
+    let now = now_unix();
+    if !envelope.is_valid(timeouts, now) {
+        return Ok(None);
+    }
+    let renewal = envelope.renewal_due(timeouts, now);
+    Ok(Some(Opened { envelope, renewal }))
+}
+
+/// Completes the renewal [`load`] found due, if any, and returns the
+/// `Set-Cookie` to attach to the response. Cookie mode re-seals the
+/// envelope with fresh timestamps. Redis mode takes the per-session lock
+/// shared with the `openid-connect` token refresh so a touch can never
+/// overwrite a concurrent refresh: when the lock is held the renewal is
+/// skipped for this request (the holder's write carries fresh timestamps);
+/// otherwise the record is re-read under the lock, renewed, `put` under the
+/// same id, and the browser gets the same id with a fresh `Max-Age`.
+#[allow(clippy::too_many_arguments)]
+pub async fn renew_if_due(
+    backend: &SessionBackend,
+    sealer: &CookieSealer,
+    cookie_value: &str,
+    opened: &Opened,
+    timeouts: &SessionTimeouts,
+    meta: SessionMeta,
+    cookie_name: &str,
+    attrs: &CookieAttrs<'_>,
+) -> Result<Option<String>, StoreError> {
+    if opened.renewal == Renewal::None {
+        return Ok(None);
+    }
+    let now = now_unix();
+    match backend {
+        SessionBackend::Cookie => {
+            let mut envelope = opened.envelope.clone();
+            envelope.apply(opened.renewal, now);
+            persist(
+                backend,
+                sealer,
+                None,
+                &envelope,
+                timeouts,
+                meta,
+                cookie_name,
+                attrs,
+                now,
+            )
+            .await
+            .map(Some)
+        }
+        SessionBackend::Store { store, .. } => {
+            let Some(id) = SessionId::parse(cookie_value) else {
+                return Ok(None);
+            };
+            if !store.try_lock(&id, Duration::from_secs(10)).await? {
+                return Ok(None);
+            }
+            let result = async {
+                let Some(mut envelope) = fetch_envelope(backend, sealer, cookie_value).await?
+                else {
+                    return Ok(None);
+                };
+                let renewal = envelope.renewal_due(timeouts, now);
+                if renewal == Renewal::None {
+                    return Ok(None);
+                }
+                envelope.apply(renewal, now);
+                persist(
+                    backend,
+                    sealer,
+                    Some(id.clone()),
+                    &envelope,
+                    timeouts,
+                    meta,
+                    cookie_name,
+                    attrs,
+                    now,
+                )
+                .await
+                .map(Some)
+            }
+            .await;
+            // Best effort: the lock self-heals via its TTL, and a failed
+            // unlock must not turn a persisted renewal into a 503.
+            if let Err(e) = store.unlock(&id).await {
+                tracing::warn!("session renewal unlock failed (self-heals via TTL): {e}");
+            }
+            result
         }
     }
 }
@@ -369,31 +524,78 @@ pub async fn destroy(
     Ok(delete_cookie(cookie_name, path))
 }
 
-/// Rewrites an existing session's payload (token refresh). Redis mode: put
-/// under the SAME id (cookie unchanged → returns None). Cookie mode: the
-/// caller must send a fresh cookie (returns Some(set_cookie)).
-#[allow(clippy::too_many_arguments)] // matches the locked interface in the task-5 brief
+/// Rewrites an existing session's payload (token refresh) as a full re-save
+/// that keeps the login time `created_at`, so a refresh never extends the
+/// absolute timeout. Redis mode puts under the SAME id. Either way the
+/// returned `Set-Cookie` must reach the browser (cookie mode: the new blob;
+/// redis mode: the same id with a fresh `Max-Age`).
+#[allow(clippy::too_many_arguments)]
 pub async fn update(
     backend: &SessionBackend,
     sealer: &CookieSealer,
     cookie_value: &str,
+    created_at: u64,
     payload: &[u8],
-    ttl: Duration,
+    timeouts: &SessionTimeouts,
     meta: SessionMeta,
     cookie_name: &str,
     attrs: &CookieAttrs<'_>,
-) -> Result<Option<String>, StoreError> {
-    let sealed = sealer.seal(payload, ttl);
-    match backend {
-        SessionBackend::Cookie => Ok(Some(build_set_cookie(cookie_name, &sealed, attrs))),
-        SessionBackend::Store { store, .. } => {
-            let Some(id) = SessionId::parse(cookie_value) else {
-                return Ok(None);
-            };
-            store.put(&id, sealed.as_bytes(), ttl, &meta).await?;
-            Ok(None)
-        }
-    }
+) -> Result<String, StoreError> {
+    let now = now_unix();
+    let envelope = Envelope {
+        created_at,
+        renewed_at: now,
+        touched_at: now,
+        payload: payload.to_vec(),
+    };
+    let id = match backend {
+        SessionBackend::Cookie => None,
+        // A junk id cannot have loaded a session; persisting under a fresh
+        // id would orphan the browser's cookie, so this is a plain outage.
+        SessionBackend::Store { .. } => Some(
+            SessionId::parse(cookie_value)
+                .ok_or_else(|| StoreError("session update: malformed session id".to_string()))?,
+        ),
+    };
+    persist(
+        backend,
+        sealer,
+        id,
+        &envelope,
+        timeouts,
+        meta,
+        cookie_name,
+        attrs,
+        now,
+    )
+    .await
+}
+
+/// Seals an envelope with explicit timestamps, for tests that need a
+/// session in a chosen state without sleeping.
+#[cfg(test)]
+pub fn seal_envelope_for_test(
+    sealer: &CookieSealer,
+    payload: &[u8],
+    created_at: u64,
+    renewed_at: u64,
+    touched_at: u64,
+    ttl: Duration,
+) -> String {
+    let envelope = Envelope {
+        created_at,
+        renewed_at,
+        touched_at,
+        payload: payload.to_vec(),
+    };
+    sealer.seal(&envelope.encode(), ttl)
+}
+
+/// Seals `payload` as a session established right now (ten-minute seal).
+#[cfg(test)]
+pub fn seal_fresh_for_test(sealer: &CookieSealer, payload: &[u8]) -> String {
+    let now = now_unix();
+    seal_envelope_for_test(sealer, payload, now, now, now, Duration::from_secs(600))
 }
 
 #[cfg(test)]
@@ -420,35 +622,57 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_cookie_mode_matches_legacy_shape() {
-        let sealer = CookieSealer::new("k");
-        let set = establish(
-            &SessionBackend::Cookie,
-            &sealer,
+    fn cookie_value(set_cookie: &str, name: &str) -> String {
+        set_cookie
+            .strip_prefix(&format!("{name}="))
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    fn max_age(set_cookie: &str) -> u64 {
+        set_cookie
+            .split("; ")
+            .find_map(|a| a.strip_prefix("Max-Age="))
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    async fn establish_default(backend: &SessionBackend, sealer: &CookieSealer) -> String {
+        establish(
+            backend,
+            sealer,
             b"payload",
-            Duration::from_secs(60),
+            &SessionTimeouts::default(),
             meta(),
             "test_session",
             &CookieAttrs::default(),
         )
         .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_establish_then_load_fresh_session_no_renewal() {
+        let sealer = CookieSealer::new("k");
+        let set = establish_default(&SessionBackend::Cookie, &sealer).await;
+        assert_eq!(max_age(&set), 3600, "Max-Age is the rolling timeout: {set}");
+        let value = cookie_value(&set, "test_session");
+        let opened = load(
+            &SessionBackend::Cookie,
+            &sealer,
+            &value,
+            &SessionTimeouts::default(),
+        )
+        .await
+        .unwrap()
         .unwrap();
-        // Legacy shape: the sealed blob is the cookie value itself.
-        let value = set
-            .strip_prefix("test_session=")
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_string();
-        assert_eq!(
-            load(&SessionBackend::Cookie, &sealer, &value)
-                .await
-                .unwrap()
-                .as_deref(),
-            Some(&b"payload"[..])
-        );
+        assert_eq!(opened.envelope.payload, b"payload");
+        assert_eq!(opened.renewal, Renewal::None);
+        assert!(now_unix() - opened.envelope.created_at <= 1);
     }
 
     #[tokio::test]
@@ -456,40 +680,25 @@ mod tests {
         let fake = Arc::new(FakeSessionStore::default());
         let backend = store_backend(fake.clone());
         let sealer = CookieSealer::new("k");
-        let set = establish(
-            &backend,
-            &sealer,
-            b"payload",
-            Duration::from_secs(60),
-            meta(),
-            "test_session",
-            &CookieAttrs::default(),
-        )
-        .await
-        .unwrap();
-        let value = set
-            .strip_prefix("test_session=")
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_string();
+        let t = SessionTimeouts::default();
+        let set = establish_default(&backend, &sealer).await;
+        let value = cookie_value(&set, "test_session");
         // The cookie is a bare 32-hex id, far under 4 KB, not the payload.
         assert_eq!(value.len(), 32);
         assert!(crate::sessions::SessionId::parse(&value).is_some());
 
-        assert_eq!(
-            load(&backend, &sealer, &value).await.unwrap().as_deref(),
-            Some(&b"payload"[..])
-        );
+        let opened = load(&backend, &sealer, &value, &t).await.unwrap().unwrap();
+        assert_eq!(opened.envelope.payload, b"payload");
         // Junk cookie values are unauthenticated, not errors.
-        assert_eq!(load(&backend, &sealer, "not-an-id").await.unwrap(), None);
+        assert!(load(&backend, &sealer, "not-an-id", &t)
+            .await
+            .unwrap()
+            .is_none());
 
-        // Destroy revokes server-side.
         destroy(&backend, Some(&value), "test_session", "/")
             .await
             .unwrap();
-        assert_eq!(load(&backend, &sealer, &value).await.unwrap(), None);
+        assert!(load(&backend, &sealer, &value, &t).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -499,10 +708,289 @@ mod tests {
         let backend = store_backend(fake);
         let sealer = CookieSealer::new("k");
         let id = crate::sessions::SessionId::random();
-        assert!(load(&backend, &sealer, id.as_str()).await.is_err());
+        assert!(
+            load(&backend, &sealer, id.as_str(), &SessionTimeouts::default())
+                .await
+                .is_err()
+        );
         assert!(destroy(&backend, Some(id.as_str()), "n", "/")
             .await
             .is_err());
+    }
+
+    /// A blob sealed by the pre-envelope code (the JSON payload directly) is
+    /// not a session: one re-login at upgrade, never a 503.
+    #[tokio::test]
+    async fn test_load_rejects_legacy_blob() {
+        let sealer = CookieSealer::new("k");
+        let legacy = sealer.seal(b"{\"x\":1}", Duration::from_secs(60));
+        assert!(load(
+            &SessionBackend::Cookie,
+            &sealer,
+            &legacy,
+            &SessionTimeouts::default()
+        )
+        .await
+        .unwrap()
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_load_rejects_idle_session_and_renews_touched_one() {
+        let sealer = CookieSealer::new("k");
+        let t = SessionTimeouts::default();
+        let now = now_unix();
+        let idle = seal_envelope_for_test(
+            &sealer,
+            b"p",
+            now - 1000,
+            now - 1000,
+            now - 901,
+            Duration::from_secs(600),
+        );
+        assert!(load(&SessionBackend::Cookie, &sealer, &idle, &t)
+            .await
+            .unwrap()
+            .is_none());
+
+        let touched = seal_envelope_for_test(
+            &sealer,
+            b"p",
+            now - 1000,
+            now - 1000,
+            now - 61,
+            Duration::from_secs(600),
+        );
+        let opened = load(&SessionBackend::Cookie, &sealer, &touched, &t)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.renewal, Renewal::Touch);
+        let set = renew_if_due(
+            &SessionBackend::Cookie,
+            &sealer,
+            &touched,
+            &opened,
+            &t,
+            meta(),
+            "n",
+            &CookieAttrs::default(),
+        )
+        .await
+        .unwrap()
+        .expect("a touch re-issues the cookie");
+        let again = load(
+            &SessionBackend::Cookie,
+            &sealer,
+            &cookie_value(&set, "n"),
+            &t,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(again.renewal, Renewal::None);
+        assert!(now_unix() - again.envelope.touched_at <= 1);
+        assert_eq!(
+            again.envelope.renewed_at,
+            now - 1000,
+            "a touch does not roll"
+        );
+        assert_eq!(again.envelope.payload, b"p");
+    }
+
+    #[tokio::test]
+    async fn test_roll_keeps_created_at_in_cookie_and_redis() {
+        use crate::sessions::SessionStore as _;
+        let sealer = CookieSealer::new("k");
+        let t = SessionTimeouts::default();
+        let now = now_unix();
+        let created = now - 5000;
+
+        // Cookie mode.
+        let due = seal_envelope_for_test(
+            &sealer,
+            b"p",
+            created,
+            now - 2701,
+            now - 10,
+            Duration::from_secs(600),
+        );
+        let opened = load(&SessionBackend::Cookie, &sealer, &due, &t)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.renewal, Renewal::Roll);
+        let set = renew_if_due(
+            &SessionBackend::Cookie,
+            &sealer,
+            &due,
+            &opened,
+            &t,
+            meta(),
+            "n",
+            &CookieAttrs::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let rolled = load(
+            &SessionBackend::Cookie,
+            &sealer,
+            &cookie_value(&set, "n"),
+            &t,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(rolled.envelope.created_at, created);
+        assert!(now_unix() - rolled.envelope.renewed_at <= 1);
+
+        // Redis mode: same id, record rewritten, meta keeps the login time.
+        let fake = Arc::new(FakeSessionStore::default());
+        let backend = store_backend(fake.clone());
+        let id = crate::sessions::SessionId::random();
+        fake.put(&id, due.as_bytes(), Duration::from_secs(600), &meta())
+            .await
+            .unwrap();
+        let opened = load(&backend, &sealer, id.as_str(), &t)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.renewal, Renewal::Roll);
+        let set = renew_if_due(
+            &backend,
+            &sealer,
+            id.as_str(),
+            &opened,
+            &t,
+            meta(),
+            "n",
+            &CookieAttrs::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            cookie_value(&set, "n"),
+            id.as_str(),
+            "redis mode keeps the id"
+        );
+        assert_eq!(max_age(&set), t.ttl(created, now_unix()).as_secs());
+        let rolled = load(&backend, &sealer, id.as_str(), &t)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rolled.envelope.created_at, created);
+        assert!(now_unix() - rolled.envelope.renewed_at <= 1);
+        let listed = fake
+            .list(&crate::sessions::SessionFilter::default())
+            .await
+            .unwrap();
+        let m = listed
+            .sessions
+            .iter()
+            .find(|m| m.id == id.as_str())
+            .unwrap();
+        assert_eq!(m.created_at, created);
+        assert_eq!(m.subject, "alice");
+        assert!(m.expires_at >= now_unix() + t.ttl(created, now_unix()).as_secs() - 1);
+        // The refresh lock is free again.
+        assert!(fake.try_lock(&id, Duration::from_secs(1)).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_two_loads_of_same_due_blob_both_renew_successfully() {
+        let sealer = CookieSealer::new("k");
+        let t = SessionTimeouts::default();
+        let now = now_unix();
+        let due = seal_envelope_for_test(
+            &sealer,
+            b"p",
+            now - 100,
+            now - 100,
+            now - 61,
+            Duration::from_secs(600),
+        );
+        let opened = load(&SessionBackend::Cookie, &sealer, &due, &t)
+            .await
+            .unwrap()
+            .unwrap();
+        let a = renew_if_due(
+            &SessionBackend::Cookie,
+            &sealer,
+            &due,
+            &opened,
+            &t,
+            meta(),
+            "n",
+            &CookieAttrs::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let b = renew_if_due(
+            &SessionBackend::Cookie,
+            &sealer,
+            &due,
+            &opened,
+            &t,
+            meta(),
+            "n",
+            &CookieAttrs::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_ne!(a, b, "fresh nonce per seal");
+        for set in [a, b] {
+            assert!(load(
+                &SessionBackend::Cookie,
+                &sealer,
+                &cookie_value(&set, "n"),
+                &t
+            )
+            .await
+            .unwrap()
+            .is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_keeps_created_at_and_caps_ttl_by_absolute() {
+        let sealer = CookieSealer::new("k");
+        let t = SessionTimeouts {
+            idling: 900,
+            rolling: 3600,
+            absolute: 5000,
+        };
+        let now = now_unix();
+        let created = now - 3000;
+        let set = update(
+            &SessionBackend::Cookie,
+            &sealer,
+            "ignored-in-cookie-mode",
+            created,
+            b"v2",
+            &t,
+            meta(),
+            "n",
+            &CookieAttrs::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(max_age(&set), 2000);
+        let opened = load(
+            &SessionBackend::Cookie,
+            &sealer,
+            &cookie_value(&set, "n"),
+            &t,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(opened.envelope.created_at, created);
+        assert_eq!(opened.envelope.payload, b"v2");
+        assert!(now_unix() - opened.envelope.renewed_at <= 1);
     }
 
     #[tokio::test]
@@ -510,40 +998,165 @@ mod tests {
         let fake = Arc::new(FakeSessionStore::default());
         let backend = store_backend(fake);
         let sealer = CookieSealer::new("k");
+        let t = SessionTimeouts::default();
         let set = establish(
             &backend,
             &sealer,
             b"v1",
-            Duration::from_secs(60),
+            &t,
             meta(),
             "n",
             &CookieAttrs::default(),
         )
         .await
         .unwrap();
-        let value = set
-            .strip_prefix("n=")
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_string();
-        let out = update(
+        let value = cookie_value(&set, "n");
+        let set2 = update(
             &backend,
             &sealer,
             &value,
+            now_unix(),
             b"v2",
-            Duration::from_secs(60),
+            &t,
             meta(),
             "n",
             &CookieAttrs::default(),
         )
         .await
         .unwrap();
-        assert!(out.is_none(), "store mode must not reissue the cookie");
+        assert_eq!(cookie_value(&set2, "n"), value, "store mode keeps the id");
         assert_eq!(
-            load(&backend, &sealer, &value).await.unwrap().as_deref(),
-            Some(&b"v2"[..])
+            load(&backend, &sealer, &value, &t)
+                .await
+                .unwrap()
+                .unwrap()
+                .envelope
+                .payload,
+            b"v2"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_store_failure_on_renew_is_err() {
+        use crate::sessions::SessionStore as _;
+        let fake = Arc::new(FakeSessionStore::default());
+        let backend = store_backend(fake.clone());
+        let sealer = CookieSealer::new("k");
+        let t = SessionTimeouts::default();
+        let now = now_unix();
+        let due = seal_envelope_for_test(
+            &sealer,
+            b"p",
+            now - 100,
+            now - 100,
+            now - 61,
+            Duration::from_secs(600),
+        );
+        let id = crate::sessions::SessionId::random();
+        fake.put(&id, due.as_bytes(), Duration::from_secs(600), &meta())
+            .await
+            .unwrap();
+        let opened = load(&backend, &sealer, id.as_str(), &t)
+            .await
+            .unwrap()
+            .unwrap();
+        fake.fail.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(renew_if_due(
+            &backend,
+            &sealer,
+            id.as_str(),
+            &opened,
+            &t,
+            meta(),
+            "n",
+            &CookieAttrs::default()
+        )
+        .await
+        .is_err());
+    }
+
+    /// Redis-mode renewal must not clobber a concurrent token refresh: it
+    /// skips when the per-session lock is held, and otherwise re-reads the
+    /// record under the lock before writing new timestamps onto it.
+    #[tokio::test]
+    async fn test_redis_renew_skips_when_lock_held_and_rereads_under_lock() {
+        use crate::sessions::SessionStore as _;
+        let fake = Arc::new(FakeSessionStore::default());
+        let backend = store_backend(fake.clone());
+        let sealer = CookieSealer::new("k");
+        let t = SessionTimeouts::default();
+        let now = now_unix();
+        let due = seal_envelope_for_test(
+            &sealer,
+            b"old-tokens",
+            now - 100,
+            now - 100,
+            now - 61,
+            Duration::from_secs(600),
+        );
+        let id = crate::sessions::SessionId::random();
+        fake.put(&id, due.as_bytes(), Duration::from_secs(600), &meta())
+            .await
+            .unwrap();
+        let opened = load(&backend, &sealer, id.as_str(), &t)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.renewal, Renewal::Touch);
+
+        // Lock held by a refresher: skip, record untouched.
+        assert!(fake.try_lock(&id, Duration::from_secs(10)).await.unwrap());
+        let out = renew_if_due(
+            &backend,
+            &sealer,
+            id.as_str(),
+            &opened,
+            &t,
+            meta(),
+            "n",
+            &CookieAttrs::default(),
+        )
+        .await
+        .unwrap();
+        assert!(out.is_none());
+        assert_eq!(fake.get(&id).await.unwrap().unwrap(), due.as_bytes());
+        fake.unlock(&id).await.unwrap();
+
+        // A refresh landed between our load and our renewal: the re-read
+        // under the lock sees the newer payload and keeps it.
+        let newer = seal_envelope_for_test(
+            &sealer,
+            b"new-tokens",
+            now - 100,
+            now - 100,
+            now - 61,
+            Duration::from_secs(600),
+        );
+        fake.put(&id, newer.as_bytes(), Duration::from_secs(600), &meta())
+            .await
+            .unwrap();
+        let out = renew_if_due(
+            &backend,
+            &sealer,
+            id.as_str(),
+            &opened,
+            &t,
+            meta(),
+            "n",
+            &CookieAttrs::default(),
+        )
+        .await
+        .unwrap();
+        assert!(out.is_some());
+        let after = load(&backend, &sealer, id.as_str(), &t)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.envelope.payload, b"new-tokens");
+        assert!(now_unix() - after.envelope.touched_at <= 1);
+        assert!(
+            fake.try_lock(&id, Duration::from_secs(1)).await.unwrap(),
+            "lock released"
         );
     }
 

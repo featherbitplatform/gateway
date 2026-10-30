@@ -788,7 +788,18 @@ impl OpenidConnectPlugin {
         let Some(raw) = read_cookie(cookie_header, &flow.session_cookie) else {
             return Ok(None);
         };
-        let bytes = server_session::load(&flow.backend, &flow.sealer, raw).await?;
+        let bytes = server_session::load(
+            &flow.backend,
+            &flow.sealer,
+            raw,
+            &server_session::SessionTimeouts {
+                idling: 0,
+                rolling: 0,
+                absolute: flow.session_lifetime.as_secs(),
+            },
+        )
+        .await?
+        .map(|o| o.envelope.payload);
         Ok(bytes.and_then(|b| serde_json::from_slice(&b).ok()))
     }
 
@@ -952,13 +963,18 @@ impl OpenidConnectPlugin {
         // `session.cookie.lifetime` — an acceptable, documented
         // over-approximation rather than a true "remaining" value.
         let ttl = flow.session_lifetime;
-        let meta = server_session::meta_now(ctx, "openid-connect", &subject, ttl);
+        let meta = server_session::meta_now(ctx, "openid-connect", &subject);
         server_session::update(
             &flow.backend,
             &flow.sealer,
             id.as_str(),
+            now_unix(),
             &payload,
-            ttl,
+            &server_session::SessionTimeouts {
+                idling: 0,
+                rolling: 0,
+                absolute: ttl.as_secs(),
+            },
             meta,
             &flow.session_cookie,
             &CookieAttrs {
@@ -1182,13 +1198,16 @@ impl OpenidConnectPlugin {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let meta =
-            server_session::meta_now(&ctx, "openid-connect", &subject, flow.session_lifetime);
+        let meta = server_session::meta_now(&ctx, "openid-connect", &subject);
         let set_session = match server_session::establish(
             &flow.backend,
             &flow.sealer,
             &payload,
-            flow.session_lifetime,
+            &server_session::SessionTimeouts {
+                idling: 0,
+                rolling: 0,
+                absolute: flow.session_lifetime.as_secs(),
+            },
             meta,
             &flow.session_cookie,
             &CookieAttrs {
@@ -2671,7 +2690,8 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         // Establish a session by hand: seal SessionData, put under an id.
         let sealer = CookieSealer::new("cookie-signing-secret");
         let data = serde_json::json!({"claims": {"sub": "u1"}});
-        let sealed = sealer.seal(&serde_json::to_vec(&data).unwrap(), Duration::from_secs(60));
+        let sealed =
+            server_session::seal_fresh_for_test(&sealer, &serde_json::to_vec(&data).unwrap());
         let id = crate::sessions::SessionId::random();
         let meta = crate::sessions::SessionMeta {
             id: String::new(),
@@ -2735,10 +2755,8 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             "refresh_token": "rt",
             "expires_at": 1
         });
-        let sealed = sealer.seal(
-            &serde_json::to_vec(&data).unwrap(),
-            Duration::from_secs(600),
-        );
+        let sealed =
+            server_session::seal_fresh_for_test(&sealer, &serde_json::to_vec(&data).unwrap());
         let id = crate::sessions::SessionId::random();
         let meta = crate::sessions::SessionMeta {
             id: String::new(),
@@ -2793,10 +2811,8 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             "refresh_token": "rt",
             "expires_at": 1
         });
-        let sealed = sealer.seal(
-            &serde_json::to_vec(&data).unwrap(),
-            Duration::from_secs(600),
-        );
+        let sealed =
+            server_session::seal_fresh_for_test(&sealer, &serde_json::to_vec(&data).unwrap());
         let id = crate::sessions::SessionId::random();
         let meta = crate::sessions::SessionMeta {
             id: String::new(),
@@ -2897,10 +2913,8 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             "refresh_token": "rt",
             "expires_at": 1
         });
-        let sealed = sealer.seal(
-            &serde_json::to_vec(&data).unwrap(),
-            Duration::from_secs(600),
-        );
+        let sealed =
+            server_session::seal_fresh_for_test(&sealer, &serde_json::to_vec(&data).unwrap());
         let id = crate::sessions::SessionId::random();
         let meta = crate::sessions::SessionMeta {
             id: String::new(),
@@ -2931,7 +2945,9 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         // tokens and a future expires_at.
         let stored = fake.get(&id).await.unwrap().unwrap();
         let sealed_str = String::from_utf8(stored).unwrap();
-        let opened = sealer.open(&sealed_str).unwrap();
+        let opened = server_session::Envelope::decode(&sealer.open(&sealed_str).unwrap())
+            .unwrap()
+            .payload;
         let value: serde_json::Value = serde_json::from_slice(&opened).unwrap();
         assert_eq!(value["access_token"], "new-at");
         assert_eq!(value["refresh_token"], "new-rt");

@@ -360,7 +360,18 @@ impl AuthzCasdoorPlugin {
         let Some(raw) = read_cookie(cookie_header, &self.cookie_name) else {
             return Ok(None);
         };
-        let bytes = server_session::load(&self.backend, sealer, raw).await?;
+        let bytes = server_session::load(
+            &self.backend,
+            sealer,
+            raw,
+            &server_session::SessionTimeouts {
+                idling: 0,
+                rolling: 0,
+                absolute: self.cookie_lifetime,
+            },
+        )
+        .await?
+        .map(|o| o.envelope.payload);
         Ok(bytes.and_then(|b| serde_json::from_slice(&b).ok()))
     }
 
@@ -514,13 +525,16 @@ impl AuthzCasdoorPlugin {
             claims,
         };
         let payload = serde_json::to_vec(&session).unwrap_or_default();
-        let ttl = Duration::from_secs(self.cookie_lifetime);
-        let meta = server_session::meta_now(&ctx, "authz-casdoor", &subject, ttl);
+        let meta = server_session::meta_now(&ctx, "authz-casdoor", &subject);
         let set_session = match server_session::establish(
             &self.backend,
             sealer,
             &payload,
-            ttl,
+            &server_session::SessionTimeouts {
+                idling: 0,
+                rolling: 0,
+                absolute: self.cookie_lifetime,
+            },
             meta,
             &self.cookie_name,
             &self.cookie_attrs(&ctx, self.cookie_lifetime),
@@ -1220,10 +1234,8 @@ mod tests {
             client_id: "id".into(),
             claims: Some(serde_json::json!({ "sub": "u1" })),
         };
-        let sealed = sealer.seal(
-            &serde_json::to_vec(&session).unwrap(),
-            Duration::from_secs(3600),
-        );
+        let sealed =
+            server_session::seal_fresh_for_test(&sealer, &serde_json::to_vec(&session).unwrap());
 
         let mut c = ctx("/protected", HashMap::new());
         c.request.headers.insert(
@@ -1363,7 +1375,7 @@ mod tests {
             claims: Some(serde_json::json!({ "sub": "u1" })),
         };
         let payload = serde_json::to_vec(&session).unwrap();
-        let sealed = sealer.seal(&payload, Duration::from_secs(3600));
+        let sealed = server_session::seal_fresh_for_test(&sealer, &payload);
         let id = crate::sessions::SessionId::random();
         let meta = crate::sessions::SessionMeta {
             id: String::new(),
