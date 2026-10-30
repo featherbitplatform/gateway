@@ -13,6 +13,12 @@ ignore = [
     # casbin -> rhai. No safe upgrade exists; revisit when casbin/rhai move
     # off it or when bumping casbin.
     "RUSTSEC-2026-0249",
+    # unsafe-libyaml is unmaintained; it is the C-port backing serde_yaml 0.9
+    # (itself deprecated by its author), our direct YAML parser for gateway.yaml
+    # and system.yaml. No vulnerability is reported, only lack of maintenance.
+    # Remove when the config loader moves to a maintained parser (serde_yaml_ng
+    # or serde-saphyr), which is a behaviour-sensitive change tracked separately.
+    "RUSTSEC-2024-0449",
 ]
 
 [licenses]
