@@ -135,9 +135,9 @@ async fn wait_for(
 /// the adoption check goes through the redis records.
 async fn run_scenario(e: &Env, backend: &Backend) {
     let system: SystemConfig =
-        serde_yaml::from_str(&system_yaml(e, &backend.storage_block)).expect("system.yaml parses");
+        crate::yaml::from_str(&system_yaml(e, &backend.storage_block)).expect("system.yaml parses");
     system.validate().unwrap();
-    let gateway: GatewayConfig = serde_yaml::from_str(&backend.gateway_yaml).unwrap();
+    let gateway: GatewayConfig = crate::yaml::from_str(&backend.gateway_yaml).unwrap();
     let state = Arc::new(
         SharedState::new(
             system.clone(),

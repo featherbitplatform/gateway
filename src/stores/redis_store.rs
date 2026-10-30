@@ -307,7 +307,7 @@ mod tests {
     use super::*;
 
     fn cfg(yaml: &str) -> StoreConfig {
-        serde_yaml::from_str(yaml).unwrap()
+        crate::yaml::from_str(yaml).unwrap()
     }
 
     /// Env placeholders resolve at build; the config object stays raw; a

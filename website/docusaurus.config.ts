@@ -89,6 +89,14 @@ const config: Config = {
           position: 'left',
           items: [
             {
+              label: 'Admin REST API (OpenAPI)',
+              to: '/api/admin',
+            },
+            {
+              label: 'Admin OpenAPI document (JSON)',
+              href: 'pathname:///api/admin-api.json',
+            },
+            {
               label: 'Rust internals (rustdoc)',
               href: 'pathname:///api/rust/featherbit/index.html',
             },

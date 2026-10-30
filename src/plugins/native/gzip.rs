@@ -275,6 +275,7 @@ mod tests {
             },
             message: HashMap::new(),
             errors: Vec::new(),
+            deferred_response_headers: Vec::new(),
         }
     }
 

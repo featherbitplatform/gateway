@@ -18,7 +18,7 @@ pub fn prepare_policy(
     if let Err(errors) = validate_policy(&policy) {
         return Err(errors.join("; "));
     }
-    let mut tmp: GatewayConfig = serde_yaml::from_str("{}").expect("empty config parses");
+    let mut tmp: GatewayConfig = crate::yaml::from_str("{}").expect("empty config parses");
     tmp.policies = vec![policy];
     tmp.supernodes = supernodes.to_vec();
     tmp.plugin_configs = plugin_configs.to_vec();
@@ -39,7 +39,7 @@ mod tests {
     use super::*;
 
     fn policy(yaml: &str) -> PolicyConfig {
-        serde_yaml::from_str(yaml).unwrap()
+        crate::yaml::from_str(yaml).unwrap()
     }
 
     #[test]
@@ -55,7 +55,7 @@ mod tests {
             "name: p\nnodes:\n  - id: l\n    type: listener\n  - id: e\n    type: echo\n    config_ref: shared-echo\n  - id: c\n    type: client\nedges:\n  - from: l.out\n    to: e.in\n  - from: e.out\n    to: c.in\n",
         );
         let pc: PluginConfigDef =
-            serde_yaml::from_str("name: shared-echo\ntype: echo\nconfig:\n  body: hi\n").unwrap();
+            crate::yaml::from_str("name: shared-echo\ntype: echo\nconfig:\n  body: hi\n").unwrap();
         let out = prepare_policy(p, &[], &[pc]).unwrap();
         let echo = out.nodes.iter().find(|n| n.id == "e").unwrap();
         assert_eq!(echo.config.get("body").and_then(|v| v.as_str()), Some("hi"));

@@ -131,12 +131,16 @@ impl SandboxContextInput {
             },
             message: self.message,
             errors: Vec::new(),
+            deferred_response_headers: Vec::new(),
         })
     }
 }
 
 /// What to do when an ad-hoc node fails.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
+#[derive(
+    Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, utoipa::ToSchema,
+)]
+#[schema(as = SandboxOnError)]
 #[serde(rename_all = "snake_case")]
 pub enum OnError {
     /// Leave error ports unwired, so a failing node hits the engine's
@@ -157,12 +161,19 @@ pub enum OnError {
 /// straight out of a trace (the nested `{request, response, message, errors}`
 /// snapshot shape). Typos in the flat shape are still rejected — validation
 /// runs after normalisation.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, utoipa::ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct SandboxRequest {
+    /// Ad-hoc node list, chained in order between an implicit `listener`
+    /// and `client`. Mutually exclusive with `policy`.
     pub nodes: Option<Vec<NodeConfig>>,
+    /// Name of a stored policy to run. Mutually exclusive with `nodes`.
     pub policy: Option<String>,
+    /// How a failing ad-hoc node is wired (ignored in `policy` mode).
     pub on_error: OnError,
+    /// Synthetic request context: the flat input shape, or a context copied
+    /// from a trace. Omitted or `null` yields a plain `GET /`.
+    #[schema(value_type = Object)]
     pub context: serde_json::Value,
 }
 
@@ -764,8 +775,8 @@ mod tests {
         use crate::config_store::FileConfigStore;
         use std::sync::Arc;
 
-        let off: SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let off: SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gw: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         let store = Arc::new(FileConfigStore::new(std::path::PathBuf::from(
             "gateway.yaml",
         )));
@@ -779,7 +790,7 @@ mod tests {
             Err(SandboxError::Disabled)
         ));
 
-        let on: SystemConfig = serde_yaml::from_str("debug:\n  enabled: true\n").unwrap();
+        let on: SystemConfig = crate::yaml::from_str("debug:\n  enabled: true\n").unwrap();
         let state = crate::state::SharedState::new(on, gw, None, store).unwrap();
         let req = SandboxRequest {
             policy: Some("missing".into()),
@@ -801,8 +812,8 @@ mod tests {
         use crate::config::{GatewayConfig, SystemConfig};
         use crate::config_store::FileConfigStore;
         use std::sync::Arc;
-        let on: SystemConfig = serde_yaml::from_str("debug:\n  enabled: true\n").unwrap();
-        let gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let on: SystemConfig = crate::yaml::from_str("debug:\n  enabled: true\n").unwrap();
+        let gw: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         let store = Arc::new(FileConfigStore::new(std::path::PathBuf::from(
             "gateway.yaml",
         )));

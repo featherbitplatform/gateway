@@ -29,14 +29,14 @@ policies:
 
 #[test]
 fn whole_config_compile_accepts_minimal_config() {
-    let gw: GatewayConfig = serde_yaml::from_str(MINIMAL).unwrap();
+    let gw: GatewayConfig = featherbit::yaml::from_str(MINIMAL).unwrap();
     validate_gateway_config(&gw).expect("minimal config compiles");
 }
 
 #[test]
 fn whole_config_compile_rejects_route_to_missing_policy() {
     let gw: GatewayConfig =
-        serde_yaml::from_str(&MINIMAL.replace("policy: hello", "policy: nope")).unwrap();
+        featherbit::yaml::from_str(&MINIMAL.replace("policy: hello", "policy: nope")).unwrap();
     let err = validate_gateway_config(&gw).unwrap_err();
     assert!(
         err.contains("nope"),
@@ -46,7 +46,7 @@ fn whole_config_compile_rejects_route_to_missing_policy() {
 
 #[test]
 fn policy_validator_reports_duplicate_node_ids() {
-    let policy: PolicyConfig = serde_yaml::from_str(
+    let policy: PolicyConfig = featherbit::yaml::from_str(
         r#"
 name: dup
 nodes:
@@ -67,9 +67,10 @@ edges:
 
 #[test]
 fn match_rule_validator_rejects_bad_host_pattern() {
-    let gw: GatewayConfig =
-        serde_yaml::from_str(&MINIMAL.replace("{ path: /hello }", "{ path: /hello, host: '*' }"))
-            .unwrap();
+    let gw: GatewayConfig = featherbit::yaml::from_str(
+        &MINIMAL.replace("{ path: /hello }", "{ path: /hello, host: '*' }"),
+    )
+    .unwrap();
     assert!(validate_match_rule(&gw.routes[0].match_rule).is_err());
 }
 
@@ -86,8 +87,8 @@ fn port_spec_is_the_node_type_catalog() {
 #[tokio::test]
 async fn reconcile_prefix_is_callable_without_runtime_state() {
     let cfg: featherbit::config::EtcdConfig =
-        serde_yaml::from_str("endpoints: ['http://127.0.0.1:1']\ntimeout_ms: 100\n").unwrap();
-    let gw: GatewayConfig = serde_yaml::from_str(MINIMAL).unwrap();
+        featherbit::yaml::from_str("endpoints: ['http://127.0.0.1:1']\ntimeout_ms: 100\n").unwrap();
+    let gw: GatewayConfig = featherbit::yaml::from_str(MINIMAL).unwrap();
     let err = featherbit::config_store::etcd::reconcile_prefix(&cfg, &gw)
         .await
         .unwrap_err();
@@ -97,7 +98,7 @@ async fn reconcile_prefix_is_callable_without_runtime_state() {
 #[test]
 fn supernode_validator_signature_and_behavior() {
     let f: fn(&SupernodeConfig) -> Result<(), Vec<String>> = validate_supernode;
-    let sn: SupernodeConfig = serde_yaml::from_str(
+    let sn: SupernodeConfig = featherbit::yaml::from_str(
         "{ name: s1, nodes: [{ id: input, type: input }, { id: output, type: output }, { id: error, type: error }], edges: [{ from: input.out, to: output.in }] }",
     )
     .unwrap();
@@ -109,7 +110,7 @@ fn prepare_policy_signature_and_behavior() {
     type PrepareFn =
         fn(PolicyConfig, &[SupernodeConfig], &[PluginConfigDef]) -> Result<PolicyConfig, String>;
     let f: PrepareFn = prepare_policy;
-    let gw: GatewayConfig = serde_yaml::from_str(MINIMAL).unwrap();
+    let gw: GatewayConfig = featherbit::yaml::from_str(MINIMAL).unwrap();
     let prepared = f(gw.policies[0].clone(), &[], &[]).expect("minimal policy prepares");
     assert_eq!(prepared.name, "hello");
 }
@@ -118,7 +119,7 @@ fn prepare_policy_signature_and_behavior() {
 fn store_validator_signature_and_behavior() {
     let f: fn(&[StoreConfig]) -> Result<(), String> = validate_stores;
     let ok: StoreConfig =
-        serde_yaml::from_str("{ name: st1, type: redis, url: 'redis://r:6379' }").unwrap();
+        featherbit::yaml::from_str("{ name: st1, type: redis, url: 'redis://r:6379' }").unwrap();
     assert!(f(std::slice::from_ref(&ok)).is_ok());
     assert!(f(&[ok.clone(), ok]).is_err(), "duplicate names rejected");
 }
@@ -127,7 +128,7 @@ fn store_validator_signature_and_behavior() {
 fn consumer_store_builds_from_config() {
     let f: fn(&[ConsumerConfig]) -> Result<ConsumerStore, String> = ConsumerStore::from_config;
     let c: ConsumerConfig =
-        serde_yaml::from_str("{ name: c1, credentials: { key-auth: { key: k } } }").unwrap();
+        featherbit::yaml::from_str("{ name: c1, credentials: { key-auth: { key: k } } }").unwrap();
     assert!(f(&[c]).is_ok());
 }
 
@@ -148,6 +149,6 @@ fn config_types_expose_json_schema() {
 fn offline_validation_is_on_the_surface() {
     let _: fn(&GatewayConfig) -> Result<(), String> =
         featherbit::state::validate_gateway_config_offline;
-    let gw: GatewayConfig = serde_yaml::from_str(MINIMAL).unwrap();
+    let gw: GatewayConfig = featherbit::yaml::from_str(MINIMAL).unwrap();
     featherbit::state::validate_gateway_config_offline(&gw).unwrap();
 }

@@ -310,6 +310,7 @@ g, alice, admin
             },
             message,
             errors: Vec::new(),
+            deferred_response_headers: Vec::new(),
         }
     }
 

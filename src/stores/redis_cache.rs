@@ -179,7 +179,7 @@ mod tests {
     }
 
     fn client(url: &str) -> Arc<crate::stores::redis_store::RedisStoreClient> {
-        let cfg: crate::config::StoreConfig = serde_yaml::from_str(&format!(
+        let cfg: crate::config::StoreConfig = crate::yaml::from_str(&format!(
             "name: cache-test\ntype: redis\nurl: {url}\nkey_prefix: fbtest\n"
         ))
         .unwrap();

@@ -254,7 +254,7 @@ impl ServerHandler for McpServer {
                 .find(|r| r.name == name)
                 .ok_or_else(not_found)?;
             (
-                serde_yaml::to_string(r)
+                crate::yaml::to_string(r)
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?,
                 "application/yaml",
             )
@@ -266,7 +266,7 @@ impl ServerHandler for McpServer {
                 .find(|p| p.name == name)
                 .ok_or_else(not_found)?;
             (
-                serde_yaml::to_string(p)
+                crate::yaml::to_string(p)
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?,
                 "application/yaml",
             )
@@ -278,7 +278,7 @@ impl ServerHandler for McpServer {
                 .find(|s| s.name == name)
                 .ok_or_else(not_found)?;
             (
-                serde_yaml::to_string(s)
+                crate::yaml::to_string(s)
                     .map_err(|e| McpError::internal_error(e.to_string(), None))?,
                 "application/yaml",
             )
@@ -390,7 +390,7 @@ mod tests {
     const WRITE: &str = "write-token-0123456789";
 
     fn admin(enabled: bool) -> AdminConfig {
-        serde_yaml::from_str(&format!(
+        crate::yaml::from_str(&format!(
             "username: u\npassword: p\nui_enabled: false\nmcp:\n  enabled: {enabled}\n  tokens:\n    - token: {READ}\n      scope: read\n      name: reader\n    - token: {WRITE}\n      scope: write\n"
         ))
         .unwrap()

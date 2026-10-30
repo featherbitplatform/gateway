@@ -81,12 +81,14 @@ impl std::fmt::Display for CertId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CertState {
     /// Self-signed stand-in served until the first issuance succeeds.
     Placeholder,
+    /// A CA-issued certificate is being served.
     Issued,
+    /// A renewal is in flight; the current certificate keeps serving.
     Renewing,
     /// Last attempt failed; the previous cert (or placeholder) keeps serving.
     Failed,
@@ -606,7 +608,7 @@ mod tests {
         // would have the InstantAcmeFactory dial the real Let's Encrypt
         // production directory in the background. Both start() calls below
         // share this cfg, so one pin covers both.
-        let system: crate::config::SystemConfig = serde_yaml::from_str(&format!(
+        let system: crate::config::SystemConfig = crate::yaml::from_str(&format!(
             "acme:\n  terms_of_service_agreed: true\n  directory_url: https://127.0.0.1:1/directory\n  storage:\n    type: filesystem\n    dir: {}\ntls:\n  acme:\n    domains: [s.example.com]\n",
             dir.display().to_string().replace('\\', "/")
         ))

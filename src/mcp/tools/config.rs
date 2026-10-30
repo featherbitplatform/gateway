@@ -159,7 +159,7 @@ pub async fn validate_policy(
         ToolError::invalid_payload("validate_policy needs `policy` (or `definition`): the policy as a JSON object or YAML string")
     })?;
     if let Value::String(yaml) = &raw {
-        raw = serde_yaml::from_str(yaml)
+        raw = crate::yaml::from_str(yaml)
             .map_err(|e| ToolError::invalid_payload(format!("policy: YAML did not parse: {e}")))?;
     }
     if let Some(obj) = raw.as_object_mut() {
@@ -233,7 +233,7 @@ mod tests {
         .unwrap();
         assert_eq!(v["valid"], true, "{v}");
         // `definition` as the argument key, YAML string payload.
-        let yaml = serde_yaml::to_string(&nameless).unwrap();
+        let yaml = crate::yaml::to_string(&nameless).unwrap();
         let v = call(
             &s,
             "validate_policy",

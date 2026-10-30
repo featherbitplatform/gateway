@@ -1,6 +1,6 @@
 [package]
 name = "featherbit"
-version = "0.17.0"
+version = "0.18.0"
 edition = "2021"
 # Not published to crates.io; also lets cargo-deny's license check skip the
 # workspace crate (deny.toml: private = { ignore = true }).
@@ -35,7 +35,7 @@ http-body-util = "0.1"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde-saphyr = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 clap = { version = "4", features = ["derive"] }
@@ -119,6 +119,8 @@ casbin = "2.20.0"
 # version bump, verify `cargo tree -i aws-lc-sys` prints nothing.
 redis = { version = "1", optional = true, default-features = false, features = ["tokio-rustls-comp", "connection-manager", "script"] }
 ldap3 = { version = "0.12.1", default-features = false, features = ["tls-rustls-ring"] }
+utoipa = { version = "6.0.0", features = ["preserve_order", "preserve_path_order"] }
+utoipa-axum = "0.3.0"
 # etcd config store (HA clustering) talks to etcd's v3 HTTP/JSON gateway via the
 # shared outbound client — no gRPC/protoc/tonic dependency required.
 

@@ -307,7 +307,7 @@ mod tests {
     /// definition must round-trip through YAML unchanged.
     #[test]
     fn test_supernodes_default_empty_and_roundtrip() {
-        let gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let gw: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         assert!(gw.supernodes.is_empty());
 
         let yaml = r#"
@@ -324,7 +324,7 @@ supernodes:
       - { from: up.success, to: output.in }
       - { from: up.error,   to: error.in }
 "#;
-        let gw: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let gw: GatewayConfig = crate::yaml::from_str(yaml).unwrap();
         assert_eq!(gw.supernodes.len(), 1);
         let sn = &gw.supernodes[0];
         assert_eq!(sn.name, "secured-call");
@@ -332,7 +332,7 @@ supernodes:
         assert_eq!(sn.nodes.len(), 4);
         assert_eq!(sn.edges.len(), 3);
 
-        let out = serde_yaml::to_string(&GatewayConfig {
+        let out = crate::yaml::to_string(&GatewayConfig {
             routes: vec![],
             policies: vec![],
             consumers: vec![],
@@ -341,7 +341,7 @@ supernodes:
             stores: vec![],
         })
         .unwrap();
-        let back: GatewayConfig = serde_yaml::from_str(&out).unwrap();
+        let back: GatewayConfig = crate::yaml::from_str(&out).unwrap();
         assert_eq!(back.supernodes[0].name, "secured-call");
         assert_eq!(back.supernodes[0].nodes.len(), 4);
     }
@@ -350,7 +350,7 @@ supernodes:
     /// through YAML; `config_ref` is omitted from output when unset.
     #[test]
     fn test_plugin_configs_default_empty_and_roundtrip() {
-        let gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let gw: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         assert!(gw.plugin_configs.is_empty());
 
         let yaml = r#"
@@ -366,7 +366,7 @@ policies:
     nodes:
       - { id: auth, type: openid-connect, config_ref: corp-oidc, config: { scope: "openid profile" } }
 "#;
-        let gw: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let gw: GatewayConfig = crate::yaml::from_str(yaml).unwrap();
         assert_eq!(gw.plugin_configs.len(), 1);
         let def = &gw.plugin_configs[0];
         assert_eq!(def.name, "corp-oidc");
@@ -378,13 +378,13 @@ policies:
         assert_eq!(node.config["scope"], serde_json::json!("openid profile"));
 
         // Round-trip keeps the reference form; nodes without a ref omit the key.
-        let out = serde_yaml::to_string(&gw).unwrap();
+        let out = crate::yaml::to_string(&gw).unwrap();
         assert!(out.contains("config_ref: corp-oidc"), "{out}");
-        let plain: GatewayConfig = serde_yaml::from_str(
+        let plain: GatewayConfig = crate::yaml::from_str(
             "policies:\n  - name: q\n    nodes:\n      - { id: a, type: cors }\n",
         )
         .unwrap();
-        let plain_out = serde_yaml::to_string(&plain).unwrap();
+        let plain_out = crate::yaml::to_string(&plain).unwrap();
         assert!(!plain_out.contains("config_ref"), "{plain_out}");
     }
 
@@ -392,7 +392,7 @@ policies:
     /// with placeholders preserved verbatim; optionals are omitted from output.
     #[test]
     fn test_stores_default_empty_and_roundtrip() {
-        let gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let gw: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         assert!(gw.stores.is_empty());
 
         let yaml = r#"
@@ -407,7 +407,7 @@ stores:
     tls:
       ca_cert_path: /etc/ssl/redis-ca.pem
 "#;
-        let gw: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let gw: GatewayConfig = crate::yaml::from_str(yaml).unwrap();
         assert_eq!(gw.stores.len(), 1);
         let s = &gw.stores[0];
         assert_eq!(s.name, "sessions-redis");
@@ -424,7 +424,7 @@ stores:
         assert!(s.urls.is_none());
 
         // Defaults apply when omitted.
-        let gw: GatewayConfig = serde_yaml::from_str(
+        let gw: GatewayConfig = crate::yaml::from_str(
             "stores:\n  - name: s1\n    type: redis\n    url: redis://localhost\n",
         )
         .unwrap();
@@ -432,7 +432,7 @@ stores:
         assert_eq!(gw.stores[0].connect_timeout_ms, 2000);
 
         // Round-trip: raw placeholder survives serialization, no null noise.
-        let out = serde_yaml::to_string(&gw).unwrap();
+        let out = crate::yaml::to_string(&gw).unwrap();
         assert!(out.contains("redis://localhost"), "{out}");
         assert!(!out.contains("description"), "{out}");
         assert!(!out.contains("topology"), "{out}");

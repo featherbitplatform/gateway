@@ -296,6 +296,7 @@ mod tests {
             },
             message: HashMap::new(),
             errors: Vec::new(),
+            deferred_response_headers: Vec::new(),
         };
         assert!(load_span(&ctx).is_none());
         let s = span();

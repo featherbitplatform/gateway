@@ -284,7 +284,7 @@ mod tests {
     use redis::AsyncCommands;
 
     fn store_cfg(tag: &str, url: &str) -> crate::config::StoreConfig {
-        serde_yaml::from_str(&format!(
+        crate::yaml::from_str(&format!(
             "name: acme-live
 type: redis
 url: {url}

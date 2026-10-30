@@ -336,6 +336,7 @@ mod tests {
             },
             message: HashMap::new(),
             errors: Vec::new(),
+            deferred_response_headers: Vec::new(),
         };
         assert_eq!(p.event_transaction_id.render_with_legacy(&ctx), "req_/foo");
     }

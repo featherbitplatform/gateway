@@ -3,33 +3,106 @@
 //! every TLS setting), so there is deliberately no CRUD here. Responses never
 //! include key material — only what `CertMeta` records.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::Json;
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
+use super::openapi::ErrorResponse;
 use crate::acme::manager::RenewOutcome;
+use crate::acme::CertState;
 use crate::state::SharedState;
 
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new()
-        .route("/api/acme/certs", get(list_certs))
-        .route("/api/acme/certs/{id}/renew", post(renew_cert))
+/// Builds the router for the `/api/acme` endpoints.
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new()
+        .routes(routes!(list_certs))
+        .routes(routes!(renew_cert))
+}
+
+/// Body of `GET /api/acme/certs`.
+#[derive(Debug, Serialize, ToSchema)]
+struct AcmeCertList {
+    /// Whether `acme:` is configured in `system.yaml`.
+    enabled: bool,
+    /// Where certificates are persisted, e.g. `filesystem`; omitted when
+    /// `enabled` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    storage: Option<String>,
+    /// Every managed certificate, sorted by id; empty when disabled.
+    certs: Vec<AcmeCertStatus>,
+}
+
+/// One managed certificate. Never includes key material.
+#[derive(Debug, Serialize, ToSchema)]
+struct AcmeCertStatus {
+    /// Certificate id: its normalized (lowercased, sorted, deduplicated)
+    /// domain list, comma-separated.
+    id: String,
+    /// Domains the certificate covers.
+    domains: Vec<String>,
+    /// Lifecycle state.
+    state: CertState,
+    /// Validity start, Unix seconds; `0` for a placeholder.
+    not_before: i64,
+    /// Validity end, Unix seconds; `0` for a placeholder.
+    not_after: i64,
+    /// Issuer distinguished name.
+    issuer: String,
+    /// Serial number, colon-separated hex.
+    serial: String,
+    /// When the next renewal is due, Unix seconds.
+    next_renewal_at: Option<i64>,
+    /// When issuance/renewal was last attempted, Unix seconds.
+    last_attempt_at: Option<i64>,
+    /// Why the last attempt failed, if it did.
+    last_error: Option<String>,
+}
+
+/// Query of `POST /api/acme/certs/{id}/renew`.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct AcmeRenewQuery {
+    /// `true` or `1` renews even when the certificate is not due yet.
+    force: Option<String>,
+}
+
+/// Outcome of `POST /api/acme/certs/{id}/renew`.
+#[derive(Debug, Serialize, ToSchema)]
+struct AcmeRenewResult {
+    /// Whether a renewal was scheduled.
+    scheduled: bool,
+    /// Why not (`not_due`); omitted when scheduled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
 /// `GET /api/acme/certs` — every managed certificate with state and metadata.
 /// `{"enabled": false, "certs": []}` when `acme:` is not configured, so the UI
 /// can tell "not configured" from "nothing managed" without a status-code guess.
+#[utoipa::path(
+    get,
+    path = "/api/acme/certs",
+    tag = "acme",
+    summary = "List managed certificates",
+    responses((status = 200, description = "Managed certificates (no key material); `enabled: false` with no certs when ACME is not configured.", body = AcmeCertList)),
+)]
 async fn list_certs(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let Some(rt) = state.acme.load_full() else {
-        return Json(serde_json::json!({"enabled": false, "certs": []}));
+        return Json(AcmeCertList {
+            enabled: false,
+            storage: None,
+            certs: Vec::new(),
+        });
     };
     let map = rt.certs.load();
-    let mut certs: Vec<serde_json::Value> = rt
+    let mut certs: Vec<AcmeCertStatus> = rt
         .manager
         .slots()
         .iter()
@@ -46,45 +119,68 @@ async fn list_certs(State(state): State<Arc<SharedState>>) -> impl IntoResponse 
             } else {
                 (c.meta.not_before, c.meta.not_after)
             };
-            serde_json::json!({
-                "id": slot.id.as_str(),
-                "domains": c.domains,
-                "state": if rt.manager.in_flight(slot.id.as_str()) && c.state != crate::acme::CertState::Placeholder {
-                    crate::acme::CertState::Renewing
+            AcmeCertStatus {
+                id: slot.id.as_str().to_string(),
+                domains: c.domains.clone(),
+                state: if rt.manager.in_flight(slot.id.as_str())
+                    && c.state != CertState::Placeholder
+                {
+                    CertState::Renewing
                 } else {
                     c.state
                 },
-                "not_before": not_before,
-                "not_after": not_after,
-                "issuer": c.meta.issuer,
-                "serial": c.meta.serial,
-                "next_renewal_at": c.meta.next_renewal_at,
-                "last_attempt_at": c.meta.last_attempt_at,
-                "last_error": c.meta.last_error,
-            })
+                not_before,
+                not_after,
+                issuer: c.meta.issuer.clone(),
+                serial: c.meta.serial.clone(),
+                next_renewal_at: c.meta.next_renewal_at,
+                last_attempt_at: c.meta.last_attempt_at,
+                last_error: c.meta.last_error.clone(),
+            }
         })
         .collect();
-    certs.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
-    Json(serde_json::json!({
-        "enabled": true,
-        "storage": rt.storage_label,
-        "certs": certs,
-    }))
+    certs.sort_by(|a, b| a.id.cmp(&b.id));
+    Json(AcmeCertList {
+        enabled: true,
+        storage: Some(rt.storage_label.clone()),
+        certs,
+    })
 }
 
 /// `POST /api/acme/certs/{id}/renew[?force=true]` — nudges the renewal manager.
+///
+/// Any spelling of the certificate's domain set is accepted as `id`
+/// (case, order and duplicates do not matter).
+#[utoipa::path(
+    post,
+    path = "/api/acme/certs/{id}/renew",
+    tag = "acme",
+    summary = "Renew a managed certificate",
+    params(
+        ("id" = String, Path, description = "Certificate id: its comma-separated domain list, in any order or case."),
+        AcmeRenewQuery,
+    ),
+    responses(
+        (status = 200, description = "Not due, nothing scheduled (`scheduled: false`, `reason: not_due`); pass `force=true` to renew anyway.", body = AcmeRenewResult),
+        (status = 202, description = "Renewal scheduled (`scheduled: true`).", body = AcmeRenewResult),
+        (status = 404, description = "No managed certificate with that id.", body = ErrorResponse),
+        (status = 409, description = "A renewal is already in progress (`error: in_progress`).", body = ErrorResponse),
+        (status = 501, description = "ACME is not configured in `system.yaml`.", body = ErrorResponse),
+    ),
+)]
 async fn renew_cert(
     State(state): State<Arc<SharedState>>,
     Path(id): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<AcmeRenewQuery>,
 ) -> impl IntoResponse {
     let Some(rt) = state.acme.load_full() else {
         return (
             StatusCode::NOT_IMPLEMENTED,
             Json(serde_json::json!({"error": "acme is not configured"})),
-        );
+        )
+            .into_response();
     };
-    let force = params.get("force").is_some_and(|v| v == "true" || v == "1");
+    let force = params.force.is_some_and(|v| v == "true" || v == "1");
     // A cert id *is* its normalized domain set, so accept any spelling of it:
     // `CertId::from_domains` lowercases, sorts and dedups, matching what the
     // manager keyed the slot under. An id that is not a valid domain list can
@@ -95,25 +191,36 @@ async fn renew_cert(
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "not_found"})),
-        );
+        )
+            .into_response();
     };
     match rt.manager.renew_now(id.as_str(), force) {
         RenewOutcome::Scheduled => (
             StatusCode::ACCEPTED,
-            Json(serde_json::json!({"scheduled": true})),
-        ),
+            Json(AcmeRenewResult {
+                scheduled: true,
+                reason: None,
+            }),
+        )
+            .into_response(),
         RenewOutcome::NotDue => (
             StatusCode::OK,
-            Json(serde_json::json!({"scheduled": false, "reason": "not_due"})),
-        ),
+            Json(AcmeRenewResult {
+                scheduled: false,
+                reason: Some("not_due".to_string()),
+            }),
+        )
+            .into_response(),
         RenewOutcome::InProgress => (
             StatusCode::CONFLICT,
             Json(serde_json::json!({"error": "in_progress"})),
-        ),
+        )
+            .into_response(),
         RenewOutcome::Unknown => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "not_found"})),
-        ),
+        )
+            .into_response(),
     }
 }
 
@@ -127,8 +234,8 @@ mod tests {
     use tower::ServiceExt;
 
     fn state() -> Arc<SharedState> {
-        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let system: SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         Arc::new(
             SharedState::new(
                 system,
@@ -145,7 +252,7 @@ mod tests {
         method: Method,
         uri: &str,
     ) -> (StatusCode, serde_json::Value) {
-        let resp = router()
+        let resp = axum::Router::from(router())
             .with_state(state)
             .oneshot(
                 Request::builder()

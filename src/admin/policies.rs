@@ -7,26 +7,34 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::Json;
+use serde::Serialize;
+use utoipa::ToSchema;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
+use super::openapi::{ErrorResponse, StatusResponse};
 use crate::config::PolicyConfig;
 use crate::state::SharedState;
 
 /// Builds the router for `/api/policies`, `/api/plugins`, and `/api/scripts`.
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new()
-        .route("/api/policies", get(list_policies))
-        .route("/api/policies/validate", post(validate_policy))
-        .route(
-            "/api/policies/{name}",
-            get(get_policy).put(update_policy).delete(delete_policy),
-        )
-        .route("/api/plugins", get(list_plugin_types))
-        .route("/api/scripts", get(list_scripts))
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new()
+        .routes(routes!(list_policies))
+        .routes(routes!(validate_policy))
+        .routes(routes!(get_policy, update_policy, delete_policy))
+        .routes(routes!(list_plugin_types))
+        .routes(routes!(list_scripts))
 }
 
 /// `GET /api/policies` — returns all configured policies as a JSON array.
+#[utoipa::path(
+    get,
+    path = "/api/policies",
+    tag = "policies",
+    summary = "List policies",
+    responses((status = 200, description = "All policies.", body = Vec<PolicyConfig>)),
+)]
 async fn list_policies(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     Json(&gw.policies).into_response()
@@ -35,6 +43,17 @@ async fn list_policies(State(state): State<Arc<SharedState>>) -> impl IntoRespon
 /// `GET /api/policies/{name}` — returns the named policy as JSON.
 ///
 /// Errors: `404 Not Found` if no policy with that name exists.
+#[utoipa::path(
+    get,
+    path = "/api/policies/{name}",
+    tag = "policies",
+    summary = "Get a policy",
+    params(("name" = String, Path, description = "Policy name.")),
+    responses(
+        (status = 200, description = "The policy.", body = PolicyConfig),
+        (status = 404, description = "No such policy.", body = ErrorResponse),
+    ),
+)]
 async fn get_policy(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -56,6 +75,18 @@ async fn get_policy(
 ///
 /// Errors: `400 Bad Request` if the resulting configuration fails
 /// validation/recompilation (the previous compiled routes stay active).
+#[utoipa::path(
+    put,
+    path = "/api/policies/{name}",
+    tag = "policies",
+    summary = "Create or replace a policy",
+    params(("name" = String, Path, description = "Policy name; overrides any `name` in the body.")),
+    request_body = PolicyConfig,
+    responses(
+        (status = 200, description = "Created or replaced (`status: updated`).", body = StatusResponse),
+        (status = 400, description = "The resulting configuration failed validation/recompilation, or the config store rejected the write.", body = ErrorResponse),
+    ),
+)]
 async fn update_policy(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -88,6 +119,18 @@ async fn update_policy(
 ///
 /// Errors: `404 Not Found` if the policy does not exist; `400 Bad Request`
 /// if recompilation fails (e.g. a route still references the policy).
+#[utoipa::path(
+    delete,
+    path = "/api/policies/{name}",
+    tag = "policies",
+    summary = "Delete a policy",
+    params(("name" = String, Path, description = "Policy name.")),
+    responses(
+        (status = 200, description = "Deleted (`status: deleted`).", body = StatusResponse),
+        (status = 400, description = "Recompilation failed (e.g. a route still references the policy), or the config store rejected the write.", body = ErrorResponse),
+        (status = 404, description = "No such policy.", body = ErrorResponse),
+    ),
+)]
 async fn delete_policy(
     State(state): State<Arc<SharedState>>,
     Path(name): Path<String>,
@@ -129,6 +172,21 @@ async fn delete_policy(
 /// still `valid` — `buffering` is informational, not an error. Each entry
 /// names the blocked upstream and the node responsible:
 /// `{"upstream": "up", "blocked_by": "rw", "node_type": "response-rewrite"}`.
+/// `cache_pairs` likewise lists unpaired `proxy-cache` halves; it is omitted
+/// when the body does not even parse as a policy.
+#[utoipa::path(
+    post,
+    path = "/api/policies/validate",
+    tag = "policies",
+    summary = "Validate a policy",
+    request_body(
+        content = PolicyConfig,
+        description = "The policy to check; `name` is optional (defaults to `unsaved-policy`). Nothing is persisted.",
+    ),
+    responses(
+        (status = 200, description = "The verdict. An invalid policy (including one that does not deserialize) is still a `200` with `valid: false`.", body = PolicyValidationResult),
+    ),
+)]
 async fn validate_policy(
     State(state): State<Arc<SharedState>>,
     Json(mut raw): Json<serde_json::Value>,
@@ -140,11 +198,12 @@ async fn validate_policy(
     let policy: PolicyConfig = match serde_json::from_value(raw) {
         Ok(p) => p,
         Err(e) => {
-            return Json(serde_json::json!({
-                "valid": false,
-                "errors": [e.to_string()],
-                "buffering": []
-            }))
+            return Json(PolicyValidationResult {
+                valid: false,
+                errors: vec![e.to_string()],
+                buffering: serde_json::json!([]),
+                cache_pairs: None,
+            })
             .into_response();
         }
     };
@@ -173,13 +232,63 @@ async fn validate_policy(
             ),
         };
 
-    Json(serde_json::json!({
-        "valid": errors.is_empty(),
-        "errors": errors,
-        "buffering": buffering,
-        "cache_pairs": cache_pairs
-    }))
+    Json(PolicyValidationResult {
+        valid: errors.is_empty(),
+        errors,
+        buffering,
+        cache_pairs: Some(cache_pairs),
+    })
     .into_response()
+}
+
+/// Response of `POST /api/policies/validate`.
+#[derive(Debug, Serialize, ToSchema)]
+struct PolicyValidationResult {
+    /// Whether the policy compiles. Buffering and cache-pair notices do not
+    /// make it invalid.
+    valid: bool,
+    /// Compilation errors, one per entry; empty when `valid`.
+    errors: Vec<String>,
+    /// Upstreams forced to buffer instead of stream, and the node responsible.
+    /// Informational. Empty when the policy is invalid.
+    // Holds the engine's own `BufferingReason` serialization (its module is
+    // private); `PolicyBufferingNotice` documents that shape.
+    #[schema(value_type = Vec<PolicyBufferingNotice>)]
+    buffering: serde_json::Value,
+    /// `proxy-cache` halves (lookup or store) with no counterpart. Informational.
+    /// Empty when the policy is invalid; absent when the body does not
+    /// deserialize as a policy at all.
+    // Holds the engine's `CachePairWarning` serialization; documented by
+    // `PolicyCachePairNotice`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<PolicyCachePairNotice>>)]
+    cache_pairs: Option<serde_json::Value>,
+}
+
+/// An upstream that must buffer its response instead of streaming it.
+/// Documents the shape of the graph engine's `BufferingReason`.
+#[derive(ToSchema)]
+#[allow(dead_code)] // schema-only mirror; never constructed
+struct PolicyBufferingNotice {
+    /// Id of the `upstream` node that cannot stream.
+    upstream: String,
+    /// Id of the downstream node that forces buffering.
+    blocked_by: String,
+    /// Node type of `blocked_by`, e.g. `response-rewrite`.
+    node_type: String,
+}
+
+/// One half of a `proxy-cache` lookup/store pair with no counterpart.
+/// Documents the shape of the graph engine's `CachePairWarning`.
+#[derive(ToSchema)]
+#[allow(dead_code)] // schema-only mirror; never constructed
+struct PolicyCachePairNotice {
+    /// The shared cache `id` that links a pair.
+    cache_id: String,
+    /// Id of the node (the half) that is present.
+    present_node_id: String,
+    /// The half that is missing: `lookup` or `store`.
+    missing_role: String,
 }
 
 /// `GET /api/scripts` — lists scripted-plugin files found in the `plugins/`
@@ -190,6 +299,13 @@ async fn validate_policy(
 /// ```json
 /// { "scripts": [ { "name": "my_filter", "file": "plugins/my_filter.lua", "runtime": "lua" } ] }
 /// ```
+#[utoipa::path(
+    get,
+    path = "/api/scripts",
+    tag = "policies",
+    summary = "List script files",
+    responses((status = 200, description = "Scripted-plugin files on disk (empty if the directory is missing or unreadable).", body = ScriptList)),
+)]
 async fn list_scripts(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let mut scripts = Vec::new();
 
@@ -212,15 +328,33 @@ async fn list_scripts(State(state): State<Arc<SharedState>>) -> impl IntoRespons
                 "lua" => "lua",
                 _ => continue,
             };
-            scripts.push(serde_json::json!({
-                "name": name,
-                "file": path.to_string_lossy(),
-                "runtime": runtime,
-            }));
+            scripts.push(ScriptFile {
+                name: name.to_string(),
+                file: path.to_string_lossy().into_owned(),
+                runtime: runtime.to_string(),
+            });
         }
     }
 
-    Json(serde_json::json!({ "scripts": scripts }))
+    Json(ScriptList { scripts })
+}
+
+/// Response of `GET /api/scripts`.
+#[derive(Debug, Serialize, ToSchema)]
+struct ScriptList {
+    /// Every recognized script file in the `plugins/` directory.
+    scripts: Vec<ScriptFile>,
+}
+
+/// A scripted-plugin file found on disk.
+#[derive(Debug, Serialize, ToSchema)]
+struct ScriptFile {
+    /// File name without extension.
+    name: String,
+    /// Path of the file, as the gateway sees it.
+    file: String,
+    /// Scripting runtime, derived from the extension (currently always `lua`).
+    runtime: String,
 }
 
 /// `GET /api/plugins` — returns the static catalog of node/plugin types
@@ -232,8 +366,79 @@ async fn list_scripts(State(state): State<Arc<SharedState>>) -> impl IntoRespons
 /// config form for still work: `NodeInspector` falls back to a raw-JSON config
 /// editor. Keep this in sync with the factory — `test_catalog_covers_factory`
 /// fails if a registered type is missing.
+#[utoipa::path(
+    get,
+    path = "/api/plugins",
+    tag = "policies",
+    summary = "List node types",
+    responses((status = 200, description = "Every registered node type with its description and port declaration.", body = PluginCatalog)),
+)]
 async fn list_plugin_types() -> impl IntoResponse {
-    Json(serde_json::json!({ "plugins": plugin_catalog() }))
+    Json(PluginCatalog {
+        plugins: plugin_catalog(),
+    })
+}
+
+/// Response of `GET /api/plugins`: the node-type palette.
+#[derive(Debug, Serialize, ToSchema)]
+struct PluginCatalog {
+    /// Every registered node type, in reference-docs category order.
+    // Entries stay `serde_json::Value` because `plugin_catalog()` is shared
+    // with the MCP tools; `PluginTypeInfo` documents their shape.
+    #[schema(value_type = Vec<PluginTypeInfo>)]
+    plugins: Vec<serde_json::Value>,
+}
+
+/// One node type in the catalog. Documents the shape of the entries
+/// `plugin_catalog()` builds.
+#[derive(ToSchema)]
+#[allow(dead_code)] // schema-only mirror; never constructed
+struct PluginTypeInfo {
+    /// Node type id, as used in a policy node's `type`.
+    r#type: String,
+    /// Human-readable one-line description.
+    description: String,
+    /// The type's declared ports.
+    ports: PluginPortSpec,
+}
+
+/// A node type's port declaration (mirrors `plugins::ports::PortSpec`).
+#[derive(ToSchema)]
+#[allow(dead_code)] // schema-only mirror; never constructed
+struct PluginPortSpec {
+    /// Description of the single `in` port; `null` when the node has no
+    /// input (only `listener`).
+    #[schema(required)]
+    input: Option<String>,
+    /// Declared output ports, in declaration order.
+    outputs: Vec<PluginOutputPort>,
+}
+
+/// One declared output port (mirrors `plugins::ports::PortDecl`).
+#[derive(ToSchema)]
+#[allow(dead_code)] // schema-only mirror; never constructed
+struct PluginOutputPort {
+    /// Port name, e.g. `success`, `denied`, `error`.
+    name: String,
+    /// Port flavor.
+    kind: PluginPortKind,
+    /// What leaving on this port means.
+    description: String,
+}
+
+/// The flavor of an output port (mirrors `plugins::ports::PortKind`).
+#[derive(ToSchema)]
+#[schema(rename_all = "lowercase")]
+#[allow(dead_code)] // schema-only mirror; never constructed
+enum PluginPortKind {
+    /// The node completed normally; mandatory wiring.
+    Success,
+    /// The node chose an alternate route (deny, redirect, throttle, ...);
+    /// mandatory wiring.
+    Outcome,
+    /// The node could not do its job; optional wiring (falls back to the
+    /// policy catch-all, then a default 500).
+    Error,
 }
 
 /// The palette catalog: `(type, description)` for every registered node type.
@@ -468,8 +673,8 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_state(gateway_yaml: &str) -> Arc<SharedState> {
-        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str(gateway_yaml).unwrap();
+        let system: SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str(gateway_yaml).unwrap();
         Arc::new(
             SharedState::new(
                 system,
@@ -483,8 +688,8 @@ mod tests {
         )
     }
 
-    fn app(state: Arc<SharedState>) -> Router {
-        router().with_state(state)
+    fn app(state: Arc<SharedState>) -> axum::Router {
+        axum::Router::from(router()).with_state(state)
     }
 
     /// Drives `POST /api/policies/validate` against a fresh in-memory state
@@ -555,7 +760,7 @@ mod tests {
         assert_eq!(api["valid"], false, "{api}");
         let api_errors: Vec<String> = serde_json::from_value(api["errors"].clone()).unwrap();
 
-        let mut gw: crate::config::GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let mut gw: crate::config::GatewayConfig = crate::yaml::from_str("{}").unwrap();
         gw.policies.push(serde_json::from_value(policy).unwrap());
         let lib_error = crate::state::validate_gateway_config(&gw).unwrap_err();
         assert!(

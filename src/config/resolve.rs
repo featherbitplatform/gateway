@@ -134,7 +134,7 @@ mod tests {
     }
 
     fn gw_with(policy_nodes: Vec<NodeConfig>, defs: Vec<PluginConfigDef>) -> GatewayConfig {
-        let mut gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let mut gw: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         gw.plugin_configs = defs;
         gw.policies = vec![PolicyConfig {
             name: "p".into(),

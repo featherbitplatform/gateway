@@ -54,20 +54,30 @@ impl SessionId {
 
 /// Unencrypted envelope for the operator surface. `id` is left empty on
 /// `put` (the key already carries it) and filled in by `list`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SessionMeta {
+    /// Session id: 32 lowercase hex chars.
     #[serde(default)]
+    #[schema(required = true)] // always present in API responses
     pub id: String,
     /// Authenticated subject; may be empty (e.g. an opaque token with no
     /// decodable claims) — such sessions are not indexed by subject.
     #[serde(default)]
+    #[schema(required = true)] // always present in API responses
     pub subject: String,
+    /// Node type that established the session, e.g. `openid-connect`.
     pub plugin: String,
+    /// Policy the session was established under.
     #[serde(default)]
+    #[schema(required = true)] // always present in API responses
     pub policy: String,
+    /// Route the session was established on.
     #[serde(default)]
+    #[schema(required = true)] // always present in API responses
     pub route: String,
+    /// Creation time, Unix seconds.
     pub created_at: u64,
+    /// Expiry time, Unix seconds.
     pub expires_at: u64,
 }
 

@@ -9,29 +9,63 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::delete,
-    Json, Router,
+    Json,
 };
+use utoipa::ToSchema;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::state::SharedState;
 use crate::traffic::{collect_targets, purge_targets, PurgeOutcome};
 
-pub fn router() -> Router<Arc<SharedState>> {
-    Router::new().route("/api/cache/{id}", delete(purge_cache))
+/// Builds the router for the `/api/cache` endpoints.
+pub fn router() -> OpenApiRouter<Arc<SharedState>> {
+    OpenApiRouter::new().routes(routes!(purge_cache))
 }
 
 /// Successful response body: the purged id and what each backend reported.
-#[derive(serde::Serialize)]
-struct PurgeResponse {
+#[derive(serde::Serialize, ToSchema)]
+struct CachePurgeResult {
+    /// The purged `proxy-cache` pair id.
     id: String,
+    /// One entry per distinct backend holding the pair.
     purged: Vec<PurgeOutcome>,
 }
 
-/// Purges the pair `id` on every backend that holds it.
+/// Error body of `DELETE /api/cache/{id}`.
+#[derive(serde::Serialize, ToSchema)]
+struct CachePurgeError {
+    /// `not_found` or `cache_purge_failed`.
+    error: String,
+    /// Human-readable detail.
+    message: String,
+    /// The pair id (`cache_purge_failed` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    /// What the backends purged before the failure (`cache_purge_failed`
+    /// only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    purged: Option<Vec<PurgeOutcome>>,
+}
+
+/// `DELETE /api/cache/{id}` — purges the pair `id` on every backend that
+/// holds it.
 ///
 /// `404` when no compiled policy has a pair with that id: a typo must not
 /// read as a successful flush of nothing. `502` when a backend could not be
 /// reached, naming it and listing what did succeed first.
+#[utoipa::path(
+    delete,
+    path = "/api/cache/{id}",
+    tag = "cache",
+    summary = "Purge a proxy-cache pair",
+    params(("id" = String, Path, description = "The `id` shared by a `proxy-cache` lookup/store pair.")),
+    responses(
+        (status = 200, description = "Purged; what each backend removed.", body = CachePurgeResult),
+        (status = 404, description = "No compiled policy has a pair with that id (`error: not_found`).", body = CachePurgeError),
+        (status = 502, description = "A backend could not be reached (`error: cache_purge_failed`); `purged` lists what succeeded first.", body = CachePurgeError),
+    ),
+)]
 async fn purge_cache(
     State(state): State<Arc<SharedState>>,
     Path(id): Path<String>,
@@ -48,24 +82,26 @@ async fn purge_cache(
     if targets.is_empty() {
         return (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "not_found",
-                "message": format!("no proxy-cache pair with id '{id}' in any policy"),
-            })),
+            Json(CachePurgeError {
+                error: "not_found".to_string(),
+                message: format!("no proxy-cache pair with id '{id}' in any policy"),
+                id: None,
+                purged: None,
+            }),
         )
             .into_response();
     }
 
     match purge_targets(&targets).await {
-        Ok(purged) => Json(PurgeResponse { id, purged }).into_response(),
+        Ok(purged) => Json(CachePurgeResult { id, purged }).into_response(),
         Err((purged, e)) => (
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({
-                "error": "cache_purge_failed",
-                "message": e.to_string(),
-                "id": id,
-                "purged": purged,
-            })),
+            Json(CachePurgeError {
+                error: "cache_purge_failed".to_string(),
+                message: e.to_string(),
+                id: Some(id),
+                purged: Some(purged),
+            }),
         )
             .into_response(),
     }
@@ -103,8 +139,8 @@ policies:
       - { from: keep.hit, to: client.in }
 "#;
 
-    fn app(s: Arc<SharedState>) -> Router {
-        router().with_state(s)
+    fn app(s: Arc<SharedState>) -> axum::Router {
+        axum::Router::from(router()).with_state(s)
     }
 
     async fn send(state: &Arc<SharedState>, req: Request<Body>) -> (StatusCode, serde_json::Value) {
