@@ -25,6 +25,13 @@ pub struct Context {
     pub message: HashMap<String, serde_json::Value>,
     /// Errors recorded by nodes; routing through a node's `error` port appends here.
     pub errors: Vec<GatewayError>,
+    /// Headers appended to the final client response after the graph
+    /// finishes, whatever node produced the response. For request-phase
+    /// nodes that must set a response header (session renewal cookies)
+    /// without being overwritten by `upstream`'s wholesale replacement of
+    /// `response.headers`. Drained by [`Context::merge_deferred_response_headers`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred_response_headers: Vec<(String, String)>,
 }
 
 /// Protocol-agnostic snapshot of the inbound request, decoupled from hyper types.
@@ -139,6 +146,17 @@ impl Context {
             },
             message: HashMap::new(),
             errors: Vec::new(),
+            deferred_response_headers: Vec::new(),
+        }
+    }
+
+    /// Appends every deferred header to `response.headers` and empties the
+    /// queue. Called once by the listener after the graph has produced its
+    /// final response, so the pairs survive any node that replaced the
+    /// response headers in between.
+    pub fn merge_deferred_response_headers(&mut self) {
+        for (name, value) in self.deferred_response_headers.drain(..) {
+            self.response.headers.entry(name).or_default().push(value);
         }
     }
 }
@@ -320,5 +338,43 @@ mod tests {
         );
 
         assert_eq!(req.host, "legacy.example.com");
+    }
+
+    fn fresh_ctx() -> Context {
+        Context::new(GatewayRequest::from_hyper(
+            &parts_with(vec![]),
+            Bytes::new(),
+            "1.2.3.4:5".parse::<SocketAddr>().unwrap(),
+        ))
+    }
+
+    /// A request-phase node (session renewal) sets a header that must reach
+    /// the client even though `upstream` later replaces `response.headers`
+    /// wholesale: the deferred pair is appended at merge time, after the
+    /// replacement, and the queue is drained.
+    #[test]
+    fn test_merge_deferred_headers_appends_after_response_headers_were_replaced() {
+        let mut ctx = fresh_ctx();
+        ctx.deferred_response_headers
+            .push(("set-cookie".to_string(), "a=1".to_string()));
+        ctx.response.headers =
+            HashMap::from([("content-type".to_string(), vec!["text/plain".to_string()])]);
+
+        ctx.merge_deferred_response_headers();
+
+        assert_eq!(ctx.response.headers["set-cookie"], vec!["a=1".to_string()]);
+        assert_eq!(
+            ctx.response.headers["content-type"],
+            vec!["text/plain".to_string()]
+        );
+        assert!(ctx.deferred_response_headers.is_empty());
+    }
+
+    /// Serialized contexts (debug traces, Lua) must not grow a field for the
+    /// common case of nothing deferred.
+    #[test]
+    fn test_deferred_headers_absent_from_serialized_context_when_empty() {
+        let json = serde_json::to_value(fresh_ctx()).unwrap();
+        assert!(json.get("deferred_response_headers").is_none());
     }
 }
