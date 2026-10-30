@@ -35,7 +35,10 @@ Setting a session secret enables the interactive login flow.
 | `session.store` (or `session_store`) | string | — | Name of a declared `stores:` entry (redis/valkey). **Required when `session.storage: redis`**; resolved at policy-compile time — an unknown name fails compilation, never a request. |
 | `session.cookie.name` (or `session_cookie_name`) | string | `cas_session` | Session cookie name. |
 | `session.cookie.path` (or `session_cookie_path`) | string | `/` | Session cookie `Path`. Scope it to the app's subpath (e.g. `/app_a`) so nodes on different subpaths keep independent sessions. |
-| `session.cookie.lifetime` (or `session_cookie_lifetime`) | number (seconds) | `3600` | Session cookie lifetime (also the sealed payload's expiry). |
+| `session.idling_timeout` (or `session_idling_timeout`) | integer (seconds) | `900` | Session ends after this much inactivity. `0` disables. See [Session lifetime](./openid-connect.md#session-lifetime). |
+| `session.rolling_timeout` (or `session_rolling_timeout`) | integer (seconds) | `3600` | The session is re-sealed with a fresh expiry while in use; a session not re-saved for this long ends. `0` disables. |
+| `session.absolute_timeout` (or `session_absolute_timeout`) | integer (seconds) | `86400` | Hard cap since login, regardless of activity. `0` disables. |
+| `session.cookie.lifetime` (or `session_cookie_lifetime`) | integer (seconds) | — | **Deprecated.** Mapped to `session.absolute_timeout` when that is unset; logs a warning at load. |
 | `logout_path` | string | — | Optional. A request to this path clears the session cookie and redirects to `/`. |
 
 ```yaml

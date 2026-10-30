@@ -47,7 +47,10 @@ Interactive-mode keys (used only when `bearer_only: false`):
 | `scope` | string | `openid` | OAuth scopes requested. |
 | `session.cookie.name` (or `session_cookie_name`) | string | `oidc_session` | Session cookie name (the transient flow cookie is `<name>_flow`). |
 | `session.cookie.path` (or `session_cookie_path`) | string | `/` | `Path` attribute of the session and flow cookies. Scope it to the app's subpath (e.g. `/app_a`) so two nodes on different subpaths keep independent sessions. **Must cover the `redirect_uri` path**, or login loops (rejected at load). |
-| `session.cookie.lifetime` (or `session_cookie_lifetime`) | integer (seconds) | `3600` | Session cookie lifetime. |
+| `session.idling_timeout` (or `session_idling_timeout`) | integer (seconds) | `900` | Session ends after this much inactivity. `0` disables. See [Session lifetime](#session-lifetime). |
+| `session.rolling_timeout` (or `session_rolling_timeout`) | integer (seconds) | `3600` | The session is re-sealed with a fresh expiry while in use; a session not re-saved for this long ends. `0` disables. |
+| `session.absolute_timeout` (or `session_absolute_timeout`) | integer (seconds) | `86400` | Hard cap since login, regardless of activity. `0` disables. |
+| `session.cookie.lifetime` (or `session_cookie_lifetime`) | integer (seconds) | — | **Deprecated.** Mapped to `session.absolute_timeout` when that is unset; logs a warning at load. |
 | `session.storage` (or `session_storage`) | string | `cookie` | `cookie` seals the whole session into the encrypted browser cookie — no server-side store. `redis` shrinks the cookie to a bare random 128-bit id and stores the sealed payload server-side in the named `session.store`, enabling listing/revocation via the [Admin API](../../guides/admin-api.md) (`GET`/`DELETE /api/sessions`) and coordinated token refresh (`session.refresh`, below). |
 | `session.store` (or `session_store`) | string | — | Name of a declared `stores:` entry (redis/valkey). **Required when `session.storage: redis`**; resolved at policy-compile time — an unknown name fails compilation, never a request. |
 | `session.refresh` (or `session_refresh`) | boolean | `true` | Keep the token response's `refresh_token` and access-token expiry with the session (both storage modes) so an expired access token can be refreshed before identity is attached. In `redis` mode the refresh is coordinated across gateway instances by a short-lived per-session store lock. See [Token refresh](#token-refresh). |
@@ -131,9 +134,27 @@ The node handles three cases per request:
 2. **Callback** (request path = `redirect_uri` path, carrying `code` + `state`) → the plugin verifies `state` against the flow cookie (CSRF), exchanges the code at the token endpoint (with the PKCE `code_verifier`), validates the `id_token` against the JWKS and checks its `nonce`, seals a session cookie, and `302`-redirects to the originally requested URL.
 3. **No session** → generates `state`/`nonce`/PKCE, sets a short-lived flow cookie, and `302`-redirects to the IdP authorization endpoint.
 
+#### Session lifetime
+
+Sessions follow the three timers of lua-resty-session, the library APISIX's session plugins delegate to, with the same defaults and the same `0` = disabled rule:
+
+| Timer | Default | The session ends when |
+|---|---|---|
+| `session.idling_timeout` | 900 s (15 min) | no request has touched it for this long |
+| `session.rolling_timeout` | 3600 s (1 h) | it has not been re-saved for this long |
+| `session.absolute_timeout` | 86400 s (24 h) | this long has passed since login, whatever the activity |
+
+A session is renewed on use: once more than 75% of the rolling timeout has passed since the last save, the request re-seals it with a fresh rolling window; otherwise, once more than 60 seconds have passed since the last touch, the touch time is updated. Either way the browser receives a new `Set-Cookie` on that response (appended after the upstream's own headers), and nothing is sent on requests that need no renewal. The cookie's `Max-Age`, the sealed blob's hard expiry and the redis record's TTL are all `min(rolling_timeout, absolute_timeout - time since login)`. The timestamps live inside the authenticated, encrypted payload, so cookie mode enforces every timer without server state and a client cannot extend its own session.
+
+The same rules apply in `session.storage: cookie` and `session.storage: redis`. In redis mode a renewal is written under the same id while holding the per-session lock the token refresh uses, so a renewal can never overwrite a concurrent refresh; if the lock is busy the renewal is simply skipped for that request. Sessions sealed by versions before this format are treated as absent, so an upgrade costs each user one re-login.
+
+The deprecated `session.cookie.lifetime` is mapped to `session.absolute_timeout` when that is unset, exactly as APISIX maps it. Note the change in meaning: it used to be the whole, non-renewing session length. To keep the old behaviour set `session.idling_timeout: 0` and `session.rolling_timeout: 0` alongside it.
+
 #### Token refresh
 
-`session.storage: redis` only, and only when `session.refresh` (default `true`) is set: a request presenting a session whose access token is near expiry is refreshed before identity is attached. The node takes a short-lived (10s, `SET NX PX`) store lock so only one gateway instance calls the token endpoint concurrently; the loser re-reads the (usually already-refreshed) session instead of also calling the IdP. The refreshed tokens — and any re-validated `id_token` claims — replace the session in the store under the same id, so the cookie itself never changes. A refresh failure at the IdP (unreachable, non-2xx, or an invalid refreshed `id_token`) is **not** a store outage: rather than a `503`, the request simply falls back to a fresh login, the same as an expired cookie-mode session. Unlocking after a refresh attempt is best-effort (the lock self-heals via its TTL either way). `session.storage: cookie` never attempts a refresh, regardless of `session.refresh`.
+Access tokens are tracked separately from the session, as lua-resty-openidc does. When `session.refresh` (default `true`) is set, the callback keeps the token response's `refresh_token` and the access token's expiry (`expires_in`, else `access_token_expires_in`) with the session, in both storage modes. On a later request whose access token has expired (or will within `access_token_expires_leeway` seconds), and with `renew_access_token_on_expiry` left at `true`, the node refreshes it at the token endpoint before attaching identity; the refreshed tokens, and any re-validated `id_token` claims, replace the session (a full re-save that keeps the login time, so a refresh never extends `session.absolute_timeout`). Without a stored refresh token, or when the provider refuses (unreachable, non-2xx, invalid refreshed `id_token`), the request falls back to a fresh login (a fast, silent redirect round-trip when the provider session is still alive), never a `503`. `renew_access_token_on_expiry: false` forwards the stale token as-is and leaves re-login to the session timers.
+
+In `session.storage: redis` the node takes a short-lived (10s, `SET NX PX`) store lock so only one gateway instance calls the token endpoint concurrently; the loser re-reads the (usually already-refreshed) session instead of also calling the IdP, and unlocking is best-effort (the lock self-heals via its TTL). Cookie mode has no coordination point, so two tabs refreshing at the same moment may both call the provider; with refresh-token rotation the second one then re-logs in. A refresh token also makes the cookie larger (1 to 2 KB at many providers): when the sealed cookie would exceed 4000 bytes the node drops the refresh token with a warning, keeping the expiry so the session re-logs in at token expiry instead of looping on a cookie the browser refuses to store. Use `session.storage: redis` for providers with large tokens, or `session.refresh: false` to keep refresh material out of the session entirely.
 
 **Wiring:** in interactive mode every browser move (the `302` to the IdP, the post-callback `302`, or a logout redirect) exits through the dedicated **`redirect`** port with the prepared response already on the context — **wire the node's `redirect` edge to `client.in`.** A deliberate rejection (missing/invalid flow cookie, CSRF `state` mismatch, an invalid `id_token`, a nonce mismatch) exits through **`denied`** — wire that to `client.in` too, or a custom denial handler. A genuine discovery/token-endpoint callout failure exits through the ordinary **error** port. Only a request with a valid session cookie leaves the `success` port. The node must sit on a route whose match rule also covers the `redirect_uri` path, so the callback reaches it.
 
@@ -196,7 +217,7 @@ Two `openid-connect` nodes on different routes can hold separate browser session
 ```
 
 :::note[Limitations]
-In the default `session.storage: cookie` mode, sessions live entirely in the encrypted cookie: there is **no server-side revocation** before the cookie's `lifetime` expires (use short lifetimes) and **no token refresh** — an expired session triggers a fresh, fast redirect round-trip. `session.storage: redis` lifts both limits (revocation via `/api/sessions`, refresh via `session.refresh`) at the cost of requiring a declared `stores:` entry. Only the Authorization Code grant is implemented.
+In the default `session.storage: cookie` mode, sessions live entirely in the encrypted cookie: there is **no server-side revocation** before the session's timers expire (keep `session.idling_timeout` short), and a token refresh cannot be coordinated across tabs. `session.storage: redis` lifts both limits (revocation via `/api/sessions`, lock-coordinated refresh) at the cost of requiring a declared `stores:` entry. Only the Authorization Code grant is implemented.
 :::
 
 ## Ports
