@@ -364,6 +364,13 @@ async fn handle_request(
     } else {
         (graph.execute(ctx).await, None)
     };
+    // Headers a request-phase node deferred (session renewal cookies) are
+    // appended now, after every node has had its say on `response.headers`.
+    // The WebSocket branch below builds its response elsewhere, so it gets
+    // a copy to append itself.
+    let mut result_ctx = result_ctx;
+    let deferred_headers = result_ctx.deferred_response_headers.clone();
+    result_ctx.merge_deferred_response_headers();
 
     let status = if result_ctx.response.status_code == 0 {
         200
@@ -464,6 +471,15 @@ async fn handle_request(
                     websocket::bad_gateway_502()
                 }
             };
+            let mut resp = resp;
+            for (name, value) in &deferred_headers {
+                if let (Ok(n), Ok(v)) = (
+                    http::header::HeaderName::from_bytes(name.as_bytes()),
+                    http::header::HeaderValue::from_str(value),
+                ) {
+                    resp.headers_mut().append(n, v);
+                }
+            }
             // `proxy_upgrade`/`bad_gateway_502` return `Response<Full<Bytes>>`
             // (a 101 switching-protocols response has no body to stream); box
             // it into the widened body type this handler returns everywhere

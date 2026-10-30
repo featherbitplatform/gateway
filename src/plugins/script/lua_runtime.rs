@@ -283,8 +283,13 @@ impl LuaRuntime {
     ) -> Result<Context, PluginExecutionError> {
         let protocol = ctx.request.protocol.clone();
         let errors = ctx.errors.clone();
+        // Not exposed to Lua: carried across the round trip unchanged.
+        let deferred = ctx.deferred_response_headers.clone();
         match lua_to_context(result_table, protocol, errors) {
-            Ok(new_ctx) => Ok(new_ctx),
+            Ok(mut new_ctx) => {
+                new_ctx.deferred_response_headers = deferred;
+                Ok(new_ctx)
+            }
             Err(e) => Err(PluginExecutionError {
                 context: ctx,
                 error: GatewayError {
@@ -601,6 +606,7 @@ fn lua_to_context(
         response,
         message,
         errors,
+        deferred_response_headers: Vec::new(),
     })
 }
 
@@ -745,6 +751,7 @@ mod tests {
             },
             message: HashMap::new(),
             errors: Vec::new(),
+            deferred_response_headers: Vec::new(),
         }
     }
 
@@ -842,6 +849,33 @@ mod tests {
         assert_eq!(result.request.protocol, Protocol::Http2);
         assert_eq!(result.errors.len(), 1);
         assert_eq!(result.errors[0].code, "UPSTREAM_CONNECTION_ERROR");
+    }
+
+    /// Deferred response headers (session renewal cookies queued by an
+    /// earlier node) are not exposed to Lua and must survive the round trip
+    /// untouched, like `errors` and the protocol.
+    #[test]
+    fn test_lua_round_trip_keeps_deferred_headers() {
+        let rt = LuaRuntime::new(
+            r#"
+            function execute(ctx)
+                return ctx
+            end
+            "#,
+            5000,
+            None,
+        )
+        .unwrap();
+
+        let mut ctx = test_context();
+        ctx.deferred_response_headers
+            .push(("set-cookie".to_string(), "s=1".to_string()));
+
+        let (result, _) = rt.execute(ctx).unwrap();
+        assert_eq!(
+            result.deferred_response_headers,
+            vec![("set-cookie".to_string(), "s=1".to_string())]
+        );
     }
 
     /// A bare `return ctx` is the whole existing contract: no port named,

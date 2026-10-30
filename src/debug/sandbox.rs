@@ -131,6 +131,7 @@ impl SandboxContextInput {
             },
             message: self.message,
             errors: Vec::new(),
+            deferred_response_headers: Vec::new(),
         })
     }
 }

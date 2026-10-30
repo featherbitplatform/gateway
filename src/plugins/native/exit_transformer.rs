@@ -213,6 +213,7 @@ mod tests {
             },
             message: HashMap::new(),
             errors,
+            deferred_response_headers: Vec::new(),
         }
     }
 

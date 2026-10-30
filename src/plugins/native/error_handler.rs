@@ -137,6 +137,7 @@ mod tests {
             },
             message: HashMap::new(),
             errors: err.into_iter().collect(),
+            deferred_response_headers: Vec::new(),
         }
     }
 
