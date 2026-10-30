@@ -22,7 +22,7 @@ fn parse_named<T: serde::de::DeserializeOwned>(
     what: &str,
 ) -> Result<T, ToolError> {
     let mut value: Value = match definition {
-        Value::String(yaml) => serde_yaml::from_str(&yaml)
+        Value::String(yaml) => crate::yaml::from_str(&yaml)
             .map_err(|e| ToolError::invalid_payload(format!("{what}: YAML did not parse: {e}")))?,
         other => other,
     };
@@ -76,7 +76,7 @@ impl PutArgs {
             return Ok(n.to_string());
         }
         let inner = match &self.definition {
-            Value::String(yaml) => serde_yaml::from_str::<Value>(yaml).ok(),
+            Value::String(yaml) => crate::yaml::from_str::<Value>(yaml).ok(),
             other => Some(other.clone()),
         };
         inner
@@ -387,8 +387,8 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("fb_reload_{tag}_{}.yaml", std::process::id()));
         std::fs::write(&path, ECHO_GATEWAY).unwrap();
-        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str(ECHO_GATEWAY).unwrap();
+        let system: SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str(ECHO_GATEWAY).unwrap();
         let s = crate::state::SharedState::new(
             system,
             gateway,
@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn unsaved_changes_lists_per_resource_differences() {
         use crate::config::GatewayConfig;
-        let disk: GatewayConfig = serde_yaml::from_str(ECHO_GATEWAY).unwrap();
+        let disk: GatewayConfig = crate::yaml::from_str(ECHO_GATEWAY).unwrap();
         let mut live = disk.clone();
         let mut extra = live.policies[0].clone();
         extra.name = "p2".to_string();
@@ -485,7 +485,7 @@ mod tests {
     async fn put_accepts_resource_key_alias_and_name_inside_definition() {
         let s = state("{}", ECHO_GATEWAY);
         // `policy` instead of `definition`, and the name carried inside it.
-        let mut def: serde_json::Value = serde_yaml::from_str(NEW_POLICY).unwrap();
+        let mut def: serde_json::Value = crate::yaml::from_str(NEW_POLICY).unwrap();
         def["name"] = serde_json::json!("p-alias");
         let v = call(&s, "put_policy", obj(serde_json::json!({"policy": def})))
             .await

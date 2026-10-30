@@ -429,8 +429,8 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_state(gateway_yaml: &str) -> Arc<SharedState> {
-        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str(gateway_yaml).unwrap();
+        let system: SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str(gateway_yaml).unwrap();
         Arc::new(
             SharedState::new(
                 system,
@@ -650,11 +650,11 @@ plugin_configs:
     #[tokio::test]
     #[cfg(feature = "redis-store")]
     async fn test_delete_store_used_by_acme_storage_is_409() {
-        let system: SystemConfig = serde_yaml::from_str(
+        let system: SystemConfig = crate::yaml::from_str(
             "acme:\n  terms_of_service_agreed: true\n  storage:\n    type: store\n    store: s1\n    encryption_key: k\n",
         )
         .unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str(
+        let gateway: GatewayConfig = crate::yaml::from_str(
             "stores:\n  - name: s1\n    type: redis\n    url: redis://127.0.0.1:6379\n",
         )
         .unwrap();

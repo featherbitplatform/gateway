@@ -234,8 +234,8 @@ mod tests {
     use tower::ServiceExt;
 
     fn state() -> Arc<SharedState> {
-        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let system: SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         Arc::new(
             SharedState::new(
                 system,

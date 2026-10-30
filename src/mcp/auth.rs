@@ -179,7 +179,7 @@ mod tests {
     const WRITE: &str = "write-token-0123456789";
 
     fn cfg() -> McpConfig {
-        serde_yaml::from_str(&format!(
+        crate::yaml::from_str(&format!(
             "enabled: true\ntokens:\n  - token: {READ}\n    scope: read\n    name: local\n  - token: {WRITE}\n    scope: write\nallowed_origins: [\"http://localhost:5173\"]\n"
         ))
         .unwrap()

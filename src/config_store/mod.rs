@@ -129,14 +129,14 @@ pub mod tests {
     use std::sync::Arc;
 
     fn empty_state() -> Arc<SharedState> {
-        let system = serde_yaml::from_str("{}").unwrap();
-        let gateway = serde_yaml::from_str("{}").unwrap();
+        let system = crate::yaml::from_str("{}").unwrap();
+        let gateway = crate::yaml::from_str("{}").unwrap();
         Arc::new(
             SharedState::new(
                 system,
                 gateway,
                 None,
-                Arc::new(FakeConfigStore::new(serde_yaml::from_str("{}").unwrap())),
+                Arc::new(FakeConfigStore::new(crate::yaml::from_str("{}").unwrap())),
             )
             .unwrap(),
         )
@@ -230,7 +230,7 @@ policies:
         let state = empty_state();
         // Swap in a real file store so commit exercises apply_gateway.
         let store = FileConfigStore::new("unused.yaml".into());
-        let candidate: GatewayConfig = serde_yaml::from_str(VALID_GW).unwrap();
+        let candidate: GatewayConfig = crate::yaml::from_str(VALID_GW).unwrap();
 
         store.commit(&state, candidate).await.unwrap();
         assert_eq!(state.routes.read().await.len(), 1);
@@ -241,7 +241,7 @@ policies:
     async fn test_commit_rejects_invalid_config() {
         let state = empty_state();
         // Route references a policy that does not exist.
-        let bad: GatewayConfig = serde_yaml::from_str(
+        let bad: GatewayConfig = crate::yaml::from_str(
             "routes:\n  - name: r\n    match: { path: /x }\n    policy: missing\n",
         )
         .unwrap();
@@ -252,7 +252,7 @@ policies:
             .await
             .is_err());
 
-        let fake = FakeConfigStore::new(serde_yaml::from_str("{}").unwrap());
+        let fake = FakeConfigStore::new(crate::yaml::from_str("{}").unwrap());
         assert!(fake.commit(&state, bad).await.is_err());
         assert!(fake.committed.lock().unwrap().is_empty());
         // The running config was never touched.

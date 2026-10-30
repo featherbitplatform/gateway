@@ -673,8 +673,8 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_state(gateway_yaml: &str) -> Arc<SharedState> {
-        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str(gateway_yaml).unwrap();
+        let system: SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str(gateway_yaml).unwrap();
         Arc::new(
             SharedState::new(
                 system,
@@ -760,7 +760,7 @@ mod tests {
         assert_eq!(api["valid"], false, "{api}");
         let api_errors: Vec<String> = serde_json::from_value(api["errors"].clone()).unwrap();
 
-        let mut gw: crate::config::GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let mut gw: crate::config::GatewayConfig = crate::yaml::from_str("{}").unwrap();
         gw.policies.push(serde_json::from_value(policy).unwrap());
         let lib_error = crate::state::validate_gateway_config(&gw).unwrap_err();
         assert!(

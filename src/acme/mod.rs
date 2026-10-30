@@ -608,7 +608,7 @@ mod tests {
         // would have the InstantAcmeFactory dial the real Let's Encrypt
         // production directory in the background. Both start() calls below
         // share this cfg, so one pin covers both.
-        let system: crate::config::SystemConfig = serde_yaml::from_str(&format!(
+        let system: crate::config::SystemConfig = crate::yaml::from_str(&format!(
             "acme:\n  terms_of_service_agreed: true\n  directory_url: https://127.0.0.1:1/directory\n  storage:\n    type: filesystem\n    dir: {}\ntls:\n  acme:\n    domains: [s.example.com]\n",
             dir.display().to_string().replace('\\', "/")
         ))

@@ -132,7 +132,7 @@ pub fn args<T: DeserializeOwned>(a: JsonObject) -> Result<T, ToolError> {
 /// string — agents naturally write the YAML the docs show.
 pub fn parse_payload<T: DeserializeOwned>(v: Value, what: &str) -> Result<T, ToolError> {
     match v {
-        Value::String(yaml) => serde_yaml::from_str(&yaml)
+        Value::String(yaml) => crate::yaml::from_str(&yaml)
             .map_err(|e| ToolError::invalid_payload(format!("{what}: YAML did not parse: {e}"))),
         other => serde_json::from_value(other).map_err(|e| {
             ToolError::invalid_payload(format!("{what}: JSON did not deserialize: {e}"))
@@ -270,8 +270,8 @@ pub(crate) mod test_support {
 
     /// A state with the given system/gateway YAML (both default to `{}`).
     pub fn state(system_yaml: &str, gateway_yaml: &str) -> Arc<SharedState> {
-        let system: SystemConfig = serde_yaml::from_str(system_yaml).unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str(gateway_yaml).unwrap();
+        let system: SystemConfig = crate::yaml::from_str(system_yaml).unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str(gateway_yaml).unwrap();
         Arc::new(
             SharedState::new(
                 system,

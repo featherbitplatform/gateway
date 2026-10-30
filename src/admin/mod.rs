@@ -234,8 +234,8 @@ mod tests {
     fn test_state() -> Arc<SharedState> {
         // Every section of both configs has a serde default, so an empty
         // document is the cheapest way to get a valid baseline.
-        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let system: SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         Arc::new(
             SharedState::new(
                 system,
@@ -251,7 +251,7 @@ mod tests {
 
     fn admin_config(ui_enabled: bool) -> AdminConfig {
         let yaml = format!("username: u\npassword: p\nui_enabled: {}\n", ui_enabled);
-        serde_yaml::from_str(&yaml).unwrap()
+        crate::yaml::from_str(&yaml).unwrap()
     }
 
     #[cfg(feature = "ui")]

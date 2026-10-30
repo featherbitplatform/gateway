@@ -114,7 +114,7 @@ All configuration values support shell-style interpolation:
 
 | Pattern | Result |
 |---|---|
-| `${VAR}` | The variable's value, or the **empty string** if unset |
+| `${VAR}` | The variable's value, or **empty** if unset |
 | `${VAR:-default}` | The variable's value, or `default` if unset |
 
 ```yaml
@@ -122,7 +122,7 @@ listener:
   port: ${GATEWAY_PORT:-8080}      # 8080 unless GATEWAY_PORT is set
 
 admin:
-  password: ${ADMIN_PASSWORD}      # empty string if ADMIN_PASSWORD is unset
+  password: ${ADMIN_PASSWORD}      # load fails if ADMIN_PASSWORD is unset
 ```
 
 Rules:
@@ -130,6 +130,10 @@ Rules:
 - Variable names must match `[A-Za-z_][A-Za-z0-9_]*`; text that does not match the pattern is left untouched.
 - There is **no escape syntax** for a literal `${...}`.
 - Multiple references in one value are all expanded, e.g. `bind: ${GW_HOST}:${GW_PORT}`.
+- An unset `${VAR}` with no default leaves the value **empty**, which YAML
+  reads as null. A field that requires a string, number or boolean rejects
+  null, so the gateway fails to start with a message naming the line rather
+  than running with an empty secret. Give the variable a default or set it.
 
 **When resolution happens differs by file.** `system.yaml` is interpolated on
 the raw file text before YAML parsing, so `${VAR}` works anywhere in it — keys
@@ -176,6 +180,23 @@ the Admin API never serves resolved values, an authenticated caller can still
 arrange to read one back through the data plane (e.g. by echoing it into a
 response header) — only expose environment holding secrets to operators you
 trust with the Admin API.
+
+## How YAML scalars are typed
+
+Both files are YAML 1.2. Where a field has a declared type (a port, a flag, a
+name) the value is read as that type, so `port: 8080` and `name: 8080` both
+work. Where a value is free-form, such as a node's `config` map, an unquoted
+scalar is typed by its spelling:
+
+- `true` and `false` are the only booleans. `yes`, `no`, `on` and `off` are
+  strings.
+- `~`, `null` and an empty value are null.
+- Numerals are numbers, including `0x1F`, `1e3`, and numerals with a leading
+  zero (`0755`) or underscores (`1_000`). Quote a value to keep it a string:
+  `"0755"`.
+- Anything else, including `1.2.3`, `12:30` and `2024-01-01`, is a string.
+
+Duplicate keys in one mapping are an error.
 
 ## Hot-reload
 

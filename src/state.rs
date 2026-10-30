@@ -364,7 +364,7 @@ policies:
 
     #[tokio::test]
     async fn online_validation_rejects_missing_files_and_offline_accepts_them() {
-        let gw: crate::config::GatewayConfig = serde_yaml::from_str(FILE_REFS).unwrap();
+        let gw: crate::config::GatewayConfig = crate::yaml::from_str(FILE_REFS).unwrap();
         let err = validate_gateway_config(&gw).unwrap_err();
         assert!(err.contains("nonexistent"), "{err}");
         validate_gateway_config_offline(&gw).expect("offline validation ignores file existence");
@@ -374,7 +374,7 @@ policies:
     async fn offline_validation_still_rejects_real_errors() {
         // Unwired `respond` port on the script node.
         let bad = FILE_REFS.replace("      - { from: lua.respond, to: client.in }\n", "");
-        let gw: crate::config::GatewayConfig = serde_yaml::from_str(&bad).unwrap();
+        let gw: crate::config::GatewayConfig = crate::yaml::from_str(&bad).unwrap();
         let err = validate_gateway_config_offline(&gw).unwrap_err();
         assert!(err.contains("respond"), "{err}");
         // Inline Lua is still compiled offline.
@@ -382,20 +382,20 @@ policies:
             "source: /nonexistent/enrich.lua",
             "inline: 'this is not lua'",
         );
-        let gw: crate::config::GatewayConfig = serde_yaml::from_str(&inline_bad).unwrap();
+        let gw: crate::config::GatewayConfig = crate::yaml::from_str(&inline_bad).unwrap();
         assert!(validate_gateway_config_offline(&gw).is_err());
         // A store URL that does not parse is still rejected offline.
         let bad_url = FILE_REFS.replace("redis://r:6379", "not a url");
-        let gw: crate::config::GatewayConfig = serde_yaml::from_str(&bad_url).unwrap();
+        let gw: crate::config::GatewayConfig = crate::yaml::from_str(&bad_url).unwrap();
         assert!(validate_gateway_config_offline(&gw).is_err());
     }
 
     fn state_from_yaml(gateway_yaml: &str) -> Result<(), String> {
-        let system: crate::config::SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gw: crate::config::GatewayConfig = serde_yaml::from_str(gateway_yaml).unwrap();
+        let system: crate::config::SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gw: crate::config::GatewayConfig = crate::yaml::from_str(gateway_yaml).unwrap();
         let state = SharedState::new(
             system,
-            serde_yaml::from_str("{}").unwrap(),
+            crate::yaml::from_str("{}").unwrap(),
             None,
             std::sync::Arc::new(crate::config_store::FileConfigStore::new(
                 std::path::PathBuf::from("gateway.yaml"),
@@ -437,10 +437,10 @@ policies:
     /// server-side.
     #[tokio::test]
     async fn test_rejected_apply_is_logged_at_warn() {
-        let system: crate::config::SystemConfig = serde_yaml::from_str("{}").unwrap();
+        let system: crate::config::SystemConfig = crate::yaml::from_str("{}").unwrap();
         let state = SharedState::new(
             system,
-            serde_yaml::from_str("{}").unwrap(),
+            crate::yaml::from_str("{}").unwrap(),
             None,
             std::sync::Arc::new(crate::config_store::FileConfigStore::new(
                 std::path::PathBuf::from("gateway.yaml"),
@@ -448,7 +448,7 @@ policies:
         )
         .unwrap();
         // `client` is never reached: listener.out is unwired.
-        let candidate: crate::config::GatewayConfig = serde_yaml::from_str(
+        let candidate: crate::config::GatewayConfig = crate::yaml::from_str(
             r#"
 routes:
   - name: r
@@ -486,7 +486,7 @@ policies:
         // never serves resolved values); the compiled route table is where
         // `${VAR}` in match rules must resolve.
         std::env::set_var("TEST_ROUTE_PREFIX", "/env-api");
-        let gw: crate::config::GatewayConfig = serde_yaml::from_str(
+        let gw: crate::config::GatewayConfig = crate::yaml::from_str(
             r#"
 routes:
   - name: r
@@ -521,7 +521,7 @@ policies:
 
     #[test]
     fn test_route_with_invalid_host_pattern_is_rejected() {
-        let gw: crate::config::GatewayConfig = serde_yaml::from_str(
+        let gw: crate::config::GatewayConfig = crate::yaml::from_str(
             r#"
 routes:
   - name: r
@@ -550,10 +550,10 @@ policies:
     /// mandatory `denied` port left unwired).
     #[test]
     fn test_validate_gateway_config_is_a_standalone_dry_run() {
-        let good: crate::config::GatewayConfig = serde_yaml::from_str(SUPERNODE_GATEWAY).unwrap();
+        let good: crate::config::GatewayConfig = crate::yaml::from_str(SUPERNODE_GATEWAY).unwrap();
         assert_eq!(validate_gateway_config(&good), Ok(()));
 
-        let broken: crate::config::GatewayConfig = serde_yaml::from_str(
+        let broken: crate::config::GatewayConfig = crate::yaml::from_str(
             r#"
 routes:
   - name: r
@@ -719,8 +719,8 @@ policies:
     /// `${...}` placeholders (the security invariant shared with routes).
     #[tokio::test]
     async fn test_stores_validated_at_compile_and_kept_raw() {
-        let system: crate::config::SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gw: crate::config::GatewayConfig = serde_yaml::from_str(
+        let system: crate::config::SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gw: crate::config::GatewayConfig = crate::yaml::from_str(
             "stores:\n  - name: s1\n    type: redis\n    url: ${STORE_TEST_URL:-redis://127.0.0.1:6379}\n",
         )
         .unwrap();
@@ -743,7 +743,7 @@ policies:
         drop(gw);
 
         // A candidate with a duplicate store name is rejected...
-        let bad: crate::config::GatewayConfig = serde_yaml::from_str(
+        let bad: crate::config::GatewayConfig = crate::yaml::from_str(
             "stores:\n  - name: d\n    type: redis\n    url: redis://a\n  - name: d\n    type: redis\n    url: redis://b\n",
         )
         .unwrap();
@@ -781,14 +781,14 @@ routes:
             )
         };
 
-        let with_store: crate::config::GatewayConfig = serde_yaml::from_str(&policy_yaml(
+        let with_store: crate::config::GatewayConfig = crate::yaml::from_str(&policy_yaml(
             "stores:\n  - name: s1\n    type: redis\n    url: redis://127.0.0.1:6379",
         ))
         .unwrap();
         validate_gateway_config(&with_store).expect("declared store must compile");
 
         let without_store: crate::config::GatewayConfig =
-            serde_yaml::from_str(&policy_yaml("")).unwrap();
+            crate::yaml::from_str(&policy_yaml("")).unwrap();
         let err = validate_gateway_config(&without_store).unwrap_err();
         assert!(err.contains("unknown store 's1'"), "{err}");
     }

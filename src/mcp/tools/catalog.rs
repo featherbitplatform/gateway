@@ -96,7 +96,7 @@ pub async fn export_config(state: &SharedState) -> Result<Value, ToolError> {
         .iter()
         .map(crate::consumers::mask_credentials)
         .collect();
-    let yaml = serde_yaml::to_string(&gw).map_err(|e| ToolError::internal(e.to_string()))?;
+    let yaml = crate::yaml::to_string(&gw).map_err(|e| ToolError::internal(e.to_string()))?;
     Ok(serde_json::json!({
         "format": "yaml",
         "content": yaml,

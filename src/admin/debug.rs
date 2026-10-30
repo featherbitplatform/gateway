@@ -320,9 +320,9 @@ mod tests {
         // document is the cheapest way to get a valid baseline.
         let system = SystemConfig {
             debug,
-            ..serde_yaml::from_str::<SystemConfig>("{}").unwrap()
+            ..crate::yaml::from_str::<SystemConfig>("{}").unwrap()
         };
-        let gateway: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         Arc::new(
             SharedState::new(
                 system,
@@ -588,9 +588,9 @@ mod tests {
                 enabled: true,
                 ..Default::default()
             },
-            ..serde_yaml::from_str::<SystemConfig>("{}").unwrap()
+            ..crate::yaml::from_str::<SystemConfig>("{}").unwrap()
         };
-        let gateway: GatewayConfig = serde_yaml::from_str(
+        let gateway: GatewayConfig = crate::yaml::from_str(
             r#"
 supernodes:
   - name: secured-call
@@ -656,9 +656,9 @@ policies:
                 enabled: true,
                 ..Default::default()
             },
-            ..serde_yaml::from_str::<SystemConfig>("{}").unwrap()
+            ..crate::yaml::from_str::<SystemConfig>("{}").unwrap()
         };
-        let gateway: GatewayConfig = serde_yaml::from_str(
+        let gateway: GatewayConfig = crate::yaml::from_str(
             r#"
 plugin_configs:
   - name: m

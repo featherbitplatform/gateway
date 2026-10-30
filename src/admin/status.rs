@@ -207,7 +207,7 @@ async fn status(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
 )]
 async fn export_config(State(state): State<Arc<SharedState>>) -> impl IntoResponse {
     let gw = state.gateway.read().await;
-    match serde_yaml::to_string(&*gw) {
+    match crate::yaml::to_string(&*gw) {
         Ok(yaml) => (
             StatusCode::OK,
             [("content-type", "text/yaml; charset=utf-8")],
@@ -289,8 +289,8 @@ mod acme_readyz_tests {
     }
 
     fn state_with(system_yaml: &str) -> Arc<SharedState> {
-        let system: SystemConfig = serde_yaml::from_str(system_yaml).unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str(
+        let system: SystemConfig = crate::yaml::from_str(system_yaml).unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str(
             "routes:\n  - name: r\n    match:\n      path: /x\n    policy: p\npolicies:\n  - name: p\n    nodes:\n      - id: in\n        type: listener\n      - id: out\n        type: client\n    edges:\n      - { from: in.out, to: out.in }\n",
         )
         .unwrap();

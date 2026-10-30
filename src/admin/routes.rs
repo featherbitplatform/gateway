@@ -326,8 +326,8 @@ policies:
 "#;
 
     fn test_state() -> Arc<SharedState> {
-        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str(GATEWAY).unwrap();
+        let system: SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str(GATEWAY).unwrap();
         Arc::new(
             SharedState::new(
                 system,
@@ -361,7 +361,7 @@ policies:
 
     #[test]
     fn test_apply_route_order_rejects_non_permutations() {
-        let gw: GatewayConfig = serde_yaml::from_str(GATEWAY).unwrap();
+        let gw: GatewayConfig = crate::yaml::from_str(GATEWAY).unwrap();
         let o = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         for bad in [
             o(&["a", "b"]),

@@ -120,7 +120,7 @@ pub fn load_yaml_with_env<T: DeserializeOwned>(
 ) -> Result<T, Box<dyn std::error::Error>> {
     let raw = fs::read_to_string(path)?;
     let interpolated = interpolate_env(&raw);
-    let config: T = serde_yaml::from_str(&interpolated)?;
+    let config: T = crate::yaml::from_str(&interpolated)?;
     Ok(config)
 }
 
@@ -134,7 +134,7 @@ pub fn load_yaml_with_env<T: DeserializeOwned>(
 /// point of consumption instead (see [`interpolate_env_json`]).
 pub fn load_yaml<T: DeserializeOwned>(path: &Path) -> Result<T, Box<dyn std::error::Error>> {
     let raw = fs::read_to_string(path)?;
-    let config: T = serde_yaml::from_str(&raw)?;
+    let config: T = crate::yaml::from_str(&raw)?;
     Ok(config)
 }
 

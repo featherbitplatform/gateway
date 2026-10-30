@@ -263,7 +263,7 @@ mod tests {
     use super::*;
 
     fn store(name: &str, ty: &str) -> StoreConfig {
-        serde_yaml::from_str(&format!(
+        crate::yaml::from_str(&format!(
             "name: {name}\ntype: {ty}\nurl: redis://127.0.0.1:6379\n"
         ))
         .unwrap()

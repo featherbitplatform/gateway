@@ -70,3 +70,4 @@ pub mod stream;
 pub(crate) mod test_log;
 pub mod traffic;
 pub mod vars;
+pub mod yaml;
