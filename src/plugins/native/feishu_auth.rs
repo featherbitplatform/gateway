@@ -37,8 +37,8 @@
 //!   present runs the existing token+userinfo callouts unchanged, then
 //!   establishes a new session (payload = userinfo JSON plus the exchanged
 //!   access token and its expiry; subject = `user_id` else `open_id` else
-//!   `union_id` else empty; ttl = `session.cookie.lifetime`, APISIX's
-//!   `cookie_expires_in`, default `86400`) and 302-redirects (the `redirect`
+//!   `union_id` else empty; timers = `session.*_timeout`, see
+//!   `server_session`; the deprecated `session.cookie.lifetime` maps to the absolute one) and 302-redirects (the `redirect`
 //!   port) to the current URL with the `code` query parameter stripped,
 //!   carrying the session `Set-Cookie` — the graph wires `success` straight
 //!   to `upstream.in`, which replaces `ctx.response.headers` wholesale, so a
@@ -65,7 +65,7 @@ use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundRequest, OutboundResponse};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::util::cookie_session::{read_cookie, CookieAttrs, CookieSealer, SameSite};
-use crate::plugins::util::server_session::{self, SessionBackend};
+use crate::plugins::util::server_session::{self, SessionBackend, SessionTimeouts};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 use crate::sessions::StoreError;
 
@@ -107,7 +107,7 @@ struct FeishuSession {
     backend: SessionBackend,
     cookie_name: String,
     cookie_path: String,
-    cookie_lifetime: u64,
+    timeouts: SessionTimeouts,
     redirect_uri: String,
 }
 
@@ -156,8 +156,10 @@ impl FeishuAuthPlugin {
     ///   session flow.
     /// - `session.cookie.name` (string, default `"feishu_session"`).
     /// - `session.cookie.path` (string, default `"/"`).
-    /// - `session.cookie.lifetime` (u64 seconds, default `86400`; APISIX's
-    ///   `cookie_expires_in`).
+    /// - `session.idling_timeout` / `session.rolling_timeout` / `session.absolute_timeout`
+    ///   (seconds, defaults 900/3600/86400, `0` disables): see [`server_session`]. The
+    ///   deprecated `session.cookie.lifetime` (APISIX's `cookie_expires_in`) maps to
+    ///   `absolute_timeout`.
     /// - `session.storage` / `session.store`: server-side session backend
     ///   (see [`server_session::parse_backend`]).
     /// - `redirect_uri` (string, **required in session mode**): where to
@@ -228,14 +230,14 @@ impl FeishuAuthPlugin {
                     .unwrap_or_else(|| "feishu_session".to_string());
                 let cookie_path =
                     session_cookie_str(config, "path").unwrap_or_else(|| "/".to_string());
-                let cookie_lifetime = session_cookie_u64(config, "lifetime").unwrap_or(86_400);
+                let timeouts = server_session::parse_timeouts(config, "feishu-auth")?;
                 let backend = server_session::parse_backend(config, resources, "feishu-auth")?;
                 Some(FeishuSession {
                     sealer,
                     backend,
                     cookie_name,
                     cookie_path,
-                    cookie_lifetime,
+                    timeouts,
                     redirect_uri,
                 })
             }
@@ -413,7 +415,7 @@ impl FeishuAuthPlugin {
     fn session_attrs<'a>(session: &'a FeishuSession, ctx: &Context) -> CookieAttrs<'a> {
         CookieAttrs {
             path: &session.cookie_path,
-            max_age: Some(session.cookie_lifetime),
+            max_age: None,
             http_only: true,
             secure: ctx.request.scheme == "https",
             same_site: SameSite::Lax,
@@ -435,7 +437,13 @@ impl FeishuAuthPlugin {
         &self,
         ctx: &Context,
         session: &FeishuSession,
-    ) -> Result<(Option<FeishuSessionData>, Option<String>), StoreError> {
+    ) -> Result<
+        (
+            Option<(server_session::Opened, String, FeishuSessionData)>,
+            Option<String>,
+        ),
+        StoreError,
+    > {
         let Some(cookie_header) = ctx.request.headers.get("cookie").and_then(|v| v.first()) else {
             return Ok((None, None));
         };
@@ -443,22 +451,14 @@ impl FeishuAuthPlugin {
             return Ok((None, None));
         };
         let raw = raw.to_string();
-        let Some(bytes) = server_session::load(
-            &session.backend,
-            &session.sealer,
-            &raw,
-            &server_session::SessionTimeouts {
-                idling: 0,
-                rolling: 0,
-                absolute: session.cookie_lifetime,
-            },
-        )
-        .await?
-        .map(|o| o.envelope.payload) else {
+        let Some(opened) =
+            server_session::load(&session.backend, &session.sealer, &raw, &session.timeouts)
+                .await?
+        else {
             return Ok((None, None));
         };
-        match serde_json::from_slice::<FeishuSessionData>(&bytes) {
-            Ok(data) => Ok((Some(data), None)),
+        match serde_json::from_slice::<FeishuSessionData>(&opened.envelope.payload) {
+            Ok(data) => Ok((Some((opened, raw, data)), None)),
             Err(_) => {
                 // Undecodable payload: destroy the session and treat this
                 // request as if there were no session at all.
@@ -477,8 +477,33 @@ impl FeishuAuthPlugin {
     /// Session-mode flow: read session → callback (code) → begin login.
     async fn execute_session(&self, mut ctx: Context, session: &FeishuSession) -> PluginResult {
         let cleared_cookie = match self.read_session(&ctx, session).await {
-            Ok((Some(data), _)) => {
+            Ok((Some((opened, raw, data)), _)) => {
                 attach_identity(&mut ctx, &data.userinfo, self.set_userinfo_header);
+                let subject = data
+                    .userinfo
+                    .get("user_id")
+                    .or_else(|| data.userinfo.get("open_id"))
+                    .or_else(|| data.userinfo.get("union_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let renewal = server_session::renew_if_due(
+                    &session.backend,
+                    &session.sealer,
+                    &raw,
+                    &opened,
+                    &session.timeouts,
+                    server_session::meta_now(&ctx, "feishu-auth", subject),
+                    &session.cookie_name,
+                    &Self::session_attrs(session, &ctx),
+                )
+                .await;
+                match renewal {
+                    Ok(Some(cookie)) => ctx
+                        .deferred_response_headers
+                        .push(("set-cookie".to_string(), cookie)),
+                    Ok(None) => {}
+                    Err(e) => return Err(Self::store_error(ctx, e)),
+                }
                 return Ok(PluginOutput::success(ctx));
             }
             Ok((None, cleared)) => cleared,
@@ -526,11 +551,7 @@ impl FeishuAuthPlugin {
             &session.backend,
             &session.sealer,
             &payload,
-            &server_session::SessionTimeouts {
-                idling: 0,
-                rolling: 0,
-                absolute: session.cookie_lifetime,
-            },
+            &session.timeouts,
             meta,
             &session.cookie_name,
             &attrs,
@@ -622,14 +643,6 @@ fn session_cookie_str(config: &HashMap<String, serde_json::Value>, key: &str) ->
 
 /// Reads a u64 field from nested `session.cookie.<key>`, falling back to the
 /// flat `session_cookie_<key>` form (used by the UI schema).
-fn session_cookie_u64(config: &HashMap<String, serde_json::Value>, key: &str) -> Option<u64> {
-    config
-        .get("session")
-        .and_then(|s| s.get("cookie"))
-        .and_then(|c| c.get(key))
-        .or_else(|| config.get(&format!("session_cookie_{key}")))
-        .and_then(|v| v.as_u64())
-}
 
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -1187,5 +1200,111 @@ mod tests {
         let err = plugin.execute(ctx).await.unwrap_err();
         assert_eq!(err.error.code, "SESSION_STORE_ERROR");
         assert_eq!(err.context.response.status_code, 503);
+    }
+
+    // ---- session timeouts and renewal on use ----
+
+    fn session_cfg() -> HashMap<String, serde_json::Value> {
+        let mut config = full_cfg();
+        config.insert(
+            "access_token_url".to_string(),
+            serde_json::json!("http://127.0.0.1:1"),
+        );
+        config.insert(
+            "userinfo_url".to_string(),
+            serde_json::json!("http://127.0.0.1:1"),
+        );
+        config.insert(
+            "redirect_uri".to_string(),
+            serde_json::json!("https://login.example.com/start"),
+        );
+        config.insert("timeout".to_string(), serde_json::json!(200));
+        config.insert(
+            "session".to_string(),
+            serde_json::json!({ "secret": "s3cr3t" }),
+        );
+        config
+    }
+
+    fn session_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    fn session_ctx(sealed: &str) -> Context {
+        let mut ctx = base_ctx();
+        ctx.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("feishu_session={sealed}")],
+        );
+        ctx
+    }
+
+    fn sealed_session(touched_ago: u64) -> String {
+        let sealer = CookieSealer::new("s3cr3t");
+        let payload = serde_json::to_vec(&FeishuSessionData {
+            userinfo: serde_json::json!({ "user_id": "u1" }),
+            access_token: Some("cached-token".to_string()),
+            access_token_expires_at: Some(1_000_000),
+        })
+        .unwrap();
+        let now = session_now();
+        server_session::seal_envelope_for_test(
+            &sealer,
+            &payload,
+            now - 1000,
+            now - 1000,
+            now - touched_ago,
+            Duration::from_secs(600),
+        )
+    }
+
+    #[test]
+    fn test_session_timeouts_parse_and_lifetime_maps_to_absolute() {
+        let plugin =
+            FeishuAuthPlugin::from_config(&session_cfg(), &PluginResources::empty()).unwrap();
+        assert_eq!(
+            plugin.session.as_ref().unwrap().timeouts,
+            server_session::SessionTimeouts::default()
+        );
+        let mut config = session_cfg();
+        config.insert(
+            "session".to_string(),
+            serde_json::json!({ "secret": "s3cr3t", "cookie": { "lifetime": 60 } }),
+        );
+        let plugin = FeishuAuthPlugin::from_config(&config, &PluginResources::empty()).unwrap();
+        let t = plugin.session.as_ref().unwrap().timeouts;
+        assert_eq!(t.absolute, 60, "deprecated lifetime maps to absolute");
+        assert_eq!(t.idling, 900);
+    }
+
+    #[tokio::test]
+    async fn test_touched_session_emits_deferred_set_cookie_on_success() {
+        let plugin =
+            FeishuAuthPlugin::from_config(&session_cfg(), &PluginResources::empty()).unwrap();
+        let out = plugin
+            .execute(session_ctx(&sealed_session(61)))
+            .await
+            .unwrap();
+        assert!(out.port.is_none());
+        assert_eq!(out.context.message.get("user_id").unwrap(), "u1");
+        let (name, value) = &out.context.deferred_response_headers[0];
+        assert_eq!(name, "set-cookie");
+        assert!(value.starts_with("feishu_session="), "{value}");
+        assert!(value.contains("; Max-Age="), "{value}");
+    }
+
+    #[tokio::test]
+    async fn test_idle_session_starts_login() {
+        let plugin =
+            FeishuAuthPlugin::from_config(&session_cfg(), &PluginResources::empty()).unwrap();
+        let out = plugin
+            .execute(session_ctx(&sealed_session(901)))
+            .await
+            .unwrap();
+        assert_eq!(out.port, Some("redirect"));
+        assert!(out.context.deferred_response_headers.is_empty());
     }
 }
