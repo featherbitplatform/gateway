@@ -109,6 +109,7 @@ Core features:
 
 **Key modules**:
 - `src/lib.rs` — crate root; every module is `pub` because `featherbitplatform/gateway-operator` links this crate for its config types and validators (`tests/lib_surface.rs` pins that surface — extend it, never trim it). `src/main.rs` is only the CLI.
+- `src/yaml.rs` — the only place YAML is parsed or emitted (`crate::yaml::from_str` / `to_string`, serde-saphyr underneath, strict `true`/`false` booleans, one-line errors); never import a YAML crate directly. Its tests pin the parsing contract and the known deviations from the former serde_yaml 0.9; `tests/config_fixtures.rs` loads every shipped `gateway.yaml`/`system.yaml` through the real loaders.
 - `src/graph/engine.rs` — compiles PolicyConfig into CompiledGraph, executes node graph with declared-port routing (success/outcome/error)
 - `src/state.rs` — SharedState with RwLock-protected routes, used by both data-plane and admin API
 - `src/plugins/mod.rs` — Plugin trait + `create_plugin()` factory for all 80+ node types

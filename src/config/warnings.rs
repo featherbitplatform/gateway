@@ -125,7 +125,7 @@ mod tests {
     }
 
     fn gw() -> GatewayConfig {
-        serde_yaml::from_str("{}").unwrap()
+        crate::yaml::from_str("{}").unwrap()
     }
 
     /// A malformed reference (`headres` typo'd for `headers`) inside a single

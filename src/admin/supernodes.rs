@@ -167,8 +167,8 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_state(gateway_yaml: &str) -> Arc<SharedState> {
-        let system: SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gateway: GatewayConfig = serde_yaml::from_str(gateway_yaml).unwrap();
+        let system: SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gateway: GatewayConfig = crate::yaml::from_str(gateway_yaml).unwrap();
         Arc::new(
             SharedState::new(
                 system,
@@ -276,7 +276,7 @@ mod tests {
             let gw = state.gateway.read().await;
             let mut c = gw.clone();
             c.policies.push(
-                serde_yaml::from_str(
+                crate::yaml::from_str(
                     r#"
 name: p
 nodes:

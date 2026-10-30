@@ -2647,7 +2647,7 @@ mod tests {
         let group = group
             .map(|g| format!("\n      group: {g}"))
             .unwrap_or_default();
-        serde_yaml::from_str(&format!(
+        crate::yaml::from_str(&format!(
             r#"
 name: {name}
 nodes:
@@ -2730,7 +2730,7 @@ edges:
 
     /// A workflow policy whose single rule rate-limits every request at `count`.
     fn workflow_policy(name: &str, count: u64) -> PolicyConfig {
-        serde_yaml::from_str(&format!(
+        crate::yaml::from_str(&format!(
             r#"
 name: {name}
 nodes:

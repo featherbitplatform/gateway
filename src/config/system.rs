@@ -1079,12 +1079,12 @@ mod tests {
     #[test]
     fn test_shutdown_timeout_default_and_parse() {
         // Absent -> 30 (via serde default) and matches the Default impl.
-        let cfg: TimeoutConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: TimeoutConfig = crate::yaml::from_str("{}").unwrap();
         assert_eq!(cfg.shutdown_timeout_seconds, 30);
         assert_eq!(TimeoutConfig::default().shutdown_timeout_seconds, 30);
 
         // Explicit value is honored.
-        let cfg: TimeoutConfig = serde_yaml::from_str("shutdown_timeout_seconds: 5").unwrap();
+        let cfg: TimeoutConfig = crate::yaml::from_str("shutdown_timeout_seconds: 5").unwrap();
         assert_eq!(cfg.shutdown_timeout_seconds, 5);
     }
 
@@ -1092,7 +1092,7 @@ mod tests {
     /// section can never enable context capture.
     #[test]
     fn test_debug_defaults_to_disabled() {
-        let cfg: DebugConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: DebugConfig = crate::yaml::from_str("{}").unwrap();
         assert!(!cfg.enabled);
         assert!(!cfg.trace_all);
         assert!(!cfg.capture_bodies);
@@ -1109,13 +1109,13 @@ mod tests {
     /// debug off.
     #[test]
     fn test_system_config_without_debug_section() {
-        let cfg: SystemConfig = serde_yaml::from_str("listener: { port: 8080 }").unwrap();
+        let cfg: SystemConfig = crate::yaml::from_str("listener: { port: 8080 }").unwrap();
         assert!(!cfg.debug.enabled);
     }
 
     #[test]
     fn test_debug_explicit_block_parses() {
-        let cfg: DebugConfig = serde_yaml::from_str(
+        let cfg: DebugConfig = crate::yaml::from_str(
             "enabled: true\ncapture_bodies: true\nmax_traces: 5\nredact_headers: [x-custom]\n",
         )
         .unwrap();
@@ -1137,7 +1137,7 @@ mod tests {
 
     #[test]
     fn test_admin_users_merges_legacy_pair_first() {
-        let cfg: AdminConfig = serde_yaml::from_str(
+        let cfg: AdminConfig = crate::yaml::from_str(
             "username: u\npassword: p\nusers:\n  - { username: ops, password: s }\n",
         )
         .unwrap();
@@ -1151,14 +1151,14 @@ mod tests {
     #[test]
     fn test_admin_users_list_alone_is_enough() {
         let cfg: AdminConfig =
-            serde_yaml::from_str("users:\n  - { username: ops, password: s }\n").unwrap();
+            crate::yaml::from_str("users:\n  - { username: ops, password: s }\n").unwrap();
         assert_eq!(admin_users(&cfg), vec![("ops".into(), "s".into())]);
         assert!(cfg.validate().is_ok());
     }
 
     #[test]
     fn test_admin_without_any_user_is_rejected() {
-        let cfg: AdminConfig = serde_yaml::from_str("port: 1\n").unwrap();
+        let cfg: AdminConfig = crate::yaml::from_str("port: 1\n").unwrap();
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("admin.users"), "{err}");
     }
@@ -1170,7 +1170,7 @@ mod tests {
             "password: p\n",
             "username: u\nusers: [{ username: a, password: b }]\n",
         ] {
-            let cfg: AdminConfig = serde_yaml::from_str(yaml).unwrap();
+            let cfg: AdminConfig = crate::yaml::from_str(yaml).unwrap();
             let err = cfg.validate().unwrap_err();
             assert!(
                 err.contains("admin.username") && err.contains("admin.password"),
@@ -1181,7 +1181,7 @@ mod tests {
 
     #[test]
     fn test_admin_duplicate_username_is_rejected() {
-        let cfg: AdminConfig = serde_yaml::from_str(
+        let cfg: AdminConfig = crate::yaml::from_str(
             "username: ops\npassword: p\nusers:\n  - { username: ops, password: s }\n",
         )
         .unwrap();
@@ -1195,16 +1195,16 @@ mod tests {
             "users: [{ username: '', password: s }]\n",
             "users: [{ username: ops, password: '' }]\n",
         ] {
-            let cfg: AdminConfig = serde_yaml::from_str(yaml).unwrap();
+            let cfg: AdminConfig = crate::yaml::from_str(yaml).unwrap();
             assert!(cfg.validate().is_err(), "{yaml}");
         }
     }
 
     #[test]
     fn test_admin_default_credentials_detected_in_any_entry() {
-        let cfg: AdminConfig = serde_yaml::from_str("username: u\npassword: p\n").unwrap();
+        let cfg: AdminConfig = crate::yaml::from_str("username: u\npassword: p\n").unwrap();
         assert!(!cfg.uses_default_credentials());
-        let cfg: AdminConfig = serde_yaml::from_str(
+        let cfg: AdminConfig = crate::yaml::from_str(
             "username: u\npassword: p\nusers:\n  - { username: admin, password: admin }\n",
         )
         .unwrap();
@@ -1213,31 +1213,31 @@ mod tests {
 
     #[test]
     fn test_system_validate_runs_admin_user_checks() {
-        let sys: SystemConfig = serde_yaml::from_str("admin:\n  port: 1\n").unwrap();
+        let sys: SystemConfig = crate::yaml::from_str("admin:\n  port: 1\n").unwrap();
         assert!(sys.validate().unwrap_err().contains("admin.users"));
     }
 
     #[test]
     fn test_admin_ui_enabled_defaults_true() {
-        let cfg: AdminConfig = serde_yaml::from_str("username: u\npassword: p\n").unwrap();
+        let cfg: AdminConfig = crate::yaml::from_str("username: u\npassword: p\n").unwrap();
         assert!(cfg.ui_enabled);
     }
 
     #[test]
     fn test_admin_ui_enabled_false_parses() {
         let cfg: AdminConfig =
-            serde_yaml::from_str("username: u\npassword: p\nui_enabled: false\n").unwrap();
+            crate::yaml::from_str("username: u\npassword: p\nui_enabled: false\n").unwrap();
         assert!(!cfg.ui_enabled);
     }
 
     fn admin_with_mcp(mcp_yaml: &str) -> AdminConfig {
         let yaml = format!("username: u\npassword: p\nmcp:\n{}", mcp_yaml);
-        serde_yaml::from_str(&yaml).unwrap()
+        crate::yaml::from_str(&yaml).unwrap()
     }
 
     #[test]
     fn test_admin_mcp_absent_by_default() {
-        let cfg: AdminConfig = serde_yaml::from_str("username: u\npassword: p\n").unwrap();
+        let cfg: AdminConfig = crate::yaml::from_str("username: u\npassword: p\n").unwrap();
         assert!(cfg.mcp.is_none());
     }
 
@@ -1330,7 +1330,7 @@ mod tests {
 
     #[test]
     fn test_system_validate_runs_mcp_validate() {
-        let s: SystemConfig = serde_yaml::from_str(
+        let s: SystemConfig = crate::yaml::from_str(
             "admin:\n  username: u\n  password: p\n  mcp:\n    enabled: true\n",
         )
         .unwrap();
@@ -1343,7 +1343,7 @@ mod acme_config_tests {
     use super::*;
 
     fn sys(yaml: &str) -> SystemConfig {
-        serde_yaml::from_str(yaml).unwrap()
+        crate::yaml::from_str(yaml).unwrap()
     }
 
     #[test]
@@ -1538,9 +1538,9 @@ mod acme_config_tests {
                 "acme:\n  terms_of_service_agreed: true\n  storage:\n    type: store\n    store: r\n    encryption_key: k\n",
             );
             s.validate().unwrap();
-            let gw: crate::config::GatewayConfig = serde_yaml::from_str("{}").unwrap();
+            let gw: crate::config::GatewayConfig = crate::yaml::from_str("{}").unwrap();
             assert!(s.validate_against_gateway(&gw).unwrap_err().contains("'r'"));
-            let gw: crate::config::GatewayConfig = serde_yaml::from_str(
+            let gw: crate::config::GatewayConfig = crate::yaml::from_str(
                 "stores:\n  - name: r\n    type: redis\n    url: redis://127.0.0.1:6379\n",
             )
             .unwrap();

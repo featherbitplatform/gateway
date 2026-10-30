@@ -775,8 +775,8 @@ mod tests {
         use crate::config_store::FileConfigStore;
         use std::sync::Arc;
 
-        let off: SystemConfig = serde_yaml::from_str("{}").unwrap();
-        let gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let off: SystemConfig = crate::yaml::from_str("{}").unwrap();
+        let gw: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         let store = Arc::new(FileConfigStore::new(std::path::PathBuf::from(
             "gateway.yaml",
         )));
@@ -790,7 +790,7 @@ mod tests {
             Err(SandboxError::Disabled)
         ));
 
-        let on: SystemConfig = serde_yaml::from_str("debug:\n  enabled: true\n").unwrap();
+        let on: SystemConfig = crate::yaml::from_str("debug:\n  enabled: true\n").unwrap();
         let state = crate::state::SharedState::new(on, gw, None, store).unwrap();
         let req = SandboxRequest {
             policy: Some("missing".into()),
@@ -812,8 +812,8 @@ mod tests {
         use crate::config::{GatewayConfig, SystemConfig};
         use crate::config_store::FileConfigStore;
         use std::sync::Arc;
-        let on: SystemConfig = serde_yaml::from_str("debug:\n  enabled: true\n").unwrap();
-        let gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let on: SystemConfig = crate::yaml::from_str("debug:\n  enabled: true\n").unwrap();
+        let gw: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         let store = Arc::new(FileConfigStore::new(std::path::PathBuf::from(
             "gateway.yaml",
         )));

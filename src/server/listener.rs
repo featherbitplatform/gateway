@@ -756,8 +756,8 @@ policies:
     }
 
     fn build_state(gw_yaml: &str) -> Arc<SharedState> {
-        let system = serde_yaml::from_str("{}").unwrap();
-        let gateway = serde_yaml::from_str(gw_yaml).unwrap();
+        let system = crate::yaml::from_str("{}").unwrap();
+        let gateway = crate::yaml::from_str(gw_yaml).unwrap();
         Arc::new(
             SharedState::new(
                 system,

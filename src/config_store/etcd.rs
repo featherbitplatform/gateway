@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_is_empty_counts_supernodes() {
-        let mut gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let mut gw: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         assert!(is_empty(&gw));
         gw.supernodes.push(SupernodeConfig {
             name: "s".into(),
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_is_empty_counts_plugin_configs() {
-        let mut gw: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let mut gw: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         assert!(is_empty(&gw));
         gw.plugin_configs.push(PluginConfigDef {
             name: "c".into(),
@@ -688,7 +688,7 @@ mod tests {
     }
 
     fn store_at(prefix: &str) -> EtcdConfigStore {
-        let cfg: EtcdConfig = serde_yaml::from_str(&format!(
+        let cfg: EtcdConfig = crate::yaml::from_str(&format!(
             "endpoints: ['http://127.0.0.1:2379']\nprefix: {prefix}\n"
         ))
         .unwrap();
@@ -696,7 +696,7 @@ mod tests {
     }
 
     fn sample_config() -> GatewayConfig {
-        serde_yaml::from_str(
+        crate::yaml::from_str(
             r#"
 routes:
   - { name: r1, match: { path: /a }, policy: p1 }
@@ -753,9 +753,9 @@ stores:
     /// An empty (or `/`) prefix is refused before any network I/O.
     #[tokio::test]
     async fn reconcile_prefix_rejects_an_empty_prefix() {
-        let empty: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let empty: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         for prefix in ["''", "/", "'/'"] {
-            let cfg: EtcdConfig = serde_yaml::from_str(&format!(
+            let cfg: EtcdConfig = crate::yaml::from_str(&format!(
                 "endpoints: ['http://127.0.0.1:1']
 prefix: {prefix}
 "
@@ -799,7 +799,7 @@ prefix: {prefix}
     #[test]
     fn desired_kvs_of_empty_config_is_empty() {
         let store = store_at("/featherbit/");
-        let empty: GatewayConfig = serde_yaml::from_str("{}").unwrap();
+        let empty: GatewayConfig = crate::yaml::from_str("{}").unwrap();
         assert!(store.desired_kvs(&empty).is_empty());
     }
 

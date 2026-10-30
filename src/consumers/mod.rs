@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn mask_credentials_keeps_identifiers_only() {
-        let c: ConsumerConfig = serde_yaml::from_str(
+        let c: ConsumerConfig = crate::yaml::from_str(
             "name: alice\ncredentials:\n  key-auth:\n    key: s3cret\n  basic-auth:\n    username: alice\n    password: pw\n  hmac-auth:\n    access_key: ak\n    secret_key: sk\n    nested: {inner: x}\n    tags: [tag1, tag2]\n",
         )
         .unwrap();

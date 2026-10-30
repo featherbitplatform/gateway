@@ -142,7 +142,7 @@ mod tests {
             );
             return;
         };
-        let cfg: crate::config::StoreConfig = serde_yaml::from_str(&format!(
+        let cfg: crate::config::StoreConfig = crate::yaml::from_str(&format!(
             "name: live\ntype: redis\nurl: {url}\nkey_prefix: fbtest{}\n",
             std::process::id()
         ))

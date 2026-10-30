@@ -278,7 +278,7 @@ mod tests {
             eprintln!("skipping test_redis_session_store_live: FEATHERBIT_TEST_REDIS_URL not set");
             return;
         };
-        let cfg: crate::config::StoreConfig = serde_yaml::from_str(&format!(
+        let cfg: crate::config::StoreConfig = crate::yaml::from_str(&format!(
             "name: live\ntype: redis\nurl: {url}\nkey_prefix: fbsess{}\n",
             std::process::id()
         ))
