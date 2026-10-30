@@ -194,24 +194,38 @@ fn sealed_len(sealer: &CookieSealer, payload: &[u8]) -> usize {
 /// Cookie-mode size guard: serializes `session`, and when the sealed value
 /// would exceed [`COOKIE_VALUE_LIMIT`] drops the refresh token (keeping
 /// `expires_at`, so the session falls back to re-login at token expiry)
-/// and serializes again. Returns the possibly-trimmed session and its
-/// payload bytes.
-fn fit_cookie_payload(mut session: SessionData, sealer: &CookieSealer) -> (SessionData, Vec<u8>) {
-    let payload = serde_json::to_vec(&session).unwrap_or_default();
-    if session.refresh_token.is_none() {
-        return (session, payload);
-    }
-    let len = sealed_len(sealer, &payload);
+/// and serializes again. Returns the possibly-trimmed session, its payload
+/// bytes, and whether the result is still over the limit (claims plus
+/// access token alone too large: nothing more can be dropped, so the
+/// browser will likely refuse the cookie; logged so the operator learns
+/// why login loops instead of discovering it the hard way).
+fn fit_cookie_payload(
+    mut session: SessionData,
+    sealer: &CookieSealer,
+) -> (SessionData, Vec<u8>, bool) {
+    let mut payload = serde_json::to_vec(&session).unwrap_or_default();
+    let mut len = sealed_len(sealer, &payload);
     if len <= COOKIE_VALUE_LIMIT {
-        return (session, payload);
+        return (session, payload, false);
+    }
+    if session.refresh_token.is_some() {
+        tracing::warn!(
+            "openid-connect: sealed session cookie is {len} bytes (limit {COOKIE_VALUE_LIMIT}); \
+             dropping refresh_token to fit (use session.storage: redis for large tokens)"
+        );
+        session.refresh_token = None;
+        payload = serde_json::to_vec(&session).unwrap_or_default();
+        len = sealed_len(sealer, &payload);
+        if len <= COOKIE_VALUE_LIMIT {
+            return (session, payload, false);
+        }
     }
     tracing::warn!(
-        "openid-connect: sealed session cookie is {len} bytes (limit {COOKIE_VALUE_LIMIT}); \
-         dropping refresh_token to fit (use session.storage: redis for large tokens)"
+        "openid-connect: sealed session cookie is {len} bytes even without a refresh_token \
+         (limit {COOKIE_VALUE_LIMIT}); browsers drop cookies this large, so login will loop. \
+         Use session.storage: redis, or request fewer claims/a smaller access token."
     );
-    session.refresh_token = None;
-    let payload = serde_json::to_vec(&session).unwrap_or_default();
-    (session, payload)
+    (session, payload, true)
 }
 
 /// What the callback keeps from a token response for later refresh:
@@ -1106,7 +1120,10 @@ impl OpenidConnectPlugin {
             expires_at,
         };
         let (updated, payload) = match flow.backend {
-            SessionBackend::Cookie => fit_cookie_payload(updated, &flow.sealer),
+            SessionBackend::Cookie => {
+                let (updated, payload, _) = fit_cookie_payload(updated, &flow.sealer);
+                (updated, payload)
+            }
             SessionBackend::Store { .. } => {
                 let payload = serde_json::to_vec(&updated).unwrap_or_default();
                 (updated, payload)
@@ -1320,12 +1337,9 @@ impl OpenidConnectPlugin {
             refresh_token,
             expires_at,
         };
-        let (_, payload) = match flow.backend {
-            SessionBackend::Cookie => fit_cookie_payload(session, &flow.sealer),
-            SessionBackend::Store { .. } => {
-                let payload = serde_json::to_vec(&session).unwrap_or_default();
-                (session, payload)
-            }
+        let payload = match flow.backend {
+            SessionBackend::Cookie => fit_cookie_payload(session, &flow.sealer).1,
+            SessionBackend::Store { .. } => serde_json::to_vec(&session).unwrap_or_default(),
         };
         let subject = claims
             .get("sub")
@@ -3429,7 +3443,8 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             refresh_token: Some("r".repeat(3500)),
             expires_at: Some(1),
         };
-        let (fitted, payload) = fit_cookie_payload(big, &sealer);
+        let (fitted, payload, still_oversize) = fit_cookie_payload(big, &sealer);
+        assert!(!still_oversize);
         assert!(
             fitted.refresh_token.is_none(),
             "oversized refresh token dropped"
@@ -3447,10 +3462,29 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             refresh_token: Some("r".repeat(100)),
             expires_at: Some(1),
         };
-        let (fitted, _) = fit_cookie_payload(small, &sealer);
+        let (fitted, _, still_oversize) = fit_cookie_payload(small, &sealer);
         assert_eq!(
             fitted.refresh_token.as_deref(),
             Some("r".repeat(100).as_str())
         );
+        assert!(!still_oversize);
+    }
+
+    /// Claims plus access token alone can exceed the cookie limit (large
+    /// provider tokens); nothing can be dropped, so the guard reports it
+    /// instead of leaving the operator to discover a silent login loop.
+    #[test]
+    fn test_cookie_size_guard_flags_payload_that_is_still_oversize() {
+        let sealer = CookieSealer::new("cookie-signing-secret");
+        let huge = SessionData {
+            claims: serde_json::json!({"sub": "u1", "groups": "g".repeat(4500)}),
+            access_token: Some("at".into()),
+            refresh_token: None,
+            expires_at: Some(1),
+        };
+        let (fitted, payload, still_oversize) = fit_cookie_payload(huge, &sealer);
+        assert!(still_oversize);
+        assert!(fitted.refresh_token.is_none());
+        assert!(sealed_len(&sealer, &payload) > COOKIE_VALUE_LIMIT);
     }
 }

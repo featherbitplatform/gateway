@@ -1289,6 +1289,151 @@ policies:
         }
     }
 
+    /// Spawns a one-shot upstream that answers any request with `response`
+    /// bytes and then closes; returns its port.
+    async fn spawn_fixed_upstream(response: &'static [u8]) -> u16 {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = upstream.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf).await;
+                let _ = s.write_all(response).await;
+                let _ = s.shutdown().await;
+            }
+        });
+        port
+    }
+
+    /// Gateway whose `/stream` route runs an interactive `openid-connect`
+    /// node (cookie sessions, secret `s3cr3t`) in front of `up_port`.
+    async fn spawn_gateway_with_session_node(up_port: u16) -> u16 {
+        spawn_gateway_with_policy(serde_json::json!({
+            "nodes": [
+                { "id": "listener", "type": "listener", "config": {} },
+                { "id": "oidc", "type": "openid-connect", "config": {
+                    "bearer_only": false,
+                    "client_id": "app", "client_secret": "s",
+                    "authorization_endpoint": "https://idp.example.com/authorize",
+                    "token_endpoint": "http://127.0.0.1:1/token",
+                    "jwks_uri": "https://idp.example.com/jwks",
+                    "redirect_uri": "http://127.0.0.1/cb",
+                    "session": { "secret": "s3cr3t" }
+                } },
+                { "id": "up", "type": "upstream",
+                  "config": { "targets": [{ "host": "127.0.0.1", "port": up_port }] } },
+                { "id": "client", "type": "client", "config": {} }
+            ],
+            "edges": [
+                { "from": "listener.out", "to": "oidc.in" },
+                { "from": "oidc.success", "to": "up.in" },
+                { "from": "oidc.redirect", "to": "client.in" },
+                { "from": "oidc.denied", "to": "client.in" },
+                { "from": "up.success", "to": "client.in" }
+            ]
+        }))
+        .await
+    }
+
+    /// A cookie-mode `openid-connect` session last touched 61 s ago, so the
+    /// node renews it on the next request.
+    fn session_cookie_due_for_touch() -> String {
+        use crate::plugins::util::{cookie_session::CookieSealer, server_session};
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let sealer = CookieSealer::new("s3cr3t");
+        let payload = serde_json::to_vec(&serde_json::json!({"claims": {"sub": "u1"}})).unwrap();
+        let sealed = server_session::seal_envelope_for_test(
+            &sealer,
+            &payload,
+            now - 1000,
+            now - 1000,
+            now - 61,
+            std::time::Duration::from_secs(600),
+        );
+        format!("oidc_session={sealed}")
+    }
+
+    /// Raw GET with a `Cookie` header; returns everything the gateway sent
+    /// before closing the connection.
+    async fn raw_get_with_cookie(port: u16, path: &str, cookie: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut acc = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = tokio::time::timeout(std::time::Duration::from_secs(3), stream.read(&mut buf))
+                .await
+                .expect("gateway must answer within 3s")
+                .unwrap();
+            if n == 0 {
+                break;
+            }
+            acc.extend_from_slice(&buf[..n]);
+        }
+        String::from_utf8_lossy(&acc).to_string()
+    }
+
+    /// The renewal `Set-Cookie` a request-phase node deferred must reach the
+    /// client even though `upstream` replaced `response.headers` wholesale
+    /// with the upstream's own (buffered path).
+    #[tokio::test]
+    async fn test_deferred_set_cookie_survives_upstream_on_buffered_response() {
+        let up_port =
+            spawn_fixed_upstream(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nx-up: 1\r\n\r\nok")
+                .await;
+        let gw_port = spawn_gateway_with_session_node(up_port).await;
+        let text = raw_get_with_cookie(gw_port, "/stream", &session_cookie_due_for_touch()).await;
+        let lower = text.to_lowercase();
+        assert!(lower.starts_with("http/1.1 200"), "{text}");
+        assert!(
+            lower.contains("\r\nx-up: 1\r\n"),
+            "upstream header kept: {text}"
+        );
+        assert!(
+            lower.contains("\r\nset-cookie: oidc_session="),
+            "renewal cookie: {text}"
+        );
+        assert!(lower.contains("max-age="), "{text}");
+        assert!(text.ends_with("ok"), "{text}");
+    }
+
+    /// Same guarantee on the streamed path (chunked upstream, headers sent
+    /// before the body completes).
+    #[tokio::test]
+    async fn test_deferred_set_cookie_survives_upstream_on_streamed_response() {
+        let up_port = spawn_fixed_upstream(
+            b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+              transfer-encoding: chunked\r\n\r\nd\r\ndata: first\n\n\r\n0\r\n\r\n",
+        )
+        .await;
+        let gw_port = spawn_gateway_with_session_node(up_port).await;
+        let text = raw_get_with_cookie(gw_port, "/stream", &session_cookie_due_for_touch()).await;
+        let lower = text.to_lowercase();
+        assert!(lower.starts_with("http/1.1 200"), "{text}");
+        assert!(
+            lower.contains("\r\ncontent-type: text/event-stream\r\n"),
+            "{text}"
+        );
+        assert!(
+            lower.contains("\r\nset-cookie: oidc_session="),
+            "renewal cookie: {text}"
+        );
+        assert!(text.contains("data: first"), "{text}");
+    }
+
     /// The whole point of the feature: an SSE event must reach the client
     /// before the upstream closes the response. Today the gateway buffers, so
     /// the client sees nothing until the server hangs up — this test fails on
