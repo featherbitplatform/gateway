@@ -50,7 +50,7 @@ use crate::context::{Context, GatewayError};
 use crate::outbound::{OutboundClient, OutboundRequest};
 use crate::plugins::resources::PluginResources;
 use crate::plugins::util::cookie_session::{read_cookie, CookieAttrs, CookieSealer, SameSite};
-use crate::plugins::util::server_session::{self, SessionBackend};
+use crate::plugins::util::server_session::{self, SessionBackend, SessionTimeouts};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 use crate::sessions::StoreError;
 
@@ -97,8 +97,8 @@ pub struct CasAuthPlugin {
     /// subpath (e.g. `/app_a`) so nodes on distinct subpaths keep independent
     /// sessions. Defaults to `/`.
     cookie_path: String,
-    /// Session cookie lifetime in seconds (interactive mode).
-    cookie_lifetime: u64,
+    /// Session timers (interactive mode).
+    timeouts: SessionTimeouts,
     /// Optional logout path; a request to it clears the session cookie.
     logout_path: Option<String>,
     /// Where the session payload lives: sealed in the cookie itself, or a
@@ -129,7 +129,9 @@ impl CasAuthPlugin {
     /// - `session.cookie.name` (string, default `"cas_session"`): session cookie name.
     /// - `session.cookie.path` (string, default `"/"`): session cookie `Path`;
     ///   scope to a subpath (e.g. `/app_a`) for independent per-app sessions.
-    /// - `session.cookie.lifetime` (u64 seconds, default `3600`): cookie lifetime.
+    /// - `session.idling_timeout` / `session.rolling_timeout` / `session.absolute_timeout`
+    ///   (seconds, defaults 900/3600/86400, `0` disables): see [`server_session`]. The
+    ///   deprecated `session.cookie.lifetime` maps to `absolute_timeout`.
     /// - `logout_path` (string, optional): request path that clears the session
     ///   cookie and redirects to `/`.
     ///
@@ -184,7 +186,7 @@ impl CasAuthPlugin {
         let cookie_name =
             session_cookie_str(config, "name").unwrap_or_else(|| "cas_session".to_string());
         let cookie_path = session_cookie_str(config, "path").unwrap_or_else(|| "/".to_string());
-        let cookie_lifetime = session_cookie_u64(config, "lifetime").unwrap_or(3_600);
+        let timeouts = server_session::parse_timeouts(config, "cas-auth")?;
         let logout_path = config
             .get("logout_path")
             .and_then(|v| v.as_str())
@@ -207,7 +209,7 @@ impl CasAuthPlugin {
             sealer,
             cookie_name,
             cookie_path,
-            cookie_lifetime,
+            timeouts,
             logout_path,
             backend,
             client: resources.outbound.clone(),
@@ -303,7 +305,7 @@ impl CasAuthPlugin {
     fn session_attrs(&self, ctx: &Context) -> CookieAttrs<'_> {
         CookieAttrs {
             path: &self.cookie_path,
-            max_age: Some(self.cookie_lifetime),
+            max_age: None,
             http_only: true,
             secure: ctx.request.scheme == "https",
             same_site: SameSite::Lax,
@@ -329,7 +331,10 @@ impl CasAuthPlugin {
     /// authenticated user. `Ok(None)` = unauthenticated (no cookie/sealer, or
     /// an unopenable/unparseable payload); `Err` = store outage (503 via
     /// [`CasAuthPlugin::store_error`]), never a silent re-login.
-    async fn read_session(&self, ctx: &Context) -> Result<Option<String>, StoreError> {
+    async fn read_session(
+        &self,
+        ctx: &Context,
+    ) -> Result<Option<(server_session::Opened, String, String)>, StoreError> {
         let Some(sealer) = self.sealer.as_ref() else {
             return Ok(None);
         };
@@ -339,22 +344,12 @@ impl CasAuthPlugin {
         let Some(raw) = read_cookie(cookie_header, &self.cookie_name) else {
             return Ok(None);
         };
-        let bytes = server_session::load(
-            &self.backend,
-            sealer,
-            raw,
-            &server_session::SessionTimeouts {
-                idling: 0,
-                rolling: 0,
-                absolute: self.cookie_lifetime,
-            },
-        )
-        .await?
-        .map(|o| o.envelope.payload);
-        Ok(bytes.and_then(|b| {
-            serde_json::from_slice::<CasSession>(&b)
-                .ok()
-                .map(|s| s.user)
+        let opened = server_session::load(&self.backend, sealer, raw, &self.timeouts).await?;
+        Ok(opened.and_then(|o| {
+            let user = serde_json::from_slice::<CasSession>(&o.envelope.payload)
+                .ok()?
+                .user;
+            Some((o, raw.to_string(), user))
         }))
     }
 
@@ -420,8 +415,26 @@ impl CasAuthPlugin {
 
         // 1. Valid session cookie → authenticate straight from it.
         match self.read_session(&ctx).await {
-            Ok(Some(user)) => {
+            Ok(Some((opened, raw, user))) => {
                 self.attach_user(&mut ctx, &user);
+                let renewal = server_session::renew_if_due(
+                    &self.backend,
+                    sealer,
+                    &raw,
+                    &opened,
+                    &self.timeouts,
+                    server_session::meta_now(&ctx, "cas-auth", &user),
+                    &self.cookie_name,
+                    &self.session_attrs(&ctx),
+                )
+                .await;
+                match renewal {
+                    Ok(Some(cookie)) => ctx
+                        .deferred_response_headers
+                        .push(("set-cookie".to_string(), cookie)),
+                    Ok(None) => {}
+                    Err(e) => return Err(Self::store_error(ctx, e)),
+                }
                 return Ok(PluginOutput::success(ctx));
             }
             Ok(None) => {}
@@ -440,11 +453,7 @@ impl CasAuthPlugin {
                         &self.backend,
                         sealer,
                         &payload,
-                        &server_session::SessionTimeouts {
-                            idling: 0,
-                            rolling: 0,
-                            absolute: self.cookie_lifetime,
-                        },
+                        &self.timeouts,
                         meta,
                         &self.cookie_name,
                         &self.session_attrs(&ctx),
@@ -530,14 +539,6 @@ fn session_cookie_str(config: &HashMap<String, serde_json::Value>, key: &str) ->
 
 /// Reads a u64 field from nested `session.cookie.<key>`, falling back to the
 /// flat `session_cookie_<key>` form (used by the UI schema).
-fn session_cookie_u64(config: &HashMap<String, serde_json::Value>, key: &str) -> Option<u64> {
-    config
-        .get("session")
-        .and_then(|s| s.get("cookie"))
-        .and_then(|c| c.get(key))
-        .or_else(|| config.get(&format!("session_cookie_{key}")))
-        .and_then(|v| v.as_u64())
-}
 
 /// Percent-encodes a query-argument value (RFC3986 unreserved chars kept).
 fn percent_encode(value: &str) -> String {
@@ -681,7 +682,7 @@ mod tests {
         assert!(p.sealer.is_none());
         assert_eq!(p.cookie_name, "cas_session");
         assert_eq!(p.cookie_path, "/");
-        assert_eq!(p.cookie_lifetime, 3600);
+        assert_eq!(p.timeouts, server_session::SessionTimeouts::default());
         assert!(p.logout_path.is_none());
     }
 
@@ -729,7 +730,11 @@ mod tests {
         let p = CasAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
         assert!(p.sealer.is_some());
         assert_eq!(p.cookie_name, "sess");
-        assert_eq!(p.cookie_lifetime, 60);
+        assert_eq!(
+            p.timeouts.absolute, 60,
+            "deprecated lifetime maps to absolute"
+        );
+        assert_eq!(p.timeouts.idling, 900);
         assert_eq!(p.logout_path.as_deref(), Some("/logout"));
     }
 
@@ -1064,5 +1069,80 @@ mod tests {
         let err = p.execute(c).await.unwrap_err();
         assert_eq!(err.error.code, "SESSION_STORE_ERROR");
         assert_eq!(err.context.response.status_code, 503);
+    }
+
+    // ---- session timeouts and renewal on use ----
+
+    fn session_plugin() -> CasAuthPlugin {
+        let mut cfg = HashMap::new();
+        cfg.insert(
+            "idp_uri".to_string(),
+            serde_json::json!("https://cas.example.org/cas"),
+        );
+        cfg.insert("session_secret".to_string(), serde_json::json!("s3cr3t"));
+        CasAuthPlugin::from_config(&cfg, &PluginResources::empty()).unwrap()
+    }
+
+    fn session_ctx(sealed: &str) -> Context {
+        let mut c = ctx("/dashboard", HashMap::new());
+        c.request
+            .headers
+            .insert("cookie".to_string(), vec![format!("cas_session={sealed}")]);
+        c
+    }
+
+    #[tokio::test]
+    async fn test_touched_session_emits_deferred_set_cookie_on_success() {
+        let p = session_plugin();
+        let sealer = CookieSealer::new("s3cr3t");
+        let payload = serde_json::to_vec(&CasSession {
+            user: "dave".into(),
+        })
+        .unwrap();
+        let now = server_session_now();
+        let sealed = server_session::seal_envelope_for_test(
+            &sealer,
+            &payload,
+            now - 1000,
+            now - 1000,
+            now - 61,
+            Duration::from_secs(600),
+        );
+        let out = p.execute(session_ctx(&sealed)).await.unwrap();
+        assert!(out.port.is_none());
+        assert_eq!(out.context.message.get("user").unwrap(), "dave");
+        let (name, value) = &out.context.deferred_response_headers[0];
+        assert_eq!(name, "set-cookie");
+        assert!(value.starts_with("cas_session="), "{value}");
+        assert!(value.contains("; Max-Age="), "{value}");
+    }
+
+    #[tokio::test]
+    async fn test_idle_session_starts_login() {
+        let p = session_plugin();
+        let sealer = CookieSealer::new("s3cr3t");
+        let payload = serde_json::to_vec(&CasSession {
+            user: "dave".into(),
+        })
+        .unwrap();
+        let now = server_session_now();
+        let sealed = server_session::seal_envelope_for_test(
+            &sealer,
+            &payload,
+            now - 1000,
+            now - 1000,
+            now - 901,
+            Duration::from_secs(600),
+        );
+        let out = p.execute(session_ctx(&sealed)).await.unwrap();
+        assert_eq!(out.port, Some("redirect"));
+        assert!(out.context.deferred_response_headers.is_empty());
+    }
+
+    fn server_session_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 }

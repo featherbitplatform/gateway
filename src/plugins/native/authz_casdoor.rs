@@ -47,7 +47,7 @@ use crate::plugins::resources::PluginResources;
 use crate::plugins::util::cookie_session::{
     build_set_cookie, delete_cookie, path_covers, read_cookie, CookieAttrs, CookieSealer, SameSite,
 };
-use crate::plugins::util::server_session::{self, SessionBackend};
+use crate::plugins::util::server_session::{self, SessionBackend, SessionTimeouts};
 use crate::plugins::{Plugin, PluginExecutionError, PluginOutput, PluginResult};
 use crate::sessions::StoreError;
 
@@ -102,8 +102,8 @@ pub struct AuthzCasdoorPlugin {
     /// Scope to a subpath (e.g. `/app_a`) for independent per-app sessions;
     /// must cover `callback_path`. Defaults to `/`.
     cookie_path: String,
-    /// Session cookie lifetime in seconds (interactive mode).
-    cookie_lifetime: u64,
+    /// Session timers (interactive mode).
+    timeouts: SessionTimeouts,
     /// Optional logout path; a request to it clears the session cookie.
     logout_path: Option<String>,
     /// Where the session payload lives: sealed in the cookie itself, or a
@@ -138,7 +138,9 @@ impl AuthzCasdoorPlugin {
     /// - `session.cookie.path` (string, default `"/"`): session/flow cookie `Path`;
     ///   scope to a subpath (e.g. `/app_a`) for independent per-app sessions. Must
     ///   cover the `callback_url` path (rejected at load otherwise).
-    /// - `session.cookie.lifetime` (u64 seconds, default `3600`): cookie lifetime.
+    /// - `session.idling_timeout` / `session.rolling_timeout` / `session.absolute_timeout`
+    ///   (seconds, defaults 900/3600/86400, `0` disables): see [`server_session`]. The
+    ///   deprecated `session.cookie.lifetime` maps to `absolute_timeout`.
     /// - `scope` (string, default `"read"`): OAuth scope requested at authorize.
     /// - `logout_path` (string, optional): request path that clears the session
     ///   cookie and redirects to `/`.
@@ -230,7 +232,7 @@ impl AuthzCasdoorPlugin {
                 ));
             }
         }
-        let cookie_lifetime = session_cookie_u64(config, "lifetime").unwrap_or(3_600);
+        let timeouts = server_session::parse_timeouts(config, "authz-casdoor")?;
         let logout_path = config
             .get("logout_path")
             .and_then(|v| v.as_str())
@@ -259,7 +261,7 @@ impl AuthzCasdoorPlugin {
             cookie_name,
             flow_cookie_name,
             cookie_path,
-            cookie_lifetime,
+            timeouts,
             logout_path,
             backend,
             rng: SystemRandom::new(),
@@ -336,10 +338,10 @@ impl AuthzCasdoorPlugin {
     }
 
     /// Cookie attributes: `HttpOnly`, `SameSite=Lax`, `Secure` only over HTTPS.
-    fn cookie_attrs(&self, ctx: &Context, max_age: u64) -> CookieAttrs<'_> {
+    fn cookie_attrs(&self, ctx: &Context, max_age: Option<u64>) -> CookieAttrs<'_> {
         CookieAttrs {
             path: &self.cookie_path,
-            max_age: Some(max_age),
+            max_age,
             http_only: true,
             secure: ctx.request.scheme == "https",
             same_site: SameSite::Lax,
@@ -350,7 +352,10 @@ impl AuthzCasdoorPlugin {
     /// sealed session. `Ok(None)` = unauthenticated (no cookie/sealer, or an
     /// unopenable/unparseable payload); `Err` = store outage (503 via
     /// [`AuthzCasdoorPlugin::store_error`]), never a silent re-login.
-    async fn read_session(&self, ctx: &Context) -> Result<Option<CasdoorSession>, StoreError> {
+    async fn read_session(
+        &self,
+        ctx: &Context,
+    ) -> Result<Option<(server_session::Opened, String, CasdoorSession)>, StoreError> {
         let Some(sealer) = self.sealer.as_ref() else {
             return Ok(None);
         };
@@ -360,19 +365,11 @@ impl AuthzCasdoorPlugin {
         let Some(raw) = read_cookie(cookie_header, &self.cookie_name) else {
             return Ok(None);
         };
-        let bytes = server_session::load(
-            &self.backend,
-            sealer,
-            raw,
-            &server_session::SessionTimeouts {
-                idling: 0,
-                rolling: 0,
-                absolute: self.cookie_lifetime,
-            },
-        )
-        .await?
-        .map(|o| o.envelope.payload);
-        Ok(bytes.and_then(|b| serde_json::from_slice(&b).ok()))
+        let opened = server_session::load(&self.backend, sealer, raw, &self.timeouts).await?;
+        Ok(opened.and_then(|o| {
+            let session = serde_json::from_slice(&o.envelope.payload).ok()?;
+            Some((o, raw.to_string(), session))
+        }))
     }
 
     /// Reads and opens the transient login-flow cookie.
@@ -470,8 +467,32 @@ impl AuthzCasdoorPlugin {
 
         // 2. Valid session cookie (for this client_id) → authenticate from it.
         match self.read_session(&ctx).await {
-            Ok(Some(session)) if session.client_id == self.client_id => {
+            Ok(Some((opened, raw, session))) if session.client_id == self.client_id => {
                 self.attach_session(&mut ctx, &session);
+                let subject = session
+                    .claims
+                    .as_ref()
+                    .and_then(|c| c.get("sub"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let renewal = server_session::renew_if_due(
+                    &self.backend,
+                    sealer,
+                    &raw,
+                    &opened,
+                    &self.timeouts,
+                    server_session::meta_now(&ctx, "authz-casdoor", subject),
+                    &self.cookie_name,
+                    &self.cookie_attrs(&ctx, None),
+                )
+                .await;
+                match renewal {
+                    Ok(Some(cookie)) => ctx
+                        .deferred_response_headers
+                        .push(("set-cookie".to_string(), cookie)),
+                    Ok(None) => {}
+                    Err(e) => return Err(Self::store_error(ctx, e)),
+                }
                 return Ok(PluginOutput::success(ctx));
             }
             Ok(_) => {}
@@ -530,14 +551,10 @@ impl AuthzCasdoorPlugin {
             &self.backend,
             sealer,
             &payload,
-            &server_session::SessionTimeouts {
-                idling: 0,
-                rolling: 0,
-                absolute: self.cookie_lifetime,
-            },
+            &self.timeouts,
             meta,
             &self.cookie_name,
-            &self.cookie_attrs(&ctx, self.cookie_lifetime),
+            &self.cookie_attrs(&ctx, None),
         )
         .await
         {
@@ -563,7 +580,7 @@ impl AuthzCasdoorPlugin {
         let set_flow = build_set_cookie(
             &self.flow_cookie_name,
             &sealed,
-            &self.cookie_attrs(&ctx, 300),
+            &self.cookie_attrs(&ctx, Some(300)),
         );
 
         let callback = self.callback_url.as_deref().unwrap_or("");
@@ -657,14 +674,6 @@ fn session_cookie_str(config: &HashMap<String, serde_json::Value>, key: &str) ->
 
 /// Reads a u64 field from nested `session.cookie.<key>`, falling back to the
 /// flat `session_cookie_<key>` form (used by the UI schema).
-fn session_cookie_u64(config: &HashMap<String, serde_json::Value>, key: &str) -> Option<u64> {
-    config
-        .get("session")
-        .and_then(|s| s.get("cookie"))
-        .and_then(|c| c.get(key))
-        .or_else(|| config.get(&format!("session_cookie_{key}")))
-        .and_then(|v| v.as_u64())
-}
 
 /// Extracts the path component of a callback URL (`https://h/p?x` → `/p`).
 /// Mirrors the APISIX regex `.+//[^/]+(/.*)`.
@@ -1096,7 +1105,7 @@ mod tests {
         assert!(p.sealer.is_some());
         assert_eq!(p.cookie_name, "casdoor_session");
         assert_eq!(p.flow_cookie_name, "casdoor_session_flow");
-        assert_eq!(p.cookie_lifetime, 3600);
+        assert_eq!(p.timeouts, server_session::SessionTimeouts::default());
         assert_eq!(p.cookie_path, "/");
         assert_eq!(p.scope, "read");
         assert_eq!(p.callback_path.as_deref(), Some("/casdoor/callback"));
@@ -1412,5 +1421,70 @@ mod tests {
         let err = p.execute(c).await.unwrap_err();
         assert_eq!(err.error.code, "SESSION_STORE_ERROR");
         assert_eq!(err.context.response.status_code, 503);
+    }
+
+    // ---- session timeouts and renewal on use ----
+
+    #[test]
+    fn test_session_timeouts_parse_and_lifetime_maps_to_absolute() {
+        let mut cfg = interactive_cfg();
+        cfg.insert("session_cookie_lifetime".to_string(), serde_json::json!(60));
+        cfg.insert("session_rolling_timeout".to_string(), serde_json::json!(30));
+        let p = AuthzCasdoorPlugin::from_config(&cfg, &PluginResources::empty()).unwrap();
+        assert_eq!(p.timeouts.absolute, 60);
+        assert_eq!(p.timeouts.rolling, 30);
+        assert_eq!(p.timeouts.idling, 900);
+    }
+
+    fn sealed_session(touched_ago: u64) -> String {
+        let sealer = CookieSealer::new("s3cr3t");
+        let session = CasdoorSession {
+            access_token: "tok-xyz".into(),
+            client_id: "id".into(),
+            claims: Some(serde_json::json!({ "sub": "u1" })),
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        server_session::seal_envelope_for_test(
+            &sealer,
+            &serde_json::to_vec(&session).unwrap(),
+            now - 1000,
+            now - 1000,
+            now - touched_ago,
+            Duration::from_secs(600),
+        )
+    }
+
+    fn session_ctx(sealed: &str) -> Context {
+        let mut c = ctx("/protected", HashMap::new());
+        c.request.headers.insert(
+            "cookie".to_string(),
+            vec![format!("casdoor_session={sealed}")],
+        );
+        c
+    }
+
+    #[tokio::test]
+    async fn test_touched_session_emits_deferred_set_cookie_on_success() {
+        let p =
+            AuthzCasdoorPlugin::from_config(&interactive_cfg(), &PluginResources::empty()).unwrap();
+        let out = p.execute(session_ctx(&sealed_session(61))).await.unwrap();
+        assert!(out.port.is_none());
+        assert_eq!(out.context.message.get("user_id").unwrap(), "u1");
+        let (name, value) = &out.context.deferred_response_headers[0];
+        assert_eq!(name, "set-cookie");
+        assert!(value.starts_with("casdoor_session="), "{value}");
+        assert!(value.contains("; Max-Age="), "{value}");
+    }
+
+    #[tokio::test]
+    async fn test_idle_session_starts_login() {
+        let p =
+            AuthzCasdoorPlugin::from_config(&interactive_cfg(), &PluginResources::empty()).unwrap();
+        let out = p.execute(session_ctx(&sealed_session(901))).await.unwrap();
+        assert_eq!(out.port, Some("redirect"));
+        assert!(out.context.deferred_response_headers.is_empty());
     }
 }
