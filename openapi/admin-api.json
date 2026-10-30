@@ -1713,7 +1713,7 @@
       "name": "Apache-2.0"
     },
     "title": "featherbit Admin API",
-    "version": "0.17.0"
+    "version": "0.17.1"
   },
   "openapi": "3.1.0",
   "paths": {
