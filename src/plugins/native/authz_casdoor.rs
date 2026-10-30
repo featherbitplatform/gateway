@@ -672,9 +672,6 @@ fn session_cookie_str(config: &HashMap<String, serde_json::Value>, key: &str) ->
         .map(String::from)
 }
 
-/// Reads a u64 field from nested `session.cookie.<key>`, falling back to the
-/// flat `session_cookie_<key>` form (used by the UI schema).
-
 /// Extracts the path component of a callback URL (`https://h/p?x` → `/p`).
 /// Mirrors the APISIX regex `.+//[^/]+(/.*)`.
 fn callback_path_of(url: &str) -> Option<String> {

@@ -537,9 +537,6 @@ fn session_cookie_str(config: &HashMap<String, serde_json::Value>, key: &str) ->
         .map(String::from)
 }
 
-/// Reads a u64 field from nested `session.cookie.<key>`, falling back to the
-/// flat `session_cookie_<key>` form (used by the UI schema).
-
 /// Percent-encodes a query-argument value (RFC3986 unreserved chars kept).
 fn percent_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());

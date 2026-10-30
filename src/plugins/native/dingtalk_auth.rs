@@ -628,9 +628,6 @@ fn session_cookie_str(config: &HashMap<String, serde_json::Value>, key: &str) ->
         .map(String::from)
 }
 
-/// Reads a u64 field from nested `session.cookie.<key>`, falling back to the
-/// flat `session_cookie_<key>` form (used by the UI schema).
-
 /// Appends `key=value` to `url`, choosing `?` or `&` as needed.
 fn append_query(url: &str, key: &str, value: &str) -> String {
     let sep = if url.contains('?') { '&' } else { '?' };
