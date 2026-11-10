@@ -26,7 +26,7 @@ In bearer mode a token is validated by **one** of two strategies:
 | `client_id` | string | — | OAuth client id (introspection auth, audience matching, and the interactive flow). |
 | `client_secret` | string | — | OAuth client secret. Required for introspection and interactive mode. |
 | `token_signing_alg_values_expected` | string or array | `RS256, RS384, RS512, ES256, ES384` | Permitted signature algorithms. A token signed with any other algorithm is rejected. The set is automatically narrowed to those matching the JWKS key's family before verification, so the mixed RSA/EC default works with whichever key type the IdP publishes — no need to pin it per deployment. |
-| `claim_validator.issuer.valid_issuers` | array | — | Accepted `iss` values. When empty, the issuer is not validated. |
+| `claim_validator.issuer.valid_issuers` | array | discovery `issuer` | Accepted `iss` values. When unset, the token's `iss` must equal the `issuer` in the `discovery` document. With no `discovery` either, the issuer is not checked. See [Issuer check](#issuer-check). |
 | `claim_validator.audience.claim` | string | `aud` | Claim name to read the audience from. |
 | `claim_validator.audience.required` | boolean | `false` | Reject the token when the audience claim is absent. |
 | `claim_validator.audience.match_with_client_id` | boolean | `false` | Require the audience to equal (or, for an array, contain) `client_id`. |
@@ -46,6 +46,7 @@ Interactive-mode keys (used only when `bearer_only: false`):
 | `redirect_uri` | string | — (**required**) | The callback URL the IdP redirects to after login. Its path must be covered by the node's route match rule. |
 | `authorization_endpoint` / `token_endpoint` | string | from `discovery` | Explicit endpoints; needed only when `discovery` is not set. |
 | `scope` | string | `openid` | OAuth scopes requested. |
+| `use_pkce` | boolean | `true` | Send a PKCE S256 `code_challenge` and the matching `code_verifier`. Set `false` only for an identity provider that rejects PKCE parameters. APISIX defaults this to `false`; we keep it on. |
 | `session.cookie.name` (or `session_cookie_name`) | string | `oidc_session` | Session cookie name (the transient flow cookie is `<name>_flow`). |
 | `session.cookie.path` (or `session_cookie_path`) | string | `/` | `Path` attribute of the session and flow cookies. Scope it to the app's subpath (e.g. `/app_a`) so two nodes on different subpaths keep independent sessions. **Must cover the `redirect_uri` path**, or login loops (rejected at load). |
 | `session.idling_timeout` (or `session_idling_timeout`) | integer (seconds) | `900` | Session ends after this much inactivity. `0` disables. See [Session lifetime](#session-lifetime). |
@@ -102,7 +103,20 @@ On success the context passes through the **success** port with the claims expos
 - `X-Userinfo` request header = base64-encoded claims JSON (when `set_userinfo_header`)
 - `X-Access-Token` (or `Authorization`) forwarded to the upstream (when `set_access_token_header`)
 
-Any client-supplied `X-Userinfo` header is stripped before validation so it cannot bleed through to the upstream.
+Any client-supplied `X-Userinfo`, `X-Access-Token`, `X-ID-Token` or `X-Refresh-Token` header is stripped before validation, in both modes and whatever the outcome, so a spoofed identity header never reaches the upstream. This matters most when the node does not overwrite the header itself: with `set_access_token_header: false`, or with the token forwarded in `Authorization` (`access_token_in_authorization_header: true`), a client-sent `X-Access-Token` used to pass through untouched.
+
+### Issuer check
+
+The token's `iss` claim is checked against `claim_validator.issuer.valid_issuers` when set. When it is not set and `discovery` is configured, the token must carry the discovery document's `issuer`, as in APISIX. The check applies to bearer tokens on both validation paths and to the interactive `id_token`.
+
+If the discovery document cannot be fetched or has no `issuer`, the request fails on the **error** port with a `502` (`OIDC_PROVIDER_ERROR`) rather than skipping the check. APISIX logs a warning and skips it.
+
+:::caution[Breaking change]
+Before v0.19, the issuer was only checked when `valid_issuers` was set. A node with `discovery` and no `valid_issuers` now rejects tokens whose `iss` differs from the discovery `issuer`. Two common cases need `valid_issuers` set explicitly:
+
+- **Azure AD v1 access tokens** carry `https://sts.windows.net/<tenant>/` while the v2.0 discovery document advertises `https://login.microsoftonline.com/<tenant>/v2.0`.
+- **Multi-tenant discovery** (`/common/`, `/organizations/`) advertises a templated issuer such as `https://login.microsoftonline.com/{tenantid}/v2.0`, which no token matches. List the tenants you accept.
+:::
 
 On a missing token, or the token being deliberately invalid (bad signature, expired, unknown `kid`, wrong issuer/audience, an introspection response saying `active: false`), the plugin rejects and exits through the **`denied`** port:
 
@@ -149,8 +163,8 @@ With `bearer_only: false` the plugin runs the browser-facing **Authorization Cod
 The node handles three cases per request:
 
 1. **Valid session cookie** → the sealed claims are attached to `context.message` (`jwt_claims`, `user_id`) and the request continues out the **success** port to the upstream.
-2. **Callback** (request path = `redirect_uri` path, carrying `code` + `state`) → the plugin verifies `state` against the flow cookie (CSRF), exchanges the code at the token endpoint (with the PKCE `code_verifier`), validates the `id_token` against the JWKS and checks its `nonce`, seals a session cookie, and `302`-redirects to the originally requested URL.
-3. **No session** → generates `state`/`nonce`/PKCE, sets a short-lived flow cookie, and `302`-redirects to the IdP authorization endpoint.
+2. **Callback** (request path = `redirect_uri` path, carrying `code` + `state`) → the plugin verifies `state` against the flow cookie (CSRF), exchanges the code at the token endpoint (with the PKCE `code_verifier`, unless `use_pkce: false`), validates the `id_token` against the JWKS and checks its `nonce`, seals a session cookie, and `302`-redirects to the originally requested URL.
+3. **No session** → generates `state`/`nonce` (and PKCE unless `use_pkce: false`), sets a short-lived flow cookie, and `302`-redirects to the IdP authorization endpoint.
 
 #### Session lifetime
 
