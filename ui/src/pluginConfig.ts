@@ -621,6 +621,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'client_secret', label: 'Client secret', type: 'text', placeholder: '${OIDC_CLIENT_SECRET}', hint: 'required for introspection', template: 'env-only' },
     { key: 'bearer_only', label: 'Bearer only', type: 'switch', switchLabel: 'Off = interactive login flow', default: true },
     { key: 'token_signing_alg_values_expected', label: 'Allowed algorithms', type: 'text', default: 'RS256', placeholder: 'RS256, ES256' },
+    { key: 'required_scopes', label: 'Required scopes', type: 'list', addLabel: 'Scope', item: { type: 'text', placeholder: 'orders:read' }, hint: 'bearer mode: the token must carry every scope listed; otherwise 403 insufficient_scope' },
     { key: 'set_userinfo_header', label: 'Set X-Userinfo header', type: 'switch', default: true },
     { key: 'set_access_token_header', label: 'Forward access token', type: 'switch', default: true },
     { key: 'access_token_in_authorization_header', label: 'Token in Authorization', type: 'switch', switchLabel: 'Keep in Authorization instead of X-Access-Token', default: false },

@@ -30,6 +30,7 @@ In bearer mode a token is validated by **one** of two strategies:
 | `claim_validator.audience.claim` | string | `aud` | Claim name to read the audience from. |
 | `claim_validator.audience.required` | boolean | `false` | Reject the token when the audience claim is absent. |
 | `claim_validator.audience.match_with_client_id` | boolean | `false` | Require the audience to equal (or, for an array, contain) `client_id`. |
+| `required_scopes` | array of strings | — | Scopes the bearer token must carry, **all** of them. Read from the token's `scope` claim (a space-delimited string or an array), falling back to `scp` when `scope` is absent. Matching is exact and case-sensitive. A token missing any of them is refused with `403` (see [Behavior](#behavior)). A single space-delimited string is accepted too. Bearer mode only: rejected at load with `bearer_only: false`. |
 | `set_userinfo_header` | boolean | `true` | Base64-encode the validated claims into the `X-Userinfo` request header for the upstream. |
 | `set_access_token_header` | boolean | `true` | Forward the validated access token to the upstream. |
 | `access_token_in_authorization_header` | boolean | `false` | When forwarding, keep the token in `Authorization: Bearer …` instead of `X-Access-Token`. |
@@ -108,6 +109,23 @@ On a missing token, or the token being deliberately invalid (bad signature, expi
 - `context.response.status_code` = `401`
 - `WWW-Authenticate: Bearer error="invalid_token"`
 - Body: `{"error": "unauthorized", "message": "<reason>"}` with `content-type: application/json`
+
+A token that is valid but lacks one or more `required_scopes` is authenticated but not authorized, so it gets a `403` instead of a `401`, still on the **`denied`** port, and no identity is attached:
+
+- `context.response.status_code` = `403`
+- `WWW-Authenticate: Bearer error="insufficient_scope", scope="<every required scope>"` ([RFC 6750 §3.1](https://www.rfc-editor.org/rfc/rfc6750#section-3.1))
+- Body: `{"error": "forbidden", "message": "token is missing required scope(s): <missing>"}` with `content-type: application/json`
+
+```yaml
+- id: auth
+  type: openid-connect
+  config:
+    discovery: https://idp.example.com/.well-known/openid-configuration
+    client_id: orders-api
+    required_scopes: [orders:read, orders:write]
+```
+
+The check runs on both validation paths, JWKS and introspection. Unlike APISIX, which ignores `required_scopes` outside bearer mode, a node with `bearer_only: false` and `required_scopes` set fails to load, because an `id_token` carries no scopes and the setting would silently do nothing.
 
 The missing-token reason names the mode — `No bearer token found in request (bearer_only is true; set bearer_only: false for interactive login)` — so a node that was *meant* to run the interactive flow but is still compiled in bearer mode (for example because the save that flipped `bearer_only` was rejected and the last-good config kept running) is recognizable from the response body alone.
 
@@ -222,7 +240,7 @@ In the default `session.storage: cookie` mode, sessions live entirely in the enc
 
 ## Ports
 
-`openid-connect` declares four output ports: `success`, `denied` (a deliberate `401` rejection is prepared — missing/invalid bearer token, or in interactive mode a CSRF/nonce/session-flow failure), `redirect` (a `302` browser move is prepared — login, callback, or logout; interactive mode only, but the port is always declared), and `error` (a genuine provider failure — discovery, JWKS, or introspection/token-endpoint callout trouble: `502`, error code `OIDC_PROVIDER_ERROR` — or, in `session.storage: redis` mode, a session-store failure: `503`, error code `SESSION_STORE_ERROR`). `denied` and `redirect` are both mandatory ports, same as `success`: the policy compiler rejects any policy that leaves either unwired, **even in bearer-only mode where `redirect` is never actually taken**. Wire both straight to `client`:
+`openid-connect` declares four output ports: `success`, `denied` (a deliberate rejection is prepared — `401` for a missing/invalid bearer token, `403` for a valid token lacking `required_scopes`, or in interactive mode a CSRF/nonce/session-flow failure), `redirect` (a `302` browser move is prepared — login, callback, or logout; interactive mode only, but the port is always declared), and `error` (a genuine provider failure — discovery, JWKS, or introspection/token-endpoint callout trouble: `502`, error code `OIDC_PROVIDER_ERROR` — or, in `session.storage: redis` mode, a session-store failure: `503`, error code `SESSION_STORE_ERROR`). `denied` and `redirect` are both mandatory ports, same as `success`: the policy compiler rejects any policy that leaves either unwired, **even in bearer-only mode where `redirect` is never actually taken**. Wire both straight to `client`:
 
 ```yaml
 edges:
