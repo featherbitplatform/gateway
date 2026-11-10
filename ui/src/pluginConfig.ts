@@ -639,6 +639,7 @@ export const pluginConfig: Record<string, FieldSchema[]> = {
     { key: 'access_token_expires_in', label: 'Access token lifetime (s)', type: 'number', default: 3600, hint: 'used when the token response has no expires_in' },
     { key: 'access_token_expires_leeway', label: 'Refresh leeway (s)', type: 'number', default: 0, hint: 'refresh this many seconds before the access token expires' },
     { key: 'scope', label: 'Scope', type: 'text', default: 'openid', hint: 'interactive mode: OAuth scopes' },
+    { key: 'use_pkce', label: 'Use PKCE', type: 'switch', default: true, hint: 'interactive mode: turn off only for an IdP that rejects PKCE' },
     { key: 'logout_path', label: 'Logout path', type: 'text', placeholder: '/logout', hint: 'interactive mode: clears the session' },
     { key: 'ssl_verify', label: 'SSL verify', type: 'switch', default: true },
     { key: 'timeout', label: 'Timeout (s)', type: 'number', default: 3 },

@@ -154,6 +154,9 @@ struct Interactive {
     /// `access_token_expires_leeway` (default 0): refresh this many seconds
     /// before the access token actually expires.
     access_token_expires_leeway: u64,
+    /// `use_pkce` (default `true`): send an S256 `code_challenge` and the
+    /// matching `code_verifier`. Turn off only for an IdP that rejects PKCE.
+    use_pkce: bool,
     logout_path: Option<String>,
     post_logout_redirect_uri: String,
     authz_endpoint_resolved: Mutex<Option<String>>,
@@ -173,6 +176,15 @@ impl Interactive {
         }
     }
 }
+
+/// Request headers an upstream may trust as identity set by this node; any
+/// client-supplied copy is removed before authentication (APISIX parity).
+const CLIENT_IDENTITY_HEADERS: &[&str] = &[
+    "x-userinfo",
+    "x-access-token",
+    "x-id-token",
+    "x-refresh-token",
+];
 
 /// Largest sealed session cookie value this node will hand a browser.
 /// Browsers drop cookies over 4 KB (name, value and attributes together),
@@ -340,6 +352,9 @@ pub struct OpenidConnectPlugin {
     /// Lazily-resolved JWKS URI (from discovery), cached for the process.
     jwks_uri_resolved: Mutex<Option<String>>,
     jwks_cache: Mutex<Option<CachedJwks>>,
+    /// Lazily-resolved `issuer` from the discovery document, used for the
+    /// `iss` check when `valid_issuers` is not configured.
+    discovery_issuer_resolved: Mutex<Option<String>>,
     /// Interactive login flow; `None` in bearer-only mode.
     interactive: Option<Interactive>,
 }
@@ -361,7 +376,9 @@ impl OpenidConnectPlugin {
     /// - `token_signing_alg_values_expected` (string or array): permitted
     ///   signature algorithms (e.g. `RS256`, `ES256`). Defaults to
     ///   `RS256, RS384, RS512, ES256, ES384`.
-    /// - `claim_validator.issuer.valid_issuers` (array): accepted `iss` values.
+    /// - `claim_validator.issuer.valid_issuers` (array): accepted `iss` values;
+    ///   when unset, the discovery document's `issuer` (if `discovery` is set).
+    /// - `use_pkce` (bool, default `true`): interactive mode, send PKCE S256.
     /// - `claim_validator.audience.{claim,required,match_with_client_id}`:
     ///   audience validation (claim defaults to `aud`).
     /// - `set_userinfo_header` (bool, default `true`): base64-encode the claims
@@ -503,6 +520,7 @@ impl OpenidConnectPlugin {
             resources: resources.clone(),
             jwks_uri_resolved: Mutex::new(None),
             jwks_cache: Mutex::new(None),
+            discovery_issuer_resolved: Mutex::new(None),
             interactive,
         })
     }
@@ -626,7 +644,9 @@ impl OpenidConnectPlugin {
         // `algs_for_key`.
         let algs = algs_for_key(&self.allowed_algs, &jwk.kty).map_err(TokenError::Infra)?;
         let claims = decode_and_validate(token, &key, &algs).map_err(TokenError::Denied)?;
-        self.validate_claims(&claims).map_err(TokenError::Denied)?;
+        let issuers = self.effective_issuers().await?;
+        self.validate_claims(&claims, &issuers)
+            .map_err(TokenError::Denied)?;
         Ok(claims)
     }
 
@@ -676,18 +696,49 @@ impl OpenidConnectPlugin {
             )));
         }
         let claims = parse_introspection(&resp.body)?;
-        self.validate_claims(&claims).map_err(TokenError::Denied)?;
+        let issuers = self.effective_issuers().await?;
+        self.validate_claims(&claims, &issuers)
+            .map_err(TokenError::Denied)?;
         Ok(claims)
     }
 
-    /// Applies the configured issuer and audience claim checks.
-    fn validate_claims(&self, claims: &HashMap<String, serde_json::Value>) -> Result<(), String> {
+    /// Issuers the `iss` claim must match: `claim_validator.issuer.valid_issuers`
+    /// when set, otherwise the discovery document's `issuer` (APISIX parity),
+    /// otherwise none (no discovery configured: nothing to compare against).
+    ///
+    /// Unlike APISIX, which skips the check when discovery cannot be read, a
+    /// discovery failure here is a provider error ([`TokenError::Infra`]): a
+    /// flaky IdP must not silently switch the issuer check off.
+    async fn effective_issuers(&self) -> Result<Vec<String>, TokenError> {
+        if !self.valid_issuers.is_empty() || self.discovery.is_none() {
+            return Ok(self.valid_issuers.clone());
+        }
+        let issuer = self
+            .discovery_field("issuer", &self.discovery_issuer_resolved)
+            .await
+            .map_err(TokenError::Infra)?;
+        Ok(vec![issuer])
+    }
+
+    /// Applies the issuer check (against `issuers`, see
+    /// [`Self::effective_issuers`]; empty = not checked) and the configured
+    /// audience checks.
+    fn validate_claims(
+        &self,
+        claims: &HashMap<String, serde_json::Value>,
+        issuers: &[String],
+    ) -> Result<(), String> {
         // Issuer
-        if !self.valid_issuers.is_empty() {
+        if !issuers.is_empty() {
             let iss = claims.get("iss").and_then(|v| v.as_str());
             match iss {
-                Some(iss) if self.valid_issuers.iter().any(|v| v == iss) => {}
-                _ => return Err("issuer not in valid_issuers".to_string()),
+                Some(iss) if issuers.iter().any(|v| v == iss) => {}
+                _ => {
+                    return Err(format!(
+                        "issuer not accepted (expected one of: {})",
+                        issuers.join(", ")
+                    ))
+                }
             }
         }
 
@@ -1207,8 +1258,13 @@ impl OpenidConnectPlugin {
 
         let state = random_token();
         let nonce = random_token();
-        let verifier = random_token();
-        let challenge = pkce_challenge(&verifier);
+        // Without PKCE the verifier stays empty in the flow cookie and is never
+        // sent to the token endpoint.
+        let verifier = if flow.use_pkce {
+            random_token()
+        } else {
+            String::new()
+        };
         let original_uri = request_uri(&ctx);
 
         let flow_state = FlowState {
@@ -1238,17 +1294,21 @@ impl OpenidConnectPlugin {
             },
         );
 
-        let url = format!(
-            "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&nonce={}\
-             &code_challenge={}&code_challenge_method=S256",
+        let mut url = format!(
+            "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&nonce={}",
             authz,
             form_encode(self.client_id.as_deref().unwrap_or("")),
             form_encode(&flow.redirect_uri),
             form_encode(&flow.scope),
             form_encode(&state),
             form_encode(&nonce),
-            form_encode(&challenge),
         );
+        if flow.use_pkce {
+            url.push_str(&format!(
+                "&code_challenge={}&code_challenge_method=S256",
+                form_encode(&pkce_challenge(&flow_state.verifier)),
+            ));
+        }
         redirect(ctx, &url, vec![set_flow])
     }
 
@@ -1281,7 +1341,7 @@ impl OpenidConnectPlugin {
             .exchange_code(
                 &token_endpoint,
                 &code,
-                &flow_state.verifier,
+                flow.use_pkce.then_some(flow_state.verifier.as_str()),
                 &flow.redirect_uri,
             )
             .await
@@ -1384,19 +1444,13 @@ impl OpenidConnectPlugin {
         &self,
         token_endpoint: &str,
         code: &str,
-        verifier: &str,
+        verifier: Option<&str>,
         redirect_uri: &str,
     ) -> Result<serde_json::Value, String> {
         let client_id = self.client_id.as_deref().unwrap_or("");
         let client_secret = self.client_secret.as_deref().unwrap_or("");
         let basic = BASE64_STANDARD.encode(format!("{}:{}", client_id, client_secret));
-        let body = format!(
-            "grant_type=authorization_code&code={}&redirect_uri={}&code_verifier={}&client_id={}",
-            form_encode(code),
-            form_encode(redirect_uri),
-            form_encode(verifier),
-            form_encode(client_id),
-        );
+        let body = code_exchange_body(code, redirect_uri, verifier, client_id);
         let req = OutboundRequest {
             method: http::Method::POST,
             url: token_endpoint.to_string(),
@@ -1536,6 +1590,12 @@ fn build_interactive(
         .get("renew_access_token_on_expiry")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    let use_pkce = match config.get("use_pkce") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(v) => v
+            .as_bool()
+            .ok_or("openid-connect: 'use_pkce' must be a boolean")?,
+    };
 
     Ok(Interactive {
         sealer: CookieSealer::new(&secret),
@@ -1553,6 +1613,7 @@ fn build_interactive(
         renew_on_expiry,
         access_token_expires_in,
         access_token_expires_leeway,
+        use_pkce,
         logout_path: string_opt(config, "logout_path"),
         post_logout_redirect_uri: string_opt(config, "post_logout_redirect_uri")
             .unwrap_or_else(|| "/".to_string()),
@@ -1651,6 +1712,26 @@ fn random_token() -> String {
         .fill(&mut bytes)
         .expect("system RNG must produce random bytes");
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Form body for the authorization-code exchange; `code_verifier` is sent
+/// only when PKCE is on.
+fn code_exchange_body(
+    code: &str,
+    redirect_uri: &str,
+    verifier: Option<&str>,
+    client_id: &str,
+) -> String {
+    let mut body = format!(
+        "grant_type=authorization_code&code={}&redirect_uri={}",
+        form_encode(code),
+        form_encode(redirect_uri),
+    );
+    if let Some(v) = verifier {
+        body.push_str(&format!("&code_verifier={}", form_encode(v)));
+    }
+    body.push_str(&format!("&client_id={}", form_encode(client_id)));
+    body
 }
 
 /// PKCE S256 challenge: base64url(SHA-256(verifier)).
@@ -1953,8 +2034,14 @@ impl Plugin for OpenidConnectPlugin {
     }
 
     async fn execute(&self, mut ctx: Context) -> PluginResult {
-        // Strip any client-supplied userinfo header before authentication.
-        ctx.request.headers.remove("x-userinfo");
+        // Strip every client-supplied identity header before authentication,
+        // in both modes and whatever the outcome: these names are what this
+        // node forwards to the upstream, so a spoofed one must never survive
+        // a config that does not overwrite it (e.g. `set_access_token_header:
+        // false`, or the token forwarded in `Authorization` instead).
+        for h in CLIENT_IDENTITY_HEADERS {
+            ctx.request.headers.remove(*h);
+        }
 
         // Interactive login (bearer_only: false) runs the cookie-session flow.
         if self.interactive.is_some() {
@@ -2424,7 +2511,7 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             "iss": "https://idp/", "aud": ["my-api", "other"], "sub": "u"
         }))
         .unwrap();
-        assert!(plugin.validate_claims(&good).is_ok());
+        assert!(plugin.validate_claims(&good, &plugin.valid_issuers).is_ok());
 
         // Wrong issuer.
         let bad_iss: HashMap<String, serde_json::Value> =
@@ -2432,7 +2519,9 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
                 "iss": "https://evil/", "aud": "my-api"
             }))
             .unwrap();
-        assert!(plugin.validate_claims(&bad_iss).is_err());
+        assert!(plugin
+            .validate_claims(&bad_iss, &plugin.valid_issuers)
+            .is_err());
 
         // Audience does not include client_id.
         let bad_aud: HashMap<String, serde_json::Value> =
@@ -2440,7 +2529,9 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
                 "iss": "https://idp/", "aud": "someone-else"
             }))
             .unwrap();
-        assert!(plugin.validate_claims(&bad_aud).is_err());
+        assert!(plugin
+            .validate_claims(&bad_aud, &plugin.valid_issuers)
+            .is_err());
 
         // Missing required audience.
         let no_aud: HashMap<String, serde_json::Value> =
@@ -2448,7 +2539,9 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
                 "iss": "https://idp/"
             }))
             .unwrap();
-        assert!(plugin.validate_claims(&no_aud).is_err());
+        assert!(plugin
+            .validate_claims(&no_aud, &plugin.valid_issuers)
+            .is_err());
     }
 
     #[test]
@@ -3486,5 +3579,256 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
         assert!(still_oversize);
         assert!(fitted.refresh_token.is_none());
         assert!(sealed_len(&sealer, &payload) > COOKIE_VALUE_LIMIT);
+    }
+
+    // ---- issuer fallback, spoofed identity headers, optional PKCE ---------
+
+    /// A JWKS document for the test key, served by a one-shot mock server.
+    fn jwks_body() -> &'static str {
+        Box::leak(
+            serde_json::json!({ "keys": [{
+                "kty": "RSA", "kid": "k1", "alg": "RS256", "n": JWK_N, "e": JWK_E
+            }]})
+            .to_string()
+            .into_boxed_str(),
+        )
+    }
+
+    fn discovery_body(issuer: &str) -> &'static str {
+        Box::leak(
+            serde_json::json!({ "issuer": issuer })
+                .to_string()
+                .into_boxed_str(),
+        )
+    }
+
+    fn token_from(iss: &str) -> String {
+        sign(
+            serde_json::json!({ "sub": "u1", "iss": iss, "exp": 9999999999u64 }),
+            "k1",
+        )
+    }
+
+    /// JWKS from `jwks_port`, discovery (used only for the issuer) from
+    /// `discovery_url`.
+    fn jwks_cfg(
+        jwks_port: u16,
+        discovery_url: Option<&str>,
+        extra: &[(&str, serde_json::Value)],
+    ) -> HashMap<String, serde_json::Value> {
+        let mut c = cfg(&[
+            (
+                "jwks_uri",
+                serde_json::json!(format!("http://127.0.0.1:{jwks_port}/jwks")),
+            ),
+            ("timeout", serde_json::json!(1)),
+        ]);
+        if let Some(d) = discovery_url {
+            c.insert("discovery".into(), serde_json::json!(d));
+        }
+        for (k, v) in extra {
+            c.insert(k.to_string(), v.clone());
+        }
+        c
+    }
+
+    #[tokio::test]
+    async fn test_issuer_defaults_to_discovery_issuer() {
+        // Matching issuer: accepted.
+        let jwks = spawn_json_server("200 OK", jwks_body()).await;
+        let disc = spawn_json_server("200 OK", discovery_body("https://idp.example/")).await;
+        let c = jwks_cfg(
+            jwks,
+            Some(&format!("http://127.0.0.1:{disc}/.well-known")),
+            &[],
+        );
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+        let out = plugin
+            .execute(with_bearer(
+                req_ctx("/", HashMap::new()),
+                &token_from("https://idp.example/"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out.port, None, "matching issuer must pass");
+
+        // Token signed by the same keys but carrying another issuer (e.g.
+        // another tenant of a multi-tenant IdP): refused.
+        let jwks = spawn_json_server("200 OK", jwks_body()).await;
+        let disc = spawn_json_server("200 OK", discovery_body("https://idp.example/")).await;
+        let c = jwks_cfg(
+            jwks,
+            Some(&format!("http://127.0.0.1:{disc}/.well-known")),
+            &[],
+        );
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+        let out = plugin
+            .execute(with_bearer(
+                req_ctx("/", HashMap::new()),
+                &token_from("https://other-tenant.example/"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert_eq!(out.context.response.status_code, 401);
+    }
+
+    /// Explicit `valid_issuers` wins and the discovery document is never
+    /// fetched for the issuer (its URL points at a closed port).
+    #[tokio::test]
+    async fn test_explicit_valid_issuers_override_discovery() {
+        let jwks = spawn_json_server("200 OK", jwks_body()).await;
+        let c = jwks_cfg(
+            jwks,
+            Some("http://127.0.0.1:1/.well-known"),
+            &[(
+                "claim_validator",
+                serde_json::json!({ "issuer": { "valid_issuers": ["https://a/", "https://b/"] } }),
+            )],
+        );
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+        let out = plugin
+            .execute(with_bearer(
+                req_ctx("/", HashMap::new()),
+                &token_from("https://b/"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out.port, None);
+    }
+
+    /// No discovery and no `valid_issuers`: nothing to compare against, so the
+    /// issuer is not checked (unchanged behaviour).
+    #[tokio::test]
+    async fn test_no_discovery_no_valid_issuers_skips_issuer_check() {
+        let jwks = spawn_json_server("200 OK", jwks_body()).await;
+        let plugin =
+            OpenidConnectPlugin::from_config(&jwks_cfg(jwks, None, &[]), &PluginResources::empty())
+                .unwrap();
+        let out = plugin
+            .execute(with_bearer(
+                req_ctx("/", HashMap::new()),
+                &token_from("https://any/"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out.port, None);
+    }
+
+    /// The discovery document cannot be read: fail closed on the error port
+    /// (502), never skip the issuer check.
+    #[tokio::test]
+    async fn test_discovery_issuer_unreachable_fails_closed() {
+        let jwks = spawn_json_server("200 OK", jwks_body()).await;
+        let c = jwks_cfg(jwks, Some("http://127.0.0.1:1/.well-known"), &[]);
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+        let err = plugin
+            .execute(with_bearer(
+                req_ctx("/", HashMap::new()),
+                &token_from("https://any/"),
+            ))
+            .await
+            .unwrap_err();
+        assert_provider_error(&err, "OIDC_PROVIDER_ERROR");
+    }
+
+    /// Client-supplied identity headers never reach the upstream: the
+    /// validated token is forwarded in `Authorization` here, so a spoofed
+    /// `X-Access-Token` would otherwise pass through untouched.
+    #[tokio::test]
+    async fn test_client_identity_headers_are_stripped() {
+        let jwks = spawn_json_server("200 OK", jwks_body()).await;
+        let c = jwks_cfg(
+            jwks,
+            None,
+            &[(
+                "access_token_in_authorization_header",
+                serde_json::json!(true),
+            )],
+        );
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+        let token = token_from("https://idp/");
+        let mut ctx = with_bearer(req_ctx("/", HashMap::new()), &token);
+        for h in [
+            "x-access-token",
+            "x-id-token",
+            "x-refresh-token",
+            "x-userinfo",
+        ] {
+            ctx.request.headers.insert(h.into(), vec!["spoofed".into()]);
+        }
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, None);
+        let h = &out.context.request.headers;
+        assert!(!h.contains_key("x-access-token"));
+        assert!(!h.contains_key("x-id-token"));
+        assert!(!h.contains_key("x-refresh-token"));
+        assert_ne!(h["x-userinfo"][0], "spoofed");
+        assert_eq!(h["authorization"][0], format!("Bearer {token}"));
+    }
+
+    /// Stripping also happens on a refused request, and in interactive mode.
+    #[tokio::test]
+    async fn test_client_identity_headers_stripped_when_denied_and_interactive() {
+        let c = cfg(&[("jwks_uri", serde_json::json!("https://idp/jwks"))]);
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+        let mut ctx = req_ctx("/", HashMap::new());
+        ctx.request
+            .headers
+            .insert("x-access-token".into(), vec!["spoofed".into()]);
+        let out = plugin.execute(ctx).await.unwrap();
+        assert_eq!(out.port, Some("denied"));
+        assert!(!out.context.request.headers.contains_key("x-access-token"));
+
+        let plugin = OpenidConnectPlugin::from_config(
+            &interactive_explicit_cfg(),
+            &PluginResources::empty(),
+        )
+        .unwrap();
+        let mut ctx = req_ctx("/dashboard", HashMap::new());
+        ctx.request
+            .headers
+            .insert("x-id-token".into(), vec!["spoofed".into()]);
+        let out = plugin.execute(ctx).await.unwrap();
+        assert!(!out.context.request.headers.contains_key("x-id-token"));
+    }
+
+    #[tokio::test]
+    async fn test_use_pkce_toggles_code_challenge() {
+        let location = |c: HashMap<String, serde_json::Value>| async move {
+            let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+            let out = plugin
+                .execute(req_ctx("/dashboard", HashMap::new()))
+                .await
+                .unwrap();
+            assert_eq!(out.port, Some("redirect"));
+            out.context.response.headers["location"][0].clone()
+        };
+
+        // Default: PKCE on.
+        let on = location(interactive_explicit_cfg()).await;
+        assert!(
+            on.contains("&code_challenge=") && on.contains("code_challenge_method=S256"),
+            "{on}"
+        );
+
+        let mut c = interactive_explicit_cfg();
+        c.insert("use_pkce".into(), serde_json::json!(false));
+        let off = location(c).await;
+        assert!(!off.contains("code_challenge"), "{off}");
+        assert!(off.contains("&state=") && off.contains("&nonce="), "{off}");
+    }
+
+    #[test]
+    fn test_code_exchange_body_verifier_is_optional() {
+        let with = code_exchange_body("c0de", "https://app/cb", Some("vrf"), "app");
+        assert!(with.contains("&code_verifier=vrf"), "{with}");
+        let without = code_exchange_body("c0de", "https://app/cb", None, "app");
+        assert!(!without.contains("code_verifier"), "{without}");
+        assert!(
+            without.starts_with("grant_type=authorization_code&code=c0de&"),
+            "{without}"
+        );
+        assert!(without.ends_with("&client_id=app"), "{without}");
     }
 }
