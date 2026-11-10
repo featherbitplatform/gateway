@@ -342,6 +342,8 @@ pub struct OpenidConnectPlugin {
     jwks_cache: Mutex<Option<CachedJwks>>,
     /// Interactive login flow; `None` in bearer-only mode.
     interactive: Option<Interactive>,
+    /// Scopes the bearer token must carry (all of them); empty = no check.
+    required_scopes: Vec<String>,
 }
 
 impl OpenidConnectPlugin {
@@ -370,10 +372,14 @@ impl OpenidConnectPlugin {
     ///   `access_token_in_authorization_header` (bool, default `false`):
     ///   forward the validated access token as `X-Access-Token` (or leave it in
     ///   `Authorization`).
+    /// - `required_scopes` (array of strings, or one space-delimited string):
+    ///   scopes the bearer token must all carry, read from its `scope` claim
+    ///   (falling back to `scp`). A token missing any is refused with `403`
+    ///   `insufficient_scope` on `denied`. Bearer mode only.
     /// - `ssl_verify` (bool, default `true`), `timeout` (integer seconds,
     ///   default `3`).
     ///
-    /// Rejected at load: `bearer_only: false`, and configs with neither a JWKS
+    /// Rejected at load: `required_scopes` with `bearer_only: false`, and configs with neither a JWKS
     /// source (`discovery`/`jwks_uri`) nor an `introspection_endpoint`.
     ///
     /// ```yaml
@@ -445,6 +451,15 @@ impl OpenidConnectPlugin {
             Some(build_interactive(config, &discovery, resources)?)
         };
 
+        let required_scopes = read_required_scopes(config)?;
+        if interactive.is_some() && !required_scopes.is_empty() {
+            return Err(
+                "openid-connect: 'required_scopes' applies to bearer tokens only; \
+                        it cannot be used with bearer_only: false"
+                    .to_string(),
+            );
+        }
+
         let allowed_algs = parse_allowed_algs(config.get("token_signing_alg_values_expected"))?;
 
         let valid_issuers = read_valid_issuers(config);
@@ -504,6 +519,7 @@ impl OpenidConnectPlugin {
             jwks_uri_resolved: Mutex::new(None),
             jwks_cache: Mutex::new(None),
             interactive,
+            required_scopes,
         })
     }
 
@@ -758,6 +774,34 @@ impl OpenidConnectPlugin {
         ctx.response.headers.insert(
             "www-authenticate".to_string(),
             vec!["Bearer error=\"invalid_token\"".to_string()],
+        );
+        Ok(PluginOutput::on_port(ctx, "denied"))
+    }
+
+    /// Builds a 403 rejection for a valid token that lacks one or more
+    /// `required_scopes` (RFC 6750 §3.1 `insufficient_scope`), exiting on the
+    /// `denied` port. The challenge names every required scope, so a client
+    /// knows what to request when it fetches a new token.
+    fn reject_insufficient_scope(&self, ctx: Context, missing: &[&str]) -> PluginResult {
+        let mut ctx = ctx;
+        ctx.response.status_code = 403;
+        ctx.response.body = Bytes::from(
+            serde_json::json!({
+                "error": "forbidden",
+                "message": format!("token is missing required scope(s): {}", missing.join(" ")),
+            })
+            .to_string(),
+        );
+        ctx.response.headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
+        ctx.response.headers.insert(
+            "www-authenticate".to_string(),
+            vec![format!(
+                "Bearer error=\"insufficient_scope\", scope=\"{}\"",
+                self.required_scopes.join(" ")
+            )],
         );
         Ok(PluginOutput::on_port(ctx, "denied"))
     }
@@ -1911,6 +1955,54 @@ fn parse_introspection(body: &[u8]) -> Result<HashMap<String, serde_json::Value>
     Ok(map)
 }
 
+/// Reads `required_scopes`: an array of non-empty strings, or a single
+/// space-delimited string. Absent or `null` means no scope check.
+fn read_required_scopes(
+    config: &HashMap<String, serde_json::Value>,
+) -> Result<Vec<String>, String> {
+    let err = || {
+        "openid-connect: 'required_scopes' must be an array of non-empty strings \
+         or a space-delimited string"
+            .to_string()
+    };
+    match config.get("required_scopes") {
+        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+        Some(serde_json::Value::String(s)) => Ok(s.split_whitespace().map(String::from).collect()),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|v| match v.as_str().map(str::trim) {
+                Some(s) if !s.is_empty() => Ok(s.to_string()),
+                _ => Err(err()),
+            })
+            .collect(),
+        Some(_) => Err(err()),
+    }
+}
+
+/// Returns the entries of `required` the token does not carry, in config
+/// order. Granted scopes come from the `scope` claim (RFC 7662 / RFC 9068:
+/// a space-delimited string; some providers emit an array), falling back to
+/// `scp` (Azure AD string, Okta array) only when `scope` is absent. Matching
+/// is exact and case-sensitive (RFC 6749 §3.3).
+fn missing_scopes<'a>(
+    claims: &HashMap<String, serde_json::Value>,
+    required: &'a [String],
+) -> Vec<&'a str> {
+    if required.is_empty() {
+        return Vec::new();
+    }
+    let granted: Vec<&str> = match claims.get("scope").or_else(|| claims.get("scp")) {
+        Some(serde_json::Value::String(s)) => s.split_whitespace().collect(),
+        Some(serde_json::Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str()).collect(),
+        _ => Vec::new(),
+    };
+    required
+        .iter()
+        .map(String::as_str)
+        .filter(|r| !granted.contains(r))
+        .collect()
+}
+
 /// True when `aud` equals `client_id` (string aud) or contains it (array aud).
 fn audience_contains(aud: &serde_json::Value, client_id: &str) -> bool {
     match aud {
@@ -1987,6 +2079,10 @@ impl Plugin for OpenidConnectPlugin {
 
         match result {
             Ok(claims) => {
+                let missing = missing_scopes(&claims, &self.required_scopes);
+                if !missing.is_empty() {
+                    return self.reject_insufficient_scope(ctx, &missing);
+                }
                 self.attach(&mut ctx, claims, &token);
                 Ok(PluginOutput::success(ctx))
             }
@@ -2581,6 +2677,173 @@ CQTyrvDSz5J6MQhLtbNHnQ==\n\
             .await
             .unwrap_err();
         assert_provider_error(&err, "OIDC_PROVIDER_ERROR");
+    }
+
+    // ---- required_scopes ---------------------------------------------------
+
+    fn introspection_cfg(
+        port: u16,
+        extra: &[(&str, serde_json::Value)],
+    ) -> HashMap<String, serde_json::Value> {
+        let mut c = cfg(&[
+            (
+                "introspection_endpoint",
+                serde_json::json!(format!("http://127.0.0.1:{port}/introspect")),
+            ),
+            ("client_id", serde_json::json!("id")),
+            ("client_secret", serde_json::json!("secret")),
+            ("ssl_verify", serde_json::json!(false)),
+        ]);
+        for (k, v) in extra {
+            c.insert(k.to_string(), v.clone());
+        }
+        c
+    }
+
+    #[test]
+    fn test_required_scopes_parsing() {
+        let base = || cfg(&[("jwks_uri", serde_json::json!("https://idp/jwks"))]);
+        let r = PluginResources::empty();
+
+        let p = OpenidConnectPlugin::from_config(&base(), &r).unwrap();
+        assert!(p.required_scopes.is_empty());
+
+        let mut c = base();
+        c.insert(
+            "required_scopes".into(),
+            serde_json::json!(["read", "write"]),
+        );
+        let p = OpenidConnectPlugin::from_config(&c, &r).unwrap();
+        assert_eq!(p.required_scopes, vec!["read", "write"]);
+
+        // A space-delimited string is accepted too (the RFC 6749 wire form).
+        c.insert("required_scopes".into(), serde_json::json!(" read  write "));
+        let p = OpenidConnectPlugin::from_config(&c, &r).unwrap();
+        assert_eq!(p.required_scopes, vec!["read", "write"]);
+
+        // Non-string entries and other types are a config error, not ignored.
+        c.insert("required_scopes".into(), serde_json::json!(["read", 1]));
+        assert!(OpenidConnectPlugin::from_config(&c, &r).is_err());
+        c.insert("required_scopes".into(), serde_json::json!({"a": 1}));
+        assert!(OpenidConnectPlugin::from_config(&c, &r).is_err());
+        c.insert("required_scopes".into(), serde_json::json!(["read", ""]));
+        assert!(OpenidConnectPlugin::from_config(&c, &r).is_err());
+    }
+
+    /// Interactive mode validates an id_token, which carries no scopes; a
+    /// security setting that would silently do nothing is rejected at load.
+    #[test]
+    fn test_required_scopes_rejected_in_interactive_mode() {
+        let mut c = interactive_explicit_cfg();
+        c.insert("required_scopes".into(), serde_json::json!(["read"]));
+        let err = OpenidConnectPlugin::from_config(&c, &PluginResources::empty())
+            .err()
+            .expect("must reject");
+        assert!(err.contains("required_scopes"), "{err}");
+    }
+
+    #[test]
+    fn test_missing_scopes() {
+        let req = vec!["read".to_string(), "write".to_string()];
+        let claims = |v: serde_json::Value| -> HashMap<String, serde_json::Value> {
+            v.as_object().unwrap().clone().into_iter().collect()
+        };
+
+        // Space-delimited `scope` string (RFC 7662 / RFC 9068).
+        assert!(missing_scopes(
+            &claims(serde_json::json!({"scope": "openid read write"})),
+            &req
+        )
+        .is_empty());
+        assert_eq!(
+            missing_scopes(&claims(serde_json::json!({"scope": "openid read"})), &req),
+            vec!["write"]
+        );
+        // Array form.
+        assert!(missing_scopes(
+            &claims(serde_json::json!({"scope": ["read", "write"]})),
+            &req
+        )
+        .is_empty());
+        // `scp` fallback (Azure AD string, Okta array).
+        assert!(missing_scopes(&claims(serde_json::json!({"scp": "read write"})), &req).is_empty());
+        assert!(
+            missing_scopes(&claims(serde_json::json!({"scp": ["read", "write"]})), &req).is_empty()
+        );
+        // `scope` wins over `scp` when both are present.
+        assert_eq!(
+            missing_scopes(
+                &claims(serde_json::json!({"scope": "read", "scp": "read write"})),
+                &req
+            ),
+            vec!["write"]
+        );
+        // No scope claim at all: everything is missing.
+        assert_eq!(
+            missing_scopes(&claims(serde_json::json!({"sub": "u"})), &req),
+            vec!["read", "write"]
+        );
+        // Matching is exact and case-sensitive (RFC 6749 §3.3).
+        assert_eq!(
+            missing_scopes(
+                &claims(serde_json::json!({"scope": "READ readwrite write"})),
+                &req
+            ),
+            vec!["read"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_required_scopes_insufficient_is_403_on_denied() {
+        let port = spawn_json_server(
+            "200 OK",
+            r#"{"active": true, "sub": "u1", "scope": "openid read"}"#,
+        )
+        .await;
+        let c = introspection_cfg(
+            port,
+            &[("required_scopes", serde_json::json!(["read", "write"]))],
+        );
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+
+        let out = plugin
+            .execute(with_bearer(req_ctx("/", HashMap::new()), "opaque-token"))
+            .await
+            .unwrap();
+        assert_eq!(out.port, Some("denied"));
+        let ctx = out.context;
+        assert_eq!(ctx.response.status_code, 403);
+        assert_eq!(
+            ctx.response.headers.get("www-authenticate").unwrap()[0],
+            r#"Bearer error="insufficient_scope", scope="read write""#
+        );
+        let body: serde_json::Value = serde_json::from_slice(&ctx.response.body).unwrap();
+        assert_eq!(body["error"], "forbidden");
+        assert!(body["message"].as_str().unwrap().contains("write"));
+        // Identity is not attached for a refused request.
+        assert!(!ctx.message.contains_key("jwt_claims"));
+        assert!(!ctx.request.headers.contains_key("x-userinfo"));
+    }
+
+    #[tokio::test]
+    async fn test_required_scopes_satisfied_passes() {
+        let port = spawn_json_server(
+            "200 OK",
+            r#"{"active": true, "sub": "u1", "scope": "openid read write"}"#,
+        )
+        .await;
+        let c = introspection_cfg(
+            port,
+            &[("required_scopes", serde_json::json!(["read", "write"]))],
+        );
+        let plugin = OpenidConnectPlugin::from_config(&c, &PluginResources::empty()).unwrap();
+
+        let out = plugin
+            .execute(with_bearer(req_ctx("/", HashMap::new()), "opaque-token"))
+            .await
+            .unwrap();
+        assert_eq!(out.port, None);
+        assert_eq!(out.context.message["user_id"], "u1");
     }
 
     /// An introspection response that reports the token inactive is a
